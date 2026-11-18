@@ -981,3 +981,24 @@
   background: var(--color-surface-2);
   color: var(--color-text-3);
 }
+
+/* ── la libreria unica: le righe di un altro dispositivo ─────────────────── */
+
+/* L'icona accanto al titolo: dice «viene da un altro dispositivo» a chi guarda,
+   e il nome sta nell'etichetta per chi no. Non un comando, e non prende il
+   fuoco. */
+.riga .nome .dispositivo-riga {
+  display: inline-flex;
+  margin-inline-start: var(--spazio-1);
+  vertical-align: -2px;
+  color: var(--color-text-3);
+}
+
+/* Il dispositivo non risponde: la riga resta, in grigio. Il fuoco, il menù, il
+   cuore e le stelle restano com'erano; il tocco non suona e dice perché. */
+.riga[data-spenta] {
+  opacity: 0.55;
+}
+.riga[data-spenta] .indice {
+  cursor: default;
+}

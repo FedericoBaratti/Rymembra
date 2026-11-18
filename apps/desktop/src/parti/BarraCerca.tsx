@@ -17,6 +17,8 @@
  * dovrebbe ritoccarlo dopo ogni prima lettera. Su Esplora il campo della
  * libreria resta montato e nascosto per la stessa ragione.
  */
+import type { ReactNode } from "react";
+
 import { t } from "../lingue";
 import type { SegmentoCerca } from "../schedeTelefono";
 import { Icona } from "./Icone";
@@ -28,6 +30,7 @@ export function BarraCerca({
   segmento,
   onSegmento,
   sottotitolo,
+  sotto,
 }: {
   query: string;
   onQuery: (testo: string) => void;
@@ -35,6 +38,12 @@ export function BarraCerca({
   onSegmento: (segmento: SegmentoCerca) => void;
   /** Quanti risultati, sotto il campo, mentre si cerca. */
   sottotitolo?: string | undefined;
+  /**
+   * Una riga sotto i due segmenti: il filtro per dispositivo. Dentro la testata
+   * e non accanto: la testata è la stessa per le tre pagine di Cerca (vedi il
+   * commento in cima), e un'altra fila fuori da lei la rifarebbe da capo.
+   */
+  sotto?: ReactNode;
 }) {
   return (
     <header className="barra-alta barra-cerca" data-grande>
@@ -93,6 +102,7 @@ export function BarraCerca({
         scelta={segmento}
         onScegli={onSegmento}
       />
+      {sotto}
     </header>
   );
 }

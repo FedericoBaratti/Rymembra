@@ -17,11 +17,9 @@ import type { ErroreIpc } from "./ipc/errori";
 import type {
   AnteprimaDimentica,
   AvanzamentoSpecchio,
-  BranoRemoto,
   DatiMobili,
   InvitoLontano,
   LinkLontano,
-  OrdineRemoto,
   Scansione,
   StatoLontano,
   ScaricoLontano,
@@ -1512,41 +1510,12 @@ export const ipc = {
   // ancora preso: una volta sola.
   lontanoLinkInAttesa: () => invoke<string | null>("lontano_link_in_attesa"),
 
-  // ── «Sfoglia <dispositivo>» ───────────────────────────────────────────────
-  // Gli elenchi dell'altro, nella forma di quelli di qui. Le copertine hanno
-  // già la chiave del protocollo (`lontano-…`): `Copertina` le disegna come
-  // le altre.
-  lontanoAlbum: (chiave: string, da: number, quanti: number) =>
-    invoke<Album[]>("lontano_album", { chiave, da, quanti }),
-  lontanoAlbumArtista: (chiave: string, artista: string) =>
-    invoke<Album[]>("lontano_album_artista", { chiave, artista }),
-  lontanoArtisti: (chiave: string, da: number, quanti: number) =>
-    invoke<Artista[]>("lontano_artisti", { chiave, da, quanti }),
-  lontanoBrani: (chiave: string, ordine: OrdineRemoto, da: number, quanti: number) =>
-    invoke<BranoRemoto[]>("lontano_brani", { chiave, ordine, da, quanti }),
-  lontanoBraniAlbum: (chiave: string, album: string) =>
-    invoke<BranoRemoto[]>("lontano_brani_album", { chiave, album }),
-  lontanoCerca: (chiave: string, testo: string, da: number, quanti: number) =>
-    invoke<BranoRemoto[]>("lontano_cerca", { chiave, testo, da, quanti }),
-  lontanoCercaConteggio: (chiave: string, testo: string) =>
-    invoke<number>("lontano_cerca_conteggio", { chiave, testo }),
-  // I gesti: le schede tornano indietro intere, il nucleo non tiene elenchi.
-  // Sui dati mobili con «Chiedi» rispondono `lontano.reteAConsumo`, e la
-  // finestra chiede (`lontano.ts`).
-  lontanoSuona: (chiave: string, brani: BranoRemoto[], indice: number) =>
-    invoke<void>("lontano_suona", { chiave, brani, indice }),
-  lontanoAccoda: (chiave: string, brani: BranoRemoto[]) =>
-    invoke<void>("lontano_accoda", { chiave, brani }),
-  lontanoDopo: (chiave: string, brani: BranoRemoto[]) =>
-    invoke<void>("lontano_dopo", { chiave, brani }),
+  // La libreria unica e «Scarica qui».
   // «Scarica qui» le righe della libreria che stanno su un altro dispositivo: in coda
   // nella cartella dei download, un dispositivo alla volta ciascuno. Le righe di
   // qui si saltano. L'avanzamento arriva con `lontano:scarico`.
   lontanoScaricaRighe: (righe: number[]) =>
     invoke<ScaricoLontano>("lontano_scarica_righe", { righe }),
-  // Di «Sfoglia», che se ne va col prossimo passo: il comando non c'è più.
-  lontanoScarica: (chiave: string, brani: BranoRemoto[]) =>
-    invoke<ScaricoLontano>("lontano_scarica", { chiave, brani }),
   lontanoScaricoAnnulla: () => invoke<ScaricoLontano>("lontano_scarico_annulla"),
   lontanoScaricoStato: () => invoke<ScaricoLontano>("lontano_scarico_stato"),
   // La libreria unica: il catalogo dei dispositivi collegati come righe di

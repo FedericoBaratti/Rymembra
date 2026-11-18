@@ -1,6 +1,6 @@
 /**
  * Parte del contratto con il nucleo: il collegamento via internet fra i
- * dispositivi di una persona, e «Sfoglia <dispositivo>». La riesporta `ipc.ts`:
+ * dispositivi di una persona, e la musica che ne arriva. La riesporta `ipc.ts`:
  * si importa da lì.
  *
  * Come in `servizi.ts`, nessun campo è facoltativo: un
@@ -97,45 +97,6 @@ export interface StatoLontano {
   invito: InvitoLontano | null;
   richieste: RichiestaLontano[];
 }
-
-/** Il pezzo di un'immagine CD, in fotogrammi da 1/75 di secondo. */
-export interface SegmentoRemoto {
-  inizioCd: number;
-  fineCd: number | null;
-}
-
-/**
- * Un brano di un altro dispositivo (`rymembra_app::library::condivisa::BranoRemoto`).
- *
- * La finestra lo rimanda intero a `lontanoSuona` e compagni: il nucleo non
- * tiene gli elenchi, registra quel che gli arriva.
- */
-export interface BranoRemoto {
-  /** L'id nella libreria **dell'altro**. */
-  id: number;
-  title: string;
-  artist: string;
-  album: string;
-  /** L'impronta dell'album, da ripetere a `lontanoBraniAlbum`. */
-  albumKey: string | null;
-  trackNumber: number | null;
-  discNumber: number | null;
-  durationMs: number;
-  year: number | null;
-  /** Già nella forma del protocollo delle copertine (`lontano-…`). */
-  coverArtHash: string | null;
-  /** Quante volte l'ha ascoltato il proprietario: solo da leggere. */
-  playCount: number;
-  liked: boolean;
-  rating: number;
-  estensione: string;
-  dimensione: number;
-  versione: string;
-  segmento: SegmentoRemoto | null;
-}
-
-/** L'ordine dei brani dell'altro: gli stessi nomi di `ipc.brani`. */
-export type OrdineRemoto = "recenti" | "ascoltati" | "titolo" | "scaffale";
 
 /** A che punto è «Scarica qui» (`lontano/scarico.rs`, `StatoScaricoIpc`). */
 export interface ScaricoLontano {

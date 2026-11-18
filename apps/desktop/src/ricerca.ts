@@ -16,7 +16,8 @@
  */
 import { useEffect, useState } from "react";
 
-import { ipc, type Brano } from "./ipc";
+import { ipc, type Brano, type OrigineLibreria } from "./ipc";
+import { chiaveDiOrigine, perIlNucleo, TUTTI } from "./origine";
 import { usePigro, useRada } from "./pagine";
 import type { ArchivioRado } from "./rada";
 
@@ -35,9 +36,15 @@ export interface Ricerca {
 }
 
 /** La ricerca della casella `query`. */
+/**
+ * La ricerca della casella `query`, nell'`origine` scelta dal filtro per
+ * dispositivo («Tutti» se non si dice: la libreria unica). Un altro filtro è
+ * un'altra ricerca: cambia il conteggio e l'elenco, e riparte da capo.
+ */
 export function useRicerca(
   query: string,
   segnalaErrore: (e: unknown) => void,
+  origine: OrigineLibreria = TUTTI,
 ): Ricerca {
   const queryPigra = usePigro(query.trim(), 140);
   const inRitardo = query.trim().length > 0 && queryPigra !== query.trim();
@@ -56,6 +63,7 @@ export function useRicerca(
    * frase di adesso non arriva, non c'è (`risultatiAdesso`).
    */
   const [risultati, setRisultati] = useState<{ query: string; n: number } | null>(null);
+  const chiaveOrigine = chiaveDiOrigine(origine);
   useEffect(() => {
     if (queryPigra.length === 0) {
       setRisultati(null);
@@ -63,9 +71,9 @@ export function useRicerca(
     }
     let annullato = false;
     ipc
-      .cercaConteggio(queryPigra)
+      .cercaConteggio(queryPigra, perIlNucleo(origine))
       .then((quanti) => {
-        if (!annullato) setRisultati({ query: queryPigra, n: quanti });
+        if (!annullato) setRisultati({ query: `${chiaveOrigine}:${queryPigra}`, n: quanti });
       })
       // Anche l'errore di una frase già superata si tace, come la risposta:
       // la fascia rossa per «sub» mentre si legge l'elenco di «subs» parla di
@@ -76,16 +84,18 @@ export function useRicerca(
     return () => {
       annullato = true;
     };
-  }, [queryPigra, segnalaErrore]);
+    // `origine` è detta da `chiaveOrigine`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryPigra, chiaveOrigine, segnalaErrore]);
   const risultatiAdesso =
-    risultati !== null && risultati.query === queryPigra ? risultati.n : null;
+    risultati !== null && risultati.query === `${chiaveOrigine}:${queryPigra}` ? risultati.n : null;
 
   const rada = useRada<Brano>({
-    chiave: `cerca:${queryPigra}`,
+    chiave: `cerca:${chiaveOrigine}:${queryPigra}`,
     totale: risultatiAdesso ?? 0,
     chiedi: (offset, limite) =>
       queryPigra.length > 0
-        ? ipc.cerca(queryPigra, offset, limite)
+        ? ipc.cerca(queryPigra, offset, limite, perIlNucleo(origine))
         : Promise.resolve([]),
     onErrore: segnalaErrore,
   });

@@ -16,7 +16,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ipc, type Artista } from "./ipc";
+import { ipc, type Artista, type OrigineLibreria } from "./ipc";
+import { chiaveDiOrigine, perIlNucleo, TUTTI } from "./origine";
 import type { Vista } from "./parti/Navigazione";
 
 /** Gli artisti in mano, e come dire che sono vecchi. */
@@ -42,6 +43,7 @@ export function useArtisti(
   vista: Vista,
   cercando: boolean,
   segnalaErrore: (e: unknown) => void,
+  origine: OrigineLibreria = TUTTI,
 ): ArtistiDellaFinestra {
   const [artisti, setArtisti] = useState<Artista[]>([]);
   /*
@@ -49,11 +51,21 @@ export function useArtisti(
    * la vista è aperta; se non lo è, la richiesta parte entrandoci.
    */
   const artistiDaRileggere = useRef(true);
+  // Un altro filtro per dispositivo sono altri artisti: si rileggono, e quelli
+  // di prima non restano a schermo nel frattempo. `lette` è di quale filtro sono
+  // gli artisti in mano.
+  const chiaveOrigine = chiaveDiOrigine(origine);
+  const lette = useRef(chiaveOrigine);
   const [giroArtisti, setGiroArtisti] = useState(0);
   const [artistiInArrivo, setArtistiInArrivo] = useState(false);
   const [artistiGuasto, setArtistiGuasto] = useState(false);
   useEffect(() => {
     if (vista !== "artisti" || cercando) return;
+    if (lette.current !== chiaveOrigine) {
+      lette.current = chiaveOrigine;
+      artistiDaRileggere.current = true;
+      setArtisti([]);
+    }
     if (!artistiDaRileggere.current) return;
     artistiDaRileggere.current = false;
     setArtistiInArrivo(true);
@@ -61,7 +73,7 @@ export function useArtisti(
     let annullato = false;
     let arrivati = false;
     ipc
-      .artisti()
+      .artisti(perIlNucleo(origine))
       .then((elenco) => {
         arrivati = true;
         if (!annullato) setArtisti(elenco);
@@ -80,7 +92,9 @@ export function useArtisti(
       // deve richiedere.
       if (!arrivati) artistiDaRileggere.current = true;
     };
-  }, [vista, cercando, segnalaErrore, giroArtisti]);
+    // `origine` è detta da `chiaveOrigine`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vista, cercando, segnalaErrore, giroArtisti, chiaveOrigine]);
   const invalidaArtisti = useCallback(() => {
     artistiDaRileggere.current = true;
     setGiroArtisti((n) => n + 1);

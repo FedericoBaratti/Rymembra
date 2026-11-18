@@ -206,7 +206,7 @@
               ["`player.spectrum.bands`, `player.spectrum.visible`, `player.fileFormat.visible`", "Display choices", "—", "yes"],
               ["`player.output`, `player.spectrum.quality`, `audio.latenza_ms`, `audio.latenza_per_uscita`", "Facts about this machine's hardware (the last one: latency per output device)", "system default / auto / 0 / none", "no"],
               ["`insieme.attivo`, `insieme.nome`, `insieme.indirizzi`, `insieme.firewall_spiegato`", "Listen together: on/off, this PC's name, hand-typed addresses, firewall dialog seen", "off / computer name / none / no", "no"],
-              ["`player.queue`, `player.queue.remote`, `player.position`", "The saved queue (and, next to it, the whole queue with other devices' tracks) and resume point", "—", "no (row ids)"],
+              ["`player.queue`, `player.position`", "The saved queue and resume point", "—", "no (row ids)"],
               ["`enrich.auto`, `testi.rete`, `aggiornamenti.attivo`, `scrobble.attivo`, `nuvola.attivo`", "Feature switches", "per feature", "yes"],
               ["`testi.accanto`, `sincronia.attiva`", "Write `.lrc` beside tracks, device sync", "off", "no"],
               ["`catalogo.alternative`", "Accept live/alternative recordings when downloading", "on", "no"],

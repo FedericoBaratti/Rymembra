@@ -71,8 +71,8 @@ export interface AzioniImpostazioni {
   onImportaLink: () => void;
   onImportaAccount: () => void;
   onVista: (vista: Vista) => void;
-  /** Apre «Sfoglia» di un dispositivo collegato via internet. */
-  onSfogliaDispositivo: (chiave: string) => void;
+  /** Apre la libreria filtrata per un dispositivo collegato via internet. */
+  onMostraDispositivo: (chiave: string) => void;
   /** Apre la finestrella del ripristino. */
   onNuvolaRipristina: () => void;
 }
@@ -247,7 +247,7 @@ export const ImpostazioniDellaFinestra = memo(function ImpostazioniDellaFinestra
       onImportaLink={azioni.onImportaLink}
       onImportaAccount={azioni.onImportaAccount}
       onVista={azioni.onVista}
-      onSfogliaDispositivo={azioni.onSfogliaDispositivo}
+      onMostraDispositivo={azioni.onMostraDispositivo}
       importazioni={importazioni}
       arricchimento={arricchimento}
       avanzaArricchimento={avanzaArricchimento}
