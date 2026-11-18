@@ -189,8 +189,12 @@ pub fn ascolto_di(
 ) -> Result<Option<Ascolto>, AppError> {
     let letto = connection
         .query_row(
+            // Una riga della libreria unica non si scrobbla da qui: l'ascolto lo
+            // conta il proprietario, che lo manda ai suoi servizi. Un brano
+            // «da scrobblare» che non c'è vale per tutti i chiamanti come «niente
+            // da mandare», e vale anche per il «sta suonando».
             "SELECT artist, title, album, album_artist, duration_ms, track_number, mb_recording_id
-               FROM tracks WHERE id = ?1",
+               FROM tracks WHERE id = ?1 AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
             [track_id],
             |riga| {
                 Ok(Ascolto {
@@ -304,6 +308,7 @@ pub fn accoda_cronologia(
                LEFT JOIN settings AS s ON s.key = ?5 || h.source
               WHERE trim(t.artist) <> ''
                 AND trim(t.title) <> ''
+                AND NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0')
                 AND h.played_at >= ?3
                 AND (?4 IS NULL OR h.source = ?4)
                 AND h.id > ?6

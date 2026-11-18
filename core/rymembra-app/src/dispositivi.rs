@@ -404,6 +404,13 @@ pub fn dimentica(connection: &Connection, chiave: &str) -> Result<bool, AppError
         [&chiave],
     )
     .map_err(guasto)?;
+    // E la posta che aspettava di partire (un voto, un testo): a un dispositivo
+    // dimenticato non si scrive più niente.
+    tx.execute(
+        "DELETE FROM dispositivi_posta WHERE dispositivo = ?1",
+        [&chiave],
+    )
+    .map_err(guasto)?;
     let cambiata = senza_fiducia_insieme(&tx, insieme.as_deref()).map_err(guasto)?;
     tx.commit().map_err(guasto)?;
     Ok(cambiata)
@@ -609,6 +616,160 @@ pub fn ascolto_da_ricontare(connection: &Connection, chiave: &str) -> Result<(),
         )
         .map(|_| ())
         .map_err(|err| db_error("ascolto da ricontare", &err))
+}
+
+// ── la posta in uscita ──────────────────────────────────────────────────────
+//
+// Quel che si decide qui di un brano di un altro dispositivo e che lui deve
+// sapere — un voto o un mi piace (`valuta`), un testo corretto (`testo`) — e
+// che aspetta se lui non risponde. Una voce sola per (dispositivo, tipo,
+// chiave): la scrittura più nuova prende il posto di quella che aspettava. Come
+// gli ascolti, non viaggia nel profilo né nel backup: è un fatto di questa
+// macchina. Vedi la migrazione 043.
+
+/// Il tipo della posta per un voto o un mi piace.
+pub const POSTA_VALUTA: &str = "valuta";
+
+/// Quanto aspetta in posta una voce che il dispositivo rifiuta sempre (una
+/// versione che non la capisce): oltre, si lascia.
+pub const SCADENZA_POSTA_MS: i64 = 30 * 24 * 3600 * 1000;
+
+/// Una voce della posta in uscita.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VocePosta {
+    /// La riga.
+    pub id: i64,
+    /// Il tipo.
+    pub tipo: String,
+    /// Quel che la distingue dalle altre dello stesso tipo.
+    pub chiave: String,
+    /// Il contenuto, in JSON.
+    pub corpo: String,
+    /// Quando è stata decisa, ms.
+    pub quando_ms: i64,
+}
+
+/// Mette in posta una voce per `dispositivo`, al posto di quella che c'era per
+/// lo stesso (tipo, chiave).
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn metti_in_posta(
+    connection: &Connection,
+    dispositivo: &str,
+    tipo: &str,
+    chiave: &str,
+    corpo: &str,
+    quando_ms: i64,
+) -> Result<(), AppError> {
+    connection
+        .execute(
+            "INSERT INTO dispositivi_posta (dispositivo, tipo, chiave, corpo, quando_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(dispositivo, tipo, chiave) DO UPDATE SET
+               corpo = excluded.corpo, quando_ms = excluded.quando_ms",
+            rusqlite::params![
+                dispositivo.trim().to_ascii_lowercase(),
+                tipo,
+                chiave,
+                corpo,
+                quando_ms
+            ],
+        )
+        .map(|_| ())
+        .map_err(|err| db_error("posta in uscita", &err))
+}
+
+/// Una voce in posta, se c'è.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn in_posta(
+    connection: &Connection,
+    dispositivo: &str,
+    tipo: &str,
+    chiave: &str,
+) -> Result<Option<VocePosta>, AppError> {
+    connection
+        .query_row(
+            "SELECT id, tipo, chiave, corpo, quando_ms FROM dispositivi_posta
+              WHERE dispositivo = ?1 AND tipo = ?2 AND chiave = ?3",
+            rusqlite::params![dispositivo.trim().to_ascii_lowercase(), tipo, chiave],
+            voce_di_posta,
+        )
+        .optional()
+        .map_err(|err| db_error("posta in uscita", &err))
+}
+
+/// La posta che `dispositivo` non ha ancora ricevuto, dalla più vecchia.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn posta_da_mandare(
+    connection: &Connection,
+    dispositivo: &str,
+) -> Result<Vec<VocePosta>, AppError> {
+    let guasto = |err: rusqlite::Error| db_error("posta da mandare", &err);
+    let mut istruzione = connection
+        .prepare(
+            "SELECT id, tipo, chiave, corpo, quando_ms FROM dispositivi_posta
+              WHERE dispositivo = ?1 ORDER BY quando_ms, id",
+        )
+        .map_err(guasto)?;
+    let righe = istruzione
+        .query_map([dispositivo.trim().to_ascii_lowercase()], voce_di_posta)
+        .map_err(guasto)?;
+    righe.collect::<Result<Vec<_>, _>>().map_err(guasto)
+}
+
+/// La voce è arrivata: si toglie — se è ancora quella che si era mandata. Una
+/// scrittura più nuova per lo stesso brano, arrivata mentre questa partiva,
+/// resta in posta. `true` se l'ha tolta.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn posta_consegnata(
+    connection: &Connection,
+    id: i64,
+    quando_ms: i64,
+) -> Result<bool, AppError> {
+    connection
+        .execute(
+            "DELETE FROM dispositivi_posta WHERE id = ?1 AND quando_ms = ?2",
+            rusqlite::params![id, quando_ms],
+        )
+        .map(|toccate| toccate > 0)
+        .map_err(|err| db_error("posta consegnata", &err))
+}
+
+/// I dispositivi che hanno posta in attesa.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn con_posta_in_attesa(connection: &Connection) -> Result<Vec<String>, AppError> {
+    let guasto = |err: rusqlite::Error| db_error("dispositivi con posta", &err);
+    let mut istruzione = connection
+        .prepare("SELECT DISTINCT dispositivo FROM dispositivi_posta")
+        .map_err(guasto)?;
+    let righe = istruzione
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(guasto)?;
+    righe.collect::<Result<Vec<_>, _>>().map_err(guasto)
+}
+
+fn voce_di_posta(r: &rusqlite::Row<'_>) -> rusqlite::Result<VocePosta> {
+    Ok(VocePosta {
+        id: r.get(0)?,
+        tipo: r.get(1)?,
+        chiave: r.get(2)?,
+        corpo: r.get(3)?,
+        quando_ms: r.get(4)?,
+    })
 }
 
 const CAMPI: &str = "id, chiave, nome, piattaforma, dispositivo, chiave_insieme, indirizzi, \

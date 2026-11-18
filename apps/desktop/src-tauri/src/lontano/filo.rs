@@ -50,6 +50,7 @@ use std::time::{Duration, Instant};
 
 use rymembra_app::dispositivi::{self, Dispositivo, Nuovo};
 use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_lontano::protocollo::CAPACITA_CATALOGO;
 use rymembra_lontano::{
     Evento, Impostazioni, Nodo, PariNoto, Presentazione, Presenza, Relay, Rete, Via,
 };
@@ -574,7 +575,12 @@ fn scrivi_su(c: &rusqlite::Connection, da_scrivere: &[(String, u64, Modifica)]) 
     let mut scritte = Scritte::default();
     for (chiave, numero, modifica) in da_scrivere {
         let esito = match modifica {
-            Modifica::Dimentica => dispositivi::dimentica(c, chiave),
+            Modifica::Dimentica => dispositivi::dimentica(c, chiave).and_then(|insieme| {
+                // Le sue righe nella libreria unica se ne vanno con lui, dopo
+                // aver passato le voci di playlist a un'altra copia.
+                rymembra_app::specchio::archivio::dimentica_dispositivo(c, chiave)?;
+                Ok(insieme)
+            }),
             Modifica::Revoca => dispositivi::revoca(c, chiave).map(|()| false),
             Modifica::Associa(collegato) => associa(c, chiave, collegato),
         };
@@ -1227,6 +1233,9 @@ impl Filo {
                 crate::insieme::ruolo(&self.app),
                 crate::insieme::Ruolo::Host
             ),
+            // Sa servire e usare il catalogo (libreria unica): le domande
+            // nuove non si fanno a chi non lo dichiara.
+            capacita: vec![CAPACITA_CATALOGO.to_owned()],
         }
     }
 
@@ -1241,6 +1250,8 @@ impl Filo {
                 // Appena risponde, gli si mandano gli ascolti rimasti in fila.
                 if nuovo {
                     super::sfoglia::manda_gli_ascolti(&self.app, &self.comune, Some(&chiave));
+                    // E si riguarda il suo catalogo, con la posta che aspetta.
+                    super::specchio::presente(&self.app, &chiave);
                 }
                 let da_scrivere = self
                     .visti

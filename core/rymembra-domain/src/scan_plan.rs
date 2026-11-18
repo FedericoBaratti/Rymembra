@@ -694,6 +694,41 @@ mod tests {
     }
 
     #[test]
+    fn le_righe_della_libreria_unica_non_sono_ne_sparite_ne_doppie() {
+        // `lontano://<dispositivo>/<id>`: il catalogo di un altro dispositivo.
+        // Non sta sotto nessuna radice, quindi la scansione non può darlo per
+        // sparito — è fuori competenza, come una riga del cloud — e due righe con
+        // id diversi non sono lo stesso file, quindi nemmeno `DuplicateRow`.
+        // (Nel database vero non arrivano nemmeno qui: `known_tracks` le tiene
+        // fuori. Questa prova dice che, se arrivassero, non verrebbero tolte.)
+        let k = "ab".repeat(32);
+        let p = plan(
+            &[r"C:\Music"],
+            vec![file(r"C:\Music.mp3", 5_000_000, 1000)],
+            vec![
+                track(1, &format!("lontano://{k}/10"), 1),
+                track(2, &format!("lontano://{k}/11"), 1),
+                track(3, r"C:\Music.mp3", 1000),
+            ],
+        );
+        assert!(p.to_remove.is_empty(), "{:?}", p.to_remove);
+        assert_eq!(p.untouched, 2);
+        // Una radice `lontano://…` — che nessuna interfaccia scrive, ma un
+        // elenco scritto a mano sì — farebbe sparire le righe del catalogo a ogni
+        // passata: per questo le radici non la accettano (`ordina_cartelle`).
+        let storta = plan(
+            &[&format!("lontano://{k}")],
+            Vec::new(),
+            vec![track(1, &format!("lontano://{k}/10"), 1)],
+        );
+        assert_eq!(
+            storta.to_remove.len(),
+            1,
+            "il pericolo che la guardia evita"
+        );
+    }
+
+    #[test]
     fn la_soglia_e_inclusiva() {
         let sotto = plan(
             &[r"C:\M"],

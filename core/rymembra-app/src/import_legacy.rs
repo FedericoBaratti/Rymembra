@@ -358,7 +358,10 @@ fn is_worth_carrying(stats: &TrackStats) -> bool {
 /// copie con conteggi diversi è un modo di sembrare rotti.
 fn index_by_key(connection: &Connection) -> Result<HashMap<String, Vec<i64>>, AppError> {
     let mut statement = connection
-        .prepare("SELECT track_key, id FROM tracks ORDER BY id")
+        .prepare(
+            "SELECT track_key, id FROM tracks
+              WHERE NOT (path >= 'lontano://' AND path < 'lontano:/0') ORDER BY id",
+        )
         .map_err(|err| db_error("indice per chiave di brano", &err))?;
     let rows = statement
         .query_map([], |row| {
@@ -378,7 +381,7 @@ fn current_stats(connection: &Connection) -> Result<HashMap<i64, TrackStats>, Ap
     let mut statement = connection
         .prepare(
             "SELECT id, play_count, last_played_at, rating, liked, liked_at, stats_updated_at
-             FROM tracks",
+             FROM tracks WHERE NOT (path >= 'lontano://' AND path < 'lontano:/0')",
         )
         .map_err(|err| db_error("statistiche correnti", &err))?;
     let rows = statement

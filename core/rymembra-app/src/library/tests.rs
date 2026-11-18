@@ -125,6 +125,18 @@ impl Libreria {
         .expect("scansione")
     }
 
+    /// L'identificativo della riga **di qui** di un brano (non della riga
+    /// specchio che porta lo stesso titolo).
+    fn id_del_titolo_di_qui(&self, titolo: &str) -> i64 {
+        self.connection
+            .query_row(
+                "SELECT id FROM tracks WHERE title = ?1 AND path NOT LIKE 'lontano://%'",
+                [titolo],
+                |r| r.get(0),
+            )
+            .expect("identificativo")
+    }
+
     fn conta(&self, tabella: &str) -> i64 {
         self.connection
             .query_row(&format!("SELECT COUNT(*) FROM {tabella}"), [], |r| r.get(0))
@@ -171,9 +183,9 @@ fn una_scansione_riempie_la_libreria_e_la_rende_cercabile() {
 
     // Interrogabile davvero: la piegatura del tokenizzatore attraversa tutto
     // il giro, dal tag sul disco alla riga trovata.
-    let trovati = search(&lib.connection, "bjork", 0, 10).expect("ricerca");
+    let trovati = search(&lib.connection, &Origine::Tutti, "bjork", 0, 10).expect("ricerca");
     assert_eq!(trovati.len(), 2);
-    let per_titolo = search(&lib.connection, "bachelor", 0, 10).expect("ricerca");
+    let per_titolo = search(&lib.connection, &Origine::Tutti, "bachelor", 0, 10).expect("ricerca");
     assert_eq!(
         per_titolo.first().map(|t| t.title.as_str()),
         Some("Bachelorette"),
@@ -1052,7 +1064,7 @@ fn gli_artisti_si_ordinano_senza_articolo() {
     );
     lib.scansiona();
 
-    let artisti = list_artists(&lib.connection).expect("elenco");
+    let artisti = list_artists(&lib.connection, &Origine::Tutti).expect("elenco");
     let nomi: Vec<&str> = artisti.iter().map(|a| a.name.as_str()).collect();
     // Air, poi Cure, poi Doors: l'articolo non conta, e il nome mostrato
     // resta quello vero.
@@ -1107,7 +1119,7 @@ fn il_mosaico_di_un_artista_si_ferma_a_quattro() {
     }
     lib.scansiona();
 
-    let artisti = list_artists(&lib.connection).expect("elenco");
+    let artisti = list_artists(&lib.connection, &Origine::Tutti).expect("elenco");
     let tale = artisti.first().expect("un artista");
     assert_eq!(tale.albums, 6);
     assert_eq!(tale.covers.len(), 4, "il mosaico ne mostra quattro");
@@ -1769,20 +1781,20 @@ fn la_ricerca_non_si_rompe_sui_caratteri_da_operatore() {
     lib.scansiona();
 
     for query in ["AC/DC", "back - black", "\"virgolette", "NEAR", "OR", "*"] {
-        let esito = search(&lib.connection, query, 0, 10);
+        let esito = search(&lib.connection, &Origine::Tutti, query, 0, 10);
         assert!(
             esito.is_ok(),
             "{query} ha fatto fallire la ricerca: {esito:?}"
         );
     }
     assert_eq!(
-        search(&lib.connection, "AC/DC", 0, 10)
+        search(&lib.connection, &Origine::Tutti, "AC/DC", 0, 10)
             .expect("ricerca")
             .len(),
         1
     );
     assert!(
-        search(&lib.connection, "", 0, 10)
+        search(&lib.connection, &Origine::Tutti, "", 0, 10)
             .expect("ricerca")
             .is_empty(),
         "una ricerca vuota non è un errore, è nessun risultato"
@@ -1806,13 +1818,13 @@ fn la_ricerca_si_impagina_e_sa_quanti_ne_ha() {
     lib.scansiona();
 
     assert_eq!(
-        search_count(&lib.connection, "pezzo").expect("conteggio"),
+        search_count(&lib.connection, &Origine::Tutti, "pezzo").expect("conteggio"),
         7,
         "il conteggio non si ferma alla pagina"
     );
-    let prima = search(&lib.connection, "pezzo", 0, 3).expect("ricerca");
-    let seconda = search(&lib.connection, "pezzo", 3, 3).expect("ricerca");
-    let terza = search(&lib.connection, "pezzo", 6, 3).expect("ricerca");
+    let prima = search(&lib.connection, &Origine::Tutti, "pezzo", 0, 3).expect("ricerca");
+    let seconda = search(&lib.connection, &Origine::Tutti, "pezzo", 3, 3).expect("ricerca");
+    let terza = search(&lib.connection, &Origine::Tutti, "pezzo", 6, 3).expect("ricerca");
     assert_eq!((prima.len(), seconda.len(), terza.len()), (3, 3, 1));
 
     // Le tre pagine non si sovrappongono e coprono tutto: senza un ordine
@@ -1829,7 +1841,7 @@ fn la_ricerca_si_impagina_e_sa_quanti_ne_ha() {
     assert_eq!(visti.len(), 7, "sette righe distinte in tre pagine");
 
     assert_eq!(
-        search_count(&lib.connection, "").expect("conteggio"),
+        search_count(&lib.connection, &Origine::Tutti, "").expect("conteggio"),
         0,
         "una ricerca vuota conta zero, non tutto"
     );
@@ -1873,7 +1885,7 @@ fn i_preferiti_sono_una_query_e_non_un_filtro() {
         )
         .expect("cuore");
 
-    let tutti = list_liked(&lib.connection, 0, 100).expect("preferiti");
+    let tutti = list_liked(&lib.connection, &Origine::Tutti, 0, 100).expect("preferiti");
     assert_eq!(
         tutti.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(),
         ["Pezzo 1", "Pezzo 3", "Pezzo 5"]
@@ -1884,7 +1896,7 @@ fn i_preferiti_sono_una_query_e_non_un_filtro() {
     );
 
     // E si impagina come gli altri elenchi.
-    let pagina = list_liked(&lib.connection, 1, 1).expect("preferiti");
+    let pagina = list_liked(&lib.connection, &Origine::Tutti, 1, 1).expect("preferiti");
     assert_eq!(pagina.len(), 1);
     assert_eq!(pagina.first().map(|b| b.title.as_str()), Some("Pezzo 3"));
 }
@@ -1978,7 +1990,7 @@ fn gli_album_di_un_artista_si_chiedono_al_database() {
     lib.brano("Altro/Terzo/01.wav", "C", "Altro", "Terzo");
     lib.scansiona();
 
-    let suoi = albums_by_artist(&lib.connection, "Tale", 0, 100).expect("album");
+    let suoi = albums_by_artist(&lib.connection, &Origine::Tutti, "Tale", 0, 100).expect("album");
     assert_eq!(
         suoi.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),
         ["Primo", "Secondo"]
@@ -1995,13 +2007,13 @@ fn gli_album_di_un_artista_si_chiedono_al_database() {
     // Se un giorno le due dovessero fondersi, va deciso in un posto solo e
     // questa prova cade.
     assert!(
-        albums_by_artist(&lib.connection, "tale", 0, 100)
+        albums_by_artist(&lib.connection, &Origine::Tutti, "tale", 0, 100)
             .expect("album")
             .is_empty(),
         "il raggruppamento e il filtro devono usare la stessa chiave"
     );
 
-    let pagina = albums_by_artist(&lib.connection, "Tale", 1, 1).expect("album");
+    let pagina = albums_by_artist(&lib.connection, &Origine::Tutti, "Tale", 1, 1).expect("album");
     assert_eq!(pagina.first().map(|a| a.title.as_str()), Some("Secondo"));
 }
 
@@ -2071,10 +2083,10 @@ fn gli_album_di_un_artista_sono_quelli_che_list_artists_conta() {
     lib.brano("B/Suo/01.wav", "Quattro", "B", "Suo");
     lib.scansiona();
 
-    let artisti = list_artists(&lib.connection).expect("artisti");
+    let artisti = list_artists(&lib.connection, &Origine::Tutti).expect("artisti");
     let a = artisti.iter().find(|x| x.name == "A").expect("A c'è");
     assert_eq!(a.albums, 1);
-    let suoi = albums_by_artist(&lib.connection, "A", 0, 100).expect("album");
+    let suoi = albums_by_artist(&lib.connection, &Origine::Tutti, "A", 0, 100).expect("album");
     assert_eq!(
         suoi.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(),
         ["Hits"]
@@ -2085,7 +2097,8 @@ fn gli_album_di_un_artista_sono_quelli_che_list_artists_conta() {
     // In generale: per ogni artista dell'elenco, la griglia ha tanti album
     // quanti l'intestazione ne promette.
     for artista in &artisti {
-        let griglia = albums_by_artist(&lib.connection, &artista.name, 0, 1_000).expect("album");
+        let griglia = albums_by_artist(&lib.connection, &Origine::Tutti, &artista.name, 0, 1_000)
+            .expect("album");
         assert_eq!(
             i64::try_from(griglia.len()).ok(),
             Some(artista.albums),
@@ -2096,7 +2109,10 @@ fn gli_album_di_un_artista_sono_quelli_che_list_artists_conta() {
 
     // E passa dall'indice dell'artista effettivo, non da una lettura intera.
     let piano: Vec<String> = {
-        let sql = format!("EXPLAIN QUERY PLAN {}", sql_degli_album_di_un_artista());
+        let sql = format!(
+            "EXPLAIN QUERY PLAN {}",
+            sql_degli_album_di_un_artista(&lib.connection, &Origine::Tutti).expect("sql")
+        );
         let mut s = lib.connection.prepare(&sql).expect("piano");
         let righe = s
             .query_map(rusqlite::params!["A", 100, 0], |r| r.get::<_, String>(3))
@@ -2201,7 +2217,8 @@ fn i_dischi_aggiunti_di_recente_sono_uno_per_album_col_piu_nuovo_in_cima() {
         )
         .expect("date del disco nuovo");
 
-    let dischi = recently_added_albums(&lib.connection, 12).expect("dischi recenti");
+    let dischi =
+        recently_added_albums(&lib.connection, &Origine::Tutti, 12).expect("dischi recenti");
 
     assert_eq!(dischi.len(), 2, "due dischi, non sei brani");
     assert_eq!(
@@ -2212,7 +2229,7 @@ fn i_dischi_aggiunti_di_recente_sono_uno_per_album_col_piu_nuovo_in_cima() {
     assert_eq!(dischi.get(1).map(|a| a.title.as_str()), Some("Vecchio"));
 
     // E il limite conta dischi, non tracce: è la misura del ripiano.
-    let uno = recently_added_albums(&lib.connection, 1).expect("dischi recenti");
+    let uno = recently_added_albums(&lib.connection, &Origine::Tutti, 1).expect("dischi recenti");
     assert_eq!(uno.len(), 1);
     assert_eq!(uno.first().map(|a| a.title.as_str()), Some("Nuovo"));
 }
@@ -2242,8 +2259,10 @@ fn a_pari_data_conta_l_ordine_di_scrittura_e_non_il_titolo() {
 
     let titoli =
         |dischi: Vec<AlbumSummary>| dischi.into_iter().map(|a| a.title).collect::<Vec<_>>();
-    let primo = titoli(recently_added_albums(&lib.connection, 12).expect("dischi"));
-    let secondo = titoli(recently_added_albums(&lib.connection, 12).expect("dischi"));
+    let primo =
+        titoli(recently_added_albums(&lib.connection, &Origine::Tutti, 12).expect("dischi"));
+    let secondo =
+        titoli(recently_added_albums(&lib.connection, &Origine::Tutti, 12).expect("dischi"));
 
     assert_eq!(
         primo.first().map(String::as_str),
@@ -5959,7 +5978,7 @@ fn i_tag_noti_fanno_la_riga_provvisoria_e_il_resto_i_ripieghi() {
     assert_eq!(artista, rymembra_domain::album::UNKNOWN_ARTIST);
 
     // Dalla stessa via di ogni brano: si cerca, e l'album c'è.
-    let trovati = search(&connection, "servizio", 0, 10).expect("ricerca");
+    let trovati = search(&connection, &Origine::Tutti, "servizio", 0, 10).expect("ricerca");
     assert_eq!(trovati.len(), 1);
     let album: i64 = connection
         .query_row(
@@ -7267,4 +7286,633 @@ fn le_chiavi_d_ordine_seguono_ogni_scrittura_dei_nomi() {
         chiavi_attese("Édith", "Ólafur Arnalds", "The Best"),
         "un ascolto non cambia i nomi"
     );
+}
+
+// ── la libreria unica: le righe specchio e la scansione ─────────────────────
+
+/// Una riga specchio di un dispositivo, scritta come la scriverebbe il
+/// riconciliatore: percorso `lontano://`, nessuna chiave di contenuto in
+/// `tracks`, quella del proprietario in `lontano_brani`.
+fn riga_specchio(c: &Connection, id: i64, remoto: i64, chiave_di_contenuto: &str, codec: &str) {
+    let dispositivo = "ab".repeat(32);
+    c.execute(
+        "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size, date_added,
+                             date_modified, source, codec, bitrate, sample_rate)
+         VALUES (?1, ?2, ?3, 'Pezzo', 'Tale', 'Disco', 5000, 1, 1, 'lontano', ?4, 320, 44100)",
+        rusqlite::params![
+            id,
+            format!("lontano://{dispositivo}/{remoto}"),
+            chiave_di_contenuto,
+            codec
+        ],
+    )
+    .expect("riga specchio");
+    c.execute(
+        "INSERT INTO lontano_brani (track_id, dispositivo, id_remoto, estensione, content_key)
+         VALUES (?1, ?2, ?3, 'mp3', ?4)",
+        rusqlite::params![id, dispositivo, remoto, chiave_di_contenuto],
+    )
+    .expect("riga di lontano_brani");
+}
+
+#[test]
+fn una_scansione_non_toglie_ne_riscrive_le_righe_specchio() {
+    // §4.7: la scansione toglie solo righe sotto le radici guardate, e
+    // `lontano://` non è una radice. Le righe specchio non entrano nemmeno fra
+    // le righe note, quindi non sono «sparite» e nemmeno «doppie».
+    let mut lib = Libreria::nuova();
+    lib.brano("A/Disco/01.wav", "Uno", "Tale", "Disco");
+    riga_specchio(&lib.connection, 900, 1, "tale|pezzo|disco", "Flac");
+    riga_specchio(&lib.connection, 901, 2, "tale|altro|disco", "Flac");
+    let prima: Vec<(i64, String, i64)> = lib
+        .connection
+        .prepare(
+            "SELECT id, path, date_modified FROM tracks WHERE path LIKE 'lontano://%' ORDER BY id",
+        )
+        .and_then(|mut q| {
+            q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .and_then(|r| r.collect::<Result<Vec<_>, _>>())
+        })
+        .expect("righe specchio");
+
+    let noti = known_tracks(&lib.connection).expect("righe note");
+    assert!(
+        noti.iter().all(|n| !n.path.starts_with("lontano://")),
+        "le righe specchio non sono righe note della scansione: {noti:?}"
+    );
+
+    let esito = lib.scansiona();
+    assert_eq!(esito.inserted, 1);
+    assert_eq!(esito.removed, 0, "{esito:?}");
+    assert_eq!(esito.updated, 0);
+    // Né toccate: stesso percorso, stessa data (la scansione non la porta a -1).
+    let dopo: Vec<(i64, String, i64)> = lib
+        .connection
+        .prepare(
+            "SELECT id, path, date_modified FROM tracks WHERE path LIKE 'lontano://%' ORDER BY id",
+        )
+        .and_then(|mut q| {
+            q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .and_then(|r| r.collect::<Result<Vec<_>, _>>())
+        })
+        .expect("righe specchio");
+    assert_eq!(dopo, prima);
+    // «Rileggi tutti i tag» non le segna da rileggere.
+    let da_rileggere = rileggi_tutti_i_tag(&lib.connection).expect("richiesta");
+    assert_eq!(da_rileggere, 1, "solo il file di qui");
+    assert_eq!(
+        lib.connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE path LIKE 'lontano://%' AND date_modified = -1",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("conto"),
+        0
+    );
+}
+
+#[test]
+fn le_righe_specchio_non_sono_mai_doppie_per_la_scansione() {
+    // Il ramo `RemoveReason::DuplicateRow`: due righe con lo stesso percorso
+    // (a meno del caso) ne tolgono una. Due righe specchio dello stesso
+    // dispositivo hanno percorsi diversi per id, e comunque non passano di lì.
+    let mut lib = Libreria::nuova();
+    lib.brano("A/Disco/01.wav", "Uno", "Tale", "Disco");
+    let dispositivo = "ab".repeat(32);
+    for (id, remoto) in [(900, 1), (901, 2)] {
+        riga_specchio(
+            &lib.connection,
+            id,
+            remoto,
+            &format!("tale|k{id}|disco"),
+            "Mpeg",
+        );
+    }
+    // Lo stesso percorso in due grafie: se fosse una riga di scansione sarebbe
+    // `DuplicateRow`.
+    lib.connection
+        .execute(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size, date_added,
+                                 date_modified, source)
+             VALUES (902, ?1, 'k902', 'x', 'x', 'x', 1, 1, 1, 'lontano')",
+            [format!("LONTANO://{dispositivo}/1")],
+        )
+        .expect("una grafia diversa");
+    let esito = lib.scansiona();
+    assert_eq!(esito.removed, 0, "{esito:?}");
+    assert_eq!(lib.conta("tracks"), 4);
+}
+
+#[test]
+fn dopo_una_scansione_la_copia_scaricata_entra_nel_gruppo_e_a_pari_vince() {
+    // «Scarica qui»: il brano del PC scende in una cartella sorvegliata, la
+    // scansione lo legge, e da lì è una riga di qui con la stessa chiave di
+    // contenuto della riga specchio. A parità o meglio, la copia di qui
+    // diventa il rappresentante, e la riga del PC sta dietro.
+    let mut lib = Libreria::nuova();
+    riga_specchio(&lib.connection, 900, 1, "tale|uno|disco", "Mpeg");
+    assert_eq!(
+        lib.connection
+            .query_row("SELECT copia_di FROM tracks WHERE id = 900", [], |r| r
+                .get::<_, Option<
+                i64,
+            >>(
+                0
+            ))
+            .expect("copia"),
+        None
+    );
+    let file = lib.brano("A/Disco/01.wav", "Uno", "Tale", "Disco");
+    let esito = lib.scansiona();
+    assert_eq!(esito.inserted, 1);
+    let scaricato = lib.id_del_titolo("Uno");
+    let copia: Option<i64> = lib
+        .connection
+        .query_row("SELECT copia_di FROM tracks WHERE id = 900", [], |r| {
+            r.get(0)
+        })
+        .expect("copia");
+    assert_eq!(
+        copia,
+        Some(scaricato),
+        "la riga del PC sta dietro la copia di qui"
+    );
+    let sua: Option<i64> = lib
+        .connection
+        .query_row(
+            "SELECT copia_di FROM tracks WHERE id = ?1",
+            [scaricato],
+            |r| r.get(0),
+        )
+        .expect("copia");
+    assert_eq!(sua, None, "la copia di qui è la voce");
+    // E se il file di qui se ne va, la scansione lo toglie e la riga del PC
+    // torna visibile.
+    std::fs::remove_file(file).expect("togli il file");
+    let esito = lib.scansiona();
+    assert_eq!(esito.removed, 1);
+    let copia: Option<i64> = lib
+        .connection
+        .query_row("SELECT copia_di FROM tracks WHERE id = 900", [], |r| {
+            r.get(0)
+        })
+        .expect("copia");
+    assert_eq!(copia, None);
+}
+
+#[test]
+fn fsync_una_copia_di_qui_che_se_ne_va_lascia_la_voce_di_playlist_alla_riga_specchio() {
+    // Il brano è stato scaricato qui e sta in una playlist con la riga di qui;
+    // poi il file sparisce. Per la sincronia un brano che c'è ancora in libreria
+    // (la riga specchio) e non sta più in una playlist è un brano che l'utente
+    // ne ha tolto, e la rimozione partirebbe verso il PC che il file ce l'ha:
+    // la voce passa alla riga specchio, e la playlist per la sincronia non
+    // cambia.
+    let mut lib = Libreria::nuova();
+    let file = lib.brano("A/Disco/01.wav", "Uno", "Tale", "Disco");
+    lib.scansiona();
+    let locale = lib.id_del_titolo("Uno");
+    let chiave: String = lib
+        .connection
+        .query_row(
+            "SELECT track_key FROM tracks WHERE id = ?1",
+            [locale],
+            |r| r.get(0),
+        )
+        .expect("chiave del brano");
+    riga_specchio(&lib.connection, 900, 1, &chiave, "Mpeg");
+    lib.connection
+        .execute(
+            "INSERT INTO playlists (id, playlist_key, name, created_at, updated_at)
+             VALUES (1, 'sera', 'Sera', 1, 1)",
+            [],
+        )
+        .expect("playlist");
+    lib.connection
+        .execute(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, ?1, 0)",
+            [locale],
+        )
+        .expect("membro");
+    crate::sincronia::allinea(&mut lib.connection, "telefono", 1_000).expect("allineamento");
+
+    std::fs::remove_file(file).expect("togli il file");
+    let esito = lib.scansiona();
+    assert_eq!(esito.removed, 1, "{esito:?}");
+
+    let membri: Vec<i64> = lib
+        .connection
+        .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = 1")
+        .and_then(|mut q| {
+            q.query_map([], |r| r.get(0))
+                .and_then(|r| r.collect::<Result<Vec<_>, _>>())
+        })
+        .expect("membri");
+    assert_eq!(membri, vec![900], "la voce passa alla riga specchio");
+
+    // E per la sincronia la playlist è com'era: una voce viva, nessuna tolta.
+    crate::sincronia::allinea(&mut lib.connection, "telefono", 2_000).expect("allineamento");
+    let contenuto = crate::sincronia::contenuto(
+        &lib.connection,
+        "telefono",
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::new(),
+    )
+    .expect("contenuto");
+    let sequenza = &contenuto.playlist["sera"].sequenza;
+    assert_eq!(sequenza.ordine(), vec![chiave.as_str()]);
+    assert_eq!(
+        sequenza
+            .elementi()
+            .filter(|(_, e)| e.tolto.is_some())
+            .count(),
+        0
+    );
+}
+
+// ── `origine`: Tutti, Locale, Dispositivo ───────────────────────────────────
+
+/// Una libreria con due dischi di qui e il catalogo di un PC che ne ha uno uguale
+/// (in qualità peggiore, quindi nascosto in «Tutti») e uno suo.
+fn libreria_con_un_pc_collegato() -> (Libreria, String) {
+    use crate::library::condivisa::BranoCatalogo;
+    use crate::specchio::comuni::{ADESSO, chiave, giro, riga};
+    let mut lib = Libreria::nuova();
+    lib.brano("A/Disco/01.wav", "Uno", "Tale", "Disco");
+    lib.brano("A/Disco/02.wav", "Due", "Tale", "Disco");
+    lib.scansiona();
+    let da_qui = |titolo: &str| -> (String, Option<String>) {
+        lib.connection
+            .query_row(
+                "SELECT track_key, content_key FROM tracks WHERE title = ?1",
+                [titolo],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("chiavi")
+    };
+    let copia = |id: i64, titolo: &str, artista: &str, album: &str, album_key: &str| {
+        let (track_key, content_key) = if artista == "Tale" {
+            da_qui(titolo)
+        } else {
+            let k = format!("{artista}|{titolo}|{album}");
+            (k.clone(), Some(k))
+        };
+        BranoCatalogo {
+            title: titolo.to_owned(),
+            artist: artista.to_owned(),
+            album: album.to_owned(),
+            album_key: Some(album_key.to_owned()),
+            codec: Some("mp3".to_owned()),
+            bitrate: Some(128),
+            track_key,
+            content_key,
+            ..riga(id)
+        }
+    };
+    let righe = vec![
+        copia(1, "Uno", "Tale", "Disco", "disco-del-pc"),
+        copia(2, "Due", "Tale", "Disco", "disco-del-pc"),
+        copia(3, "Tre", "Loro", "Altro", "altro-del-pc"),
+    ];
+    let pc = chiave('c');
+    giro(&lib.connection, &pc, &righe, ADESSO);
+    (lib, pc)
+}
+
+#[test]
+fn tutti_mostra_una_voce_per_brano_e_locale_e_dispositivo_le_righe_di_ognuno() {
+    let (lib, pc) = libreria_con_un_pc_collegato();
+    let c = &lib.connection;
+    let nascoste: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .expect("copie nascoste");
+    assert_eq!(
+        nascoste, 2,
+        "le due copie del PC dietro quelle di qui (wav)"
+    );
+
+    let tutti = Origine::Tutti;
+    let locale = Origine::Locale;
+    let del_pc = Origine::Dispositivo(pc.clone());
+    // I numeri: «Tutti» non conta due volte, gli album e gli artisti sono quelli
+    // che hanno almeno un brano visibile.
+    let numeri = |o: &Origine| {
+        let n = counts(c, o).expect("numeri");
+        (n.tracks, n.albums, n.artists)
+    };
+    assert_eq!(numeri(&tutti), (3, 2, 2), "Uno, Due e Tre; Disco e Altro");
+    assert_eq!(numeri(&locale), (2, 1, 1));
+    assert_eq!(
+        numeri(&del_pc),
+        (3, 2, 2),
+        "il Disco nascosto sta sotto il PC"
+    );
+
+    let titoli = |v: Vec<TrackSummary>| {
+        let mut t: Vec<String> = v.into_iter().map(|b| b.title).collect();
+        t.sort();
+        t
+    };
+    let per_origine =
+        |o: &Origine| titoli(list_tracks(c, o, TrackOrder::Shelf, 0, 100).expect("brani"));
+    assert_eq!(per_origine(&tutti), ["Due", "Tre", "Uno"]);
+    assert_eq!(per_origine(&locale), ["Due", "Uno"]);
+    assert_eq!(per_origine(&del_pc), ["Due", "Tre", "Uno"]);
+    // E sono le stesse righe, nello stesso ordine, per gli identificativi della
+    // vista intera.
+    for o in [&tutti, &locale, &del_pc] {
+        let pagine: Vec<i64> = list_tracks(c, o, TrackOrder::Title, 0, -1)
+            .expect("brani")
+            .into_iter()
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(id_dei_brani(c, o, TrackOrder::Title).expect("id"), pagine);
+    }
+
+    // Gli album.
+    let album = |o: &Origine| {
+        let mut a: Vec<String> = list_albums(c, o, 0, 100)
+            .expect("album")
+            .into_iter()
+            .map(|a| a.title)
+            .collect();
+        a.sort();
+        a
+    };
+    assert_eq!(album(&tutti), ["Altro", "Disco"]);
+    assert_eq!(album(&locale), ["Disco"]);
+    assert_eq!(album(&del_pc), ["Altro", "Disco"]);
+    let recenti = |o: &Origine| recently_added_albums(c, o, 10).expect("recenti").len();
+    assert_eq!(
+        (recenti(&tutti), recenti(&locale), recenti(&del_pc)),
+        (2, 1, 2)
+    );
+
+    // Gli artisti e gli album di un artista.
+    let artisti = |o: &Origine| -> Vec<(String, i64)> {
+        list_artists(c, o)
+            .expect("artisti")
+            .into_iter()
+            .map(|a| (a.name, a.tracks))
+            .collect()
+    };
+    assert_eq!(
+        artisti(&tutti),
+        [("Loro".to_owned(), 1), ("Tale".to_owned(), 2)]
+    );
+    assert_eq!(artisti(&locale), [("Tale".to_owned(), 2)]);
+    assert_eq!(
+        albums_by_artist(c, &tutti, "Loro", 0, 10)
+            .expect("album")
+            .len(),
+        1
+    );
+    assert_eq!(
+        albums_by_artist(c, &locale, "Loro", 0, 10)
+            .expect("album")
+            .len(),
+        0
+    );
+
+    // La ricerca, e il suo conto.
+    for (o, attesi) in [(&tutti, 1_usize), (&locale, 1), (&del_pc, 1)] {
+        assert_eq!(search(c, o, "uno", 0, 10).expect("ricerca").len(), attesi);
+        assert_eq!(
+            search_count(c, o, "uno").expect("conto"),
+            i64::try_from(attesi).expect("pochi")
+        );
+        assert_eq!(id_della_ricerca(c, o, "uno").expect("id").len(), attesi);
+    }
+    assert_eq!(search(c, &locale, "tre", 0, 10).expect("ricerca").len(), 0);
+
+    // I brani di un disco: con l'origine di chi lo guarda.
+    let chiave_del_pc: String = c
+        .query_row(
+            "SELECT album_key FROM tracks WHERE title = 'Uno' AND path LIKE 'lontano://%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("album del pc");
+    assert_eq!(
+        album_tracks(c, &tutti, &chiave_del_pc)
+            .expect("album")
+            .len(),
+        0,
+        "in «Tutti» il disco del PC sta dietro il nostro"
+    );
+    assert_eq!(
+        album_tracks(c, &del_pc, &chiave_del_pc)
+            .expect("album")
+            .len(),
+        2
+    );
+
+    // Preferiti e ascoltati: stessa regola.
+    c.execute(
+        "UPDATE tracks SET liked = 1, liked_at = 5, play_count = 2, last_played_at = 9",
+        [],
+    )
+    .expect("tutti preferiti e ascoltati");
+    assert_eq!(list_liked(c, &tutti, 0, 10).expect("preferiti").len(), 3);
+    assert_eq!(list_liked(c, &locale, 0, 10).expect("preferiti").len(), 2);
+    assert_eq!(id_dei_preferiti(c, &tutti).expect("id").len(), 3);
+    assert_eq!(
+        ascoltati_di_recente(c, &tutti, 10).expect("recenti").len(),
+        3
+    );
+    assert_eq!(
+        ascoltati_di_recente(c, &locale, 10).expect("recenti").len(),
+        2
+    );
+    assert_eq!(counts(c, &tutti).expect("numeri").liked, 3);
+}
+
+#[test]
+fn le_regole_e_la_radio_non_vedono_le_copie_nascoste() {
+    use rymembra_domain::regole::{
+        Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore,
+    };
+    let (lib, _pc) = libreria_con_un_pc_collegato();
+    let c = &lib.connection;
+    // Una playlist intelligente «tutto ciò che ha un titolo» non conta due
+    // volte i brani che stanno in due posti.
+    let insieme = Insieme {
+        combinazione: Combinazione::Tutte,
+        regole: vec![Regola {
+            campo: Campo::Titolo,
+            operatore: Operatore::Contiene,
+            valore: Valore::Testo(String::new()),
+        }],
+        limite: None,
+        ordinamento: Ordinamento::Casuale,
+    };
+    assert_eq!(crate::smart::quanti(c, &insieme, 0).expect("conto"), 3);
+    assert_eq!(crate::smart::brani(c, &insieme, 0).expect("brani").len(), 3);
+}
+
+#[test]
+fn togliere_la_copia_di_qui_rende_visibile_quella_del_pc_da_ogni_strada() {
+    // «Tutti» nasconde la copia del PC dietro quella di qui; `copia_di` non ha una
+    // chiave esterna, quindi se la copia di qui se ne va senza che i doppioni si
+    // rifacciano il brano sparisce da «Tutti». Vale per «Togli dalla libreria» e
+    // per la conferma di una rimozione trattenuta, non solo per la scansione.
+    let (mut lib, pc) = libreria_con_un_pc_collegato();
+    let regole = PathRules::for_current_platform();
+    let visibili = |c: &Connection| counts(c, &Origine::Tutti).expect("numeri").tracks;
+    assert_eq!(visibili(&lib.connection), 3);
+
+    let uno = lib.id_del_titolo_di_qui("Uno");
+    let fatto = cancella_brani(&mut lib.connection, &[uno], &[], regole).expect("cancellazione");
+    assert_eq!(fatto.tolti, 1);
+    assert_eq!(
+        visibili(&lib.connection),
+        3,
+        "il brano c'e' ancora: ora e' la riga del PC"
+    );
+    let (copia, origine): (Option<i64>, String) = lib
+        .connection
+        .query_row(
+            "SELECT copia_di, path FROM tracks WHERE title = 'Uno'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("riga del pc");
+    assert_eq!(copia, None);
+    assert!(origine.starts_with(&format!("lontano://{pc}/")));
+
+    let due = lib.id_del_titolo_di_qui("Due");
+    let path: String = lib
+        .connection
+        .query_row("SELECT path FROM tracks WHERE id = ?1", [due], |r| r.get(0))
+        .expect("percorso");
+    let tolte = applica_rimozioni(&mut lib.connection, &[RimozioneInAttesa { id: due, path }])
+        .expect("rimozione confermata");
+    assert_eq!(tolte, 1);
+    assert_eq!(visibili(&lib.connection), 3);
+    assert_eq!(
+        lib.connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("conto"),
+        0,
+        "nessuna riga punta piu' a un rappresentante che non c'e'"
+    );
+}
+
+/// Una misura, non una prova: `cargo test -p rymembra-app --lib --release --
+/// --ignored --nocapture costo_dell_origine`. Quanto costa `copia_di IS NULL`
+/// a chi non ha nessun dispositivo collegato (il caso comune): 30 000 brani, tremila
+/// album, ottocento artisti.
+#[test]
+#[ignore = "misura: si lancia a mano con --ignored --nocapture"]
+fn costo_dell_origine_su_una_libreria_di_trentamila_brani() {
+    use std::time::Instant;
+    let c = crate::db::open_in_memory().expect("database").connection;
+    {
+        let tx = c.unchecked_transaction().expect("transazione");
+        for i in 0..30_000_i64 {
+            tx.execute(
+                "INSERT INTO tracks (path, track_key, title, artist, album, duration_ms, file_size,
+                                     date_added, date_modified, play_count, last_played_at, liked)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 200000, 1000000, ?6, 1, ?7, ?8, ?9)",
+                rusqlite::params![
+                    format!("/m/{i}.mp3"),
+                    format!("k{i}"),
+                    format!("Titolo {}", (i * 7919) % 30_000),
+                    format!("Artista {}", i % 800),
+                    format!("Album {}", i.div_euclid(10)),
+                    i,
+                    i % 9,
+                    (i % 400 == 0).then_some(i),
+                    i64::from(i % 50 == 0),
+                ],
+            )
+            .expect("riga");
+        }
+        tx.commit().expect("chiusura");
+    }
+    {
+        let tx = c.unchecked_transaction().expect("transazione");
+        rebuild_aggregates(&tx).expect("aggregati");
+        tx.commit().expect("chiusura");
+    }
+    let misura = |nome: &str, f: &dyn Fn()| {
+        f();
+        let inizio = Instant::now();
+        for _ in 0..5 {
+            f();
+        }
+        println!("{nome}: {:?} a chiamata", inizio.elapsed() / 5);
+    };
+    misura("counts (prima)", &|| {
+        c.query_row(
+            "SELECT (SELECT COUNT(*) FROM tracks), (SELECT COUNT(*) FROM albums),
+                    (SELECT COUNT(*) FROM artists),
+                    (SELECT COUNT(*) FROM tracks WHERE liked = 1),
+                    (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .expect("conteggi");
+    });
+    misura("counts (dopo)", &|| {
+        counts(&c, &Origine::Tutti).expect("conteggi");
+    });
+    for ordine in [
+        TrackOrder::Shelf,
+        TrackOrder::Title,
+        TrackOrder::RecentlyAdded,
+    ] {
+        misura(&format!("id_dei_brani {ordine:?} (prima)"), &|| {
+            let mut q = c
+                .prepare(&format!(
+                    "SELECT t.id FROM tracks t ORDER BY {}",
+                    ordine.sql()
+                ))
+                .expect("sql");
+            let n = q
+                .query_map([], |r| r.get::<_, i64>(0))
+                .expect("righe")
+                .count();
+            assert_eq!(n, 30_000);
+        });
+        misura(&format!("id_dei_brani {ordine:?} (dopo)"), &|| {
+            assert_eq!(
+                id_dei_brani(&c, &Origine::Tutti, ordine).expect("id").len(),
+                30_000
+            );
+        });
+    }
+    interrogazioni::assicura_ordine(&c).expect("ordine");
+    misura("list_albums (prima)", &|| {
+        let mut q = c
+            .prepare(&format!(
+                "SELECT {} FROM albums a ORDER BY {} LIMIT 60 OFFSET 0",
+                interrogazioni::COLONNE_ALBUM,
+                interrogazioni::ORDINE_DEGLI_ALBUM
+            ))
+            .expect("sql");
+        let _ = q
+            .query_map([], interrogazioni::album_from_row)
+            .expect("righe")
+            .count();
+    });
+    misura("list_albums (dopo)", &|| {
+        list_albums(&c, &Origine::Tutti, 0, 60).expect("album");
+    });
+    misura("list_artists (prima)", &|| {
+        // la stessa forma, senza il filtro: l'elenco è quello del test
+        let _ = list_artists(&c, &Origine::Locale).expect("artisti");
+    });
+    misura("list_artists (dopo)", &|| {
+        let _ = list_artists(&c, &Origine::Tutti).expect("artisti");
+    });
 }

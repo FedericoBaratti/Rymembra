@@ -104,7 +104,14 @@ fn recenti_a_parita_di_data_tiene_l_ordine_del_disco() {
     ] {
         scrivi(&connection, &r);
     }
-    let brani = list_tracks(&connection, TrackOrder::RecentlyAdded, 0, 10).expect("elenco");
+    let brani = list_tracks(
+        &connection,
+        &Origine::Tutti,
+        TrackOrder::RecentlyAdded,
+        0,
+        10,
+    )
+    .expect("elenco");
     assert_eq!(ids(&brani), vec![6, 1, 2, 3, 5, 4]);
 }
 
@@ -191,12 +198,12 @@ fn album_e_artisti_ordinano_allo_stesso_modo() {
     rebuild_aggregates(&tx).expect("aggregati");
     tx.commit().expect("commit");
 
-    let album: Vec<String> = list_albums(&connection, 0, 10)
+    let album: Vec<String> = list_albums(&connection, &Origine::Tutti, 0, 10)
         .expect("album")
         .into_iter()
         .map(|a| a.artist)
         .collect();
-    let artisti: Vec<String> = list_artists(&connection)
+    let artisti: Vec<String> = list_artists(&connection, &Origine::Tutti)
         .expect("artisti")
         .into_iter()
         .map(|a| a.name)
@@ -250,7 +257,7 @@ fn i_brani_ordinano_per_nome_come_artisti_e_album() {
     rebuild_aggregates(&tx).expect("aggregati");
     tx.commit().expect("commit");
 
-    let titoli: Vec<String> = list_tracks(&connection, TrackOrder::Title, 0, 10)
+    let titoli: Vec<String> = list_tracks(&connection, &Origine::Tutti, TrackOrder::Title, 0, 10)
         .expect("per titolo")
         .into_iter()
         .map(|b| b.title)
@@ -259,7 +266,7 @@ fn i_brani_ordinano_per_nome_come_artisti_e_album() {
         titoli,
         ["Alba", "Ça plane pour moi", "È sera", "The Wall", "Zombie"]
     );
-    let artisti: Vec<String> = list_tracks(&connection, TrackOrder::Shelf, 0, 10)
+    let artisti: Vec<String> = list_tracks(&connection, &Origine::Tutti, TrackOrder::Shelf, 0, 10)
         .expect("per scaffale")
         .into_iter()
         .map(|b| b.artist)

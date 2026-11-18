@@ -171,6 +171,16 @@ const CHI_SCRIVE_I_NOMI: &[(&str, &str, &str)] = &[
         "update_track",
         "la transazione del lotto segna i brani (segna_brani) prima di chiudersi",
     ),
+    (
+        "src/specchio/archivio.rs",
+        "aggiorna",
+        "applica_secchio segna i brani (segna_brani) prima e dopo, e Giro::chiudi ricostruisce gli aggregati",
+    ),
+    (
+        "src/specchio/archivio.rs",
+        "inserisci",
+        "applica_secchio segna i brani (segna_brani) prima e dopo, e Giro::chiudi ricostruisce gli aggregati",
+    ),
 ];
 
 /// Dove cominciano le prove di un file: il primo `#[cfg(test)]` in prima

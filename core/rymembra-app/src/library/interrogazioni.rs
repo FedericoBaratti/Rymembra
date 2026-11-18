@@ -160,26 +160,88 @@ pub struct Counts {
     pub duration_ms: i64,
 }
 
-/// I numeri della libreria, in una query sola.
-pub fn counts(connection: &Connection) -> Result<Counts, AppError> {
+/// Ci sono righe nascoste dietro una copia migliore di un altro dispositivo?
+///
+/// Una `EXISTS` sull'indice parziale di `copia_di`: costa quanto leggere una
+/// riga, e dice se «Tutti» è diverso da «tutte le righe».
+fn ci_sono_copie_nascoste(connection: &Connection) -> Result<bool, AppError> {
     connection
-        .query_row(
-            "SELECT (SELECT COUNT(*) FROM tracks),
-                    (SELECT COUNT(*) FROM albums),
-                    (SELECT COUNT(*) FROM artists),
-                    (SELECT COUNT(*) FROM tracks WHERE liked = 1),
-                    (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)",
-            [],
-            |row| {
-                Ok(Counts {
-                    tracks: row.get(0)?,
-                    albums: row.get(1)?,
-                    artists: row.get(2)?,
-                    liked: row.get(3)?,
-                    duration_ms: row.get(4)?,
-                })
-            },
-        )
+        .prepare_cached("SELECT EXISTS (SELECT 1 FROM tracks WHERE copia_di IS NOT NULL)")
+        .and_then(|mut statement| statement.query_row([], |riga| riga.get(0)))
+        .map_err(|err| db_error("copie nascoste", &err))
+}
+
+/// La condizione di origine su `tracks` (con l'alias dato: `"t."` o vuoto), o
+/// `None` quando non serve.
+///
+/// «Tutti» senza nessuna riga nascosta vale «tutte le righe», e chi non ha
+/// dispositivi collegati — il caso comune — non deve pagare un filtro per
+/// niente: sui trentamila brani il filtro toglie ai conteggi e agli elenchi di
+/// identificativi l'indice che li serve da solo (R21-6).
+///
+/// # Errori
+///
+/// `ipc.payloadInvalid` per una chiave di dispositivo storta; `db.*` dalla
+/// lettura.
+pub(super) fn filtro(
+    connection: &Connection,
+    origine: &Origine,
+    alias: &str,
+) -> Result<Option<String>, AppError> {
+    if origine.e_tutti() && !ci_sono_copie_nascoste(connection)? {
+        return Ok(None);
+    }
+    origine.sql(alias).map(Some)
+}
+
+/// Come [`filtro`], pronta da mettere in un `WHERE`: «tutte le righe» è `1`.
+pub(super) fn dove(
+    connection: &Connection,
+    origine: &Origine,
+    alias: &str,
+) -> Result<String, AppError> {
+    Ok(filtro(connection, origine, alias)?.unwrap_or_else(|| "1".to_owned()))
+}
+
+/// I numeri della libreria, in una query sola.
+///
+/// Gli album e gli artisti sono quelli che hanno almeno un brano di questa
+/// origine: un album i cui brani stanno tutti dietro una copia migliore non si
+/// conta (vedi [`Origine`]).
+pub fn counts(connection: &Connection, origine: &Origine) -> Result<Counts, AppError> {
+    let sql = match filtro(connection, origine, "t.")? {
+        // Niente di nascosto: le tabelle degli album e degli artisti sono già i
+        // numeri giusti.
+        None => "SELECT (SELECT COUNT(*) FROM tracks),
+                        (SELECT COUNT(*) FROM albums),
+                        (SELECT COUNT(*) FROM artists),
+                        (SELECT COUNT(*) FROM tracks WHERE liked = 1),
+                        (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)"
+            .to_owned(),
+        Some(t) => {
+            let senza_alias = origine.sql("")?;
+            format!(
+                "SELECT (SELECT COUNT(*) FROM tracks t WHERE {t}),
+                        (SELECT COUNT(*) FROM albums a
+                          WHERE EXISTS (SELECT 1 FROM tracks t
+                                         WHERE t.album_key = a.album_key AND {t})),
+                        (SELECT COUNT(DISTINCT {ARTISTA_EFFETTIVO}) FROM tracks
+                          WHERE {ARTISTA_EFFETTIVO} <> '' AND {senza_alias}),
+                        (SELECT COUNT(*) FROM tracks t WHERE t.liked = 1 AND {t}),
+                        (SELECT COALESCE(SUM(t.duration_ms), 0) FROM tracks t WHERE {t})"
+            )
+        }
+    };
+    connection
+        .query_row(&sql, [], |row| {
+            Ok(Counts {
+                tracks: row.get(0)?,
+                albums: row.get(1)?,
+                artists: row.get(2)?,
+                liked: row.get(3)?,
+                duration_ms: row.get(4)?,
+            })
+        })
         .map_err(|err| db_error("numeri della libreria", &err))
 }
 
@@ -311,12 +373,14 @@ impl TrackOrder {
 /// Una pagina di brani.
 pub fn list_tracks(
     connection: &Connection,
+    origine: &Origine,
     order: TrackOrder,
     offset: i64,
     limit: i64,
 ) -> Result<Vec<TrackSummary>, AppError> {
     let sql = format!(
-        "SELECT {COLONNE_BRANO} FROM tracks t ORDER BY {} LIMIT ?1 OFFSET ?2",
+        "SELECT {COLONNE_BRANO} FROM tracks t WHERE {} ORDER BY {} LIMIT ?1 OFFSET ?2",
+        dove(connection, origine, "t.")?,
         order.sql()
     );
     let mut statement = connection
@@ -349,10 +413,11 @@ pub fn list_tracks(
 /// `db.queryFailed` se il database non risponde.
 pub fn ascoltati_di_recente(
     connection: &Connection,
+    origine: &Origine,
     limit: i64,
 ) -> Result<Vec<TrackSummary>, AppError> {
     let mut statement = connection
-        .prepare_cached(&sql_dei_recenti())
+        .prepare_cached(&sql_dei_recenti(connection, origine)?)
         .map_err(|err| db_error("ascoltati di recente", &err))?;
     let rows = statement
         .query_map([limit], track_from_row)
@@ -426,13 +491,17 @@ pub fn trascurati(
 /// Il più unario su `play_count` toglie a quel termine l'indice dei più
 /// ascoltati: senza, il pianificatore può preferirlo e tornare a ordinare
 /// tutti gli ascoltati invece di scorrere l'indice delle date per dodici righe.
-pub(super) fn sql_dei_recenti() -> String {
-    format!(
+pub(super) fn sql_dei_recenti(
+    connection: &Connection,
+    origine: &Origine,
+) -> Result<String, AppError> {
+    Ok(format!(
         "SELECT {COLONNE_BRANO} FROM tracks t
-          WHERE t.last_played_at IS NOT NULL AND +t.play_count > 0
+          WHERE t.last_played_at IS NOT NULL AND +t.play_count > 0 AND {}
           ORDER BY t.last_played_at DESC, t.title COLLATE NOCASE
-          LIMIT ?1"
-    )
+          LIMIT ?1",
+        dove(connection, origine, "t.")?
+    ))
 }
 
 /// Una pagina di preferiti.
@@ -449,10 +518,14 @@ pub(super) fn sql_dei_recenti() -> String {
 /// all'`ORDER BY` le manda in fondo invece di lasciarle dove capita.
 pub fn list_liked(
     connection: &Connection,
+    origine: &Origine,
     offset: i64,
     limit: i64,
 ) -> Result<Vec<TrackSummary>, AppError> {
-    let sql = format!("SELECT {COLONNE_BRANO} {DA_PREFERITI} LIMIT ?1 OFFSET ?2");
+    let sql = format!(
+        "SELECT {COLONNE_BRANO} {} LIMIT ?1 OFFSET ?2",
+        da_preferiti(connection, origine)?
+    );
     let mut statement = connection
         .prepare_cached(&sql)
         .map_err(|err| db_error("elenco dei preferiti", &err))?;
@@ -468,8 +541,13 @@ pub fn list_liked(
 /// A parte perché lo legge anche `identificativi`, che deve dare gli stessi
 /// brani nello stesso ordine senza leggerne le colonne: due copie della
 /// clausola sarebbero due ordini il giorno in cui una cambia.
-pub(super) const DA_PREFERITI: &str = "FROM tracks t WHERE t.liked = 1
-         ORDER BY t.liked_at IS NULL, t.liked_at DESC, t.title COLLATE NOCASE";
+pub(super) fn da_preferiti(connection: &Connection, origine: &Origine) -> Result<String, AppError> {
+    Ok(format!(
+        "FROM tracks t WHERE t.liked = 1 AND {}
+         ORDER BY t.liked_at IS NULL, t.liked_at DESC, t.title COLLATE NOCASE",
+        dove(connection, origine, "t.")?
+    ))
+}
 
 /// Un ascolto, con il brano che lo ha prodotto.
 ///
@@ -950,14 +1028,39 @@ pub fn ids_by_path(
         .collect()
 }
 
+/// L'origine di un album: i suoi brani stanno tutti su una macchina sola — le
+/// righe locali hanno la chiave di una cartella di qui, quelle specchio la
+/// chiave dell'album di un dispositivo —, e per aprirlo senza che «Tutti» ne
+/// nasconda dei pezzi basta chiedergli da dove viene.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn origine_dell_album(connection: &Connection, album_key: &str) -> Result<Origine, AppError> {
+    use rusqlite::OptionalExtension as _;
+    let percorso: Option<Option<String>> = connection
+        .query_row(
+            "SELECT path FROM tracks WHERE album_key = ?1 LIMIT 1",
+            [album_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| db_error("origine di un album", &err))?;
+    Ok(crate::specchio::origine_della_riga(
+        percorso.flatten().as_deref(),
+    ))
+}
+
 /// I brani di un album, nell'ordine del disco.
 pub fn album_tracks(
     connection: &Connection,
+    origine: &Origine,
     album_key: &str,
 ) -> Result<Vec<TrackSummary>, AppError> {
     let sql = format!(
-        "SELECT {COLONNE_BRANO} FROM tracks t WHERE t.album_key = ?1
-         ORDER BY t.disc_number, t.track_number, t.title COLLATE NOCASE"
+        "SELECT {COLONNE_BRANO} FROM tracks t WHERE t.album_key = ?1 AND {}
+         ORDER BY t.disc_number, t.track_number, t.title COLLATE NOCASE",
+        dove(connection, origine, "t.")?
     );
     let mut statement = connection
         .prepare_cached(&sql)
@@ -972,13 +1075,23 @@ pub fn album_tracks(
 /// Una pagina di album, per artista e anno.
 pub fn list_albums(
     connection: &Connection,
+    origine: &Origine,
     offset: i64,
     limit: i64,
 ) -> Result<Vec<AlbumSummary>, AppError> {
     // La chiave degli Artisti anche qui (D-104): vedi `assicura_ordine`.
     assicura_ordine(connection)?;
+    // Un album compare se ha almeno un brano di questa origine: uno che sta
+    // tutto dietro una copia migliore di un altro dispositivo no.
+    let con_brani = match filtro(connection, origine, "t.")? {
+        None => "1".to_owned(),
+        Some(t) => {
+            format!("EXISTS (SELECT 1 FROM tracks t WHERE t.album_key = a.album_key AND {t})")
+        }
+    };
     let sql = format!(
         "SELECT {COLONNE_ALBUM} FROM albums a
+         WHERE {con_brani}
          ORDER BY {ORDINE_DEGLI_ALBUM}
          LIMIT ?1 OFFSET ?2"
     );
@@ -1031,6 +1144,7 @@ pub(super) const ORDINE_DEGLI_ALBUM: &str =
 /// `db.queryFailed` se il database non risponde.
 pub fn recently_added_albums(
     connection: &Connection,
+    origine: &Origine,
     limit: i64,
 ) -> Result<Vec<AlbumSummary>, AppError> {
     // Il raggruppamento in una sottoquery e non sull'esterna: così gira su
@@ -1039,10 +1153,11 @@ pub fn recently_added_albums(
     let sql = format!(
         "SELECT {COLONNE_ALBUM} FROM albums a
          JOIN (SELECT album_key, MAX(date_added) AS entrato, MAX(id) AS ultima
-               FROM tracks WHERE album_key IS NOT NULL
+               FROM tracks WHERE album_key IS NOT NULL AND {}
                GROUP BY album_key) u ON u.album_key = a.album_key
          ORDER BY u.entrato DESC, u.ultima DESC
-         LIMIT ?1"
+         LIMIT ?1",
+        dove(connection, origine, "")?
     );
     let mut statement = connection
         .prepare_cached(&sql)
@@ -1080,11 +1195,12 @@ pub fn recently_added_albums(
 /// pagina vuota sotto un titolo che diceva «tre album».
 pub fn albums_by_artist(
     connection: &Connection,
+    origine: &Origine,
     artist: &str,
     offset: i64,
     limit: i64,
 ) -> Result<Vec<AlbumSummary>, AppError> {
-    let sql = sql_degli_album_di_un_artista();
+    let sql = sql_degli_album_di_un_artista(connection, origine)?;
     let mut statement = connection
         .prepare_cached(&sql)
         .map_err(|err| db_error("album di un artista", &err))?;
@@ -1102,13 +1218,18 @@ pub fn albums_by_artist(
 /// parola per parola: è l'espressione di `idx_tracks_artista_effettivo`, e
 /// SQLite usa un indice su espressione solo se la riconosce identica. Scritta
 /// a mano, la pagina di un artista leggerebbe tutta la libreria.
-pub(super) fn sql_degli_album_di_un_artista() -> String {
-    format!(
+pub(super) fn sql_degli_album_di_un_artista(
+    connection: &Connection,
+    origine: &Origine,
+) -> Result<String, AppError> {
+    Ok(format!(
         "SELECT {COLONNE_ALBUM} FROM albums a
-         WHERE a.album_key IN (SELECT album_key FROM tracks WHERE {ARTISTA_EFFETTIVO} = ?1)
+         WHERE a.album_key IN (SELECT album_key FROM tracks
+                                WHERE {ARTISTA_EFFETTIVO} = ?1 AND {})
          ORDER BY a.year, a.title COLLATE NOCASE
-         LIMIT ?2 OFFSET ?3"
-    )
+         LIMIT ?2 OFFSET ?3",
+        dove(connection, origine, "")?
+    ))
 }
 
 /// Un artista come lo mostra la griglia.
@@ -1151,14 +1272,18 @@ pub struct ArtistSummary {
 /// Cure» sta sotto C — e SQLite non può chiamarla senza che gliela si registri
 /// come funzione, cioè senza duplicarla. Ordinare qui la tiene in un posto solo,
 /// e quel posto è lo stesso che userà Android.
-pub fn list_artists(connection: &Connection) -> Result<Vec<ArtistSummary>, AppError> {
+pub fn list_artists(
+    connection: &Connection,
+    origine: &Origine,
+) -> Result<Vec<ArtistSummary>, AppError> {
+    let origine = dove(connection, origine, "")?;
     let mut statement = connection
         .prepare_cached(&format!(
             "SELECT {ARTISTA_EFFETTIVO} AS nome,
                     COUNT(DISTINCT album_key) AS album,
                     COUNT(*)                  AS brani
              FROM tracks
-             WHERE {ARTISTA_EFFETTIVO} <> ''
+             WHERE {ARTISTA_EFFETTIVO} <> '' AND {origine}
              GROUP BY nome"
         ))
         .map_err(|err| db_error("elenco degli artisti", &err))?;
@@ -1184,7 +1309,7 @@ pub fn list_artists(connection: &Connection) -> Result<Vec<ArtistSummary>, AppEr
         .prepare_cached(&format!(
             "SELECT {ARTISTA_EFFETTIVO} AS nome, MIN(cover_art_hash) AS hash, MIN(year) AS anno
              FROM tracks
-             WHERE {ARTISTA_EFFETTIVO} <> '' AND cover_art_hash IS NOT NULL
+             WHERE {ARTISTA_EFFETTIVO} <> '' AND cover_art_hash IS NOT NULL AND {origine}
              GROUP BY nome, album_key
              ORDER BY nome, anno"
         ))
@@ -1249,6 +1374,7 @@ pub fn fts_query(input: &str) -> String {
 /// riscontro perso dentro uno lungo.
 pub fn search(
     connection: &Connection,
+    origine: &Origine,
     query: &str,
     offset: i64,
     limit: i64,
@@ -1257,7 +1383,10 @@ pub fn search(
     if expression.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = format!("SELECT {COLONNE_BRANO} {DA_RICERCA} LIMIT ?2 OFFSET ?3");
+    let sql = format!(
+        "SELECT {COLONNE_BRANO} {} LIMIT ?2 OFFSET ?3",
+        da_ricerca(connection, origine)?
+    );
     let mut statement = connection
         .prepare_cached(&sql)
         .map_err(|err| db_error("ricerca", &err))?;
@@ -1269,15 +1398,20 @@ pub fn search(
 }
 
 /// Da dove e in che ordine legge la ricerca, con l'espressione in `?1`: vedi
-/// [`search`]. A parte per la stessa ragione di [`DA_PREFERITI`].
+/// [`search`]. A parte per la stessa ragione di [`da_preferiti`].
 ///
 /// Il nome della tabella e non un alias: in FTS5 il lato sinistro di `MATCH` e
 /// l'argomento di `bm25` devono nominare la tabella virtuale per esteso, e con
 /// un alias SQLite risponde che quella colonna non esiste.
-pub(super) const DA_RICERCA: &str = "FROM tracks_fts
+pub(super) fn da_ricerca(connection: &Connection, origine: &Origine) -> Result<String, AppError> {
+    Ok(format!(
+        "FROM tracks_fts
          JOIN tracks t ON t.id = tracks_fts.rowid
-         WHERE tracks_fts MATCH ?1
-         ORDER BY bm25(tracks_fts)";
+         WHERE tracks_fts MATCH ?1 AND {}
+         ORDER BY bm25(tracks_fts)",
+        dove(connection, origine, "t.")?
+    ))
+}
 
 /// Quanti brani risponderebbero a questa ricerca.
 ///
@@ -1289,13 +1423,23 @@ pub(super) const DA_RICERCA: &str = "FROM tracks_fts
 /// Passa dalla **stessa** [`fts_query`] della ricerca: due traduzioni diverse
 /// della stessa stringa sono due occasioni di contare righe che poi non
 /// arrivano.
-pub fn search_count(connection: &Connection, query: &str) -> Result<i64, AppError> {
+pub fn search_count(
+    connection: &Connection,
+    origine: &Origine,
+    query: &str,
+) -> Result<i64, AppError> {
     let expression = fts_query(query);
     if expression.is_empty() {
         return Ok(0);
     }
     connection
-        .prepare_cached("SELECT COUNT(*) FROM tracks_fts WHERE tracks_fts MATCH ?1")
+        .prepare_cached(&match filtro(connection, origine, "t.")? {
+            None => "SELECT COUNT(*) FROM tracks_fts WHERE tracks_fts MATCH ?1".to_owned(),
+            Some(t) => format!(
+                "SELECT COUNT(*) FROM tracks_fts JOIN tracks t ON t.id = tracks_fts.rowid
+                  WHERE tracks_fts MATCH ?1 AND {t}"
+            ),
+        })
         .and_then(|mut statement| statement.query_row([&expression], |row| row.get(0)))
         .map_err(|err| db_error("conteggio della ricerca", &err))
 }

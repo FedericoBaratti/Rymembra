@@ -43,6 +43,7 @@ use rymembra_app::library::{
     recently_added_albums, search,
 };
 use rymembra_app::playlists::{self, PlaylistSummary};
+use rymembra_app::specchio::Origine;
 use rymembra_domain::keys::sort_name;
 use rymembra_domain::{AppError, ErrorCode};
 use serde::Serialize;
@@ -510,14 +511,41 @@ fn lettere<T>(elenco: &[T], nome: impl Fn(&T) -> &str) -> Vec<(String, usize)> {
     lettere
 }
 
+/// Le righe di una playlist che l'auto può suonare adesso.
+///
+/// Una playlist nomina le righe una per una, e una riga di un dispositivo che
+/// non risponde — il PC spento — non parte: nell'auto sarebbe un brano che
+/// si salta al volante. Con le altre origini la lista resta com'è.
+fn raggiungibili(origine: &Origine, brani: Vec<TrackSummary>) -> Vec<TrackSummary> {
+    let Origine::Raggiungibili(chiavi) = origine else {
+        return brani;
+    };
+    brani
+        .into_iter()
+        .filter(|brano| {
+            brano
+                .path
+                .as_deref()
+                .and_then(rymembra_app::specchio::parti)
+                .is_none_or(|(dispositivo, _)| chiavi.iter().any(|c| c == dispositivo))
+        })
+        .collect()
+}
+
 /// Gli artisti ordinati come nella finestra: per chiave d'ordinamento.
-fn artisti_in_ordine(connessione: &Connection) -> Result<Vec<ArtistSummary>, AppError> {
-    list_artists(connessione)
+fn artisti_in_ordine(
+    connessione: &Connection,
+    origine: &Origine,
+) -> Result<Vec<ArtistSummary>, AppError> {
+    list_artists(connessione, origine)
 }
 
 /// Tutti gli album, nell'ordine della griglia della finestra.
-fn tutti_gli_album(connessione: &Connection) -> Result<Vec<AlbumSummary>, AppError> {
-    list_albums(connessione, 0, i64::MAX)
+fn tutti_gli_album(
+    connessione: &Connection,
+    origine: &Origine,
+) -> Result<Vec<AlbumSummary>, AppError> {
+    list_albums(connessione, origine, 0, i64::MAX)
 }
 
 // ── i figli ─────────────────────────────────────────────────────────────────
@@ -530,6 +558,7 @@ fn tutti_gli_album(connessione: &Connection) -> Result<Vec<AlbumSummary>, AppErr
 /// figli — un brano — o una playlist che non c'è più.
 pub fn figli(
     connessione: &Connection,
+    origine: &Origine,
     store: &CoverStore,
     genitore: &Nodo,
     numero: u32,
@@ -541,8 +570,8 @@ pub fn figli(
             if numero > 0 {
                 return Ok(Vec::new());
             }
-            let ascoltati = ascoltati_di_recente(connessione, RECENTI)?;
-            let aggiunti = recently_added_albums(connessione, AGGIUNTI)?;
+            let ascoltati = ascoltati_di_recente(connessione, origine, RECENTI)?;
+            let aggiunti = recently_added_albums(connessione, origine, AGGIUNTI)?;
             ascoltati
                 .iter()
                 .map(|brano| Voce {
@@ -556,7 +585,7 @@ pub fn figli(
                 .collect()
         }
         Nodo::Album => {
-            let tutti = tutti_gli_album(connessione)?;
+            let tutti = tutti_gli_album(connessione, origine)?;
             if tutti.len() > SOGLIA_LETTERE {
                 let lettere = lettere(&tutti, |album| album.artist.as_str());
                 pagina(lettere, numero, quante)
@@ -573,7 +602,7 @@ pub fn figli(
             }
         }
         Nodo::AlbumLettera(lettera) => {
-            let sotto: Vec<AlbumSummary> = tutti_gli_album(connessione)?
+            let sotto: Vec<AlbumSummary> = tutti_gli_album(connessione, origine)?
                 .into_iter()
                 .filter(|album| iniziale(&album.artist) == *lettera)
                 .collect();
@@ -583,7 +612,7 @@ pub fn figli(
                 .collect()
         }
         Nodo::Artisti => {
-            let tutti = artisti_in_ordine(connessione)?;
+            let tutti = artisti_in_ordine(connessione, origine)?;
             if tutti.len() > SOGLIA_LETTERE {
                 let lettere = lettere(&tutti, |artista| artista.name.as_str());
                 pagina(lettere, numero, quante)
@@ -600,7 +629,7 @@ pub fn figli(
             }
         }
         Nodo::ArtistiLettera(lettera) => {
-            let sotto: Vec<ArtistSummary> = artisti_in_ordine(connessione)?
+            let sotto: Vec<ArtistSummary> = artisti_in_ordine(connessione, origine)?
                 .into_iter()
                 .filter(|artista| iniziale(&artista.name) == *lettera)
                 .collect();
@@ -615,14 +644,14 @@ pub fn figli(
             pagina(tutte, numero, quante)
         }
         Nodo::Preferiti => {
-            let voci = list_liked(connessione, offset, limite)?
+            let voci = list_liked(connessione, origine, offset, limite)?
                 .iter()
                 .map(|brano| voce_brano(brano, genitore, store))
                 .collect();
             con_tutto(genitore, numero, None, voci)
         }
         Nodo::AlbumDi(chiave) => {
-            let brani = album_tracks(connessione, chiave)?;
+            let brani = album_tracks(connessione, origine, chiave)?;
             let quanti = brani.len();
             let voci = pagina(brani, numero, quante)
                 .iter()
@@ -631,14 +660,14 @@ pub fn figli(
             con_tutto(genitore, numero, Some(quanti), voci)
         }
         Nodo::ArtistaDi(nome) => {
-            let voci = albums_by_artist(connessione, nome, offset, limite)?
+            let voci = albums_by_artist(connessione, origine, nome, offset, limite)?
                 .iter()
                 .map(|album| voce_album(album, store))
                 .collect();
             con_tutto(genitore, numero, None, voci)
         }
         Nodo::PlaylistDi(id) => {
-            let brani = playlists::tracks(connessione, *id)?;
+            let brani = raggiungibili(origine, playlists::tracks(connessione, *id)?);
             let quanti = brani.len();
             let voci = pagina(brani, numero, quante)
                 .iter()
@@ -646,7 +675,7 @@ pub fn figli(
                 .collect();
             con_tutto(genitore, numero, Some(quanti), voci)
         }
-        Nodo::Cerca(testo) => search(connessione, testo, offset, limite)?
+        Nodo::Cerca(testo) => search(connessione, origine, testo, offset, limite)?
             .iter()
             .map(|brano| voce_brano(brano, genitore, store))
             .collect(),
@@ -668,6 +697,7 @@ pub fn figli(
 /// Quelli della libreria.
 pub fn voce(
     connessione: &Connection,
+    origine: &Origine,
     store: &CoverStore,
     nodo: &Nodo,
 ) -> Result<Option<Voce>, AppError> {
@@ -675,7 +705,7 @@ pub fn voce(
         Nodo::Brano { id, dentro } => {
             read_summary(connessione, *id)?.map(|brano| voce_brano(&brano, dentro, store))
         }
-        Nodo::AlbumDi(chiave) => album_tracks(connessione, chiave)?
+        Nodo::AlbumDi(chiave) => album_tracks(connessione, origine, chiave)?
             .first()
             .map(|brano| Voce {
                 id: nodo.testo(),
@@ -689,7 +719,7 @@ pub fn voce(
                 durata_ms: None,
                 gruppo: None,
             }),
-        Nodo::ArtistaDi(nome) => artisti_in_ordine(connessione)?
+        Nodo::ArtistaDi(nome) => artisti_in_ordine(connessione, origine)?
             .iter()
             .find(|artista| artista.name == *nome)
             .map(|artista| voce_artista(artista, store)),
@@ -710,17 +740,17 @@ pub fn voce(
 // ── che cosa suonare ────────────────────────────────────────────────────────
 
 /// I brani di un nodo che si suona per intero, nell'ordine in cui suonano.
-fn elenco(connessione: &Connection, nodo: &Nodo) -> Result<Vec<i64>, AppError> {
+fn elenco(connessione: &Connection, origine: &Origine, nodo: &Nodo) -> Result<Vec<i64>, AppError> {
     let righe = |brani: Vec<TrackSummary>| brani.into_iter().map(|brano| brano.id).collect();
     Ok(match nodo {
-        Nodo::Recenti => righe(ascoltati_di_recente(connessione, RECENTI)?),
-        Nodo::Preferiti => righe(list_liked(connessione, 0, TETTO_CODA)?),
-        Nodo::AlbumDi(chiave) => righe(album_tracks(connessione, chiave)?),
-        Nodo::PlaylistDi(id) => righe(playlists::tracks(connessione, *id)?),
-        Nodo::Cerca(testo) => righe(search(connessione, testo, 0, TETTO_CODA)?),
-        Nodo::ArtistaDi(nome) => brani_di_artista(connessione, nome)?,
+        Nodo::Recenti => righe(ascoltati_di_recente(connessione, origine, RECENTI)?),
+        Nodo::Preferiti => righe(list_liked(connessione, origine, 0, TETTO_CODA)?),
+        Nodo::AlbumDi(chiave) => righe(album_tracks(connessione, origine, chiave)?),
+        Nodo::PlaylistDi(id) => righe(raggiungibili(origine, playlists::tracks(connessione, *id)?)),
+        Nodo::Cerca(testo) => righe(search(connessione, origine, testo, 0, TETTO_CODA)?),
+        Nodo::ArtistaDi(nome) => brani_di_artista(connessione, origine, nome)?,
         Nodo::Brano { id, .. } => vec![*id],
-        Nodo::Tutto(dentro) => elenco(connessione, dentro)?,
+        Nodo::Tutto(dentro) => elenco(connessione, origine, dentro)?,
         Nodo::Album
         | Nodo::AlbumLettera(_)
         | Nodo::Artisti
@@ -731,11 +761,15 @@ fn elenco(connessione: &Connection, nodo: &Nodo) -> Result<Vec<i64>, AppError> {
 
 /// Tutti i brani di un artista: i suoi album, uno dopo l'altro, nell'ordine
 /// della sua pagina nella finestra.
-fn brani_di_artista(connessione: &Connection, nome: &str) -> Result<Vec<i64>, AppError> {
+fn brani_di_artista(
+    connessione: &Connection,
+    origine: &Origine,
+    nome: &str,
+) -> Result<Vec<i64>, AppError> {
     let mut ids = Vec::new();
-    for album in albums_by_artist(connessione, nome, 0, TETTO_ALBUM_ARTISTA)? {
+    for album in albums_by_artist(connessione, origine, nome, 0, TETTO_ALBUM_ARTISTA)? {
         ids.extend(
-            album_tracks(connessione, &album.album_key)?
+            album_tracks(connessione, origine, &album.album_key)?
                 .into_iter()
                 .map(|brano| brano.id),
         );
@@ -752,16 +786,20 @@ fn brani_di_artista(connessione: &Connection, nome: &str) -> Result<Vec<i64>, Ap
 ///
 /// Quelli della libreria; `library.trackNotFound` per un nodo che non si
 /// suona — una scheda, una lettera — o che è vuoto.
-pub fn da_suonare(connessione: &Connection, nodo: &Nodo) -> Result<(Vec<i64>, usize), AppError> {
+pub fn da_suonare(
+    connessione: &Connection,
+    origine: &Origine,
+    nodo: &Nodo,
+) -> Result<(Vec<i64>, usize), AppError> {
     let (ids, da) = match nodo {
         Nodo::Brano { id, dentro } => {
-            let lista = elenco(connessione, dentro)?;
+            let lista = elenco(connessione, origine, dentro)?;
             match lista.iter().position(|riga| riga == id) {
                 Some(da) => (lista, da),
                 None => (vec![*id], 0),
             }
         }
-        altro => (elenco(connessione, altro)?, 0),
+        altro => (elenco(connessione, origine, altro)?, 0),
     };
     if ids.is_empty() {
         return Err(niente(&nodo.testo()));
@@ -783,6 +821,7 @@ pub fn da_suonare(connessione: &Connection, nodo: &Nodo) -> Result<(Vec<i64>, us
 /// Quelli della libreria.
 pub fn per_la_voce(
     connessione: &Connection,
+    origine: &Origine,
     ricerca: &RicercaVocale,
 ) -> Result<Vec<i64>, AppError> {
     let righe = |brani: Vec<TrackSummary>| -> Vec<i64> {
@@ -804,37 +843,53 @@ pub fn per_la_voce(
         let domanda = artista
             .as_ref()
             .map_or_else(|| titolo.clone(), |artista| format!("{titolo} {artista}"));
-        let trovati = righe(search(connessione, &domanda, 0, TETTO_CODA)?);
+        let trovati = righe(search(connessione, origine, &domanda, 0, TETTO_CODA)?);
         if !trovati.is_empty() {
             return Ok(trovati);
         }
-        return Ok(righe(search(connessione, &titolo, 0, TETTO_CODA)?));
+        return Ok(righe(search(connessione, origine, &titolo, 0, TETTO_CODA)?));
     }
     if let Some(album) = album {
-        if let Some(trovato) =
-            scegli_album(&tutti_gli_album(connessione)?, &album, artista.as_deref())
-        {
-            return Ok(righe(album_tracks(connessione, &trovato.album_key)?));
+        if let Some(trovato) = scegli_album(
+            &tutti_gli_album(connessione, origine)?,
+            &album,
+            artista.as_deref(),
+        ) {
+            return Ok(righe(album_tracks(
+                connessione,
+                origine,
+                &trovato.album_key,
+            )?));
         }
-        return Ok(righe(search(connessione, &album, 0, TETTO_CODA)?));
+        return Ok(righe(search(connessione, origine, &album, 0, TETTO_CODA)?));
     }
     if let Some(artista) = artista {
-        if let Some(trovato) = scegli_artista(&artisti_in_ordine(connessione)?, &artista) {
-            return brani_di_artista(connessione, &trovato.name);
+        if let Some(trovato) = scegli_artista(&artisti_in_ordine(connessione, origine)?, &artista) {
+            return brani_di_artista(connessione, origine, &trovato.name);
         }
-        return Ok(righe(search(connessione, &artista, 0, TETTO_CODA)?));
+        return Ok(righe(search(
+            connessione,
+            origine,
+            &artista,
+            0,
+            TETTO_CODA,
+        )?));
     }
     let testo = ricerca.testo.trim();
     if testo.is_empty() {
         return Ok(Vec::new());
     }
-    if let Some(trovato) = scegli_artista(&artisti_in_ordine(connessione)?, testo) {
-        return brani_di_artista(connessione, &trovato.name);
+    if let Some(trovato) = scegli_artista(&artisti_in_ordine(connessione, origine)?, testo) {
+        return brani_di_artista(connessione, origine, &trovato.name);
     }
-    if let Some(trovato) = scegli_album(&tutti_gli_album(connessione)?, testo, None) {
-        return Ok(righe(album_tracks(connessione, &trovato.album_key)?));
+    if let Some(trovato) = scegli_album(&tutti_gli_album(connessione, origine)?, testo, None) {
+        return Ok(righe(album_tracks(
+            connessione,
+            origine,
+            &trovato.album_key,
+        )?));
     }
-    Ok(righe(search(connessione, testo, 0, TETTO_CODA)?))
+    Ok(righe(search(connessione, origine, testo, 0, TETTO_CODA)?))
 }
 
 /// Due nomi «uguali» per chi parla: stessa chiave d'ordinamento, che ignora
@@ -897,7 +952,7 @@ fn niente(dove: &str) -> AppError {
 #[cfg(mobile)]
 pub fn leggi<T>(
     app: &tauri::AppHandle,
-    lettura: impl FnOnce(&Connection, &CoverStore) -> Result<T, AppError>,
+    lettura: impl FnOnce(&Connection, &Origine, &CoverStore) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
     let stato = app.try_state::<Stato>().ok_or_else(|| {
         AppError::new(ErrorCode::InternalAborted {
@@ -906,7 +961,12 @@ pub fn leggi<T>(
         .with_cause("la libreria non è più fra gli stati gestiti")
     })?;
     let store = stato.copertine()?;
-    con_libreria(&stato, |libreria| lettura(&libreria.connection, &store))
+    // Nell'auto non c'è una riga grigia: un brano che non parte è un guasto al
+    // volante. Le righe dei dispositivi che adesso non rispondono non si mostrano.
+    let origine = Origine::Raggiungibili(crate::lontano::specchio::dispositivi_raggiungibili(app));
+    con_libreria(&stato, |libreria| {
+        lettura(&libreria.connection, &origine, &store)
+    })
 }
 
 /// Esegue un gesto dell'auto con i comandi della finestra: la stessa coda,
@@ -927,8 +987,10 @@ pub fn esegui(app: &tauri::AppHandle, gesto: GestoAuto) -> Esito<()> {
                 return crate::riproduzione::riprendi_ora(app.clone(), lettore);
             }
             let nodo = Nodo::da_testo(&testo).ok_or_else(|| errore(niente(&testo)))?;
-            let (ids, da) =
-                leggi(app, |connessione, _| da_suonare(connessione, &nodo)).map_err(errore)?;
+            let (ids, da) = leggi(app, |connessione, origine, _| {
+                da_suonare(connessione, origine, &nodo)
+            })
+            .map_err(errore)?;
             crate::riproduzione::suona_ora(app.clone(), lettore, ids, da)
         }
         GestoAuto::Cerca(ricerca) => {
@@ -938,14 +1000,16 @@ pub fn esegui(app: &tauri::AppHandle, gesto: GestoAuto) -> Esito<()> {
                 if crate::riproduzione::c_e_un_brano(&lettore) {
                     return crate::riproduzione::riprendi_ora(app.clone(), lettore);
                 }
-                let (ids, da) = leggi(app, |connessione, _| {
-                    da_suonare(connessione, &Nodo::Recenti)
+                let (ids, da) = leggi(app, |connessione, origine, _| {
+                    da_suonare(connessione, origine, &Nodo::Recenti)
                 })
                 .map_err(errore)?;
                 return crate::riproduzione::suona_ora(app.clone(), lettore, ids, da);
             }
-            let ids =
-                leggi(app, |connessione, _| per_la_voce(connessione, &ricerca)).map_err(errore)?;
+            let ids = leggi(app, |connessione, origine, _| {
+                per_la_voce(connessione, origine, &ricerca)
+            })
+            .map_err(errore)?;
             if ids.is_empty() {
                 return Err(errore(niente(&ricerca.testo)));
             }

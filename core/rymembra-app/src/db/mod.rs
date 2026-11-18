@@ -1687,6 +1687,13 @@ mod tests {
     }
 
     /// Quante righe ha una tabella.
+    /// Un conteggio, da una `SELECT COUNT(*)` qualunque.
+    fn conta(connection: &Connection, sql: &str) -> i64 {
+        connection
+            .query_row(sql, [], |riga| riga.get::<_, i64>(0))
+            .unwrap_or_else(|err| panic!("{sql}: {err}"))
+    }
+
     fn quante(connection: &Connection, tabella: &str) -> i64 {
         connection
             .query_row(&format!("SELECT COUNT(*) FROM {tabella}"), [], |r| r.get(0))
@@ -2487,6 +2494,9 @@ mod tests {
         // `migrate` porta all'ultima: prima si toglie quel che è venuto dopo
         // la 037, col ritorno indietro scritto in testa a ciascuna.
         tornata
+            .execute_batch(RITORNO_DALLA_43)
+            .expect("ritorno a mano dalla 43");
+        tornata
             .execute_batch(RITORNO_DALLA_42)
             .expect("ritorno a mano dalla 42");
         tornata
@@ -3214,7 +3224,7 @@ mod tests {
             .expect("un dispositivo");
         tornata
             .connection
-            .execute_batch(RITORNO_DA_42_ALLA_38)
+            .execute_batch(RITORNO_DA_43_ALLA_38)
             .expect("ritorno a mano");
         assert_eq!(
             schema_senza_i_brani(&tornata.connection),
@@ -3349,9 +3359,12 @@ mod tests {
         let prima_schema = schema_senza_i_brani(&connection);
 
         let aperta = open_connection(connection, None).expect("apertura");
-        assert_eq!(aperta.applied, 1);
+        assert_eq!(
+            u32::try_from(aperta.applied).expect("il conto sta in un u32"),
+            LATEST_VERSION - 41
+        );
         let c = &aperta.connection;
-        assert_eq!(user_version(c).expect("versione"), 42);
+        assert_eq!(user_version(c).expect("versione"), LATEST_VERSION);
         assert_eq!(conti(c), prima_conti, "nessuna riga è cambiata");
         assert_eq!(brani_come_sono(c), prima_brani, "nessun valore è cambiato");
         let dopo_schema = schema_senza_i_brani(c);
@@ -3434,6 +3447,11 @@ mod tests {
         libreria_da_perdere(&tornata.connection);
         brani_coi_nomi(&tornata.connection);
         let prima_brani = brani_come_sono(&tornata.connection);
+        // Dalla 043 in poi si torna dalla 43 alla 42, e poi alla 41.
+        tornata
+            .connection
+            .execute_batch(RITORNO_DALLA_43)
+            .expect("ritorno a mano dalla 43");
         tornata
             .connection
             .execute_batch(RITORNO_DALLA_42)
@@ -3455,7 +3473,10 @@ mod tests {
         assert_eq!(quante(&tornata.connection, "play_history"), 1);
         // E la 42 si riapplica: le colonne tornano, vuote, e l'apertura le
         // riempie.
-        assert_eq!(migrate(&tornata.connection).expect("di nuovo la 42"), 1);
+        assert_eq!(
+            u32::try_from(migrate(&tornata.connection).expect("di nuovo la 42")).expect("conto"),
+            LATEST_VERSION - 41
+        );
     }
 
     #[test]
@@ -3490,6 +3511,324 @@ mod tests {
                 .iter()
                 .any(|r| r.contains("idx_tracks_titolo_per_nome")),
             "{da_riempire:?}"
+        );
+    }
+
+    // ── la 043: la libreria unica ───────────────────────────────────────────
+
+    /// Il ritorno indietro a mano scritto in testa alla 043.
+    const RITORNO_DALLA_43: &str = "DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
+         DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
+         DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
+         DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
+         PRAGMA user_version = 42;";
+
+    /// Il ritorno a mano dalla 43 alla 38 — la 3.2.0 — in un blocco solo, come
+    /// lo scrive la testa della 043.
+    const RITORNO_DA_43_ALLA_38: &str = "DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
+         DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
+         DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
+         DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
+         DROP TRIGGER chiavi_d_ordine_da_rifare;
+         DROP INDEX idx_tracks_titolo_per_nome; DROP INDEX idx_tracks_scaffale_per_nome;
+         ALTER TABLE tracks DROP COLUMN ordine_album; ALTER TABLE tracks DROP COLUMN ordine_artista;
+         ALTER TABLE tracks DROP COLUMN ordine_titolo;
+         DROP INDEX idx_artists_mb; DROP INDEX idx_tracks_mb_recording;
+         DROP TABLE insieme_indirizzi;
+         DROP TABLE dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
+         PRAGMA user_version = 38;";
+
+    /// Una riga specchio, con la sua riga di `lontano_brani`, e un posto in una
+    /// playlist: quel che la ricetta di ritorno deve portare via.
+    fn riga_specchio(connection: &Connection, id: i64) {
+        let chiave = "ab".repeat(32);
+        connection
+            .execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified, source, play_count, liked)
+                 VALUES (?1, ?2, 'k|l|m', 'Remota', 'R', 'M', 1000, 1, 1, 'lontano', 9, 1)",
+                rusqlite::params![id, format!("lontano://{chiave}/{id}")],
+            )
+            .expect("riga specchio");
+        connection
+            .execute(
+                "INSERT INTO lontano_brani (track_id, dispositivo, id_remoto, estensione)
+                 VALUES (?1, ?2, ?1, 'flac')",
+                rusqlite::params![id, chiave],
+            )
+            .expect("riga di lontano_brani");
+        connection
+            .execute(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, ?1, ?1)",
+                [id],
+            )
+            .expect("nella playlist");
+    }
+
+    #[test]
+    fn la_quarantatre_aggiunge_la_libreria_unica_e_non_tocca_il_resto() {
+        // Una libreria alla 42 con le righe che si perderebbero; poi
+        // l'apertura vera, che migra.
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&connection, 42);
+        libreria_da_perdere(&connection);
+        brani_coi_nomi(&connection);
+        let conti = |c: &Connection| {
+            [
+                "tracks",
+                "artists",
+                "playlist_tracks",
+                "play_history",
+                "track_overrides",
+            ]
+            .map(|tabella| quante(c, tabella))
+        };
+        let prima_conti = conti(&connection);
+        let prima_brani = brani_come_sono(&connection);
+        let prima_schema = schema_senza_i_brani(&connection);
+
+        let aperta = open_connection(connection, None).expect("apertura");
+        assert_eq!(aperta.applied, 1);
+        let c = &aperta.connection;
+        assert_eq!(user_version(c).expect("versione"), 43);
+        assert_eq!(conti(c), prima_conti, "nessuna riga è cambiata");
+        assert_eq!(brani_come_sono(c), prima_brani, "nessun valore è cambiato");
+        let dopo_schema = schema_senza_i_brani(c);
+        assert!(
+            prima_schema.iter().all(|riga| dopo_schema.contains(riga)),
+            "la 43 ha toccato qualcosa che c'era già"
+        );
+        // Nessuna riga ha una copia: tutte visibili in «Tutti».
+        assert_eq!(
+            conta(c, "SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL"),
+            0
+        );
+        for tabella in [
+            "lontano_cataloghi",
+            "lontano_secchi",
+            "lontano_brani",
+            "dispositivi_posta",
+        ] {
+            assert_eq!(quante(c, tabella), 0, "{tabella} nasce vuota");
+        }
+        assert_eq!(
+            colonna(
+                c,
+                "SELECT name FROM sqlite_master WHERE name = 'idx_tracks_copia_di'"
+            ),
+            ["idx_tracks_copia_di"]
+        );
+    }
+
+    #[test]
+    fn l_indice_di_copia_di_e_parziale_e_senza_chiave_esterna() {
+        let db = open_in_memory().expect("database");
+        let c = &db.connection;
+        let sql = colonna(
+            c,
+            "SELECT sql FROM sqlite_master WHERE name = 'idx_tracks_copia_di'",
+        );
+        assert!(sql[0].contains("WHERE copia_di IS NOT NULL"), "{sql:?}");
+        // `DROP COLUMN` rifiuta una colonna con una chiave esterna: la ricetta
+        // di ritorno deve poterla togliere.
+        assert_eq!(
+            conta(
+                c,
+                "SELECT COUNT(*) FROM pragma_foreign_key_list('tracks') WHERE \"from\" = 'copia_di'"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn le_ricette_di_ritorno_stanno_in_testa_alla_quarantatre() {
+        let testa = spazi_compressi(
+            &include_str!("schema/043_libreria_unica.sql")
+                .lines()
+                .filter_map(|riga| riga.strip_prefix("--"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        for ricetta in [RITORNO_DALLA_43, RITORNO_DA_43_ALLA_38] {
+            assert!(
+                testa.contains(&spazi_compressi(ricetta)),
+                "la testa della 043 non porta la ricetta: {ricetta}"
+            );
+        }
+        // E dice, in chiaro, cosa si perde e dov'è la copia.
+        assert!(testa.contains("le playlist perdono i brani remoti"));
+        assert!(testa.contains("rymembra.db.schema-042.bak"));
+    }
+
+    #[test]
+    fn togliere_la_quarantatre_a_mano_riporta_la_quarantadue() {
+        let alla_42 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_42, 42);
+        let tornata = open_in_memory().expect("database");
+        libreria_da_perdere(&tornata.connection);
+        brani_coi_nomi(&tornata.connection);
+        riga_specchio(&tornata.connection, 500);
+        riga_specchio(&tornata.connection, 501);
+        let prima_brani = brani_come_sono(&tornata.connection)
+            .into_iter()
+            .filter(|riga| !riga.contains("lontano://"))
+            .collect::<Vec<_>>();
+        tornata
+            .connection
+            .execute_batch(RITORNO_DALLA_43)
+            .expect("ritorno a mano");
+        assert_eq!(
+            schema_senza_i_brani(&tornata.connection),
+            schema_senza_i_brani(&alla_42)
+        );
+        assert_eq!(
+            colonne_di(&tornata.connection, "tracks"),
+            colonne_di(&alla_42, "tracks")
+        );
+        assert_eq!(user_version(&tornata.connection).expect("versione"), 42);
+        assert_eq!(
+            brani_come_sono(&tornata.connection),
+            prima_brani,
+            "i brani di questa macchina restano com'erano, quelli remoti se ne vanno"
+        );
+        assert_eq!(
+            conta(
+                &tornata.connection,
+                "SELECT COUNT(*) FROM playlist_tracks WHERE position >= 500"
+            ),
+            0,
+            "le playlist perdono i brani remoti, come dice la testa"
+        );
+        assert_eq!(quante(&tornata.connection, "play_history"), 1);
+        // E la 43 si riapplica.
+        assert_eq!(migrate(&tornata.connection).expect("di nuovo la 43"), 1);
+    }
+
+    #[test]
+    fn la_ricetta_dalla_quarantatre_alla_trentotto_lascia_riaggiornare() {
+        let alla_38 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_38, 38);
+        let tornata = open_in_memory().expect("database");
+        libreria_da_perdere(&tornata.connection);
+        riga_specchio(&tornata.connection, 700);
+        tornata
+            .connection
+            .execute(
+                "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+                ["ab".repeat(32)],
+            )
+            .expect("un dispositivo");
+        tornata
+            .connection
+            .execute_batch(RITORNO_DA_43_ALLA_38)
+            .expect("ritorno a mano");
+        assert_eq!(
+            schema_senza_i_brani(&tornata.connection),
+            schema_senza_i_brani(&alla_38)
+        );
+        assert_eq!(
+            colonne_di(&tornata.connection, "tracks"),
+            colonne_di(&alla_38, "tracks")
+        );
+        assert_eq!(user_version(&tornata.connection).expect("versione"), 38);
+        assert_eq!(
+            u32::try_from(migrate(&tornata.connection).expect("il riaggiornamento riparte"))
+                .expect("conto"),
+            LATEST_VERSION - 38
+        );
+    }
+
+    #[test]
+    fn aprire_un_file_alla_quarantadue_lascia_la_copia_schema_042() {
+        // La strada di serie per tornare indietro: la copia che l'apertura fa
+        // da sé prima di migrare, col nome della versione da cui si arriva.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let percorso = dir.path().join("rymembra.db");
+        {
+            let connection = Connection::open(&percorso).expect("creazione");
+            fino_alla(&connection, 42);
+            libreria_da_perdere(&connection);
+        }
+        let aperto = open(&percorso).expect("apertura con migrazione");
+        assert_eq!(aperto.version_before, 42);
+        assert_eq!(aperto.applied, 1);
+        let attesa = nome_istantanea(&percorso, 42);
+        assert_eq!(
+            attesa.file_name().and_then(|n| n.to_str()),
+            Some("rymembra.db.schema-042.bak")
+        );
+        assert!(
+            matches!(&aperto.istantanea, Some(Istantanea::Fatta { percorso, .. }) if *percorso == attesa),
+            "{:?}",
+            aperto.istantanea
+        );
+        // La copia è il database **prima** della 43: senza le tabelle nuove, e
+        // alla 42.
+        let copia = Connection::open(&attesa).expect("la copia si apre");
+        assert_eq!(user_version(&copia).expect("versione della copia"), 42);
+        assert_eq!(
+            conta(
+                &copia,
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'lontano_brani'"
+            ),
+            0
+        );
+        assert_eq!(quante(&copia, "tracks"), 1);
+    }
+
+    #[test]
+    fn togliere_una_riga_specchio_non_lascia_statistiche_orfane_ne_ne_eredita_di_un_file_locale() {
+        // Invariante di §4.7 sui trigger della 026 e della 028: scattano solo
+        // per le righe con una chiave di contenuto, e quelle specchio non ce
+        // l'hanno (resta NULL: quella del proprietario sta in `lontano_brani`).
+        // Cancellare una riga specchio con statistiche e playlist non deve
+        // mettere da parte niente come orfano, e un file locale con la stessa
+        // chiave che arriva dopo non deve ereditare le statistiche altrui.
+        let db = open_in_memory().expect("database");
+        let c = &db.connection;
+        libreria_da_perdere(c);
+        riga_specchio(c, 900);
+        c.execute(
+            "UPDATE lontano_brani SET content_key = 'x|remota|y' WHERE track_id = 900",
+            [],
+        )
+        .expect("chiave del proprietario");
+        c.execute(
+            "INSERT INTO play_history (track_id, played_at, ms_played) VALUES (900, 1700, 1000)",
+            [],
+        )
+        .expect("un ascolto locale");
+        c.execute("DELETE FROM tracks WHERE id = 900", [])
+            .expect("tolta");
+        for tabella in [
+            "brani_orfani",
+            "ascolti_orfani",
+            "playlist_orfane",
+            "correzioni_orfane",
+        ] {
+            assert_eq!(quante(c, tabella), 0, "{tabella} non deve ricordare niente");
+        }
+        assert_eq!(
+            quante(c, "lontano_brani"),
+            0,
+            "la cascata porta via il resto"
+        );
+        // Un file locale con quella chiave di contenuto, dopo: niente da
+        // ereditare.
+        c.execute(
+            "INSERT INTO tracks (id, path, track_key, content_key, title, artist, album,
+                                 file_size, date_added, date_modified)
+             VALUES (901, 'C:/M/remota.flac', 'x|remota|y', 'x|remota|y', 'Remota', 'R', 'M',
+                     1000, 1, 1)",
+            [],
+        )
+        .expect("il file locale");
+        assert_eq!(
+            colonna(
+                c,
+                "SELECT play_count || '|' || liked || '|' || rating FROM tracks WHERE id = 901"
+            ),
+            ["0|0|0"]
         );
     }
 }

@@ -150,10 +150,12 @@ pub fn da_canonico(canonico: &Path) -> Collocazione {
 /// perché la forma non basta a dirlo.
 #[must_use]
 pub fn dalla_forma(percorso: &Path) -> Option<Collocazione> {
-    let del_cloud = percorso
+    // Una riga specchio non sta su nessun disco di qui: vale «di rete» per le
+    // stesse decisioni del cloud — niente Cestino, niente sorveglianza.
+    let senza_disco = percorso
         .to_str()
-        .is_some_and(rymembra_domain::nuvola::e_nuvola);
-    (del_cloud || percorso_di_rete(percorso)).then_some(Collocazione::DiRete)
+        .is_some_and(|p| rymembra_domain::nuvola::e_nuvola(p) || crate::specchio::e_specchio(p));
+    (senza_disco || percorso_di_rete(percorso)).then_some(Collocazione::DiRete)
 }
 
 /// Il nome vero di un percorso del cloud: lui stesso.
@@ -445,7 +447,9 @@ pub fn risolvi_tutti(percorsi: &[String], scadenza: Duration) -> Vec<Option<Stri
 /// filesystem darebbe farebbe proporre di rimappare una cartella che c'è.
 #[must_use]
 pub fn esistenza(percorso: &str) -> Esistenza {
-    if rymembra_domain::nuvola::e_nuvola(percorso) {
+    if rymembra_domain::nuvola::e_nuvola(percorso) || crate::specchio::e_specchio(percorso) {
+        // Il cloud e una riga specchio non stanno su un disco di qui: «non c'è»
+        // non vuol dire che il file è sparito, e non si propone di rimappare.
         return Esistenza::Ignota;
     }
     match std::fs::metadata(percorso_lungo(Path::new(percorso))) {

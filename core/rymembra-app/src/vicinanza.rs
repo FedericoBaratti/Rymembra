@@ -169,7 +169,8 @@ const fn da_chiedere() -> &'static str {
     "LEFT JOIN brano_vicino_stato s ON s.track_id = t.id
      LEFT JOIN artists a ON a.name = t.artist
      WHERE (t.mb_recording_id IS NOT NULL OR a.mb_artist_id IS NOT NULL)
-       AND (s.track_id IS NULL OR s.chiesto_at < ?1)"
+       AND (s.track_id IS NULL OR s.chiesto_at < ?1)
+       AND NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0')"
 }
 
 /// Quando diventa vecchia una domanda già fatta.

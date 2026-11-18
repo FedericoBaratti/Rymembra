@@ -249,7 +249,14 @@ fn main() {
 
     if let Some(query) = ricerca {
         println!("\n── ricerca «{query}» ──");
-        let trovati = search(&connection, &query, 0, 10).expect("ricerca");
+        let trovati = search(
+            &connection,
+            &rymembra_app::specchio::Origine::Tutti,
+            &query,
+            0,
+            10,
+        )
+        .expect("ricerca");
         println!("{} risultati", trovati.len());
         for hit in trovati.iter().take(10) {
             println!("  {} · {} — {}", hit.artist, hit.album, hit.title);

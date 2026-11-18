@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_lontano::nodo::TENTATIVI_AL_MINUTO;
+use rymembra_lontano::protocollo::{CAPACITA_CATALOGO, SCRITTURE_AL_MINUTO};
 use rymembra_lontano::{
     Domanda, Evento, Flusso, Identita, Impostazioni, Nodo, Ospite, PariNoto, Presentazione,
     Presenza, Rete, Risposta,
@@ -40,6 +41,12 @@ struct Finta {
     tentenna: Mutex<bool>,
     /// Le domande ritirate da chi aveva letto il QR.
     ritirate: Mutex<Vec<String>>,
+    /// Le domande arrivate a `rispondi`, nell'ordine.
+    viste: Mutex<Vec<Domanda>>,
+    /// Cosa fa chi ha una build di prima: le domande nuove gli arrivano
+    /// sconosciute, e rifiuta. Non le risponderebbe mai, anche se glien'ar-
+    /// rivasse una.
+    vecchia: Mutex<bool>,
 }
 
 impl Ospite for Finta {
@@ -73,7 +80,24 @@ impl Ospite for Finta {
     }
 
     fn rispondi(&self, da: &str, domanda: Domanda) -> Result<Risposta, AppError> {
+        self.viste.lock().unwrap().push(domanda.clone());
         match domanda {
+            // Una build di prima non conosce le domande nuove: per lei sono
+            // `Sconosciuta`, e il nodo rifiuta prima che arrivino qui.
+            Domanda::CatalogoRiassunto
+            | Domanda::CatalogoSecchio { .. }
+            | Domanda::Valuta { .. }
+                if *self.vecchia.lock().unwrap() =>
+            {
+                Err(AppError::new(ErrorCode::LontanoProtocollo))
+            }
+            Domanda::CatalogoRiassunto => Ok(Risposta::Dati(
+                serde_json::json!({ "generazione": 7, "secchi": [] }),
+            )),
+            Domanda::CatalogoSecchio { da_id, a_id } => Ok(Risposta::Dati(
+                serde_json::json!({ "generazione": 7, "daId": da_id, "aId": a_id, "brani": [] }),
+            )),
+            Domanda::Valuta { .. } => Ok(Risposta::Fatto),
             Domanda::Leggi { brano: 404, .. } => Err(AppError::new(ErrorCode::LontanoFileCambiato)),
             Domanda::Leggi {
                 da: inizio, quanti, ..
@@ -111,7 +135,13 @@ impl Ospite for Finta {
 }
 
 fn nodo(nome: &str) -> (Nodo, Arc<Finta>) {
+    nodo_con(nome, &[])
+}
+
+/// Un nodo che dichiara le capacità `capacita`: nessuna è una build di prima.
+fn nodo_con(nome: &str, capacita: &[&str]) -> (Nodo, Arc<Finta>) {
     let finta = Arc::new(Finta::default());
+    *finta.vecchia.lock().unwrap() = capacita.is_empty();
     let nodo = Nodo::avvia(
         Impostazioni {
             identita: Identita::nuova(),
@@ -126,6 +156,7 @@ fn nodo(nome: &str) -> (Nodo, Arc<Finta>) {
                 nome: nome.to_owned(),
                 piattaforma: "prova".to_owned(),
                 versione: "0".to_owned(),
+                capacita: capacita.iter().map(|c| (*c).to_owned()).collect(),
                 ..Presenza::default()
             },
         },
@@ -822,4 +853,221 @@ fn si_sa_se_si_passa_diritti_o_dal_relay() {
     telefono
         .chiedi(&pc.chiave(), Domanda::Presenza, Duration::from_secs(10))
         .unwrap();
+}
+
+// ── la libreria unica: capacità, versioni miste, scritture ─────────────────
+
+/// Associa `a` e `b` (chi mostra il QR è `b`) e fa che si seguano e si
+/// conoscano: ognuno ha la presenza dell'altro.
+fn collegati(a: &Nodo, b: &Nodo, di_b: &Finta, di_a: &Finta) {
+    *di_b.consente.lock().unwrap() = true;
+    a.collega(&b.invita().unwrap().link()).unwrap();
+    b.pari(vec![PariNoto {
+        chiave: a.chiave(),
+        indirizzi: a.socket(),
+    }]);
+    a.pari(vec![PariNoto {
+        chiave: b.chiave(),
+        indirizzi: b.socket(),
+    }]);
+    let presenze = |finta: &Finta, chiave: &str| {
+        finta
+            .eventi
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, Evento::Presente { chiave: c, .. } if c == chiave))
+    };
+    assert!(aspetta(|| presenze(di_a, &b.chiave())), "a conosce b");
+    assert!(aspetta(|| presenze(di_b, &a.chiave())), "b conosce a");
+}
+
+fn nuove_domande() -> Vec<Domanda> {
+    vec![
+        Domanda::CatalogoRiassunto,
+        Domanda::CatalogoSecchio {
+            da_id: 1,
+            a_id: 500,
+        },
+        Domanda::Valuta {
+            brano: 1,
+            liked: Some(true),
+            rating: Some(5),
+            quando_ms: 1,
+            chiave: "v".to_owned(),
+        },
+    ]
+}
+
+#[test]
+fn a_un_pari_di_prima_le_domande_nuove_non_si_fanno_e_quelle_di_sempre_si() {
+    // Sul telefono e sul PC dell'utente gira una build che non dichiara
+    // `catalogo`: qui un nodo nuovo parla con uno così.
+    let (nuovo, del_nuovo) = nodo_con("Nuovo", &[CAPACITA_CATALOGO]);
+    let (vecchio, del_vecchio) = nodo("Vecchio");
+    collegati(&nuovo, &vecchio, &del_vecchio, &del_nuovo);
+    del_vecchio.viste.lock().unwrap().clear();
+
+    // Il nodo sa cosa dichiara l'altro.
+    assert!(!nuovo.dichiara(&vecchio.chiave(), CAPACITA_CATALOGO));
+    assert!(vecchio.dichiara(&nuovo.chiave(), CAPACITA_CATALOGO));
+
+    for domanda in nuove_domande() {
+        // Rifiutata in locale con lo stesso codice con cui risponderebbe una
+        // build di prima, e senza mandare niente.
+        assert_eq!(
+            codice(nuovo.chiedi(&vecchio.chiave(), domanda.clone(), Duration::from_secs(10))),
+            ErrorCodeKind::LontanoProtocollo,
+            "{domanda:?}"
+        );
+    }
+    assert!(
+        del_vecchio.viste.lock().unwrap().is_empty(),
+        "al pari di prima non è arrivata nessuna domanda nuova: {:?}",
+        del_vecchio.viste.lock().unwrap()
+    );
+
+    // Le domande di oggi continuano ad avere risposta, nei due versi.
+    for (chi, a_chi) in [(&nuovo, &vecchio), (&vecchio, &nuovo)] {
+        let Risposta::Dati(dati) = chi
+            .chiedi(
+                &a_chi.chiave(),
+                Domanda::Album { da: 0, quanti: 20 },
+                Duration::from_secs(10),
+            )
+            .unwrap()
+        else {
+            panic!("dei dati");
+        };
+        assert_eq!(dati["quanti"], 20);
+    }
+    assert!(matches!(
+        nuovo
+            .chiedi(
+                &vecchio.chiave(),
+                Domanda::Leggi {
+                    brano: 1,
+                    da: 0,
+                    quanti: 10
+                },
+                Duration::from_secs(10)
+            )
+            .unwrap(),
+        Risposta::Byte { .. }
+    ));
+    // E il pari di prima che le domande nuove le riceverebbe lo stesso, per
+    // errore, le rifiuta e la connessione resta in piedi.
+    assert!(vecchio.raggiungibile(&nuovo.chiave()) || nuovo.raggiungibile(&vecchio.chiave()));
+}
+
+#[test]
+fn fra_due_pari_che_dichiarano_il_catalogo_le_domande_nuove_passano() {
+    let (a, di_a) = nodo_con("A", &[CAPACITA_CATALOGO]);
+    let (b, di_b) = nodo_con("B", &[CAPACITA_CATALOGO]);
+    collegati(&a, &b, &di_b, &di_a);
+    assert!(a.dichiara(&b.chiave(), CAPACITA_CATALOGO));
+    assert!(b.dichiara(&a.chiave(), CAPACITA_CATALOGO));
+    di_b.viste.lock().unwrap().clear();
+    let Risposta::Dati(riassunto) = a
+        .chiedi(
+            &b.chiave(),
+            Domanda::CatalogoRiassunto,
+            Duration::from_secs(10),
+        )
+        .unwrap()
+    else {
+        panic!("un riassunto");
+    };
+    assert_eq!(riassunto["generazione"], 7);
+    assert_eq!(
+        a.chiedi(
+            &b.chiave(),
+            Domanda::Valuta {
+                brano: 1,
+                liked: Some(true),
+                rating: Some(4),
+                quando_ms: 10,
+                chiave: "v1".to_owned()
+            },
+            Duration::from_secs(10)
+        )
+        .unwrap(),
+        Risposta::Fatto
+    );
+    assert_eq!(di_b.viste.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn senza_aver_visto_la_presenza_le_domande_nuove_non_partono() {
+    // Prima che l'altro si sia presentato non si sa cosa sa fare: niente
+    // domande nuove, e nessuna sorpresa a un pari di prima.
+    let (a, _) = nodo_con("A", &[CAPACITA_CATALOGO]);
+    let (b, di_b) = nodo_con("B", &[CAPACITA_CATALOGO]);
+    *di_b.consente.lock().unwrap() = true;
+    a.collega(&b.invita().unwrap().link()).unwrap();
+    // Nessuno segue nessuno: nessuna presenza scambiata.
+    assert_eq!(
+        codice(a.chiedi(
+            &b.chiave(),
+            Domanda::CatalogoRiassunto,
+            Duration::from_secs(10)
+        )),
+        ErrorCodeKind::LontanoProtocollo
+    );
+    assert!(di_b.viste.lock().unwrap().is_empty());
+    // Una volta presentati, passa.
+    a.chiedi(&b.chiave(), Domanda::Presenza, Duration::from_secs(10))
+        .unwrap();
+    a.pari(vec![PariNoto {
+        chiave: b.chiave(),
+        indirizzi: b.socket(),
+    }]);
+    assert!(aspetta(|| a.dichiara(&b.chiave(), CAPACITA_CATALOGO)));
+    a.chiedi(
+        &b.chiave(),
+        Domanda::CatalogoRiassunto,
+        Duration::from_secs(10),
+    )
+    .unwrap();
+}
+
+#[test]
+fn le_scritture_di_un_pari_hanno_un_tetto_al_minuto_e_gli_altri_non_ne_risentono() {
+    let (server, del_server) = nodo_con("Server", &[CAPACITA_CATALOGO]);
+    let (uno, di_uno) = nodo_con("Uno", &[CAPACITA_CATALOGO]);
+    let (due, di_due) = nodo_con("Due", &[CAPACITA_CATALOGO]);
+    collegati(&uno, &server, &del_server, &di_uno);
+    collegati(&due, &server, &del_server, &di_due);
+    let valuta = |n: usize| Domanda::Valuta {
+        brano: 1,
+        liked: Some(n.is_multiple_of(2)),
+        rating: Some(3),
+        quando_ms: i64::try_from(n).unwrap(),
+        chiave: format!("v{n}"),
+    };
+    for n in 0..SCRITTURE_AL_MINUTO {
+        uno.chiedi(&server.chiave(), valuta(n), Duration::from_secs(10))
+            .unwrap_or_else(|err| panic!("la scrittura {n}: {err:?}"));
+    }
+    // Oltre il tetto: `lontano.irraggiungibile`, che fa tenere la scrittura in
+    // coda e riprovare dopo, e al server non arriva.
+    let prima = del_server.viste.lock().unwrap().len();
+    assert_eq!(
+        codice(uno.chiedi(&server.chiave(), valuta(999), Duration::from_secs(10))),
+        ErrorCodeKind::LontanoIrraggiungibile
+    );
+    assert_eq!(del_server.viste.lock().unwrap().len(), prima);
+    // Un altro dispositivo ha il suo conto.
+    assert_eq!(
+        due.chiedi(&server.chiave(), valuta(1), Duration::from_secs(10))
+            .unwrap(),
+        Risposta::Fatto
+    );
+    // E le letture del catalogo di chi è al tetto non sono scritture.
+    uno.chiedi(
+        &server.chiave(),
+        Domanda::CatalogoRiassunto,
+        Duration::from_secs(10),
+    )
+    .unwrap();
 }

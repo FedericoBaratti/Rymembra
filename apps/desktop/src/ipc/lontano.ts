@@ -154,6 +154,42 @@ export interface ScaricoLontano {
   errore: string | null;
 }
 
+/** In che punto è la lettura del catalogo di un dispositivo. */
+export type FaseSpecchio = "inattivo" | "leggo" | "fine" | "errore" | "nonSupportato";
+
+/**
+ * Quel che la finestra sa del catalogo di un dispositivo collegato
+ * (`lontano/specchio.rs`, `AvanzamentoSpecchio`). Arriva con l'evento
+ * `lontano:specchio` a ogni passo, e `lontanoSpecchioStato` dà l'ultimo di
+ * ciascuno a chi arriva dopo.
+ */
+export interface AvanzamentoSpecchio {
+  /** La chiave del dispositivo. */
+  dispositivo: string;
+  fase: FaseSpecchio;
+  /** Righe lette in questo giro, su `totali`. */
+  fatti: number;
+  totali: number;
+  /** Righe di questo dispositivo in libreria, a giro finito. */
+  righe: number;
+  /** Righe che il dispositivo non manda più, in attesa di una conferma per sparire. */
+  inAttesa: number;
+  /** Quando è finito l'ultimo giro riuscito, in millisecondi. */
+  ultimoMs: number | null;
+  /** Il codice dell'errore, se il giro non è riuscito. */
+  errore: string | null;
+}
+
+/** Cosa succederebbe alle playlist dimenticando un dispositivo. */
+export interface AnteprimaDimentica {
+  righe: number;
+  voci: number;
+  rimappabili: number;
+  perse: number;
+  /** In quante playlist si perde qualcosa: il numero da dire a chi conferma. */
+  playlistChePerdono: number;
+}
+
 /** L'esito dello scanner del QR (solo telefono). */
 export interface Scansione {
   /** Il link letto; `null` se si è annullato. */

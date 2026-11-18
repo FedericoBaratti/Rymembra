@@ -408,6 +408,7 @@ fn cronologia(connection: &Connection) -> Result<Vec<Ascoltato>, AppError> {
         .prepare(
             "SELECT t.track_key, h.played_at, h.ms_played, h.source
                FROM play_history h JOIN tracks t ON t.id = h.track_id
+              WHERE NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0')
               ORDER BY h.played_at",
         )
         .map_err(|err| db_error("cronologia del profilo", &err))?;
@@ -564,6 +565,7 @@ fn copertine(connection: &Connection) -> Result<BTreeMap<String, Copertina>, App
             "SELECT t.track_key, c.hash, c.mime_type, c.width, c.height, c.byte_size,
                     c.source, c.created_at
                FROM tracks t JOIN cover_art c ON c.hash = t.cover_art_hash
+              WHERE NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0')
               ORDER BY t.track_key",
         )
         .map_err(|err| db_error("copertine del profilo", &err))?;
@@ -688,7 +690,7 @@ fn applica_cronologia(tx: &Transaction<'_>, righe: &[Ascoltato]) -> Result<usize
     let mut scrivi = tx
         .prepare(
             "INSERT OR IGNORE INTO play_history (track_id, played_at, ms_played, source)
-             SELECT id, ?2, ?3, ?4 FROM tracks WHERE track_key = ?1 ORDER BY id LIMIT 1",
+             SELECT id, ?2, ?3, ?4 FROM tracks WHERE track_key = ?1 AND NOT (path >= 'lontano://' AND path < 'lontano:/0') ORDER BY id LIMIT 1",
         )
         .map_err(|err| db_error("cronologia dal profilo", &err))?;
     let mut entrate = 0;
@@ -740,10 +742,10 @@ pub fn applica_correzioni_in(
         // cui tag dicono già il nome giusto — e per quella dei tag grezzi: il
         // file appena scansionato su un computer nuovo.
         let mut quali = tx
-            .prepare("SELECT id FROM tracks WHERE track_key = ?1")
+            .prepare("SELECT id FROM tracks WHERE track_key = ?1 AND NOT (path >= 'lontano://' AND path < 'lontano:/0')")
             .map_err(|err| db_error("correzioni dal profilo", &err))?;
         let mut per_contenuto = tx
-            .prepare("SELECT id FROM tracks WHERE content_key = ?1")
+            .prepare("SELECT id FROM tracks WHERE content_key = ?1 AND NOT (path >= 'lontano://' AND path < 'lontano:/0')")
             .map_err(|err| db_error("correzioni dal profilo", &err))?;
         let mut scrivi = tx
             .prepare(

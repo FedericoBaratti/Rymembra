@@ -852,6 +852,11 @@ catalogo! {
     /// L'altro ha risposto qualcosa che non si capisce: un'altra versione, o
     /// un messaggio rotto.
     LontanoProtocollo = "lontano.protocollo", Lontano, Warning, Never, None;
+    /// Il brano sta su un altro dispositivo: qui non se ne può toccare il file
+    /// (riscrivere i tag, spostarlo, eliminarlo, mostrarlo nella cartella),
+    /// né togliere la riga dalla libreria. Non viaggia: lo dice questo
+    /// dispositivo a chi ha chiesto il gesto.
+    LontanoNonQui = "lontano.nonQui", Lontano, Info, Never, None;
     /// La chiave di questo dispositivo non si legge o non si scrive nel
     /// portachiavi. `Error` per la stessa ragione di `insieme.identitaPersa`:
     /// una chiave nuova al suo posto scollegherebbe in silenzio ogni

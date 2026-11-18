@@ -44,6 +44,7 @@ pub mod settings;
 pub mod sincronia;
 pub mod smart;
 pub mod sonora;
+pub mod specchio;
 pub mod tag_scrittura;
 pub mod testi;
 pub mod tinta;

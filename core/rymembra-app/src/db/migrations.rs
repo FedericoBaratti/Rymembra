@@ -304,6 +304,15 @@ pub const MIGRATIONS: &[Migration] = &[
         // trigger: nessuna tabella si rifà, e le righe restano dove sono.
         ricostruisce: false,
     },
+    Migration {
+        version: 43,
+        name: "libreria-unica",
+        sql: include_str!("schema/043_libreria_unica.sql"),
+        // Una colonna in coda a `tracks` con `ADD COLUMN`, un indice parziale
+        // e quattro tabelle nuove: `lontano_brani` ha una chiave esterna verso
+        // `tracks`, ma una tabella nuova non tocca le righe di nessuno.
+        ricostruisce: false,
+    },
 ];
 
 /// La versione a cui questa build porta il database.

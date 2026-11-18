@@ -27,6 +27,7 @@ fn codice_di(kind: ErrorCodeKind) -> ErrorCode {
         ErrorCodeKind::LontanoReteAConsumo => ErrorCode::LontanoReteAConsumo,
         ErrorCodeKind::LontanoSpento => ErrorCode::LontanoSpento,
         ErrorCodeKind::LontanoIdentitaPersa => ErrorCode::LontanoIdentitaPersa,
+        ErrorCodeKind::LontanoNonQui => ErrorCode::LontanoNonQui,
         // `ErrorCodeKind` è `non_exhaustive`, e qui passano solo codici del
         // dominio (vedi `da_testo`): un altro è un errore di chi chiama.
         _ => ErrorCode::LontanoProtocollo,

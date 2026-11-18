@@ -793,6 +793,12 @@ impl MusicFiles for LocalFiles {
     }
 
     fn open(&self, path: &str) -> Result<Box<dyn ReadSeek + Send + Sync>, AppError> {
+        // Una riga specchio non ha un file su questo disco: `lontano://…` a
+        // `std::fs` sarebbe un nome relativo qualunque.
+        if crate::specchio::e_specchio(path) {
+            return Err(AppError::new(ErrorCode::LontanoNonQui)
+                .with_cause("il file sta su un altro dispositivo"));
+        }
         // `percorso_lungo` e non `Path::new` nudo: un album annidato su una
         // share può sfondare i 260 caratteri di `MAX_PATH`, e da lì l'apertura
         // fallisce con «nome del file non valido» su un file che esiste. Il

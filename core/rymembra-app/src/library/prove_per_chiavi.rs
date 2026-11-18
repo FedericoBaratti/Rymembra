@@ -955,7 +955,10 @@ fn il_ripiano_dei_recenti_passa_dall_indice() {
     let connection = database();
     let piano: Vec<String> = {
         let mut s = connection
-            .prepare(&format!("EXPLAIN QUERY PLAN {}", sql_dei_recenti()))
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                sql_dei_recenti(&connection, &Origine::Tutti).expect("sql")
+            ))
             .expect("piano");
         let righe = s
             .query_map([12_i64], |r| r.get::<_, String>(3))
@@ -985,7 +988,7 @@ fn il_ripiano_dei_recenti_passa_dall_indice() {
             )
             .expect("brano");
     }
-    let recenti = ascoltati_di_recente(&connection, 12).expect("recenti");
+    let recenti = ascoltati_di_recente(&connection, &Origine::Tutti, 12).expect("recenti");
     assert_eq!(recenti.iter().map(|b| b.id).collect::<Vec<_>>(), [2, 1]);
 }
 
@@ -1084,7 +1087,7 @@ fn misure_su_cinquantamila_brani() {
         ids.len(),
         inizio.elapsed().as_secs_f64() * 1000.0
     );
-    let numeri = counts(&connection).expect("numeri");
+    let numeri = counts(&connection, &Origine::Tutti).expect("numeri");
     println!(
         "album {} · artisti {} · brani {}",
         numeri.albums, numeri.artists, numeri.tracks
@@ -1177,13 +1180,13 @@ fn misure_su_cinquantamila_brani() {
         ricostruisci_gli_artisti(&tx, &nomi).expect("artisti");
         drop(tx);
     });
-    let elenco_senza = cronometra(|| list_artists(&connection).expect("artisti"));
+    let elenco_senza = cronometra(|| list_artists(&connection, &Origine::Tutti).expect("artisti"));
     connection
         .execute_batch(&format!(
             "CREATE INDEX idx_tracks_artista_effettivo ON tracks({ARTISTA_EFFETTIVO})"
         ))
         .expect("indice rimesso");
-    let elenco_con = cronometra(|| list_artists(&connection).expect("artisti"));
+    let elenco_con = cronometra(|| list_artists(&connection, &Origine::Tutti).expect("artisti"));
     println!("50 artisti toccati: {artisti_senza:.1} ms senza indice, {artisti_con:.2} ms con");
 
     // ── le letture che la finestra chiede: chi supera i 50 ms ──
@@ -1191,43 +1194,51 @@ fn misure_su_cinquantamila_brani() {
     let letture: Vec<(&str, f64)> = vec![
         (
             "numeri (avvio)",
-            cronometra(|| counts(&connection).expect("numeri")),
+            cronometra(|| counts(&connection, &Origine::Tutti).expect("numeri")),
         ),
         (
             "brani, prima pagina per scaffale",
-            cronometra(|| list_tracks(&connection, TrackOrder::Shelf, 0, 200).expect("brani")),
+            cronometra(|| {
+                list_tracks(&connection, &Origine::Tutti, TrackOrder::Shelf, 0, 200).expect("brani")
+            }),
         ),
         (
             "brani, pagina a metà per scaffale",
-            cronometra(|| list_tracks(&connection, TrackOrder::Shelf, 25_000, 200).expect("brani")),
+            cronometra(|| {
+                list_tracks(&connection, &Origine::Tutti, TrackOrder::Shelf, 25_000, 200)
+                    .expect("brani")
+            }),
         ),
         (
             "brani, pagina in fondo per titolo",
-            cronometra(|| list_tracks(&connection, TrackOrder::Title, 49_800, 200).expect("brani")),
+            cronometra(|| {
+                list_tracks(&connection, &Origine::Tutti, TrackOrder::Title, 49_800, 200)
+                    .expect("brani")
+            }),
         ),
         (
             "album, pagina a metà",
-            cronometra(|| list_albums(&connection, 2_000, 200).expect("album")),
+            cronometra(|| list_albums(&connection, &Origine::Tutti, 2_000, 200).expect("album")),
         ),
         (
             "dischi aggiunti di recente",
-            cronometra(|| recently_added_albums(&connection, 12).expect("dischi")),
+            cronometra(|| recently_added_albums(&connection, &Origine::Tutti, 12).expect("dischi")),
         ),
         (
             "ricerca «brano» (pagina)",
-            cronometra(|| search(&connection, "brano", 0, 200).expect("ricerca")),
+            cronometra(|| search(&connection, &Origine::Tutti, "brano", 0, 200).expect("ricerca")),
         ),
         (
             "ricerca «brano» (conteggio)",
-            cronometra(|| search_count(&connection, "brano").expect("conteggio")),
+            cronometra(|| search_count(&connection, &Origine::Tutti, "brano").expect("conteggio")),
         ),
         (
             "ricerca «art» (pagina)",
-            cronometra(|| search(&connection, "art", 0, 200).expect("ricerca")),
+            cronometra(|| search(&connection, &Origine::Tutti, "art", 0, 200).expect("ricerca")),
         ),
         (
             "preferiti",
-            cronometra(|| list_liked(&connection, 0, 200).expect("preferiti")),
+            cronometra(|| list_liked(&connection, &Origine::Tutti, 0, 200).expect("preferiti")),
         ),
     ];
     for (nome, ms) in letture {
