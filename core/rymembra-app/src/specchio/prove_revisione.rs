@@ -773,11 +773,12 @@ fn misura_togliere_un_quinto_di_un_catalogo_grande_in_una_transazione_sola() {
     let t = Instant::now();
     let chiusura = giro(&c, &pc, &restano, ADESSO + 10_000);
     eprintln!(
-        "MISURA secondo giro (tolte {}, in grazia {}, in attesa {}): {} ms",
+        "MISURA secondo giro (tolte {}, in grazia {}, in attesa {}): {} ms, di cui la sola chiusura (una transazione, col lucchetto) {} ms",
         chiusura.tolte,
         chiusura.in_grazia,
         chiusura.in_attesa,
-        t.elapsed().as_millis()
+        t.elapsed().as_millis(),
+        crate::specchio::comuni::ULTIMA_CHIUSURA_MS.with(std::cell::Cell::get)
     );
     // Dopo la grazia le righe si tolgono a blocchi, ognuno in una presa sua del
     // lucchetto: quel che conta è il blocco più lungo, non il totale.

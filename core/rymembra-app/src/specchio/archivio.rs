@@ -1111,6 +1111,31 @@ fn controlla_che_sia_associato(tx: &Connection, dispositivo: &str) -> Result<(),
     }
 }
 
+/// Quali di queste righe sono in grazia: segnate sparite e nascoste. Per chi
+/// mostra una playlist — le sue voci restano sulla riga — e non può mostrare
+/// una riga che non si suona (Android Auto).
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn in_grazia(connection: &Connection, ids: &[i64]) -> Result<HashSet<i64>, AppError> {
+    let cosa = "righe in grazia";
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let insieme = serde_json::to_string(ids).unwrap_or_else(|_| "[]".to_owned());
+    let mut st = connection
+        .prepare_cached(
+            "SELECT id FROM tracks
+              WHERE copia_di = id AND id IN (SELECT value FROM json_each(?1))",
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    st.query_map([&insieme], |r| r.get::<_, i64>(0))
+        .map_err(|err| db_error(cosa, &err))?
+        .collect::<Result<_, _>>()
+        .map_err(|err| db_error(cosa, &err))
+}
+
 /// Nasconde le righe che il proprietario non manda più, e porta le loro voci di
 /// playlist su un'altra copia del brano.
 ///

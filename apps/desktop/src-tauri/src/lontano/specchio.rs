@@ -1399,6 +1399,36 @@ mod prove {
     }
 
     #[test]
+    fn un_dispositivo_dimenticato_mentre_il_giro_e_in_volo_non_riporta_le_sue_righe() {
+        // La corsa del difetto 05: il filo dice «collegato» (`associato`, qui il
+        // confronto con la chiave del PC), il database no — la persona ha appena
+        // premuto «Dimentica». I cancelli del guscio non se ne accorgono; il
+        // nucleo controlla `dispositivi` nella transazione che scrive il secchio e
+        // quella che chiude il giro, e non scrive niente.
+        let (_nodo_pc, _pc, telefono) = collegati(30);
+        let chiave = telefono.pc.clone();
+        telefono
+            .db
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM dispositivi WHERE chiave = ?1", [&chiave])
+            .unwrap();
+        let esito = giro(&telefono, &chiave);
+        assert!(esito.is_err(), "il giro non riesce: {esito:?}");
+        let db = telefono.db.lock().unwrap();
+        assert_eq!(
+            quante(
+                &db,
+                "SELECT COUNT(*) FROM tracks WHERE path LIKE 'lontano://%'"
+            ),
+            0,
+            "nessuna riga del dispositivo dimenticato entra in libreria"
+        );
+        assert_eq!(quante(&db, "SELECT COUNT(*) FROM lontano_cataloghi"), 0);
+        assert_eq!(quante(&db, "SELECT COUNT(*) FROM lontano_secchi"), 0);
+    }
+
+    #[test]
     fn a_un_pari_di_prima_non_si_chiede_il_catalogo() {
         // Sul telefono e sul PC dell'utente gira una build che non dichiara
         // `catalogo`: lo specchio lo dice `nonSupportato` e non rompe niente.

@@ -804,3 +804,140 @@ fn una_riga_che_torna_con_un_id_nuovo_ritrova_voce_e_visibilita() {
         "la voce sta ancora sulla stessa riga, col suo id remoto nuovo"
     );
 }
+
+#[test]
+fn le_righe_in_grazia_si_riconoscono_per_chi_mostra_una_playlist() {
+    let (c, m3, _) = telefono_con_una_riga_in_grazia();
+    let m2 = id_specchio(&c, PC, 2);
+    let trovate = specchio::archivio::in_grazia(&c, &[m2, m3, 1]).expect("in grazia");
+    assert_eq!(trovate, std::collections::HashSet::from([m3]));
+    assert!(
+        specchio::archivio::in_grazia(&c, &[])
+            .expect("vuoto")
+            .is_empty()
+    );
+}
+
+#[test]
+fn ogni_domanda_di_libreria_regge_ogni_origine_con_righe_nascoste_e_in_grazia() {
+    // Le due forme nuove di `Origine::sql` (`Tutti` con `NOT IN`, `Raggiungibili`
+    // con la riga di fuori nominata per tabella) non eseguono mai quando non ci
+    // sono righe nascoste: qui ci sono — copie dietro una flac del PC, una riga
+    // in grazia, un secondo dispositivo — e ogni domanda che prende un'origine
+    // gira con tutte e cinque, con e senza alias, come le fa Android Auto.
+    use crate::library::{
+        TrackOrder, album_tracks, albums_by_artist, ascoltati_di_recente, counts, id_dei_brani,
+        id_dei_preferiti, id_della_ricerca, list_albums, list_artists, list_liked, list_tracks,
+        recently_added_albums, search, search_count,
+    };
+    use crate::specchio::Origine;
+    let c = libreria();
+    for numero in 1..=4 {
+        locale(&c, numero, numero);
+    }
+    let pc = chiave(PC);
+    let altro = chiave('b');
+    let mut dal_pc: Vec<_> = (1..=2)
+        .map(|numero| {
+            let mut r = riga(numero);
+            r.codec = Some("flac".to_owned());
+            r.estensione = "flac".to_owned();
+            r.sample_rate = Some(96_000);
+            r.bitrate = Some(900);
+            r.dimensione = 24_000_000;
+            r
+        })
+        .collect();
+    dal_pc.extend((20..=23).map(riga));
+    giro(&c, &pc, &dal_pc, ADESSO);
+    // Una copia dello stesso brano 3 su un secondo dispositivo, che risponde.
+    giro(&c, &altro, &[riga(3), riga(30)], ADESSO);
+    let senza: Vec<_> = dal_pc.iter().filter(|r| r.id != 23).cloned().collect();
+    giro(&c, &pc, &senza, ADESSO + 10_000);
+    let nascoste: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .expect("nascoste");
+    assert!(
+        nascoste >= 3,
+        "copie dietro la flac, e una riga in grazia: {nascoste}"
+    );
+    c.execute("UPDATE tracks SET liked = 1 WHERE id IN (1, 2, 3)", [])
+        .expect("preferiti");
+
+    let origini = [
+        Origine::Tutti,
+        Origine::Locale,
+        Origine::Dispositivo(pc.clone()),
+        Origine::Raggiungibili(vec![pc.clone()]),
+        Origine::Raggiungibili(vec![altro.clone()]),
+        Origine::Raggiungibili(Vec::new()),
+    ];
+    for origine in &origini {
+        let chiaro = format!("{origine:?}");
+        counts(&c, origine).unwrap_or_else(|e| panic!("counts {chiaro}: {e:?}"));
+        for ordine in [
+            TrackOrder::Title,
+            TrackOrder::Shelf,
+            TrackOrder::RecentlyAdded,
+        ] {
+            list_tracks(&c, origine, ordine, 0, 50)
+                .unwrap_or_else(|e| panic!("list_tracks {chiaro}: {e:?}"));
+            id_dei_brani(&c, origine, ordine)
+                .unwrap_or_else(|e| panic!("id_dei_brani {chiaro}: {e:?}"));
+        }
+        ascoltati_di_recente(&c, origine, 12)
+            .unwrap_or_else(|e| panic!("ascoltati_di_recente {chiaro}: {e:?}"));
+        list_liked(&c, origine, 0, 50).unwrap_or_else(|e| panic!("list_liked {chiaro}: {e:?}"));
+        id_dei_preferiti(&c, origine)
+            .unwrap_or_else(|e| panic!("id_dei_preferiti {chiaro}: {e:?}"));
+        album_tracks(&c, origine, &"a".repeat(32))
+            .unwrap_or_else(|e| panic!("album_tracks {chiaro}: {e:?}"));
+        list_albums(&c, origine, 0, 50).unwrap_or_else(|e| panic!("list_albums {chiaro}: {e:?}"));
+        recently_added_albums(&c, origine, 12)
+            .unwrap_or_else(|e| panic!("recently_added_albums {chiaro}: {e:?}"));
+        albums_by_artist(&c, origine, "Artista", 0, 50)
+            .unwrap_or_else(|e| panic!("albums_by_artist {chiaro}: {e:?}"));
+        list_artists(&c, origine).unwrap_or_else(|e| panic!("list_artists {chiaro}: {e:?}"));
+        search(&c, origine, "titolo", 0, 50).unwrap_or_else(|e| panic!("search {chiaro}: {e:?}"));
+        search_count(&c, origine, "titolo")
+            .unwrap_or_else(|e| panic!("search_count {chiaro}: {e:?}"));
+        id_della_ricerca(&c, origine, "titolo")
+            .unwrap_or_else(|e| panic!("id_della_ricerca {chiaro}: {e:?}"));
+    }
+    // E i risultati hanno il senso giusto: la riga in grazia non c'è da nessuna parte.
+    let in_grazia: i64 = c
+        .query_row("SELECT id FROM tracks WHERE copia_di = id", [], |r| {
+            r.get(0)
+        })
+        .expect("la riga in grazia");
+    for origine in &origini {
+        let ids = id_dei_brani(&c, origine, TrackOrder::Title).expect("id");
+        assert!(!ids.contains(&in_grazia), "{origine:?}");
+    }
+    // Raggiungibili([altro]): il PC tace, quindi le copie di qui dei brani 1 e 2
+    // (nascoste dietro la flac) tornano, e il brano 3 c'è una volta sola — di qui o
+    // dell'altro dispositivo, non tutte e due.
+    let ids =
+        id_dei_brani(&c, &Origine::Raggiungibili(vec![altro]), TrackOrder::Title).expect("id");
+    let chiavi_dei_brani: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            c.query_row("SELECT track_key FROM tracks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .expect("chiave")
+        })
+        .collect();
+    assert_eq!(
+        chiavi_dei_brani
+            .iter()
+            .filter(|chiave_del_brano| **chiave_del_brano == k(3))
+            .count(),
+        1,
+        "il brano 3 una volta sola: {chiavi_dei_brani:?}"
+    );
+}

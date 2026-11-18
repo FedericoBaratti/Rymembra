@@ -93,6 +93,12 @@ pub(crate) fn giro_con(
     giro_che_puo_fallire(c, dispositivo, righe, adesso).expect("giro")
 }
 
+thread_local! {
+    /// Quanto è durata la `chiudi` dell'ultimo giro di prova, in ms: per le
+    /// misure, che vogliono il tempo della sola transazione di chiusura.
+    pub(crate) static ULTIMA_CHIUSURA_MS: std::cell::Cell<u128> = const { std::cell::Cell::new(0) };
+}
+
 /// Lo stesso giro, **senza** collegare il dispositivo e con l'esito di chi lo
 /// fa: il secchio di un dispositivo dimenticato mentre era in volo.
 pub(crate) fn giro_che_puo_fallire(
@@ -139,7 +145,9 @@ pub(crate) fn giro_che_puo_fallire(
         giro.applica_secchio(c, secchio, buone.righe, adesso)?;
     }
     let conti = giro.conti;
+    let inizio = std::time::Instant::now();
     let chiusura = giro.chiudi(c, &lavoro.da_svuotare, true, 1, adesso)?;
+    ULTIMA_CHIUSURA_MS.with(|ms| ms.set(inizio.elapsed().as_millis()));
     Ok((chiusura, conti))
 }
 
