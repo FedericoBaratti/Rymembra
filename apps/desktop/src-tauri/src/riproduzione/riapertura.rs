@@ -22,7 +22,7 @@ use crate::spegnimento::Emette as _;
 use super::coda::{leggi_il_salvato, riga_delle_latenze, rimetti_il_salvato, riprendi_coda};
 use super::fili::prepara_prossimo;
 use super::{
-    Lettore, StatoLettore, apri_motore, brano_di, con_lettore, manda_stato,
+    Lettore, PASSO_ATTESA, StatoLettore, apri_motore, brano_di, con_lettore, manda_stato,
     manda_stato_con_posizione, riga_dell_uscita, uscita_nel_diario,
 };
 
@@ -765,6 +765,63 @@ fn primo_guasto(app: &tauri::AppHandle, stato: &StatoLettore, err: AppError) {
     app.emetti("riproduzione:errore", errore(err));
 }
 
+/// Quanto un gesto dell'auto o dei tasti aspetta che il primo motore si apra.
+///
+/// Dieci secondi: l'apertura sta in disparte proprio perché un driver piantato
+/// può tenerla fino ai venti di `APERTURA_USCITA`, ma il caso che conta è un
+/// altro — l'auto che si collega a nucleo appena partito, e un «riprendi» che
+/// arriva nei pochi decimi di secondo in cui il lettore è ancora «in apertura».
+/// Oltre i dieci secondi il gesto si lascia cadere con l'errore vero, lo stesso
+/// di sempre: aspettare di più vorrebbe dire una schermata dell'auto ferma.
+pub(crate) const ATTESA_PRIMO_MOTORE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Aspetta che il primo motore si apra: [`ATTESA_PRIMO_MOTORE`] al più.
+///
+/// `true` se il lettore non è più «in apertura» — aperto, o finito nel guasto
+/// vero: sarà il gesto, subito dopo, a dire quale dei due —; `false` se allo
+/// scadere il motore si sta ancora aprendo.
+///
+/// # Perché qui, e perché a parte da `riprendi_ora`
+///
+/// Chi possiede l'apertura è questo modulo, e il difetto era un gesto che
+/// trovava `playback.engineOpening` e lo restituiva come un errore: «non riesce
+/// a suonarlo adesso» sullo schermo dell'auto, per una cosa che si risolve da
+/// sola. Ma l'attesa non può stare dentro `riprendi_ora`: quel nucleo lo
+/// chiamano anche la finestra, che ha il suo filo, e la sessione di «Ascolta
+/// insieme», e le sue prove dicono che la strada si chiede per prima. Chi
+/// aspetta è chi riceve il gesto dal sistema — l'auto, un tasto, la notifica —:
+/// vedi `crate::media::premi`.
+///
+/// Niente lucchetto tenuto fra un controllo e l'altro: si guarda e si lascia, e
+/// si dorme [`PASSO_ATTESA`] come ogni altra attesa del modulo. Il veleno si
+/// recupera, come ovunque qui.
+pub(crate) fn aspetta_il_primo_motore(stato: &StatoLettore) -> bool {
+    aspetta_apertura(&stato.lettore, ATTESA_PRIMO_MOTORE)
+}
+
+/// [`aspetta_il_primo_motore`] sul solo lucchetto, per poterla provare senza
+/// un'applicazione.
+fn aspetta_apertura(
+    lettore: &std::sync::Mutex<Result<Lettore, AppError>>,
+    attesa: std::time::Duration,
+) -> bool {
+    let fino = std::time::Instant::now() + attesa;
+    loop {
+        let si_apre = lettore
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_err_and(|err| err.code().kind() == ErrorCodeKind::PlaybackEngineOpening);
+        if !si_apre {
+            return true;
+        }
+        if std::time::Instant::now() >= fino {
+            return false;
+        }
+        std::thread::sleep(PASSO_ATTESA);
+    }
+}
+
 /// Quanto la riapertura aspetta la libreria per rileggere le latenze.
 ///
 /// Un secondo, e poi si va avanti con quella di prima. Il motore nuovo è già
@@ -1291,6 +1348,91 @@ mod prove {
         assert!(Riaprendo::prendi(&bandiera).is_none());
         drop(prima);
         assert!(!bandiera.load(Ordering::Acquire));
+    }
+
+    // ── l'attesa del primo motore: vedi `aspetta_il_primo_motore` ──
+
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    /// Un lettore che non c'è: «in apertura», o col guasto che dice la ragione.
+    /// Un `Lettore` vero vuole un dispositivo audio, e le prove non ne hanno;
+    /// l'attesa guarda solo da che parte sta il `Result`.
+    fn senza_lettore(errore: ErrorCode) -> Arc<Mutex<Result<Lettore, AppError>>> {
+        Arc::new(Mutex::new(Err(AppError::new(errore))))
+    }
+
+    /// Il difetto: un «riprendi» che arriva mentre il motore si apre trovava
+    /// `playback.engineOpening` e falliva. Adesso aspetta, e riparte appena il
+    /// lettore smette di essere «in apertura».
+    #[test]
+    fn un_gesto_aspetta_il_motore_che_si_apre() {
+        let lettore = senza_lettore(ErrorCode::PlaybackEngineOpening);
+        let altro = Arc::clone(&lettore);
+        let apertura = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            *altro.lock().unwrap() = Err(AppError::new(ErrorCode::PlaybackEngineUnavailable));
+        });
+        let inizio = Instant::now();
+        assert!(
+            aspetta_apertura(&lettore, Duration::from_secs(5)),
+            "l'attesa è finita senza che il motore smettesse di aprirsi"
+        );
+        assert!(
+            inizio.elapsed() >= Duration::from_millis(40),
+            "non ha aspettato: ha risposto prima dell'apertura"
+        );
+        assert!(
+            inizio.elapsed() < Duration::from_secs(2),
+            "ha aspettato oltre l'apertura"
+        );
+        apertura.join().unwrap();
+    }
+
+    /// Un motore che non si apre mai non tiene fermo il gesto per sempre: allo
+    /// scadere si dice `false`, e il gesto sbatte sull'errore vero.
+    #[test]
+    fn l_attesa_ha_una_scadenza() {
+        let lettore = senza_lettore(ErrorCode::PlaybackEngineOpening);
+        let inizio = Instant::now();
+        assert!(!aspetta_apertura(&lettore, Duration::from_millis(80)));
+        let passato = inizio.elapsed();
+        assert!(
+            passato >= Duration::from_millis(80),
+            "è tornata prima della scadenza: {passato:?}"
+        );
+        assert!(
+            passato < Duration::from_secs(2),
+            "è andata ben oltre la scadenza"
+        );
+    }
+
+    /// Un lettore già finito nel guasto — non si è aperto, e lo dice — non si
+    /// aspetta: non diventerà un motore da solo, e il gesto lo racconterà.
+    #[test]
+    fn un_lettore_gia_guasto_non_si_aspetta() {
+        let lettore = senza_lettore(ErrorCode::PlaybackEngineUnavailable);
+        let inizio = Instant::now();
+        assert!(aspetta_apertura(&lettore, Duration::from_secs(5)));
+        assert!(
+            inizio.elapsed() < Duration::from_millis(500),
+            "ha aspettato un guasto che non passa"
+        );
+    }
+
+    /// Il lucchetto avvelenato — un filo caduto a metà — non ferma l'attesa:
+    /// come ovunque nel modulo, il veleno si recupera.
+    #[test]
+    fn il_lucchetto_avvelenato_non_blocca_l_attesa() {
+        let lettore = senza_lettore(ErrorCode::PlaybackEngineUnavailable);
+        let altro = Arc::clone(&lettore);
+        let _ = std::thread::spawn(move || {
+            let _guardia = altro.lock().unwrap();
+            panic!("un filo che cade col lettore in mano");
+        })
+        .join();
+        assert!(lettore.is_poisoned());
+        assert!(aspetta_apertura(&lettore, Duration::from_secs(5)));
     }
 
     // ── la puntina nel solco: vedi `decidi_ripresa` ──
