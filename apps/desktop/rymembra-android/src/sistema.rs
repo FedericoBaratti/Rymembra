@@ -461,6 +461,7 @@ struct Sottofondo<'a> {
     acceso: bool,
     collegati: &'a [String],
     dalla_persona: bool,
+    parti_con_auto: bool,
 }
 
 /// Accende, o spegne, il servizio in primo piano di «Resta attiva in
@@ -472,19 +473,41 @@ struct Sottofondo<'a> {
 /// uno «Spegni» della notifica non ancora arrivato al nucleo, e al primo
 /// «acceso» chiede le notifiche.
 ///
+/// `parti_con_auto` è «Parti con l'auto» com'è adesso: ogni chiamata la porta,
+/// perché il servizio la ricorda da quel che gli si dice, e una chiamata che la
+/// tacesse — l'interruttore del sottofondo, per dire — la spegnerebbe fino al
+/// giro dopo. Vale solo col sottofondo acceso.
+///
 /// # Errori
 ///
 /// Se il ponte non risponde. Un servizio che il sistema non lascia partire
 /// dallo sfondo non è un errore: riparte quando l'app torna in vista.
-pub fn sottofondo(acceso: bool, collegati: &[String], dalla_persona: bool) -> Result<(), Errore> {
+pub fn sottofondo(
+    acceso: bool,
+    collegati: &[String],
+    dalla_persona: bool,
+    parti_con_auto: bool,
+) -> Result<(), Errore> {
     chiama(
         "sistema.sottofondo",
         &Sottofondo {
             acceso,
             collegati,
             dalla_persona,
+            parti_con_auto,
         },
     )
+}
+
+/// Se questa build offre «Parti con l'auto»: la costante di build
+/// `PARTENZA_CON_AUTO`, che la variante per Google Play mette a falso. Non cambia
+/// mai nella vita del processo; non aspetta niente.
+///
+/// # Errori
+///
+/// Se il ponte non risponde.
+pub fn partenza_con_auto_offerta() -> Result<bool, Errore> {
+    chiama("sistema.partenzaConAuto", &())
 }
 
 /// Se «Spegni» è stato premuto sulla notifica del sottofondo e il nucleo non
@@ -699,13 +722,15 @@ mod prove {
 
     #[test]
     fn il_sottofondo_parla_a_kotlin_con_i_nomi_che_kotlin_legge() {
-        // `Ponte.kt` legge `acceso`, `collegati` e `dallaPersona`: un nome
-        // scritto in un altro modo da questo lato non dà un errore, dà un
-        // `JSONException` sul telefono.
+        // `Ponte.kt` legge `acceso`, `collegati`, `dallaPersona` e
+        // `partiConAuto`: un nome scritto in un altro modo da questo lato non
+        // dà un errore, dà un `JSONException` sul telefono — o peggio, per
+        // `optBoolean`, un `false` muto che spegne «Parti con l'auto».
         let a = serde_json::to_value(Sottofondo {
             acceso: true,
             collegati: &["PC di casa".to_owned(), "Studio".to_owned()],
             dalla_persona: true,
+            parti_con_auto: true,
         })
         .unwrap();
         assert_eq!(
@@ -714,6 +739,7 @@ mod prove {
                 "acceso": true,
                 "collegati": ["PC di casa", "Studio"],
                 "dallaPersona": true,
+                "partiConAuto": true,
             })
         );
     }
@@ -721,7 +747,8 @@ mod prove {
     #[test]
     fn fuori_da_android_il_ponte_dice_che_non_c_e() {
         for esito in [
-            sottofondo(true, &[], false).err(),
+            sottofondo(true, &[], false, false).err(),
+            partenza_con_auto_offerta().err(),
             sottofondo_spento_dalla_notifica().err(),
             senza_risparmio_batteria().err(),
             apri_risparmio_batteria().err(),

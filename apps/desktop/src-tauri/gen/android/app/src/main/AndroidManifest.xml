@@ -209,6 +209,23 @@
             android:foregroundServiceType="connectedDevice"
             android:exported="false" />
 
+        <!-- Il tasto play di una cuffia o dell'auto, e la scheda di ripresa del
+             sistema, che riaccendono la musica quando l'app non suona. Spento
+             di serie: a nucleo spento il play farebbe nascere il servizio della
+             musica in primo piano senza che niente suoni, e Android chiude
+             l'app. Lo accende `Presenza` (`setComponentEnabledSetting`) solo
+             con «Resta attiva in sottofondo» acceso, e anche allora non parte
+             niente se il nucleo non c'è (vedi `RicevitoreTasti`). Esportato
+             perché a mandare il tasto è il sistema. -->
+        <receiver
+            android:name=".RicevitoreTasti"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
         <!-- Le copertine per l'auto e la schermata di blocco, che stanno in un
              altro processo e un file privato non lo aprono. Esportato e senza
              permesso perché a chiederle è il sistema; serve solo i file della

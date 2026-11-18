@@ -323,6 +323,7 @@ fn niente_di_insieme_viaggia_nel_profilo() {
 fn il_sottofondo_del_telefono_resta_qui_e_il_manifesto_lo_dichiara() {
     let mut c = libreria();
     crate::dispositivi::sottofondo(&c, true).expect("acceso");
+    crate::dispositivi::parti_con_auto(&c, true).expect("acceso anche l'auto");
     let raccolto = raccogli(
         &mut c,
         "qui",
@@ -345,11 +346,27 @@ fn il_sottofondo_del_telefono_resta_qui_e_il_manifesto_lo_dichiara() {
             .contains(&crate::dispositivi::CHIAVE_SOTTOFONDO.to_owned()),
         "e il profilo dice che l'ha lasciato qui"
     );
+    // «Parti con l'auto» è dello stesso genere, e di più: un profilo portato su
+    // un altro telefono farebbe partire la musica da sola all'auto di un altro.
+    assert!(
+        !raccolto
+            .preferenze
+            .voci
+            .contains_key(crate::dispositivi::CHIAVE_PARTI_CON_AUTO),
+        "«Parti con l'auto» non entra nel profilo"
+    );
+    assert!(
+        raccolto
+            .lasciate
+            .contains(&crate::dispositivi::CHIAVE_PARTI_CON_AUTO.to_owned()),
+        "e il profilo dice che l'ha lasciata qui"
+    );
     assert!(
         super::FUORI
             .iter()
-            .any(|riga| riga.contains("sottofondo del telefono")),
-        "il manifesto dice che il sottofondo è rimasto fuori, e perché"
+            .any(|riga| riga.contains("sottofondo del telefono")
+                && riga.contains("«Parti con l'auto»")),
+        "il manifesto dice che il sottofondo e la partenza con l'auto sono rimasti fuori, e perché"
     );
 }
 

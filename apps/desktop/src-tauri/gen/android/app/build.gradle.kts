@@ -57,6 +57,20 @@ android {
         targetSdk = 37
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        // «Parti con l'auto»: quando l'auto si collega, Rymembra riprende da
+        // sola la coda salvata, al posto dell'ultima app usata. È spenta di
+        // serie e solo l'utente la accende, ma le linee guida di qualità di
+        // Google per le app multimediali delle auto — `MA-1`, «The app must not
+        // autoplay on startup or without user initiated action to select the
+        // app or app media» (developer.android.com/docs/quality-guidelines/car-app-quality)
+        // — e la pagina «Enable playback controls» («Your app mustn't
+        // automatically start playing music when Android Automotive OS or
+        // Android Auto connect to the media browser service») dicono il
+        // contrario, e la revisione di Play può contestarla. Questa è l'**unica**
+        // costante che la toglie: Kotlin la legge (`Presenza`, `Ponte`) e la passa
+        // alla finestra, che dove è falsa non disegna l'interruttore. La variante
+        // per Play la mette a `false`; quella di GitHub resta com'è.
+        buildConfigField("boolean", "PARTENZA_CON_AUTO", "true")
     }
     buildTypes {
         getByName("debug") {
@@ -167,6 +181,13 @@ dependencies {
     // la musica a schermo spento. Vedi `Sessione.kt`.
     implementation("androidx.media3:media3-session:1.8.0")
     implementation("androidx.media3:media3-common:1.8.0")
+    // «Parti con l'auto»: `CarConnection`, che dice se il telefono è in
+    // un'auto con Android Auto (`CONNECTION_TYPE_PROJECTION`). Solo quella
+    // classe, via `Presenza.kt`: Rymembra non è un'app «per auto» della Car App
+    // Library, e la sua sessione resta quella di Media3. Apache-2.0 (vedi
+    // `THIRD-PARTY-NOTICES.md`). La 1.7.0 è l'ultima stabile (la 1.8.0 è in
+    // release candidate); il suo `minSdk` è 21, il nostro 26.
+    implementation("androidx.car.app:app:1.7.0")
     // «Collega un dispositivo»: la fotocamera per il QR mostrato dal PC
     // (CameraX), e la sua lettura (ZXing core, Apache-2.0: niente Play
     // Services, che un telefono senza Google non ha). Vedi `ScansioneQr.kt`.

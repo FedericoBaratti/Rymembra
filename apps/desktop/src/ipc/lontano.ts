@@ -91,6 +91,19 @@ export interface StatoLontano {
   datiMobili: DatiMobili;
   /** «Resta attiva in sottofondo» (solo il telefono): il servizio che tiene il nodo acceso. */
   sottofondo: boolean;
+  /**
+   * «Parti con l'auto» (solo il telefono): quando l'auto si collega, Rymembra
+   * riprende da sola la coda salvata. Si accende solo col sottofondo acceso, e
+   * con lui si spegne.
+   */
+  partiConAuto: boolean;
+  /**
+   * Questa build offre «Parti con l'auto». Falso dove la costante di build
+   * `PARTENZA_CON_AUTO` lo toglie — la variante per Google Play, che chiede alle
+   * app per l'auto di non partire da sole — e sul computer: lì la riga non si
+   * disegna.
+   */
+  partenzaConAuto: boolean;
   /** Perché il nodo non si accende: la chiave del testo. */
   errore: string | null;
   dispositivi: DispositivoLontano[];

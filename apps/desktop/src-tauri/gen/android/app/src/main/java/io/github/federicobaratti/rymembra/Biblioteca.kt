@@ -95,13 +95,16 @@ class Biblioteca(private val contesto: Context) : MediaLibrarySession.Callback {
   ): ListenableFuture<LibraryResult<MediaItem>> {
     // «L'ultima cosa suonata»: un albero di una voce sola, per chi lo chiede.
     //
-    // La scheda di ripresa delle impostazioni rapide non arriva fin qui: Media3
-    // la concede solo alle app che dichiarano un `MediaButtonReceiver`, e
-    // Rymembra non lo dichiara apposta. Il ricevitore fa nascere il servizio in
-    // primo piano dal tasto play, e Android lo chiude se entro pochi secondi
-    // non suona niente — ma a nucleo spento non può suonare niente, e Android
-    // non lascia aprire l'attività che lo accenderebbe (vedi `Nucleo`). Una
-    // scheda il cui play fa cadere l'app è peggio di nessuna scheda.
+    // La scheda di ripresa delle impostazioni rapide arriva fin qui solo se
+    // Media3 trova un `MediaButtonReceiver` **abilitato**: `RicevitoreTasti`
+    // c'è nel manifesto, ma lo accende `Presenza` soltanto con «Resta attiva in
+    // sottofondo» acceso. Il ricevitore fa nascere il servizio in primo piano
+    // dal tasto play, e Android lo chiude se entro pochi secondi non suona
+    // niente: col sottofondo il processo c'è, e con lui il nucleo che suona;
+    // a sottofondo spento il nucleo non c'è, e Android non lascia aprire
+    // l'attività che lo accenderebbe (vedi `Nucleo`). Una scheda il cui play
+    // fa cadere l'app è peggio di nessuna scheda: a sottofondo spento il
+    // ricevitore resta spento, e questo ramo non lo chiede nessuno.
     if (params?.isRecent == true) {
       return Futures.immediateFuture(
         LibraryResult.ofItem(cartella(RECENTE, contesto.getString(R.string.auto_recenti)), params)

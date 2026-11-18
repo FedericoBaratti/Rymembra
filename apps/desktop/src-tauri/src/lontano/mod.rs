@@ -399,16 +399,52 @@ pub async fn lontano_sottofondo(app: AppHandle, attivo: bool) -> Esito<StatoLont
         // La scelta più recente vince: un «Spegni» della notifica non ancora
         // scritto non disfa quel che la persona ha appena deciso.
         comune(&app)?.spegnere.store(false, Ordering::Release);
-        scrivi_in_libreria(&app, |c| dispositivi::sottofondo(c, attivo))?;
+        // La scelta dell'auto si rilegge dopo la scrittura: spegnere il
+        // sottofondo spegne anche lei, e il servizio deve sentirlo da qui — se
+        // gli si dicesse quella di prima, resterebbe a guardare l'auto fino al
+        // giro dopo.
+        let parti_con_auto = scrivi_in_libreria(&app, |c| {
+            dispositivi::sottofondo(c, attivo)?;
+            Ok(dispositivi::impostazioni(c)?.parti_con_auto)
+        })?;
         // Subito, e non al giro del filo: la persona vuole vedere la notifica
         // — o sentirla andare — adesso, e al primo «acceso» le si chiedono le
         // notifiche. Il filo poi dice al servizio a chi si è collegati.
-        rymembra_android::sistema::sottofondo(attivo, &[], true).map_err(|err| {
-            AppError::new(ErrorCode::InternalUnexpected {
-                detail: Some("servizio del sottofondo".to_owned()),
-            })
-            .with_cause(err.to_string())
-        })?;
+        rymembra_android::sistema::sottofondo(attivo, &[], true, attivo && parti_con_auto)
+            .map_err(|err| {
+                AppError::new(ErrorCode::InternalUnexpected {
+                    detail: Some("servizio del sottofondo".to_owned()),
+                })
+                .with_cause(err.to_string())
+            })?;
+        rileggi_e_aspetta(&app)
+    })
+    .await;
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, attivo);
+        Err(errore(AppError::new(ErrorCode::InternalAborted {
+            what: Some("solo su Android".to_owned()),
+        })))
+    }
+}
+
+/// «Parti con l'auto» (solo il telefono): quando l'auto si collega, Rymembra
+/// riprende da sola la coda salvata, al posto dell'ultima app usata.
+///
+/// Si accende solo col sottofondo acceso — `internal.aborted` se è spento: la
+/// finestra non lo permette, e arrivarci vuol dire che si è spento un istante
+/// prima — e con lui si spegne (`dispositivi::sottofondo`). Dove la build non
+/// la offre (la variante per Google Play) non è un comando che la finestra
+/// chiami: la riga non c'è. Il servizio lo sa dal filo del collegamento, a
+/// questo giro, ed è `rileggi_e_aspetta` che lo aspetta.
+///
+/// Fuori da Android è `internal.aborted`: la finestra non lo chiama.
+#[tauri::command]
+pub async fn lontano_parti_con_auto(app: AppHandle, attivo: bool) -> Esito<StatoLontanoIpc> {
+    #[cfg(target_os = "android")]
+    return in_disparte(move || {
+        scrivi_in_libreria(&app, |c| dispositivi::parti_con_auto(c, attivo))?;
         rileggi_e_aspetta(&app)
     })
     .await;

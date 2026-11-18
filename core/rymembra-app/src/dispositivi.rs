@@ -100,6 +100,16 @@ pub const CHIAVE_DATI_MOBILI: &str = "lontano.dati_mobili";
 /// altro accenderebbe da sé un servizio sempre in primo piano.
 pub const CHIAVE_SOTTOFONDO: &str = "daemon.attivo";
 
+/// L'interruttore «Parti con l'auto» del telefono: quando l'auto si collega,
+/// Rymembra riprende da sola la coda salvata, al posto dell'ultima app usata.
+///
+/// Fuori dal profilo e dal backup, e più forte di `daemon.attivo`: è un fatto
+/// **di questo telefono e dell'auto in cui lo si collega**, e portarlo su un
+/// altro farebbe partire la musica da sola in un'auto di un altro. Spenta di
+/// serie, funziona solo col sottofondo acceso — è il suo servizio a guardare
+/// quando l'auto si collega — e col sottofondo si spegne: vedi [`sottofondo`].
+pub const CHIAVE_PARTI_CON_AUTO: &str = "daemon.auto";
+
 /// Il relay più lungo che si accetta: un indirizzo, non un testo.
 pub const MASSIMO_RELAY: usize = 300;
 
@@ -132,6 +142,9 @@ pub struct Impostazioni {
     /// dormire. Spento di serie, e **indipendente** da `attivo`: non
     /// accende la porta verso internet, che è un sì a parte.
     pub sottofondo: bool,
+    /// «Parti con l'auto» (solo sul telefono): spenta di serie, vera solo
+    /// insieme al sottofondo.
+    pub parti_con_auto: bool,
 }
 
 /// Le impostazioni. Un valore illeggibile vale quello di serie: è
@@ -155,21 +168,55 @@ pub fn impostazioni(connection: &Connection) -> Result<Impostazioni, AppError> {
         .ok()
         .flatten()
         .unwrap_or(false);
+    let parti_con_auto = crate::settings::read_json::<bool>(connection, CHIAVE_PARTI_CON_AUTO)
+        .ok()
+        .flatten()
+        .unwrap_or(false);
     Ok(Impostazioni {
         attivo,
         relay,
         dati_mobili,
         sottofondo,
+        parti_con_auto,
     })
 }
 
 /// Accende o spegne «Resta attiva in sottofondo».
 ///
+/// Spegnerlo spegne anche «Parti con l'auto», e riaccenderlo non la
+/// riaccende: era un sì per un servizio che c'era, e far partire la musica da
+/// sola all'auto è una scelta che si rifà. Prima si scrive lei, poi lui: se la
+/// seconda scrittura cade, il sottofondo resta acceso e la partenza spenta, che
+/// è la direzione prudente.
+///
 /// # Errori
 ///
 /// Quelli del database.
 pub fn sottofondo(connection: &Connection, acceso: bool) -> Result<(), AppError> {
+    if !acceso {
+        crate::settings::write_json(connection, CHIAVE_PARTI_CON_AUTO, &false)?;
+    }
     crate::settings::write_json(connection, CHIAVE_SOTTOFONDO, &acceso)
+}
+
+/// Accende o spegne «Parti con l'auto».
+///
+/// Accenderla vuole il sottofondo acceso: senza il suo servizio nessuno guarda
+/// quando l'auto si collega, e un «sì» muto direbbe una cosa non vera. Spegnerla
+/// si può sempre.
+///
+/// # Errori
+///
+/// `internal.aborted` se si accende col sottofondo spento — la finestra non lo
+/// permette, e arrivarci vuol dire che il sottofondo si è spento un istante
+/// prima —; quelli del database.
+pub fn parti_con_auto(connection: &Connection, acceso: bool) -> Result<(), AppError> {
+    if acceso && !impostazioni(connection)?.sottofondo {
+        return Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("«Parti con l'auto» senza il sottofondo".to_owned()),
+        }));
+    }
+    crate::settings::write_json(connection, CHIAVE_PARTI_CON_AUTO, &acceso)
 }
 
 /// Accende o spegne «Raggiungibile da internet».
@@ -894,6 +941,41 @@ mod prove {
         // in primo piano non si accende per un'impostazione che non si legge.
         crate::settings::write(c, CHIAVE_SOTTOFONDO, "{").unwrap();
         assert!(!impostazioni(c).unwrap().sottofondo);
+    }
+
+    #[test]
+    fn parti_con_l_auto_e_spento_di_serie_serve_il_sottofondo_e_con_lui_si_spegne() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        assert!(!impostazioni(c).unwrap().parti_con_auto, "spenta di serie");
+
+        // Senza il sottofondo non si accende, e lo si dice: nessuno guarderebbe
+        // l'auto, e un «sì» muto direbbe una cosa che non è vera.
+        assert!(parti_con_auto(c, true).is_err());
+        assert!(!impostazioni(c).unwrap().parti_con_auto);
+
+        sottofondo(c, true).unwrap();
+        parti_con_auto(c, true).unwrap();
+        let accesa = impostazioni(c).unwrap();
+        assert!(accesa.parti_con_auto && accesa.sottofondo);
+
+        // Spenta da sola, il sottofondo resta com'è.
+        parti_con_auto(c, false).unwrap();
+        let sola = impostazioni(c).unwrap();
+        assert!(!sola.parti_con_auto && sola.sottofondo);
+
+        // Col sottofondo si spegne anche lei, e riaccenderlo non la riaccende:
+        // il sì era per un servizio che c'era, e ripartire con l'auto da soli
+        // è una scelta che si rifà.
+        parti_con_auto(c, true).unwrap();
+        sottofondo(c, false).unwrap();
+        assert!(!impostazioni(c).unwrap().parti_con_auto);
+        sottofondo(c, true).unwrap();
+        assert!(!impostazioni(c).unwrap().parti_con_auto);
+
+        // Un valore illeggibile vale spento: la scelta prudente.
+        crate::settings::write(c, CHIAVE_PARTI_CON_AUTO, "{").unwrap();
+        assert!(!impostazioni(c).unwrap().parti_con_auto);
     }
 
     #[test]

@@ -291,6 +291,7 @@ pub(crate) fn premi(app: &tauri::AppHandle, gesto: Gesto) {
     let corsie = media.tasti.get_or_init(|| {
         let mano = app.clone();
         let chi_suona = app.clone();
+        let chi_aspetta = app.clone();
         let corsie = avvia_corsie(
             move |gesto| {
                 let _ = crate::stato::sorvegliato(FILO_TASTI, || esegui(&mano, gesto));
@@ -299,6 +300,20 @@ pub(crate) fn premi(app: &tauri::AppHandle, gesto: Gesto) {
                 chi_suona
                     .try_state::<StatoLettore>()
                     .is_some_and(|stato| crate::riproduzione::suona_adesso(&stato))
+            },
+            move |gesto| {
+                if !vuole_il_motore(gesto) {
+                    return;
+                }
+                let Some(stato) = chi_aspetta.try_state::<StatoLettore>() else {
+                    return;
+                };
+                // Il motore non si è aperto entro l'attesa: il gesto prosegue
+                // lo stesso, e dice lui l'errore vero. Una riga, perché sullo
+                // schermo dell'auto l'errore è una frase sola.
+                if !crate::riproduzione::aspetta_il_primo_motore(&stato) {
+                    nota!("[media] un gesto ha aspettato il primo motore e non si è aperto");
+                }
             },
         );
         if corsie.is_none() {
@@ -312,6 +327,20 @@ pub(crate) fn premi(app: &tauri::AppHandle, gesto: Gesto) {
     // quindici secondi su un «successivo» dalla rete (R23-10).
     if !corsie.as_ref().is_some_and(|corsie| corsie.manda(gesto)) {
         nota!("[media] un tasto si è perso: i fili dei tasti non ci sono");
+    }
+}
+
+/// Il gesto ha bisogno del motore audio: se si sta ancora aprendo, aspetta.
+///
+/// Tutti tranne la pausa — che non ha niente da fermare, e sta nella corsia che
+/// non aspetta — e il «mi piace» dell'auto, che scrive nella libreria e non
+/// tocca il lettore. Vedi [`crate::riproduzione::aspetta_il_primo_motore`].
+fn vuole_il_motore(gesto: &Gesto) -> bool {
+    match gesto {
+        Gesto::Pausa => false,
+        #[cfg(mobile)]
+        Gesto::Auto(crate::auto::GestoAuto::Piace { .. }) => false,
+        _ => true,
     }
 }
 
@@ -361,7 +390,21 @@ impl Corsie {
 }
 
 /// Fa partire i fili delle corsie. `esegui` fa il gesto; `suona` dice se la
-/// musica sta andando, per «alterna». `None` se un filo non parte.
+/// musica sta andando, per «alterna»; `aspetta` è l'attesa del motore audio che
+/// si sta ancora aprendo, che ogni gesto in fila fa **prima** del suo turno.
+/// `None` se un filo non parte.
+///
+/// # Perché l'attesa sta fuori dal turno
+///
+/// Un «riprendi» che arriva mentre il primo motore si apre — l'auto che si
+/// collega a nucleo appena partito — aspetta fino a dieci secondi invece di
+/// fallire (vedi [`crate::riproduzione::aspetta_il_primo_motore`]). Se
+/// aspettasse col turno in mano, la pausa — che sta nella corsia veloce e prende
+/// lo stesso turno — resterebbe ferma lo stesso tempo: le cuffie staccate, o il
+/// tasto pausa dell'auto, partirebbero dopo la ripresa, e la musica comincerebbe
+/// proprio mentre li si è fermati (R23-3). Aspettando fuori, una pausa arrivata
+/// nel frattempo alza il numero del turno, e la ripresa — già in fila con un
+/// numero più basso — non si esegue: vince l'ultimo tasto premuto.
 ///
 /// # Perché due corsie
 ///
@@ -388,6 +431,7 @@ impl Corsie {
 fn avvia_corsie(
     esegui: impl Fn(Gesto) + Send + Sync + 'static,
     suona: impl Fn() -> bool + Send + 'static,
+    aspetta: impl Fn(&Gesto) + Send + 'static,
 ) -> Option<Corsie> {
     let esegui = Arc::new(esegui);
     // Il numero dell'ultima pausa fatta dalla corsia veloce, e il turno fra
@@ -402,6 +446,8 @@ fn avvia_corsie(
             .name(FILO_TASTI.to_owned())
             .spawn(move || {
                 for (numero, gesto) in in_fila {
+                    // Fuori dal turno: vedi sopra, «Perché l'attesa sta fuori».
+                    aspetta(&gesto);
                     if !matches!(gesto, Gesto::Riprendi | Gesto::Alterna) {
                         esegui(gesto);
                         continue;
@@ -559,6 +605,15 @@ mod prove {
     /// fermo — un brano che si apre da un NAS che dorme — finché la prova non
     /// lo lascia andare.
     fn banco(suona: bool) -> (Corsie, Receiver<&'static str>, Sender<()>) {
+        banco_con(suona, |_| {})
+    }
+
+    /// Come [`banco`], con l'attesa del motore che l'avvio vero fa prima del
+    /// turno di ogni gesto in fila.
+    fn banco_con(
+        suona: bool,
+        aspetta_il_motore: impl Fn(&Gesto) + Send + 'static,
+    ) -> (Corsie, Receiver<&'static str>, Sender<()>) {
         let (annota, annotati) = std::sync::mpsc::channel();
         let (lascia, aspetta) = std::sync::mpsc::channel::<()>();
         let aspetta = Mutex::new(aspetta);
@@ -582,9 +637,130 @@ mod prove {
                 let _ = annota.send(nome);
             },
             move || suona,
+            aspetta_il_motore,
         )
         .expect("i fili delle corsie partono");
         (corsie, annotati, lascia)
+    }
+
+    /// L'attesa del motore di una prova: sul «riprendi» annota che comincia e
+    /// resta ferma finché la prova non la lascia andare; ogni altro gesto passa.
+    fn attesa_sul_riprendi() -> (
+        impl Fn(&Gesto) + Send + 'static,
+        Receiver<&'static str>,
+        Sender<()>,
+    ) {
+        let (annota, annotati) = std::sync::mpsc::channel();
+        let (lascia, aspetta) = std::sync::mpsc::channel::<()>();
+        let aspetta = Mutex::new(aspetta);
+        let attesa = move |gesto: &Gesto| {
+            if matches!(gesto, Gesto::Riprendi) {
+                let _ = annota.send("motore:aspetta");
+                let _ = aspetta
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .recv_timeout(ENTRO);
+                let _ = annota.send("motore:aperto");
+            }
+        };
+        (attesa, annotati, lascia)
+    }
+
+    /// Il difetto di Android Auto: un «riprendi» che arriva mentre il primo
+    /// motore si apre falliva. Adesso aspetta l'apertura, e solo dopo si
+    /// esegue: mai prima.
+    #[test]
+    fn un_riprendi_aspetta_il_motore_che_si_apre_e_poi_parte() {
+        let (attesa, motore, apri) = attesa_sul_riprendi();
+        let (corsie, annotati, _) = banco_con(false, attesa);
+        assert!(corsie.manda(Gesto::Riprendi));
+        assert_eq!(motore.recv_timeout(ENTRO), Ok("motore:aspetta"));
+        assert!(
+            annotati.try_recv().is_err(),
+            "il «riprendi» si è eseguito mentre il motore si apriva"
+        );
+        let _ = apri.send(());
+        assert_eq!(motore.recv_timeout(ENTRO), Ok("motore:aperto"));
+        assert_eq!(
+            annotati.recv_timeout(ENTRO),
+            Ok("riprendi"),
+            "il «riprendi» non è ripartito all'apertura"
+        );
+    }
+
+    /// L'attesa del motore non tiene il turno: una pausa premuta mentre il
+    /// «riprendi» aspetta passa subito — il filo della pausa non resta ad
+    /// aspettare —, e il «riprendi» superato non parte quando il motore si
+    /// apre: vince l'ultimo tasto premuto (R23-3).
+    #[test]
+    fn una_pausa_durante_l_attesa_del_motore_annulla_la_ripresa() {
+        let (attesa, motore, apri) = attesa_sul_riprendi();
+        let (corsie, annotati, _) = banco_con(true, attesa);
+        assert!(corsie.manda(Gesto::Riprendi));
+        assert_eq!(motore.recv_timeout(ENTRO), Ok("motore:aspetta"));
+        assert!(corsie.manda(Gesto::Pausa));
+        assert_eq!(
+            annotati.recv_timeout(ENTRO),
+            Ok("pausa"),
+            "la pausa ha aspettato che il motore si aprisse"
+        );
+        let _ = apri.send(());
+        assert_eq!(motore.recv_timeout(ENTRO), Ok("motore:aperto"));
+        // Un gesto dopo, per sapere che il filo in fila ha finito col
+        // «riprendi»: se fosse stato eseguito, starebbe prima di questo.
+        assert!(corsie.manda(Gesto::Precedente));
+        assert_eq!(
+            annotati.recv_timeout(ENTRO),
+            Ok("precedente"),
+            "il «riprendi» superato dalla pausa è partito all'apertura del motore"
+        );
+    }
+
+    /// Chi aspetta il motore è chi lo vuole: la pausa e il cuore dell'auto no.
+    #[test]
+    fn solo_i_gesti_che_toccano_il_motore_lo_aspettano() {
+        assert!(!vuole_il_motore(&Gesto::Pausa));
+        for gesto in [
+            Gesto::Riprendi,
+            Gesto::Alterna,
+            Gesto::Prossimo,
+            Gesto::Precedente,
+            Gesto::VaiA(1_000),
+        ] {
+            assert!(vuole_il_motore(&gesto), "{gesto:?}");
+        }
+    }
+
+    /// L'ordine dentro `avvia_corsie`: l'attesa viene **prima** del turno. Se
+    /// scivolasse dopo, la pausa resterebbe ferma per dieci secondi.
+    #[test]
+    fn l_attesa_del_motore_sta_prima_del_turno() {
+        let sorgente = include_str!("mod.rs");
+        let sorgente = sorgente
+            .split("#[cfg(test)]\nmod prove")
+            .next()
+            .unwrap_or(sorgente);
+        let corpo = sorgente
+            .split("fn avvia_corsie(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        let attesa = corpo.find("aspetta(&gesto)");
+        let turno = corpo.find("ultima_pausa.lock()");
+        assert!(
+            attesa.is_some() && attesa < turno,
+            "avvia_corsie non aspetta il motore prima di prendere il turno"
+        );
+        // E il filo che chiama `premi` lo collega davvero all'attesa vera.
+        let premi = sorgente
+            .split("pub(crate) fn premi(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        assert!(
+            premi.contains("aspetta_il_primo_motore(&stato)"),
+            "premi non collega i gesti all'attesa del primo motore"
+        );
     }
 
     /// R23-3: una pausa da un tasto non aspetta un «successivo» lento.

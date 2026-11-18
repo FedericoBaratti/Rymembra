@@ -43,7 +43,7 @@
  * uno che ne attribuisce uno solo lascia scoperto l'altro.
  *
  * Le librerie Kotlin e Java che Gradle mette nell'APK — AndroidX, CameraX,
- * Media3, ZXing — e le icone delle schede di Android Auto non passano da
+ * Media3, la Car App Library, ZXing — e le icone delle schede di Android Auto non passano da
  * `cargo` né da `npm`: le dice un paragrafo scritto qui sotto, da aggiornare
  * quando cambia `gen/android/app/build.gradle.kts`.
  *
@@ -313,7 +313,9 @@ function main() {
     "`activity-ktx`, `lifecycle-process`), **CameraX** (`camera-camera2`,",
     "`camera-lifecycle`, `camera-view`: the QR scanner that links a device),",
     "**Media3** (`media3-session` and `media3-common`: the player service, its",
-    "notification and Android Auto), **ZXing** (`core`: reading the QR code),",
+    "notification and Android Auto), the **Car App Library** (`app`: only",
+    "`CarConnection`, to know when the phone is connected to Android Auto),",
+    "**ZXing** (`core`: reading the QR code),",
     "**Material Components for Android** and the **Kotlin standard library**.",
     "All of them are under **Apache-2.0**, whose text is below; their sources",
     "are at <https://android.googlesource.com/platform/frameworks/support>,",

@@ -5,9 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.net.Uri
@@ -18,6 +20,11 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import androidx.car.app.connection.CarConnection
+import androidx.lifecycle.Observer
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
@@ -77,6 +84,30 @@ import java.util.concurrent.TimeUnit
  * solo se cambia la frase. «Spegni» sulla notifica fa da sé quel che può — ferma
  * il servizio e ricorda la scelta — e la dice al nucleo alla prima occasione
  * ([prendiLoSpegnimentoDellaNotifica]), che la scrive nelle impostazioni.
+ *
+ * # Il ricevitore dei tasti
+ *
+ * Il sottofondo acceso accende anche [RicevitoreTasti] (vedi [ricevitoreTasti]):
+ * il play di una cuffia o dell'auto, e la scheda di ripresa del sistema, che
+ * riaccendono la musica quando l'app non suona. Spento il sottofondo si spegne
+ * anche lui, e torna la ragione per cui non c'era: a nucleo spento il tasto
+ * farebbe cadere l'app.
+ *
+ * # «Parti con l'auto»
+ *
+ * Spenta di serie, e solo col sottofondo acceso: è questo servizio a guardare
+ * `CarConnection(…).type` (Car App Library, `androidx.car.app`), e
+ * `CONNECTION_TYPE_PROJECTION` è Android Auto. Quando l'auto **diventa**
+ * collegata — la prima notizia è solo un punto di partenza — e c'è un brano
+ * ricordato, si chiede il fuoco audio e si manda il gesto «riprendi»: la
+ * stessa strada del tasto play, e la musica riparte dalla coda salvata, al
+ * posto dell'ultima app usata. Il Bluetooth dell'auto non si guarda.
+ *
+ * Google Play, per le app multimediali delle auto, chiede di non partire da
+ * sole (`MA-1`, «The app must not autoplay on startup or without user
+ * initiated action to select the app or app media»): una sola costante di
+ * build, `PARTENZA_CON_AUTO`, toglie la funzione dalla variante che esce là.
+ * Dove è falsa nessuno osserva l'auto e la scelta non esiste.
  */
 class Presenza : Service() {
   override fun onBind(intent: Intent?): IBinder? = null
@@ -89,8 +120,10 @@ class Presenza : Service() {
       preferenze(this)
         .edit()
         .putBoolean(VOLUTO, false)
+        .putBoolean(PARTI_CON_AUTO, false)
         .putBoolean(SPENTO_DALLA_NOTIFICA, true)
         .commit()
+      ricevitoreTasti(this, false)
       ferma()
       return START_NOT_STICKY
     }
@@ -120,10 +153,12 @@ class Presenza : Service() {
       ferma()
       return START_NOT_STICKY
     }
+    guardaLAuto()
     return START_STICKY
   }
 
   override fun onDestroy() {
+    smettiDiGuardareLAuto()
     if (vivo === this) {
       vivo = null
       mostrata = null
@@ -136,6 +171,110 @@ class Presenza : Service() {
     stopSelf()
   }
 
+  // ── «Parti con l'auto» ─────────────────────────────────────────────────────
+  //
+  // Tutto sul filo principale: il servizio ci vive, e `LiveData.observeForever`
+  // lo pretende.
+
+  /** Chi guarda l'auto, e a cosa: vedi [guardaLAuto]. */
+  private var collegamentoAuto: CarConnection? = null
+  private var osservatoreAuto: Observer<Int>? = null
+
+  /**
+   * L'auto era collegata all'ultima notizia, o `null` se non è ancora arrivata
+   * nessuna. La prima notizia è un punto di partenza e non fa partire niente:
+   * accendere la scelta con l'auto già collegata, o far risorgere il servizio
+   * dentro l'auto, non deve far suonare il telefono senza che nessuno abbia
+   * fatto niente. Parte solo chi vede l'auto **diventare** collegata.
+   */
+  private var autoCollegata: Boolean? = null
+
+  /**
+   * Il controllore con cui Presenza tiene in piedi la sessione della musica
+   * mentre l'auto è collegata: senza di lui nessuno è collegato a
+   * [ServizioMusica] (l'attività, che di solito lo fa, non c'è), la sessione
+   * non esiste, e l'auto non troverebbe Rymembra anche se la musica suona.
+   */
+  private var sessione: ListenableFuture<MediaController>? = null
+
+  /**
+   * Guarda se l'auto si collega, se serve: sottofondo acceso, «Parti con
+   * l'auto» accesa e una build che la offre. Si chiama a ogni cambio di questi,
+   * ed è idempotente. Fuori da qui nessuno osserva niente: spenta la scelta, il
+   * telefono non sa se è in un'auto.
+   */
+  private fun guardaLAuto() {
+    val serve = voluto(this) && partiConAuto(this)
+    if (serve && osservatoreAuto == null) {
+      autoCollegata = null
+      val osservatore = Observer<Int> { tipo ->
+        cambioDiAuto(tipo == CarConnection.CONNECTION_TYPE_PROJECTION)
+      }
+      osservatoreAuto = osservatore
+      collegamentoAuto = CarConnection(this).also { it.type.observeForever(osservatore) }
+    } else if (!serve && osservatoreAuto != null) {
+      smettiDiGuardareLAuto()
+    }
+  }
+
+  private fun smettiDiGuardareLAuto() {
+    osservatoreAuto?.let { collegamentoAuto?.type?.removeObserver(it) }
+    osservatoreAuto = null
+    collegamentoAuto = null
+    autoCollegata = null
+    rilasciaLaSessione()
+  }
+
+  /** `CONNECTION_TYPE_PROJECTION` è Android Auto: tutto il resto è «non collegata». */
+  private fun cambioDiAuto(collegata: Boolean) {
+    val prima = autoCollegata
+    autoCollegata = collegata
+    if (!collegata) {
+      rilasciaLaSessione()
+      return
+    }
+    if (prima == false) riprendiConLAuto()
+  }
+
+  /**
+   * L'auto si è collegata: se c'è qualcosa da riprendere, riparte. Il fuoco
+   * audio si chiede **prima** — se un'altra app lo tiene e non lo cede, non si
+   * parte — e poi il gesto è lo stesso del tasto play, per la stessa strada:
+   * la musica la fa Rust, e il fuoco già preso lo trova la sessione quando
+   * arriva la scheda che dice «suona».
+   *
+   * Senza il nucleo non c'è niente da riprendere, e dallo sfondo non si può
+   * aprire l'attività che lo accenderebbe: si scrive nel logcat e basta.
+   */
+  private fun riprendiConLAuto() {
+    val perche = when {
+      !Nucleo.pronto -> "il nucleo non c'è"
+      Sessione.suonaOra -> "Rymembra suona già"
+      Ricordo.voce(this) == null -> "non c'è un brano ricordato"
+      else -> null
+    }
+    if (perche != null) {
+      Log.i(ETICHETTA, "«Parti con l'auto» non parte: $perche")
+      return
+    }
+    if (sessione == null) {
+      sessione = MediaController.Builder(
+        this,
+        SessionToken(this, ComponentName(this, ServizioMusica::class.java)),
+      ).buildAsync()
+    }
+    if (!Sessione.fuocoPerPartire(this)) {
+      Log.i(ETICHETTA, "«Parti con l'auto» non parte: il fuoco audio non è stato concesso")
+      return
+    }
+    Sessione.gesto("riprendi")
+  }
+
+  private fun rilasciaLaSessione() {
+    sessione?.let { MediaController.releaseFuture(it) }
+    sessione = null
+  }
+
   companion object {
     private const val ETICHETTA = "Rymembra"
     private const val ID = 7433
@@ -146,6 +285,13 @@ class Presenza : Service() {
 
     /** Il sottofondo è acceso, secondo l'ultimo ordine del nucleo. */
     private const val VOLUTO = "voluto"
+
+    /**
+     * «Parti con l'auto» è accesa, secondo l'ultimo ordine del nucleo. Vera
+     * solo insieme a [VOLUTO]: lo scrive [imposta] così, e «Spegni» la porta
+     * giù con lui.
+     */
+    private const val PARTI_CON_AUTO = "partiConAuto"
 
     /** «Spegni» sulla notifica, e il nucleo non lo sa ancora. */
     private const val SPENTO_DALLA_NOTIFICA = "spentoDallaNotifica"
@@ -164,6 +310,9 @@ class Presenza : Service() {
     /** Android ha detto di no a un avvio dallo sfondo: si riprova con l'app in vista. */
     @Volatile private var rifiutato = false
 
+    /** L'ultimo valore di «Parti con l'auto» detto al servizio: lo si dice di nuovo solo se cambia. */
+    @Volatile private var guardaAuto = false
+
     private fun preferenze(contesto: Context): SharedPreferences =
       contesto.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -174,17 +323,36 @@ class Presenza : Service() {
     fun voluto(contesto: Context): Boolean = preferenze(contesto).getBoolean(VOLUTO, false)
 
     /**
-     * Acceso o spento, e a chi si è collegati. Il nucleo lo dice a ogni giro:
-     * se il servizio c'è basta rifare la notifica, e solo se la frase cambia.
-     * Non lancia mai.
+     * «Parti con l'auto» è accesa **e** questa build la offre. La costante di
+     * build `PARTENZA_CON_AUTO` è l'unico punto che la toglie: la variante per
+     * Google Play, che chiede alle app per l'auto di non partire da sole, la
+     * mette a falso, e da lì in giù — la scelta, l'osservazione dell'auto, la
+     * riga nelle impostazioni — la funzione non esiste.
+     */
+    fun partiConAuto(contesto: Context): Boolean =
+      BuildConfig.PARTENZA_CON_AUTO && preferenze(contesto).getBoolean(PARTI_CON_AUTO, false)
+
+    /**
+     * Acceso o spento, a chi si è collegati, e se «Parti con l'auto» è
+     * accesa. Il nucleo lo dice a ogni giro: se il servizio c'è basta rifare la
+     * notifica, e solo se la frase cambia. Non lancia mai.
      *
      * `dallaPersona` è l'interruttore delle impostazioni, e non il giro:
      * annulla uno «Spegni» che il nucleo non ha ancora ricevuto — la scelta
      * più recente vince — e chiede le notifiche, perché è lì che chi lo accende
      * sa perché arriva la domanda. Il giro invece non rimette in piedi quel
      * che «Spegni» ha appena fermato.
+     *
+     * `partiConAuto` vale solo col sottofondo acceso, qualunque cosa dica il
+     * chiamante: il servizio è l'unico che guarda l'auto.
      */
-    fun imposta(contesto: Context, acceso: Boolean, collegati: List<String>, dallaPersona: Boolean) {
+    fun imposta(
+      contesto: Context,
+      acceso: Boolean,
+      collegati: List<String>,
+      dallaPersona: Boolean,
+      partiConAuto: Boolean,
+    ) {
       val app = contesto.applicationContext
       val p = preferenze(app)
       if (dallaPersona) {
@@ -192,12 +360,18 @@ class Presenza : Service() {
       } else if (acceso && p.getBoolean(SPENTO_DALLA_NOTIFICA, false)) {
         return
       }
-      p.edit().putBoolean(VOLUTO, acceso).apply()
+      val guardare = acceso && partiConAuto
+      p.edit().putBoolean(VOLUTO, acceso).putBoolean(PARTI_CON_AUTO, guardare).apply()
+      ricevitoreTasti(app, acceso)
       this.collegati = collegati
       if (acceso) {
         val servizio = vivo
         if (servizio != null) {
           aggiornaLaNotifica(app)
+          if (guardare != guardaAuto) {
+            guardaAuto = guardare
+            Handler(Looper.getMainLooper()).post { servizio.guardaLAuto() }
+          }
           return
         }
         // Dopo un no di Android, dallo sfondo non si riprova a ogni giro del
@@ -210,10 +384,35 @@ class Presenza : Service() {
           rifiutato = true
         }
       } else {
+        guardaAuto = false
         // Solo se è partito: fermarlo prima del suo `startForeground` farebbe
         // chiudere l'app. Se non è ancora partito, si ferma da sé appena parte.
         val servizio = vivo ?: return
         Handler(Looper.getMainLooper()).post { servizio.ferma() }
+      }
+    }
+
+    /**
+     * Accende o spegne il ricevitore dei tasti multimediali ([RicevitoreTasti]):
+     * acceso solo col sottofondo, perché a nucleo spento un tasto play farebbe
+     * nascere il servizio della musica senza che niente suoni, e Android
+     * chiuderebbe l'app. Lo stato di serie è quello del manifesto, spento.
+     *
+     * Idempotente, e si chiama a ogni giro del nucleo: il sistema si cambia
+     * solo se lo stato è diverso. Con `DONT_KILL_APP`: senza, il processo — e
+     * con lui il nucleo — morirebbe a ogni cambio. Non lancia mai.
+     */
+    private fun ricevitoreTasti(contesto: Context, acceso: Boolean) {
+      try {
+        val gestore = contesto.packageManager
+        val nome = ComponentName(contesto, RicevitoreTasti::class.java)
+        val voluto =
+          if (acceso) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+          else PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+        if (gestore.getComponentEnabledSetting(nome) == voluto) return
+        gestore.setComponentEnabledSetting(nome, voluto, PackageManager.DONT_KILL_APP)
+      } catch (e: Exception) {
+        Log.w(ETICHETTA, "il ricevitore dei tasti non cambia stato", e)
       }
     }
 
