@@ -418,8 +418,11 @@ a longer listening history than the public API offers.
   row, an album, an artist page or a selection, copies them to this device
   (from 50 tracks it asks first). The artist’s name in Now playing opens a page
   with the albums, all the tracks (those with no album too) and the
-  appearances on other artists’ albums. Nothing of another device enters the
-  profile, the Drive backup, sync, an exported playlist or a scrobble; what
+  appearances on other artists’ albums. The rows of another device, their
+  statistics and their covers do not enter the profile, the Drive backup, sync, an
+  exported playlist or a scrobble; a playlist that contains one carries only the
+  track’s key, and the one thing that does reach a profile you export is the text
+  of a song fetched from that device, which sits with the other lyrics. What
   stays is in [`PRIVACY.md`](PRIVACY.md) § 4-ter and § 4-quinquies. A device
   that has not updated to this version cannot show its music here.
 - **Start with Windows, and the tray.** *Settings › Startup and closing* has a

@@ -357,10 +357,11 @@ procedure that hands everything to `DefWindowProcW`) — and `src/jvm.rs` in
 `rymembra-android`, where the two pointers `tao` hands over become `jni`
 objects. The list is in the comments of both `Cargo.toml` files and of the
 workspace root; WinRT calls of the `windows` crate are safe and need none.
-Start with Windows writes `HKCU\…\Run\Rymembra` and
-`HKCU\…\Explorer\StartupApproved\Run\Rymembra` only: it never overrides a
-“turned off” that Windows recorded, and a test copy with a data folder of its
-own never writes them.
+Start with Windows writes one value, `HKCU\…\Run\Rymembra`, and only reads and
+deletes `HKCU\…\Explorer\StartupApproved\Run\Rymembra`, which is Windows’ to
+write when you turn the entry off in Task Manager: it never overrides a “turned
+off” that Windows recorded, and a test copy with a data folder of its own never
+writes either.
 
 **Untrusted input.** A `.ryskin` skin is a zip archive somebody sends you, and
 so is the Spotify GDPR export. `rymembra-skin::package` has explicit ceilings —

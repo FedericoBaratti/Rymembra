@@ -111,7 +111,7 @@ device that has not updated is under Known limits.
   Search and playlists as ordinary rows, each with the icon of the device it
   lives on, and “Browse <device>” is gone. The first time Rymembra reads the
   device’s catalog — a strip says “Reading the library of “<PC>”… 12,000/50,000”
-  — and after that only what changed. Nothing is copied to this device until you
+  — and after that only what changed. No audio file is copied to this device until you
   ask; a device whose version cannot send its catalog says “Update Rymembra on
   “<name>” to see its music”.
   - **A filter, not a page.** “All · This device · <name>” sits above Albums,
@@ -315,8 +315,8 @@ device that has not updated is under Known limits.
   the app window had it. See “New — Android Auto”.
 - **A “resume” from Android Auto, the notification or a media key** that arrives
   while the audio engine is still opening, right after Rymembra starts, waits
-  for it — up to ten seconds — instead of failing with “can’t play it right
-  now”. A pause pressed meanwhile is not held back and cancels the pending
+  for it — up to ten seconds — instead of failing with “Rymembra can’t play
+  that right now”. A pause pressed meanwhile is not held back and cancels the pending
   resume.
 
 ### Security
@@ -328,12 +328,17 @@ device that has not updated is under Known limits.
   an older build is never sent one, and answers the old ones as before. The
   answering side serves only devices that are still linked, and checks that on
   every question, not only when the connection opens.
-- **What is shared did not grow**: only files in watched local and network
-  folders — never cloud folders, catalog tracks, a path, or the rows of another
-  device. Those rows are not shared onward, not in the profile, the Drive
-  backup, sync, playlist files or scrobbles, and a restore or an account import
-  no longer writes statistics onto them. A playlist that contains one carries
-  only the track’s key.
+- **Which tracks are shared did not change** — only files in watched local and
+  network folders, never cloud folders, catalog tracks, a path, or the rows of
+  another device — though what a device now sends for each of them, and what the
+  other keeps, is more: genre, album artist, when it was added and last played,
+  codec, bitrate, sample rate, a content key, the MusicBrainz ids and the times
+  of the last heart and rating (PRIVACY § 4-quinquies lists them). Those rows
+  are not shared onward, not in the profile, the Drive backup, sync, playlist
+  files or scrobbles, and a restore or an account import no longer writes
+  statistics onto them. A playlist that contains one carries only the track’s
+  key. The one exception is the text of a song fetched from the owner, which
+  sits in the lyrics table and so goes into a profile you export.
 - **Writes from another device**: `Valuta` and `TestoScrivi` act only on tracks
   the answering device shares (never cloud, catalog or a third device’s tracks),
   and count together against a limit of 60 writes a minute for each device.

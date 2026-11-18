@@ -62,9 +62,10 @@ Everything Rymembra knows about you:
   duration, year, track number, genre, play count, like and rating, when it was
   added and last played, codec, bitrate, sample rate, file size and date, a key
   for the content and the MusicBrainz identifiers, but never a path (§
-  4-quinquies) — the listens of their tracks made here, and the hearts,
-  ratings and lyric corrections you gave their tracks, all waiting to be
-  delivered (for 30 days at most), and the lyrics you fetched from them. A
+  4-quinquies) — the listens of their tracks made here, waiting to be
+  delivered, the hearts, ratings and lyric corrections you gave their tracks,
+  also waiting (an outbox that keeps each for 30 days at most), and the lyrics
+  you fetched from them. A
   track that a device stops sharing stays hidden for seven days in case it comes
   back, then leaves; “Forget” removes the whole catalog of that device at once.
   In the local application data folder (`%LOCALAPPDATA%` on Windows), while a
