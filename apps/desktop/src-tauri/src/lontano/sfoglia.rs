@@ -468,8 +468,9 @@ fn manda_a(app: &AppHandle, comune: &Comune, chiave: &str) -> bool {
 // la loro impronta (`specchio::copertina_di_una_riga`). La cartella
 // `copertine-lontane` serve adesso alle copertine delle voci di una sessione di
 // «Ascolta insieme» (`insieme/su_file.rs`) — che Android serve da una seconda
-// radice, `Copertine.kt` — e a ripulire quel che una versione di prima, con
-// «Sfoglia», vi aveva lasciato: una cartella per dispositivo.
+// radice, `Copertine.kt` — e basta: quel che una versione di prima, con
+// «Sfoglia», vi aveva lasciato si toglie una volta all'avvio
+// ([`ripulisci_le_copertine_di_prima`]).
 
 /// Dove stanno le copertine lontane: accanto alla cache dei brani del cloud,
 /// e per la stessa ragione fuori dai dati che vanno in giro coi profili. La
@@ -507,6 +508,105 @@ fn togli_la_cartella_di(cartella: &Path, dispositivo: &str) -> bool {
             false
         }
     }
+}
+
+/// Quel che [`ripulisci_la_cartella`] ha tolto.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Ripulita {
+    /// I file piatti.
+    file: usize,
+    /// Le cartelle intere, coi loro file.
+    cartelle: usize,
+}
+
+/// Una volta per processo, **all'avvio**: toglie da `copertine-lontane` quel che
+/// le versioni di prima vi hanno lasciato e che adesso non serve a nessuno.
+///
+/// La cartella aveva una cache con la sua potatura, per le copertine di
+/// «Sfoglia». Con la libreria unica quelle copertine stanno nello store, la
+/// potatura è andata, e nessuno toglieva più i file piatti
+/// `<dispositivo>-<impronta>.jpg` della 3.2.1 (fino a 50 MiB), né le cartelle
+/// `<dispositivo>/` della versione dopo, né la cartella di zeri — le copertine di
+/// una sessione di «Ascolta insieme» — rimasta da un processo morto a metà
+/// sessione (`insieme/su_file.rs`). All'avvio non può esserci una sessione, e
+/// vale comunque la domanda: con una in corso non si tocca niente
+/// ([`si_ripulisce`]).
+///
+/// Va su un filo suo, per non fermare l'avvio: sono pochi file, ma su un disco
+/// lento sono secondi.
+pub(crate) fn ripulisci_le_copertine_di_prima(app: &AppHandle) {
+    let sessione_in_corso = crate::insieme::ruolo(app) != crate::insieme::Ruolo::Fuori;
+    if !si_ripulisce(sessione_in_corso, &RIPULITA) {
+        return;
+    }
+    let Some(cartella) = cartella_copertine(app) else {
+        return;
+    };
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        let ripulita = ripulisci_la_cartella(&cartella);
+        if ripulita != Ripulita::default() {
+            nota!(
+                "[lontano] copertine lontane di una versione di prima tolte: {} file, {} cartelle",
+                ripulita.file,
+                ripulita.cartelle
+            );
+        }
+    }));
+}
+
+/// Se [`ripulisci_le_copertine_di_prima`] ha già fatto, o ha rinunciato.
+static RIPULITA: AtomicBool = AtomicBool::new(false);
+
+/// Si ripulisce adesso? Una volta per processo, e mai con una sessione in corso:
+/// con una sessione non si segna nemmeno fatta, e la prima occasione senza la
+/// farà. Pura, per provarla senza un'applicazione.
+fn si_ripulisce(sessione_in_corso: bool, fatta: &AtomicBool) -> bool {
+    !sessione_in_corso && !fatta.swap(true, Ordering::AcqRel)
+}
+
+/// [`ripulisci_le_copertine_di_prima`] dentro `cartella`.
+///
+/// Toglie **solo** quel che una versione di Rymembra ci ha messo: i file piatti
+/// `.jpg` e `.part` — `<dispositivo>-<impronta>.jpg`, `<impronta>.jpg` — e le
+/// cartelle col nome di una chiave di dispositivo (64 cifre esadecimali
+/// minuscole: quelle dei dispositivi, e quella di zeri delle sessioni). Quel che
+/// ha un altro nome resta com'è, e i collegamenti simbolici non si seguono né si
+/// toccano: `file_type` non li risolve. Fuori da `cartella` non si esce mai: i
+/// nomi sono quelli letti qui, non composti da fuori.
+///
+/// Una cartella che non c'è non è un guasto. Un file che non si toglie — su
+/// Windows, tenuto aperto da qualcuno — si dice nel diario e resta: alla prossima.
+fn ripulisci_la_cartella(cartella: &Path) -> Ripulita {
+    let mut ripulita = Ripulita::default();
+    let Ok(voci) = std::fs::read_dir(cartella) else {
+        return ripulita;
+    };
+    for voce in voci.filter_map(Result::ok) {
+        let Ok(tipo) = voce.file_type() else {
+            continue;
+        };
+        let nome = voce.file_name();
+        let nome = nome.to_string_lossy();
+        let da_togliere = if tipo.is_file() {
+            nome.ends_with(".jpg") || nome.ends_with(".part")
+        } else {
+            tipo.is_dir() && e_una_chiave(&nome)
+        };
+        if !da_togliere {
+            continue;
+        }
+        let esito = if tipo.is_file() {
+            std::fs::remove_file(voce.path())
+        } else {
+            std::fs::remove_dir_all(voce.path())
+        };
+        match esito {
+            Ok(()) if tipo.is_file() => ripulita.file = ripulita.file.saturating_add(1),
+            Ok(()) => ripulita.cartelle = ripulita.cartelle.saturating_add(1),
+            Err(err) => nota!("[lontano] una copertina lontana di prima non si toglie: {err}"),
+        }
+    }
+    ripulita
 }
 
 #[cfg(test)]
@@ -696,5 +796,119 @@ mod prove {
         }
         assert!(cartella.join(&b).exists());
         let _ = std::fs::remove_dir_all(&cartella);
+    }
+
+    /// FR2: la cartella `copertine-lontane` non si pota più — la potatura c'era
+    /// per le copertine di «Sfoglia» — e quel che le versioni di prima vi hanno
+    /// lasciato resta: i file piatti `<dispositivo>-<impronta>.jpg`, le cartelle
+    /// `<dispositivo>/` (le copertine delle righe di un altro dispositivo stanno
+    /// nello store), e la cartella di zeri delle sessioni di un processo morto.
+    /// Si toglie una volta all'avvio, e solo quello: niente di quel che sta fuori
+    /// dalla cartella, e niente di quel che nessuna versione ci ha mai messo.
+    #[test]
+    fn la_cartella_delle_copertine_lontane_si_ripulisce_di_quel_che_ci_hanno_lasciato() {
+        let fuori = tempfile::tempdir().unwrap();
+        let cartella = fuori.path().join("copertine-lontane");
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        let zeri = "0".repeat(64);
+        let impronta = "0123456789abcdef";
+        // Quel che c'era: i file piatti di tre forme, le cartelle di due dispositivi, e
+        // quella di zeri con una copertina di sessione e un `.part` a metà.
+        std::fs::create_dir_all(&cartella).unwrap();
+        for nome in [
+            format!("{a}-{impronta}.jpg"),
+            format!("{impronta}.jpg"),
+            format!("{b}-{impronta}.part"),
+        ] {
+            std::fs::write(cartella.join(nome), b"x").unwrap();
+        }
+        for dispositivo in [&a, &b, &zeri] {
+            let dentro = cartella.join(dispositivo);
+            std::fs::create_dir_all(&dentro).unwrap();
+            std::fs::write(dentro.join(format!("{impronta}.jpg")), b"x").unwrap();
+        }
+        std::fs::write(cartella.join(&zeri).join("abc.part"), b"x").unwrap();
+        // Quel che nessuna versione ci ha messo, e che non è nostro da togliere.
+        std::fs::write(cartella.join("appunti.txt"), b"x").unwrap();
+        std::fs::create_dir_all(cartella.join("una-cartella")).unwrap();
+        std::fs::write(cartella.join("una-cartella").join("dentro.jpg"), b"x").unwrap();
+        let quasi = "c".repeat(63);
+        std::fs::create_dir_all(cartella.join(&quasi)).unwrap();
+        std::fs::write(cartella.join(&quasi).join("dentro.jpg"), b"x").unwrap();
+        // E fuori dalla cartella, accanto a lei e dentro un'altra.
+        std::fs::write(fuori.path().join("copertine.jpg"), b"x").unwrap();
+        std::fs::create_dir_all(fuori.path().join("altra")).unwrap();
+        std::fs::write(
+            fuori
+                .path()
+                .join("altra")
+                .join(format!("{a}-{impronta}.jpg")),
+            b"x",
+        )
+        .unwrap();
+
+        let ripulita = ripulisci_la_cartella(&cartella);
+        assert_eq!(
+            ripulita,
+            Ripulita {
+                file: 3,
+                cartelle: 3
+            }
+        );
+
+        let rimasti: std::collections::BTreeSet<String> = std::fs::read_dir(&cartella)
+            .unwrap()
+            .map(|v| v.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            rimasti,
+            [
+                "appunti.txt".to_owned(),
+                "una-cartella".to_owned(),
+                quasi.clone()
+            ]
+            .into_iter()
+            .collect(),
+            "resta quel che nessuna versione ci ha messo"
+        );
+        assert!(cartella.join("una-cartella").join("dentro.jpg").exists());
+        assert!(cartella.join(&quasi).join("dentro.jpg").exists());
+        assert!(
+            fuori.path().join("copertine.jpg").exists(),
+            "fuori non si tocca"
+        );
+        assert!(
+            fuori
+                .path()
+                .join("altra")
+                .join(format!("{a}-{impronta}.jpg"))
+                .exists(),
+            "nemmeno un'altra cartella"
+        );
+
+        // Una seconda volta non trova più niente, e una cartella che non c'è non è un guasto.
+        assert_eq!(ripulisci_la_cartella(&cartella), Ripulita::default());
+        assert_eq!(
+            ripulisci_la_cartella(&fuori.path().join("non-c-e")),
+            Ripulita::default()
+        );
+    }
+
+    /// FR2: una volta per processo, e mai con una sessione in corso — le
+    /// copertine di «Ascolta insieme» stanno proprio in quella cartella.
+    #[test]
+    fn la_pulizia_si_fa_una_volta_e_non_con_una_sessione_in_corso() {
+        let fatta = AtomicBool::new(false);
+        assert!(
+            !si_ripulisce(true, &fatta),
+            "con una sessione non si tocca niente"
+        );
+        assert!(
+            !fatta.load(Ordering::Acquire),
+            "e non si segna fatta: la prima occasione senza sessione la fa"
+        );
+        assert!(si_ripulisce(false, &fatta), "la prima volta sì");
+        assert!(!si_ripulisce(false, &fatta), "poi più");
+        assert!(!si_ripulisce(true, &fatta));
     }
 }

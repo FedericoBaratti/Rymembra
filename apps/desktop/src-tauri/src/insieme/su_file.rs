@@ -33,10 +33,9 @@
 //!
 //! Alla fine della sessione ([`svuota`]), con la memoria: una copertina di un
 //! altro PC non deve restare sul telefono dopo che l'ascolto è finito. Se il
-//! processo muore a metà restano i file, e vanno via alla fine della sessione
-//! dopo. Non li pota nessun altro: la potatura della cache delle copertine
-//! lontane (`lontano::sfoglia::pota`) c'era per le copertine di «Sfoglia», ed è
-//! andata con loro.
+//! processo muore a metà restano i file, e vanno via all'avvio dopo
+//! (`lontano::sfoglia::ripulisci_le_copertine_di_prima`, che toglie la cartella
+//! di zeri se nessuna sessione è in corso) o alla fine della sessione dopo.
 
 use std::path::{Path, PathBuf};
 
@@ -111,8 +110,8 @@ pub(super) fn scrivi_se_manca(
 /// riservata, e niente altro. Le cartelle dei dispositivi collegati restano.
 ///
 /// Una cartella che non c'è non è un guasto. Un file che non si toglie — un
-/// lettore che lo tiene aperto, su Windows — resta, e se ne va alla fine della
-/// sessione dopo: lo si scrive nel diario, una volta per chiamata.
+/// lettore che lo tiene aperto, su Windows — resta, e se ne va all'avvio dopo o
+/// alla fine della sessione dopo: lo si scrive nel diario, una volta per chiamata.
 pub(super) fn svuota(cache: &Path) {
     match std::fs::remove_dir_all(cache.join(CARTELLA)) {
         Ok(()) => {}
