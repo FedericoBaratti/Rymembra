@@ -248,12 +248,16 @@ test("CarConnection viene dalla Car App Library stabile, con la sua voce negli a
 });
 
 test("una sola costante di build toglie «Parti con l'auto», di serie accesa, e Kotlin la passa alla finestra", () => {
-  const costanti = [...GRADLE.matchAll(/buildConfigField\("boolean", "PARTENZA_CON_AUTO", "(true|false)"\)/g)];
-  assert.equal(costanti.length, 1, "la costante dev'essere dichiarata una volta sola (la variante per Play la riscrive)");
-  assert.equal(costanti[0]?.[1], "true");
-  // Nel `defaultConfig`, dove la variante per Play la sovrascrive.
+  // Di serie, nel `defaultConfig`, una volta sola e vera. La variante per Play
+  // (F9) la riscrive nel suo `productFlavors`: lì, e solo lì, con `"false"`.
   const config = /defaultConfig \{([\s\S]*?)\n    \}/.exec(GRADLE)?.[1] ?? "";
-  assert.ok(config.includes("PARTENZA_CON_AUTO"), "la costante non sta nel defaultConfig");
+  const diSerie = [...config.matchAll(/buildConfigField\("boolean", "PARTENZA_CON_AUTO", "(true|false)"\)/g)];
+  assert.equal(diSerie.length, 1, "la costante dev'essere dichiarata una volta sola nel defaultConfig");
+  assert.equal(diSerie[0]?.[1], "true", "di serie la funzione c'è: la toglie solo la variante per Play");
+  const tutte = [...GRADLE.matchAll(/buildConfigField\("boolean", "PARTENZA_CON_AUTO", "(true|false)"\)/g)];
+  for (const altra of tutte.slice(1)) {
+    assert.equal(altra[1], "false", "fuori dal defaultConfig la costante può solo togliere la funzione");
+  }
   assert.match(GRADLE, /buildConfig = true/);
   // La guida e la ragione stanno scritte accanto: le linee guida di Google.
   assert.match(GRADLE, /MA-1/);
