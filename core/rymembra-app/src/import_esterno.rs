@@ -288,6 +288,7 @@ fn run(
                 .map(|a| (a.indice, a.track_id))
                 .collect::<Vec<_>>(),
         )?;
+        seppellisci_le_tolte(&tx, fatta.id, &fatta.solo_specchio_di_prima)?;
     }
 
     // Gli identificativi esterni sui brani ritrovati. È qui che l'innesto di
@@ -507,6 +508,38 @@ pub(crate) struct Preparata {
     /// Il nome della playlist che c'era già con quel nome e che si è lasciata
     /// com'era: la nuova le sta accanto (D-11).
     pub accanto_a: Option<String>,
+    /// Se è stata sostituita: le chiavi delle sue voci il cui brano qui c'era
+    /// solo come riga specchio, com'erano prima dello svuotamento. Servono a
+    /// [`seppellisci_le_tolte`].
+    pub solo_specchio_di_prima: Vec<String>,
+}
+
+/// A riempimento finito: la lapide delle voci di un brano di un altro
+/// dispositivo che la sostituzione ha tolto e che non sono tornate
+/// ([`Preparata::solo_specchio_di_prima`]).
+///
+/// Una sostituzione è un gesto dell'utente, e per queste voci la lapide non
+/// può essere dedotta dalla differenza (vedi
+/// [`crate::sincronia::seppellisci_le_voci_tolte`]). Dopo il riempimento e non
+/// prima, così una playlist reimportata uguale non lascia una lapide e una
+/// voce nuova per ogni brano del PC. Un `&[String]` e non la `Preparata`
+/// intera: chi chiama ne ha già spostato dei campi.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la scrittura fallisce.
+pub(crate) fn seppellisci_le_tolte(
+    tx: &Transaction<'_>,
+    playlist_id: i64,
+    solo_specchio_di_prima: &[String],
+) -> Result<(), AppError> {
+    crate::sincronia::seppellisci_le_voci_tolte(
+        tx,
+        playlist_id,
+        solo_specchio_di_prima,
+        now_ms(),
+    )
+    .map(|_| ())
 }
 
 /// Come si chiama una fonte nel nome di una playlist messa accanto a un'altra:
@@ -625,6 +658,9 @@ pub(crate) fn prepara_playlist_escludendo(
             if let Some((fonte, letti, attesi)) = troncatura {
                 return Err(AppError::new(monco(fonte, letti, attesi)));
             }
+            // Prima dello svuotamento: dopo non si saprebbe più quali voci
+            // stavano su una riga specchio.
+            let solo_specchio_di_prima = crate::sincronia::voci_solo_specchio(tx, id)?;
             crate::playlists::svuota_per_riscrivere(tx, id)?;
             rinomina_se_libero(tx, id, &nome, &chiave)?;
             crate::playlists::segna_provenienza(tx, id, provenienza)?;
@@ -639,6 +675,7 @@ pub(crate) fn prepara_playlist_escludendo(
                 creata: false,
                 sostituita: true,
                 accanto_a: None,
+                solo_specchio_di_prima,
             })
         }
         Destinazione::Nuova { nome, accanto_a } => {
@@ -650,6 +687,7 @@ pub(crate) fn prepara_playlist_escludendo(
                 creata: true,
                 sostituita: false,
                 accanto_a,
+                solo_specchio_di_prima: Vec::new(),
             })
         }
     }
@@ -1678,6 +1716,60 @@ mod prove {
             1,
             "e soprattutto non deve aver cancellato niente"
         );
+    }
+
+    #[test]
+    fn reimportare_toglie_con_la_lapide_le_voci_dei_brani_di_un_altro_dispositivo() {
+        // La sostituzione del contenuto è un gesto dell'utente. Una voce di un
+        // brano che qui c'è solo come riga specchio (il brano di un altro
+        // dispositivo) non ha una lapide deducibile dalla differenza fra le
+        // tabelle: la scrive la sostituzione, dopo il riempimento, e solo per
+        // quel che è uscito. Il brano di qui, che la sostituzione rimette, non
+        // lascia niente.
+        use crate::specchio::comuni::{ADESSO, chiave, giro, id_specchio, pubblicata, riga};
+        let mut db = database();
+        aggiungi(&db, "Grateful Dead", "Scarlet Begonias", "Cornell", 600_000);
+        let c = contenuto_catalogo(vec![brano(
+            "Grateful Dead",
+            "Scarlet Begonias",
+            "Cornell",
+            600_000,
+        )]);
+        let Ok(prima) = import(&mut db, &c, true) else {
+            panic!("la prima importazione deve riuscire");
+        };
+        let Some(id) = prima.playlist_id else {
+            panic!("la playlist c'è");
+        };
+        let nome: String = db
+            .query_row("SELECT playlist_key FROM playlists WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .expect("la chiave");
+        giro(&db, &chiave('a'), &[riga(5)], ADESSO);
+        let remoto = id_specchio(&db, 'a', 5);
+        let Ok(_) = crate::playlists::add_tracks(&mut db, id, &[remoto]) else {
+            panic!("la voce del brano remoto si deve aggiungere");
+        };
+        let Ok(_) = crate::sincronia::allinea(&mut db, "telefono", 1_000) else {
+            panic!("l'allineamento deve riuscire");
+        };
+        assert_eq!(pubblicata(&db, &nome).1, 0, "il punto di partenza");
+
+        let Ok(dopo) = import(&mut db, &c, true) else {
+            panic!("la reimportazione deve riuscire");
+        };
+        assert!(dopo.playlist_replaced, "è una sostituzione");
+        let Ok(_) = crate::sincronia::allinea(&mut db, "telefono", 2_000) else {
+            panic!("l'allineamento deve riuscire");
+        };
+        let (vive, tolte) = pubblicata(&db, &nome);
+        assert_eq!(tolte, 1, "la voce del brano remoto tolta è una lapide");
+        assert!(
+            !vive.contains(&riga(5).track_key),
+            "e non è più viva: {vive:?}"
+        );
+        assert_eq!(vive.len(), 1, "resta il brano di qui: {vive:?}");
     }
 
     #[test]

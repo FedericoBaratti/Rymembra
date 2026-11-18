@@ -27,12 +27,17 @@
 
 pub mod archivio;
 #[cfg(test)]
+#[path = "specchio/prove_comuni.rs"]
 pub(crate) mod comuni;
 pub mod convalida;
 pub mod doppioni;
 #[cfg(test)]
+#[path = "specchio/prove_gesti.rs"]
+mod gesti;
+#[cfg(test)]
 mod invarianti;
 #[cfg(test)]
+#[path = "specchio/prove_revisione.rs"]
 mod revisione;
 pub mod scelta;
 pub mod valutazioni;

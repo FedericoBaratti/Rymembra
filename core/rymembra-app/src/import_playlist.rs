@@ -339,6 +339,7 @@ pub fn scrivi(
     rapporto.replaced = fatta.sostituita;
     rapporto.beside = fatta.accanto_a;
     crate::playlists::riscrivi_ordine(&tx, id, &ordine)?;
+    crate::import_esterno::seppellisci_le_tolte(&tx, id, &fatta.solo_specchio_di_prima)?;
 
     if commit {
         tx.commit()
@@ -1136,6 +1137,35 @@ mod prove {
             crate::playlists::list(&c).expect("elenco").is_empty(),
             "il database dopo un piano deve essere intatto"
         );
+    }
+
+    #[test]
+    fn reimportare_toglie_con_la_lapide_le_voci_dei_brani_di_un_altro_dispositivo() {
+        // La sostituzione da un file è un gesto dell'utente: una voce di un brano
+        // che qui c'è solo come riga specchio (il brano di un altro dispositivo,
+        // finita nella playlist per la sincronia) ha la sua lapide scritta dal
+        // gesto, e solo lei — il brano di qui, che il file rimette, non ne lascia.
+        use crate::specchio::comuni::{ADESSO, chiave, giro, id_specchio, pubblicata, riga};
+        let mut c = libreria();
+        let letta = PlaylistLetta {
+            nome: None,
+            voci: vec![voce("C:\\Musica\\Bjork\\01 Joga.flac", None, None)],
+            illeggibili: 0,
+        };
+        let prima = import(&mut c, &letta, "Serata", None).expect("prima");
+        let id = prima.playlist_id.expect("creata");
+        giro(&c, &chiave('a'), &[riga(5)], ADESSO);
+        let remoto = id_specchio(&c, 'a', 5);
+        crate::playlists::add_tracks(&mut c, id, &[remoto]).expect("brano del PC");
+        crate::sincronia::allinea(&mut c, "telefono", 1_000).expect("allineamento");
+        assert_eq!(pubblicata(&c, "serata").1, 0, "il punto di partenza");
+
+        let dopo = import(&mut c, &letta, "Serata", None).expect("seconda");
+        assert!(dopo.replaced);
+        crate::sincronia::allinea(&mut c, "telefono", 2_000).expect("allineamento");
+        let (vive, tolte) = pubblicata(&c, "serata");
+        assert_eq!(tolte, 1, "la voce del brano remoto è una lapide");
+        assert_eq!(vive, vec!["k1".to_owned()], "resta il brano di qui");
     }
 
     #[test]

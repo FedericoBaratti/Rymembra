@@ -477,12 +477,20 @@ fn allinea_sequenze(
         Ricordo::Nessuno | Ricordo::Illeggibile => &nessuno,
     };
 
-    // Da non seppellire: quelli che qui non ci sono, quelli che erano assenti
-    // all'ultimo allineamento e adesso ci sono (da agganciare), e — se la
-    // memoria non si legge — tutti.
-    let da_lasciare =
-        |brano: &str| illeggibile || assenti.contains(brano) || ricordati.contains(brano);
-    let visibile = |brano: &&str| !assenti.contains(*brano);
+    // Da non seppellire: quelli che qui non ci sono — né come file di qui né,
+    // per le due regole di [`brani_assenti`], come riga di un altro dispositivo
+    // che è la sola a nominarli —, quelli che erano assenti all'ultimo
+    // allineamento e adesso ci sono (da agganciare), e — se la memoria non si
+    // legge — tutti.
+    let da_lasciare = |brano: &str| {
+        illeggibile
+            || assenti.senza_riga.contains(brano)
+            || assenti.solo_specchio.contains(brano)
+            || ricordati.contains(brano)
+    };
+    // Visibile è ciò a cui si può agganciare una voce, e una riga specchio è
+    // una riga: la differenza con `da_lasciare` è tutta qui.
+    let visibile = |brano: &&str| !assenti.senza_riga.contains(*brano);
 
     let mut rifatte = 0;
     let mut agganciate = 0;
@@ -561,7 +569,7 @@ fn allinea_sequenze(
     // lettura in più, a ogni passata. Valgono ancora anche dopo aver sepolto le
     // sequenze rimaste, perché `assenti` nomina i brani di **tutti** gli
     // elementi, vivi o tolti, e una lapide non ne cambia la chiave.
-    scrivi_il_ricordo(tx, &assenti, &ricordo)?;
+    scrivi_il_ricordo(tx, &assenti.senza_riga, &ricordo)?;
     Ok((rifatte, agganciate))
 }
 
@@ -655,21 +663,68 @@ fn senza_i_ritorni_di_voci_tolte(
 ///
 /// Su tutte le sequenze insieme e non playlist per playlist: è
 /// un'interrogazione sola, e usa `idx_tracks_track_key`.
-fn brani_assenti(connection: &Connection) -> Result<BTreeSet<String>, AppError> {
+///
+/// # Due regole, e perché non sono la stessa
+///
+/// Una riga specchio (il brano di un altro dispositivo, `lontano://…`) risponde
+/// a due domande diverse, e la risposta è opposta.
+///
+/// - **Per agganciare** — una voce viva entra in `playlist_tracks` su una riga —
+///   una riga specchio **conta** come presente: senza, sul telefono le playlist
+///   perderebbero i brani del PC. Vale per [`Assenti::senza_riga`], che è la
+///   memoria di [`CHIAVE_BRANI_ASSENTI`] e il filtro di ciò che è visibile.
+/// - **Per seppellire** — una voce viva che manca in `playlist_tracks` diventa
+///   «tolta», e la lapide viaggia — una chiave presente qui **solo attraverso
+///   righe specchio** conta come **assente**: [`Assenti::solo_specchio`]. Una
+///   riga specchio nasce, cambia chiave e sparisce per volontà del proprietario
+///   e della rete; che la sua chiave resti per un'altra riga (un tag corretto
+///   qui sulla copia di qui, che ha ancora la vecchia chiave sul PC) non dice
+///   niente di cosa l'utente ha fatto della playlist. Il solo gesto che toglie
+///   una voce così è dell'utente, e la sua lapide la scrive il gesto
+///   ([`seppellisci_le_voci_tolte`]).
+///
+/// Le due insieme in una lettura sola: una chiave che qui ha almeno una riga di
+/// questa macchina non c'è in nessuno dei due elenchi.
+struct Assenti {
+    /// Nessuna riga, né di qui né specchio: la voce non si può agganciare a
+    /// niente.
+    senza_riga: BTreeSet<String>,
+    /// Righe sì, ma tutte specchio: la voce si aggancia, ma non si seppellisce
+    /// per differenza.
+    solo_specchio: BTreeSet<String>,
+}
+
+fn brani_assenti(connection: &Connection) -> Result<Assenti, AppError> {
     #[cfg(test)]
     LETTURE.with(|letture| letture.set((letture.get().0 + 1, letture.get().1)));
     let mut statement = connection
         .prepare(
-            "SELECT DISTINCT s.track_key FROM sync_sequenza s
-              WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.track_key = s.track_key)",
+            "SELECT DISTINCT s.track_key,
+                    EXISTS (SELECT 1 FROM tracks m WHERE m.track_key = s.track_key)
+               FROM sync_sequenza s
+              WHERE NOT EXISTS (SELECT 1 FROM tracks t
+                                 WHERE t.track_key = s.track_key
+                                   AND (t.path IS NULL OR t.path < 'lontano://'
+                                        OR t.path >= 'lontano:/0'))",
         )
         .map_err(|err| db_error("brani delle playlist che qui mancano", &err))?;
     let chiavi = statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)))
         .map_err(|err| db_error("brani delle playlist che qui mancano", &err))?;
-    chiavi
-        .collect::<Result<_, _>>()
-        .map_err(|err| db_error("brani delle playlist che qui mancano", &err))
+    let mut assenti = Assenti {
+        senza_riga: BTreeSet::new(),
+        solo_specchio: BTreeSet::new(),
+    };
+    for riga in chiavi {
+        let (chiave, ha_una_riga) =
+            riga.map_err(|err| db_error("brani delle playlist che qui mancano", &err))?;
+        if ha_una_riga {
+            assenti.solo_specchio.insert(chiave);
+        } else {
+            assenti.senza_riga.insert(chiave);
+        }
+    }
+    Ok(assenti)
 }
 
 /// Come si presenta la memoria dei brani assenti quando la si legge: vedi
@@ -707,7 +762,7 @@ fn ricordo_dei_brani_assenti(connection: &Connection) -> Result<Ricordo, AppErro
 /// rifà sempre, anche se quella di adesso è vuota: lasciarla lì vorrebbe dire
 /// che la passata dopo la ritrova guasta, e non seppellisce niente neanche lei.
 pub(crate) fn ricorda_i_brani_assenti(connection: &Connection) -> Result<(), AppError> {
-    let adesso = brani_assenti(connection)?;
+    let adesso = brani_assenti(connection)?.senza_riga;
     let ricordo = ricordo_dei_brani_assenti(connection)?;
     scrivi_il_ricordo(connection, &adesso, &ricordo)
 }
@@ -1227,14 +1282,38 @@ fn membri_per_playlist(
 
 /// Le sequenze come stanno scritte.
 fn sequenze_salvate(connection: &Connection) -> Result<BTreeMap<String, Sequenza>, AppError> {
+    leggi_le_sequenze(
+        connection,
+        "SELECT playlist_key, elemento, dopo, track_key, tolto_ms
+           FROM sync_sequenza ORDER BY playlist_key",
+        [],
+    )
+}
+
+/// La sequenza di una playlist sola, com'è scritta: vuota se non ce n'è.
+fn sequenza_salvata(connection: &Connection, playlist_key: &str) -> Result<Sequenza, AppError> {
+    Ok(leggi_le_sequenze(
+        connection,
+        "SELECT playlist_key, elemento, dopo, track_key, tolto_ms
+           FROM sync_sequenza WHERE playlist_key = ?1",
+        [playlist_key],
+    )?
+    .remove(playlist_key)
+    .unwrap_or_else(Sequenza::vuota))
+}
+
+/// Il corpo di [`sequenze_salvate`] e [`sequenza_salvata`]: la stessa lettura,
+/// con la riga d'identità illeggibile saltata allo stesso modo.
+fn leggi_le_sequenze<P: rusqlite::Params>(
+    connection: &Connection,
+    sql: &str,
+    parametri: P,
+) -> Result<BTreeMap<String, Sequenza>, AppError> {
     let mut statement = connection
-        .prepare(
-            "SELECT playlist_key, elemento, dopo, track_key, tolto_ms
-               FROM sync_sequenza ORDER BY playlist_key",
-        )
+        .prepare(sql)
         .map_err(|err| db_error("sequenze salvate", &err))?;
     let righe = statement
-        .query_map([], |row| {
+        .query_map(parametri, |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1273,7 +1352,7 @@ fn sequenze_salvate(connection: &Connection) -> Result<BTreeMap<String, Sequenza
 
 /// Riscrive la sequenza di una playlist.
 fn scrivi_sequenza(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     playlist_key: &str,
     sequenza: &Sequenza,
 ) -> Result<(), AppError> {
@@ -1430,6 +1509,163 @@ pub(crate) fn rianima_la_sequenza(
             .map_err(|err| db_error("sequenza di una playlist ripristinata", &err))?;
     }
     Ok(())
+}
+
+// ── la lapide esplicita ─────────────────────────────────────────────────────
+
+/// Le chiavi delle voci di una playlist il cui brano qui c'è **solo** come riga
+/// specchio, nell'ordine in cui stanno. Da leggere **prima** di un gesto che
+/// toglie voci: vedi [`seppellisci_le_voci_tolte`].
+///
+/// Chi non ha righe specchio — il caso comune — non paga che una `EXISTS`.
+///
+/// # Errori
+///
+/// `db.queryFailed` se la lettura fallisce.
+pub(crate) fn voci_solo_specchio(
+    connection: &Connection,
+    playlist_id: i64,
+) -> Result<Vec<String>, AppError> {
+    let cosa = "voci di playlist su righe specchio";
+    let c_e_uno: bool = connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM tracks
+                             WHERE path >= 'lontano://' AND path < 'lontano:/0')",
+            [],
+            |riga| riga.get(0),
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    if !c_e_uno {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection
+        .prepare_cached(
+            "SELECT t.track_key
+               FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
+              WHERE pt.playlist_id = ?1
+                AND t.path >= 'lontano://' AND t.path < 'lontano:/0'
+                AND NOT EXISTS (SELECT 1 FROM tracks l
+                                 WHERE l.track_key = t.track_key
+                                   AND (l.path IS NULL OR l.path < 'lontano://'
+                                        OR l.path >= 'lontano:/0'))
+              ORDER BY pt.position",
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    statement
+        .query_map([playlist_id], |riga| riga.get::<_, String>(0))
+        .map_err(|err| db_error(cosa, &err))?
+        .collect::<Result<_, _>>()
+        .map_err(|err| db_error(cosa, &err))
+}
+
+/// La lapide di un gesto dell'utente: le voci che `prima` nominava
+/// ([`voci_solo_specchio`], letto prima del gesto) e che la playlist non ha più
+/// si seppelliscono nella sua sequenza, **adesso**, e non per differenza al
+/// prossimo [`allinea`].
+///
+/// # Perché esplicita
+///
+/// Per le voci di un brano che qui c'è solo come riga specchio la differenza
+/// non vale più niente: una chiave presente solo attraverso righe specchio
+/// conta come assente per la lapide ([`brani_assenti`]), perché una riga
+/// specchio che nasce, cambia chiave o sparisce è un evento della rete e non un
+/// gesto, e la sua lapide partirebbe verso un dispositivo che il brano ce l'ha.
+/// Ma il gesto — «togli dalla playlist», la sostituzione da un'importazione —
+/// non può smettere di propagarsi: chi lo compie scrive qui la lapide per quel
+/// che ha tolto, e nient'altro.
+///
+/// Si seppelliscono le **ultime** occorrenze del brano nella sequenza, tante
+/// quante voci sono sparite dalla playlist: è quel che farebbe
+/// [`Sequenza::riordina_lasciando`], che consuma per prime le occorrenze che la
+/// playlist ancora vuole. Una playlist che non ha ancora una sequenza (la
+/// sincronia spenta, mai accesa) non ha niente da seppellire, e il primo
+/// battesimo nasce già senza quella voce.
+///
+/// Restituisce quante voci ha sepolto.
+///
+/// # Errori
+///
+/// `db.queryFailed` se una lettura o una scrittura fallisce.
+pub(crate) fn seppellisci_le_voci_tolte(
+    connection: &Connection,
+    playlist_id: i64,
+    prima: &[String],
+    adesso_ms: i64,
+) -> Result<usize, AppError> {
+    if prima.is_empty() {
+        return Ok(0);
+    }
+    let cosa = "lapide di una voce tolta da una playlist";
+    let chiave: Option<String> = connection
+        .query_row(
+            "SELECT playlist_key FROM playlists WHERE id = ?1",
+            [playlist_id],
+            |riga| riga.get(0),
+        )
+        .map(Some)
+        .or_else(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            altro => Err(altro),
+        })
+        .map_err(|err| db_error(cosa, &err))?;
+    let Some(chiave) = chiave else {
+        return Ok(0);
+    };
+    let mut sequenza = sequenza_salvata(connection, &chiave)?;
+    if sequenza.e_vuota() {
+        return Ok(0);
+    }
+
+    // Quante voci per chiave ha adesso la playlist, di qualunque riga.
+    let ora: BTreeMap<String, usize> = {
+        let mut statement = connection
+            .prepare_cached(
+                "SELECT t.track_key, COUNT(*)
+                   FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
+                  WHERE pt.playlist_id = ?1 GROUP BY t.track_key",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        statement
+            .query_map([playlist_id], |riga| {
+                Ok((
+                    riga.get::<_, String>(0)?,
+                    usize::try_from(riga.get::<_, i64>(1)?).unwrap_or(0),
+                ))
+            })
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<_, _>>()
+            .map_err(|err| db_error(cosa, &err))?
+    };
+    let mut prima_per_chiave: BTreeMap<&str, usize> = BTreeMap::new();
+    for brano in prima {
+        *prima_per_chiave.entry(brano.as_str()).or_insert(0) += 1;
+    }
+
+    // Le posizioni, nell'ordine vivo della sequenza, da seppellire: si fa dal
+    // fondo, perché sotterrare un elemento sposta i numeri di quelli dopo.
+    let ordine = sequenza.ordine();
+    let mut posizioni: Vec<usize> = Vec::new();
+    for (brano, quante_prima) in &prima_per_chiave {
+        let da_togliere = quante_prima.saturating_sub(ora.get(*brano).copied().unwrap_or(0));
+        let sue: Vec<usize> = ordine
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| *b == brano)
+            .map(|(posizione, _)| posizione)
+            .collect();
+        posizioni.extend(sue.into_iter().rev().take(da_togliere));
+    }
+    posizioni.sort_unstable_by(|a, b| b.cmp(a));
+    let mut sepolte = 0;
+    for posizione in posizioni {
+        if sequenza.togli(posizione, adesso_ms) {
+            sepolte += 1;
+        }
+    }
+    if sepolte > 0 {
+        scrivi_sequenza(connection, &chiave, &sequenza)?;
+    }
+    Ok(sepolte)
 }
 
 // ── dal fuso al database ────────────────────────────────────────────────────
@@ -5708,7 +5944,7 @@ mod prove {
             tx.commit().expect("commit");
         }
         let t0 = Instant::now();
-        let tutte = brani_assenti(&telefono).expect("assenti");
+        let tutte = brani_assenti(&telefono).expect("assenti").senza_riga;
         eprintln!(
             "MISURA nuova (tutte le righe): {:?}, {} chiavi",
             t0.elapsed(),

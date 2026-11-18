@@ -518,6 +518,7 @@ fn scrivi_playlist(
             .map(|a| (a.indice, a.track_id))
             .collect::<Vec<_>>(),
     )?;
+    crate::import_esterno::seppellisci_le_tolte(tx, id, &fatta.solo_specchio_di_prima)?;
 
     let mut rapporto = scrivi_elenco(
         tx,
