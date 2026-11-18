@@ -16,6 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ErroreIpc } from "./ipc/errori";
 import type {
   AnteprimaDimentica,
+  AnteprimaScarico,
   AvanzamentoSpecchio,
   DatiMobili,
   InvitoLontano,
@@ -1554,6 +1555,10 @@ export const ipc = {
   // qui si saltano. L'avanzamento arriva con `lontano:scarico`.
   lontanoScaricaRighe: (righe: number[]) =>
     invoke<ScaricoLontano>("lontano_scarica_righe", { righe }),
+  // Prima di «Scarica qui» su un insieme grande: quanti brani scenderebbero e quanto
+  // spazio prendono, per chiedere. Non accoda niente.
+  lontanoScaricaAnteprima: (righe: number[]) =>
+    invoke<AnteprimaScarico>("lontano_scarica_anteprima", { righe }),
   lontanoScaricoAnnulla: () => invoke<ScaricoLontano>("lontano_scarico_annulla"),
   lontanoScaricoStato: () => invoke<ScaricoLontano>("lontano_scarico_stato"),
   // La libreria unica: il catalogo dei dispositivi collegati come righe di

@@ -1089,6 +1089,7 @@ pub fn run() {
             lontano::specchio::lontano_specchio_conferma,
             lontano::specchio::lontano_specchio_ora,
             lontano::specchio::lontano_specchio_stato,
+            lontano::scarico::lontano_scarica_anteprima,
             lontano::scarico::lontano_scarica_righe,
             lontano::scarico::lontano_scarico_annulla,
             lontano::scarico::lontano_scarico_stato,

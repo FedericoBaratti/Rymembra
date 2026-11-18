@@ -67,12 +67,16 @@ import { AggiungiCartella } from "./AggiungiCartella";
 import { ANNULLI, annullaATempo } from "./annullaATempo";
 import { ugualiInSuperficie, useArchivio } from "./archivio";
 import {
+  PER_VOLTA_SCARICO,
   archivioLontano,
   archivioScarico,
   archivioSpecchio,
+  chiedeConfermaPerLoScarico,
   conAvanzamento,
   conIlSiDeiDatiMobili,
   daFotografia,
+  domandaDelloScarico,
+  inBlocchi,
   rileggereDopo,
 } from "./lontano";
 import { useArtisti } from "./artisti";
@@ -97,7 +101,7 @@ import {
 } from "./collegati";
 import { MenuDellaCoda } from "./Coda";
 import { ConfermaEliminazione } from "./ConfermaEliminazione";
-import { ConfermaGesto } from "./ConfermaGesto";
+import { ConfermaGesto, type Domanda as DomandaDiConferma } from "./ConfermaGesto";
 import { ConfermaRimozioni } from "./ConfermaRimozioni";
 import {
   AvvisoMaiusc,
@@ -110,7 +114,7 @@ import { ConfermaTrasloco } from "./ConfermaTrasloco";
 import { Copertina } from "./Copertina";
 import { CARTELLA_DELLA_1_0 } from "./eredita";
 import { chiaveDellApertura, chiusuraDi } from "./foglio";
-import { brani_, durata, nomeArtista, numero, titoloAlbum } from "./formato";
+import { brani_, durata, nomeArtista, numero, pesoDi, titoloAlbum } from "./formato";
 import { SCHEDA_FERMA, fuocoDiRitorno, fuocoSullaTestata } from "./fuocoPagina";
 import { Fornitori } from "./Fornitori";
 import {
@@ -512,6 +516,11 @@ export function App() {
     playlist: Playlist;
     risposta: () => boolean;
   } | null>(null);
+  /**
+   * «Scarica qui» su un insieme grande, in attesa del sì: la domanda con il
+   * numero di brani e lo spazio (`scaricaQui`). `null` finché non c'è.
+   */
+  const [confermaScarico, setConfermaScarico] = useStatoPresente<DomandaDiConferma | null>(null);
   const [vista, setVista] = useState<Vista>("home");
   /**
    * Quel che Esplora ha trovato l'ultima volta che era aperta.
@@ -2043,9 +2052,37 @@ export function App() {
   );
 
   /**
+   * Mette in coda le righe, a blocchi dei più grandi che il nucleo accetta.
+   *
+   * Un artista con la discografia intera supera il tetto di una chiamata
+   * (`PER_VOLTA_SCARICO`), e prima il nucleo rifiutava tutto. «Dati mobili:
+   * Chiedi» rifà il gesto dopo il sì: `fatti` sta fuori dal gesto, così il
+   * secondo giro riparte dal blocco dove si era fermato e non rimette in coda
+   * quelli già partiti.
+   */
+  const accodaRighe = useCallback(async (ids: readonly number[]) => {
+    const blocchi = inBlocchi(ids, PER_VOLTA_SCARICO);
+    let fatti = 0;
+    await conIlSiDeiDatiMobili(async () => {
+      while (fatti < blocchi.length) {
+        const stato = await ipc.lontanoScaricaRighe(blocchi[fatti] ?? []);
+        fatti += 1;
+        archivioScarico.scrivi(stato);
+      }
+    });
+  }, []);
+
+  /**
    * «Scarica qui»: copia nella cartella dei download di questo dispositivo i
    * brani che stanno su un altro. Quel che già è di qui non c'è da scaricare, e
    * un dispositivo che non risponde lo dice senza provarci.
+   *
+   * Da `SOGLIA_CONFERMA_SCARICO` brani in su chiede prima, con quanti sono e
+   * quanto spazio prendono. È il cancello di tutti i «Scarica qui» — una riga o
+   * una selezione, l'album, la playlist, l'artista —, perché passano tutti da
+   * qui. Il numero detto è quello del nucleo (`lontano_scarica_anteprima`), che
+   * non conta le righe che il proprietario non manda più né le tracce di un CD:
+   * se a conti fatti sono meno della soglia, non si chiede.
    */
   const scaricaQui = useCallback(
     async (brani: readonly Brano[]) => {
@@ -2060,11 +2097,28 @@ export function App() {
         avvisaNonRaggiungibile(primoSpento(lontani, pannello));
         return;
       }
-      await conIlSiDeiDatiMobili(async () => {
-        archivioScarico.scrivi(await ipc.lontanoScaricaRighe(accesi.map((b) => b.id)));
-      });
+      const ids = accesi.map((b) => b.id);
+      if (chiedeConfermaPerLoScarico(ids.length)) {
+        const anteprima = await ipc.lontanoScaricaAnteprima(ids);
+        if (chiedeConfermaPerLoScarico(anteprima.brani)) {
+          const { titolo, descrizione } = domandaDelloScarico(anteprima, {
+            brani: brani_,
+            peso: pesoDi,
+          });
+          setConfermaScarico({
+            titolo: t(titolo.chiave, titolo.valori),
+            descrizione: t(descrizione.chiave, descrizione.valori),
+            conferma: t("devices.download.confirm.go"),
+            fai: () => {
+              accodaRighe(ids).catch(segnalaErrore);
+            },
+          });
+          return;
+        }
+      }
+      await accodaRighe(ids);
     },
-    [avvisaNonRaggiungibile, setNotizia],
+    [avvisaNonRaggiungibile, setNotizia, setConfermaScarico, accodaRighe, segnalaErrore],
   );
 
   /**
@@ -5363,6 +5417,13 @@ export function App() {
               },
             }}
             onChiudi={() => setDaCancellare(null)}
+          />
+        )}
+
+        {confermaScarico && (
+          <ConfermaGesto
+            domanda={confermaScarico}
+            onChiudi={() => setConfermaScarico(null)}
           />
         )}
 

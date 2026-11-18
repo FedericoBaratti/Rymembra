@@ -25,6 +25,7 @@ import { eventiEFotografia } from "./ultima";
 import { dispositivoDellaRiga } from "./ipc/libreria";
 import type { Chiave, Valori } from "./lingue";
 import type {
+  AnteprimaScarico,
   AvanzamentoSpecchio,
   DispositivoLontano,
   DispositivoSincronia,
@@ -265,6 +266,78 @@ export function fraseScaricoFinito(
   return {
     chiave: "devices.download.doneWithErrors",
     valori: { n: adesso.fatti, falliti: adesso.falliti },
+  };
+}
+
+/**
+ * Da quanti brani «Scarica qui» chiede prima.
+ *
+ * Un album, una selezione, una manciata di brani si scaricano e basta: è un
+ * gesto che chi lo fa vuole subito, e costa poco. Sopra questa soglia — un
+ * artista con la discografia intera, una playlist da migliaia di righe — sono
+ * decine di gigabyte sul disco e ore di rete di un altro dispositivo, e un clic
+ * di troppo non si disfa a costo zero (F3c lo scrisse fra i rischi). Cinquanta è
+ * anche la soglia con cui il nucleo chiede prima di togliere le righe di un
+ * dispositivo (`SOGLIA_RIMOZIONI` in `specchio/archivio.rs`): un insieme «grande»
+ * ha lo stesso senso nei due posti.
+ */
+export const SOGLIA_CONFERMA_SCARICO = 50;
+
+/**
+ * Quanti brani al più in una chiamata a `lontano_scarica_righe`: lo stesso
+ * numero di `MASSIMI_PER_VOLTA` in `lontano/scarico.rs`, che rifiuta il resto.
+ * Una prova (`confermaScarico.test.ts`) li tiene uguali.
+ */
+export const PER_VOLTA_SCARICO = 5000;
+
+/** Un insieme di questa grandezza chiede conferma prima di scendere. */
+export function chiedeConfermaPerLoScarico(brani: number): boolean {
+  return brani >= SOGLIA_CONFERMA_SCARICO;
+}
+
+/** `elementi` a pezzi di `per` al più, nello stesso ordine. Un elenco vuoto non ne dà nessuno. */
+export function inBlocchi<T>(elementi: readonly T[], per: number): T[][] {
+  const blocchi: T[][] = [];
+  for (let da = 0; da < elementi.length; da += per) blocchi.push(elementi.slice(da, da + per));
+  return blocchi;
+}
+
+/**
+ * La domanda prima di un «Scarica qui» grande: il titolo e la frase sotto, come
+ * chiave e valori da dare a `t`.
+ *
+ * `formati` sono quelli della finestra (`brani_` e la misura in MB/GB): questo
+ * modulo non carica le lingue. Lo spazio si dice solo se si sa:
+ * - tutte le dimensioni note: «Occupano 8,2 GB»;
+ * - qualcuna ignota: «Occupano almeno 3 GB» — la somma è un minimo, e dirla
+ *   per intera sarebbe una cifra falsa;
+ * - nessuna: la frase non dà una cifra. Una somma di zero byte non è «niente»,
+ *   è che non lo si sa.
+ */
+export function domandaDelloScarico(
+  anteprima: AnteprimaScarico,
+  formati: { brani: (n: number) => string; peso: (byte: number) => string },
+): {
+  titolo: { chiave: Chiave; valori: Valori };
+  descrizione: { chiave: Chiave; valori: Valori };
+} {
+  const titolo = {
+    chiave: "devices.download.confirm.title" as const,
+    valori: { brani: formati.brani(anteprima.brani) },
+  };
+  if (anteprima.byte <= 0) {
+    return { titolo, descrizione: { chiave: "devices.download.confirm.bodyUnknown", valori: {} } };
+  }
+  const spazio = { spazio: formati.peso(anteprima.byte) };
+  return {
+    titolo,
+    descrizione: {
+      chiave:
+        anteprima.senzaDimensione > 0
+          ? "devices.download.confirm.bodyAtLeast"
+          : "devices.download.confirm.body",
+      valori: spazio,
+    },
   };
 }
 

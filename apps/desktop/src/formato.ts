@@ -65,6 +65,20 @@ export function brani_(n: number): string {
 }
 
 /**
+ * Da byte a una misura che si legge: kB sotto il mega, MB sotto il giga, poi GB.
+ *
+ * Le stesse tre unità e le stesse chiavi di `peso` in `Impostazioni` e di quella
+ * in `Aggiornamenti` — che restano com'erano, ognuna nel suo file —; qui per chi
+ * non è una di quelle schermate («Scarica qui» su un artista intero).
+ */
+export function pesoDi(byte: number): string {
+  const mb = byte / (1024 * 1024);
+  if (mb < 1) return t("settings.maintenance.kb", { n: Math.round(byte / 1024) });
+  if (mb < 1024) return t("settings.maintenance.mb", { n: numero(mb, 1) });
+  return t("settings.maintenance.gb", { n: numero(mb / 1024, 2) });
+}
+
+/**
  * Una data e un'ora, come si scrivono nella lingua attiva.
  *
  * Esiste per la stessa ragione di [`numero`]: `toLocaleString("it")` era scritto

@@ -128,6 +128,20 @@ export interface ScaricoLontano {
   errore: string | null;
 }
 
+/**
+ * Quanto è grande un «Scarica qui», prima di farlo (`lontano/scarico.rs`,
+ * `AnteprimaScarico`): quel che la coda chiederebbe davvero, non quel che la
+ * finestra ha in mano.
+ */
+export interface AnteprimaScarico {
+  /** Quanti brani scenderebbero: senza le righe che il proprietario non manda più e le tracce di un CD. */
+  brani: number;
+  /** La somma delle dimensioni che si sanno, in byte. */
+  byte: number;
+  /** Quanti di quei brani non hanno una dimensione nota. */
+  senzaDimensione: number;
+}
+
 /** In che punto è la lettura del catalogo di un dispositivo. */
 export type FaseSpecchio = "inattivo" | "leggo" | "fine" | "errore" | "nonSupportato";
 
