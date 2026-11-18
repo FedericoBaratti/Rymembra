@@ -34,7 +34,7 @@ mod prove {
     use rymembra_domain::errors::ErrorCodeKind;
     use rymembra_domain::paths::PathRules;
 
-    use crate::specchio::archivio::dimentica_dispositivo;
+    use crate::specchio::archivio::{GRAZIA_MS, dimentica_dispositivo};
     use crate::specchio::comuni::{ADESSO, chiave, giro, libreria, riga};
     use crate::{backup, sincronia};
 
@@ -205,9 +205,16 @@ mod prove {
         let prima = pubblicata(&c, "sera");
         assert_eq!(prima.0.len(), 3);
 
-        // Il PC toglie il brano 2: l'altro giro non lo manda più, e (pochi brani)
-        // la riga se ne va subito, come per una scansione.
-        let chiusura = giro(&c, &chiave(PC), &[riga(3)], ADESSO + 10_000);
+        // Il PC toglie il brano 2: l'altro giro non lo manda più, la riga resta
+        // nascosta per la grazia, e passata quella (pochi brani) se ne va, come
+        // per una scansione.
+        giro(&c, &chiave(PC), &[riga(3)], ADESSO + 10_000);
+        let chiusura = giro(
+            &c,
+            &chiave(PC),
+            &[riga(3)],
+            ADESSO + 10_000 + GRAZIA_MS + 1_000,
+        );
         assert_eq!(chiusura.tolte, 1, "{chiusura:?}");
         assert_eq!(
             in_playlist(&c, "sera"),
@@ -237,8 +244,19 @@ mod prove {
         let prima = pubblicata(&c, "sera");
 
         giro(&c, &chiave(PC), &[riga(3)], ADESSO + 10_000);
+        giro(
+            &c,
+            &chiave(PC),
+            &[riga(3)],
+            ADESSO + 10_000 + GRAZIA_MS + 1_000,
+        );
         assert_eq!(in_playlist(&c, "sera").len(), 2);
-        giro(&c, &chiave(PC), &[riga(2), riga(3)], ADESSO + 20_000);
+        giro(
+            &c,
+            &chiave(PC),
+            &[riga(2), riga(3)],
+            ADESSO + 20_000 + GRAZIA_MS,
+        );
 
         let fatto = sincronia::allinea(&mut c, "telefono", 3_000).expect("allineamento");
         assert_eq!(fatto.agganciate, 1, "{fatto:?}");

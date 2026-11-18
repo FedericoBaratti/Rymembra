@@ -3667,6 +3667,12 @@ mod tests {
                 "content_key",
             ),
             ("cover_remota = 'x'", "idx_lontano_brani_cover", "cover_remota"),
+            // Com'è scritta da «Dimentica»: tutte le chiavi in un parametro solo.
+            (
+                "content_key IN (SELECT value FROM json_each('[\"a\"]'))",
+                "idx_lontano_brani_content_key",
+                "content_key",
+            ),
         ] {
             assert_eq!(
                 colonna(

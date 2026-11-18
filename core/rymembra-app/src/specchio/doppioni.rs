@@ -14,11 +14,27 @@
 //!
 //! # La copia migliore
 //!
-//! Senza perdita (flac, alac, wav, aiff, ape, wavpack) prima; poi la frequenza
-//! di campionamento; poi il bitrate. La profondità di bit conta quando è nota,
-//! e `tracks` non ha una colonna per lei: non conta. A parità vince la copia di
-//! **questo** dispositivo, poi — per non decidere a caso — la chiave del
-//! dispositivo più bassa.
+//! Senza perdita (flac, alac, wav, aiff, ape, wavpack) prima. Fra due copie
+//! senza perdita conta la frequenza di campionamento, poi il bitrate. Fra due
+//! copie **con perdita** conta solo il bitrate: la frequenza di campionamento
+//! non dice quanto suona bene un MP3 o un AAC — una registrazione a 48 kHz e
+//! 128 kbps non batte un MP3 a 44,1 kHz e 320 kbps. La profondità di bit conta
+//! quando è nota, e `tracks` non ha una colonna per lei: non conta. A parità
+//! vince la copia di **questo** dispositivo, poi — per non decidere a caso — la
+//! chiave del dispositivo più bassa.
+//!
+//! # Quel che un pari dichiara non è un fatto
+//!
+//! Codec, frequenza e bitrate di una riga specchio li scrive il proprietario, e
+//! chi dichiara «flac a 384 kHz» vince su ogni copia di qui. Un controllo di
+//! plausibilità li confronta con quel che la riga dice anche della dimensione
+//! del file e della durata ([`Qualita::da_riga`]): il bitrate medio **reale** è
+//! `dimensione × 8 / durata`. Una copia «senza perdita» che pesa come un MP3
+//! non è senza perdita, e un bitrate dichiarato molto più alto di quel che il
+//! file pesa si riporta a quel che pesa. Senza dimensione o durata non c'è
+//! niente da confrontare, e si crede alla dichiarazione. Non è una prova — chi
+//! mente su tutti e tre in modo coerente non si scopre — ma chiude la bugia
+//! più economica, senza impostazioni nuove.
 //!
 //! # La coerenza d'album
 //!
@@ -37,13 +53,24 @@ use std::collections::{BTreeMap, HashMap};
 use rymembra_domain::album::UNKNOWN_ALBUM;
 use rymembra_domain::keys::normalize_key;
 
+/// Sotto questo bitrate medio reale (kbps) una copia non è senza perdita: nessun
+/// file senza perdita di musica pesa così poco, e i codec con perdita ci
+/// arrivano comodamente (un MP3 a 320 kbps, un AAC a 256).
+pub const SOGLIA_SENZA_PERDITA_KBPS: i64 = 224;
+
+/// Quanto un bitrate dichiarato può superare quel che il file pesa davvero,
+/// prima di non essere creduto: un quarto, più sedici kbps (il peso di un
+/// po' di tag e di una copertina, e dei file brevi).
+const TOLLERANZA_BITRATE_KBPS: i64 = 16;
+
 /// Quanto è buona una copia: il confronto è in quest'ordine, e `Ord` lo fa da
 /// solo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Qualita {
     /// Senza perdita.
     pub senza_perdita: bool,
-    /// Frequenza di campionamento, Hz; 0 se non si sa.
+    /// Frequenza di campionamento, Hz; 0 se non si sa **o se la copia ha
+    /// perdita**: per un codec con perdita non dice quanto suona bene.
     pub campionamento: i64,
     /// Bitrate, kbps; 0 se non si sa.
     pub bitrate: i64,
@@ -71,9 +98,57 @@ impl Qualita {
         ) || (matches!(codec.as_str(), "mp4" | "m4a") && bitrate >= 600);
         Self {
             senza_perdita,
-            campionamento: campionamento.unwrap_or(0).max(0),
+            // Con perdita la frequenza non conta: vedi il `//!`.
+            campionamento: if senza_perdita {
+                campionamento.unwrap_or(0).max(0)
+            } else {
+                0
+            },
             bitrate,
         }
+    }
+
+    /// Come [`Qualita::da_colonne`], con il controllo di plausibilità contro la
+    /// dimensione del file e la durata: vedi il `//!`.
+    ///
+    /// Con dimensione o durata mancanti, o non positive, vale la dichiarazione.
+    /// Un brano d'immagine CD — dove la dimensione è quella dell'intero disco e
+    /// la durata quella del pezzo — risulta più pesante di quel che è, e il
+    /// controllo, che si muove solo verso il basso, non lo tocca.
+    #[must_use]
+    pub fn da_riga(
+        codec: Option<&str>,
+        campionamento: Option<i64>,
+        bitrate: Option<i64>,
+        dimensione: Option<i64>,
+        durata_ms: Option<i64>,
+    ) -> Self {
+        let dichiarata = Self::da_colonne(codec, campionamento, bitrate);
+        let reale = match (dimensione, durata_ms) {
+            (Some(byte), Some(ms)) if byte > 0 && ms > 0 => {
+                byte.saturating_mul(8).checked_div(ms)
+            }
+            _ => None,
+        };
+        let Some(reale) = reale else {
+            return dichiarata;
+        };
+        if dichiarata.senza_perdita && reale < SOGLIA_SENZA_PERDITA_KBPS {
+            // «Senza perdita» che pesa come un MP3: si conta per quel che pesa.
+            return Self {
+                senza_perdita: false,
+                campionamento: 0,
+                bitrate: reale,
+            };
+        }
+        if dichiarata.bitrate > reale.saturating_add(reale / 4).saturating_add(TOLLERANZA_BITRATE_KBPS)
+        {
+            return Self {
+                bitrate: reale,
+                ..dichiarata
+            };
+        }
+        dichiarata
     }
 }
 
@@ -471,5 +546,71 @@ mod prove {
         assert!(flac(44_100) > mp3(320));
         assert!(flac(96_000) > flac(44_100));
         assert!(mp3(320) > mp3(192));
+    }
+
+    /// Un file di `minuti` minuti che pesa `kbps` kbps di media: dimensione e
+    /// durata come le scriverebbe un proprietario onesto.
+    fn peso(kbps: i64, minuti: i64) -> (Option<i64>, Option<i64>) {
+        let ms = minuti * 60_000;
+        (Some(kbps * ms / 8), Some(ms))
+    }
+
+    #[test]
+    fn un_flac_a_384_khz_che_pesa_come_un_mp3_non_e_senza_perdita() {
+        // La bugia più economica: dichiarare «flac 384 kHz» per vincere su ogni
+        // copia di qui. Il file pesa 128 kbps in media, e un FLAC di musica non
+        // pesa così poco.
+        let (dimensione, durata) = peso(128, 4);
+        let bugia = Qualita::da_riga(Some("flac"), Some(384_000), Some(2_000), dimensione, durata);
+        assert!(!bugia.senza_perdita, "{bugia:?}");
+        assert_eq!(bugia.bitrate, 128, "si conta per quel che pesa");
+        assert!(
+            mp3(320) > bugia,
+            "una copia di qui a 320 kbps batte la bugia: {bugia:?}"
+        );
+        // Un FLAC vero, che pesa quel che pesa un FLAC, resta quel che dice.
+        let (dimensione, durata) = peso(900, 4);
+        let vero = Qualita::da_riga(Some("flac"), Some(96_000), None, dimensione, durata);
+        assert!(vero.senza_perdita);
+        assert_eq!(vero.campionamento, 96_000);
+        assert!(vero > mp3(320));
+    }
+
+    #[test]
+    fn un_bitrate_dichiarato_sopra_quel_che_il_file_pesa_si_riporta_a_quel_che_pesa() {
+        let (dimensione, durata) = peso(128, 4);
+        let dichiarato = Qualita::da_riga(Some("mp3"), Some(44_100), Some(320), dimensione, durata);
+        assert_eq!(dichiarato.bitrate, 128);
+        // Dentro la tolleranza (tag, copertina) si crede alla dichiarazione.
+        let (dimensione, durata) = peso(300, 4);
+        let onesto = Qualita::da_riga(Some("mp3"), Some(44_100), Some(320), dimensione, durata);
+        assert_eq!(onesto.bitrate, 320);
+    }
+
+    #[test]
+    fn senza_dimensione_o_durata_si_crede_alla_dichiarazione() {
+        for (dimensione, durata) in [(None, Some(240_000)), (Some(5_000_000), None), (Some(0), Some(240_000)), (Some(5_000_000), Some(0))] {
+            let q = Qualita::da_riga(Some("flac"), Some(96_000), Some(1_000), dimensione, durata);
+            assert_eq!(q, Qualita::da_colonne(Some("flac"), Some(96_000), Some(1_000)));
+        }
+    }
+
+    #[test]
+    fn un_pezzo_di_un_disco_d_immagine_non_si_declassa() {
+        // La dimensione è quella dell'immagine intera, la durata quella del
+        // pezzo: il bitrate risulta più alto del vero, e il controllo — che si
+        // muove solo verso il basso — lo lascia stare.
+        let q = Qualita::da_riga(Some("flac"), Some(44_100), Some(900), Some(300_000_000), Some(240_000));
+        assert!(q.senza_perdita);
+        assert_eq!(q.bitrate, 900);
+    }
+
+    #[test]
+    fn fra_due_copie_con_perdita_conta_il_bitrate_e_la_frequenza_no() {
+        let aac_48 = Qualita::da_colonne(Some("aac"), Some(48_000), Some(128));
+        assert_eq!(aac_48.campionamento, 0);
+        assert!(mp3(320) > aac_48);
+        // Senza perdita la frequenza conta ancora.
+        assert!(flac(96_000) > flac(44_100));
     }
 }

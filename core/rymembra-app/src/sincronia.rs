@@ -427,6 +427,19 @@ fn allinea_ascolti(tx: &Transaction<'_>) -> Result<usize, AppError> {
 /// sorveglianza, «Scarica qui», una correzione che ne cambia la chiave, un
 /// profilo), la voce ha già il suo posto e basta agganciarlo.
 ///
+/// # «Qui» vuol dire due cose, e una riga specchio le distingue
+///
+/// Un brano che c'è **solo come riga specchio** — il brano di un altro
+/// dispositivo, `lontano://…` — è, per **agganciare**, presente: una voce viva
+/// entra in `playlist_tracks` anche su una riga del PC, o sul telefono le
+/// playlist perderebbero i brani del PC. Ma per **seppellire** è assente: una
+/// riga specchio nasce, cambia chiave e sparisce per mano del proprietario e
+/// della rete, e che la sua chiave resti per un'altra riga (la copia di qui con
+/// un tag corretto, che sul PC ha ancora la vecchia chiave) non dice niente di
+/// cosa l'utente ha fatto della playlist. La differenza fra le tabelle, per
+/// quelle voci, non è una lapide: lo è solo il gesto dell'utente, e il gesto la
+/// scrive da sé ([`seppellisci_le_voci_tolte`]). Vedi [`brani_assenti`].
+///
 /// Agganciarlo è la parte difficile: al primo `allinea` dopo l'arrivo il brano
 /// c'è, la voce è viva e `playlist_tracks` non lo nomina, cioè è identico a un
 /// brano che l'utente ha appena tolto. Si distingue con

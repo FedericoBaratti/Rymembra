@@ -58,7 +58,9 @@ pub(crate) fn riga(id: i64) -> BranoCatalogo {
         mb_release_group_id: None,
         mb_release_id: None,
         estensione: "mp3".to_owned(),
-        dimensione: 5_000_000,
+        // 320 kbps per duecento secondi: quel che pesa un MP3 come quello dichiarato
+        // (il controllo di plausibilità della qualità, `doppioni::Qualita::da_riga`).
+        dimensione: 8_000_000,
         versione: "5000000-1700000000000".to_owned(),
         segmento: None,
     }
@@ -66,7 +68,8 @@ pub(crate) fn riga(id: i64) -> BranoCatalogo {
 
 /// Un giro intero con `righe` come catalogo del dispositivo: i secchi
 /// dell'id, ognuno scritto, poi la chiusura. Come lo farebbe chi ha la
-/// rete, senza la rete.
+/// rete, senza la rete. Il dispositivo è collegato (una riga in `dispositivi`,
+/// se non c'è già): il nucleo non scrive secchi di uno che non lo è.
 pub(crate) fn giro(
     c: &Connection,
     dispositivo: &str,
@@ -82,6 +85,22 @@ pub(crate) fn giro_con(
     righe: &[BranoCatalogo],
     adesso: i64,
 ) -> (Chiusura, Conti) {
+    c.execute(
+        "INSERT OR IGNORE INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'Prova', 1)",
+        [dispositivo],
+    )
+    .expect("dispositivo collegato");
+    giro_che_puo_fallire(c, dispositivo, righe, adesso).expect("giro")
+}
+
+/// Lo stesso giro, **senza** collegare il dispositivo e con l'esito di chi lo
+/// fa: il secchio di un dispositivo dimenticato mentre era in volo.
+pub(crate) fn giro_che_puo_fallire(
+    c: &Connection,
+    dispositivo: &str,
+    righe: &[BranoCatalogo],
+    adesso: i64,
+) -> Result<(Chiusura, Conti), rymembra_domain::errors::AppError> {
     let mut per_secchio: BTreeMap<i64, Vec<BranoCatalogo>> = BTreeMap::new();
     for r in righe {
         per_secchio
@@ -117,14 +136,11 @@ pub(crate) fn giro_con(
             .cloned()
             .unwrap_or_default();
         let buone = convalida_secchio(secchio.da_id, secchio.a_id, letto, adesso);
-        giro.applica_secchio(c, secchio, buone.righe, adesso)
-            .expect("secchio");
+        giro.applica_secchio(c, secchio, buone.righe, adesso)?;
     }
     let conti = giro.conti;
-    let chiusura = giro
-        .chiudi(c, &lavoro.da_svuotare, true, 1, adesso)
-        .expect("chiusura");
-    (chiusura, conti)
+    let chiusura = giro.chiudi(c, &lavoro.da_svuotare, true, 1, adesso)?;
+    Ok((chiusura, conti))
 }
 
 // ── le playlist e la sincronia, per le prove dei gesti ──────────────────────

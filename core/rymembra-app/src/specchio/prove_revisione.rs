@@ -15,8 +15,8 @@ use rymembra_sync::{Contenuto, Documento, fondi};
 
 use crate::db::RITORNO_DALLA_43;
 use crate::sincronia;
-use crate::specchio::archivio::{anteprima_dimentica, dimentica_dispositivo};
-use crate::specchio::comuni::{ADESSO, chiave, giro, libreria, riga};
+use crate::specchio::archivio::{GRAZIA_MS, anteprima_dimentica, dimentica_dispositivo};
+use crate::specchio::comuni::{ADESSO, chiave, giro, giro_che_puo_fallire, libreria, riga};
 
 /// Il dispositivo dell'altro lato: il PC.
 const PC: char = 'a';
@@ -247,10 +247,20 @@ fn rev2_03_una_riga_che_il_pc_toglie_e_rimette_ritrova_il_suo_posto_nella_playli
         .expect("riga 2");
     playlist_con(&c, "sera", &[id2]);
 
-    // Il PC non manda il brano 2: la riga se ne va subito.
+    // Il PC non manda il brano 2: la riga non si toglie subito ma entra in grazia
+    // (la voce deve poter ritrovare il suo posto), e per i giorni della grazia
+    // non si suona e non si conta da nessuna parte.
     let senza: Vec<_> = tutte.iter().filter(|r| r.id != 2).cloned().collect();
     let chiusura = giro(&c, &chiave(PC), &senza, ADESSO + 10_000);
-    assert_eq!(chiusura.tolte, 1, "{chiusura:?}");
+    assert_eq!((chiusura.tolte, chiusura.in_grazia), (0, 1), "{chiusura:?}");
+    assert_eq!(
+        n(
+            &c,
+            &format!("SELECT COUNT(*) FROM tracks WHERE id = {id2} AND copia_di = id")
+        ),
+        1,
+        "la riga in grazia è nascosta"
+    );
 
     // E poi lo rimanda, con un id nuovo (la libreria del PC ricostruita).
     let mut di_nuovo = riga(2);
@@ -332,8 +342,12 @@ fn rev2_05_un_secchio_arrivato_dopo_il_dimentica_non_riporta_le_righe() {
     crate::dispositivi::dimentica(&c, &pc).expect("dimentica");
     dimentica_dispositivo(&c, &pc).expect("specchio dimenticato");
     assert_eq!(n(&c, "SELECT COUNT(*) FROM lontano_brani"), 0);
-    // Il secchio che era in volo arriva.
-    giro(&c, &pc, &[riga(1), riga(2)], ADESSO + 1_000);
+    // Il secchio che era in volo arriva: il nucleo, che controlla `dispositivi`
+    // nella transazione che scrive, lo rifiuta.
+    assert!(
+        giro_che_puo_fallire(&c, &pc, &[riga(1), riga(2)], ADESSO + 1_000).is_err(),
+        "un secchio di un dispositivo dimenticato non si scrive"
+    );
     assert_eq!(
         n(&c, "SELECT COUNT(*) FROM lontano_brani"),
         0,
@@ -671,7 +685,10 @@ fn rev2_08a_se_il_pc_toglie_il_brano_la_voce_passa_alla_copia_di_qui() {
     let c = telefono_con_la_stessa_canzone_in_due_posti(5);
     let k = riga(1).track_key;
     let senza: Vec<_> = (2..=5).map(riga).collect();
-    let chiusura = giro(&c, &chiave(PC), &senza, ADESSO + 10_000);
+    // La riga entra in grazia e la voce passa subito alla copia di qui; passata
+    // la grazia la riga se ne va, e non c'è più una voce da perdere.
+    giro(&c, &chiave(PC), &senza, ADESSO + 10_000);
+    let chiusura = giro(&c, &chiave(PC), &senza, ADESSO + 10_000 + GRAZIA_MS + 1_000);
     assert_eq!(chiusura.tolte, 1, "{chiusura:?}");
     assert_eq!(
         in_playlist(&c, "sera"),
@@ -690,6 +707,7 @@ fn rev2_08b_se_il_pc_toglie_il_brano_non_parte_una_lapide_per_la_playlist_degli_
     sincronia::allinea(&mut c, "telefono", 1_000).expect("allineamento");
     let senza: Vec<_> = (2..=5).map(riga).collect();
     giro(&c, &chiave(PC), &senza, ADESSO + 10_000);
+    giro(&c, &chiave(PC), &senza, ADESSO + 10_000 + GRAZIA_MS + 1_000);
     sincronia::allinea(&mut c, "telefono", 2_000).expect("allineamento");
     let tolte = documento(&c, "telefono")
         .playlist
