@@ -799,3 +799,8 @@ mod tests;
 /// righe che costano un `INSERT` e non un WAV.
 #[cfg(test)]
 mod prove_per_chiavi;
+
+/// Il catalogo condiviso per la libreria unica: secchi, impronte, la cache per
+/// generazione, il confine di fiducia e le valutazioni che arrivano da fuori.
+#[cfg(test)]
+mod prove_catalogo;
