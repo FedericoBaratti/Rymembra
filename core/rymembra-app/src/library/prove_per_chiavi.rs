@@ -957,7 +957,7 @@ fn il_ripiano_dei_recenti_passa_dall_indice() {
         let mut s = connection
             .prepare(&format!(
                 "EXPLAIN QUERY PLAN {}",
-                sql_dei_recenti(&Origine::Tutti).expect("sql")
+                sql_dei_recenti(&connection, &Origine::Tutti).expect("sql")
             ))
             .expect("piano");
         let righe = s

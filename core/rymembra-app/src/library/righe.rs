@@ -921,6 +921,15 @@ pub(super) fn remove_tracks(
             .execute(rusqlite::params![id, path])
             .map_err(|err| db_error("rimozione di un brano", &err))?;
     }
+    // Una riga che se ne va poteva essere il rappresentante di un brano che sta
+    // anche su un altro dispositivo: senza `copia_di` che la segue (non c'è una
+    // chiave esterna), la riga specchio che stava dietro di lei resterebbe
+    // nascosta in «Tutti» e il brano sparirebbe dalla libreria. Vale per ogni
+    // strada che toglie righe — la scansione, «Togli dalla libreria», la
+    // conferma di una rimozione trattenuta.
+    if ce_uno_specchio && removed > 0 {
+        crate::specchio::archivio::ricalcola_doppioni_in(tx)?;
+    }
     Ok(removed)
 }
 

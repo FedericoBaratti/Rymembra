@@ -249,6 +249,40 @@ mod prove {
         assert_eq!(pubblicata(&c, "sera"), prima, "nessuna voce tolta");
     }
 
+    #[test]
+    fn fsync_limite_dichiarato_una_correzione_di_chiave_con_una_copia_specchio() {
+        // Il limite della scelta «una riga specchio è un membro di playlist ma non
+        // conta come avere il file», scritto perché non lo si scopra a posteriori.
+        //
+        // Il brano sta qui (riga 1) e sul PC (riga specchio) con la stessa chiave.
+        // Qui si corregge un tag e la chiave della riga di qui cambia. Il PC ha
+        // ancora la vecchia chiave, quindi per questa libreria la vecchia chiave
+        // «c'è ancora» — è la riga specchio — e la sua voce non è un brano
+        // assente: la sincronia la legge come tolta dalla playlist, e la lapide
+        // parte. Senza una riga specchio la voce sarebbe rimasta invisibile.
+        //
+        // Non si risolve contando le righe specchio come «assenti»: allora
+        // togliere da una playlist un brano solo remoto non resterebbe tolto. La
+        // stessa cosa succede già oggi con due file locali dello stesso brano,
+        // uno solo corretto.
+        let mut c = libreria();
+        brano_di_qui(&c, 1, 1);
+        giro(&c, &chiave(PC), &[riga(1)], ADESSO);
+        playlist_con(&c, "sera", &[1]);
+        sincronia::allinea(&mut c, "telefono", 1_000).expect("allineamento");
+        assert_eq!(pubblicata(&c, "sera"), (vec![riga(1).track_key], 0));
+
+        c.execute(
+            "UPDATE tracks SET track_key = 'corretta|uno|album' WHERE id = 1",
+            [],
+        )
+        .expect("correzione");
+        sincronia::allinea(&mut c, "telefono", 2_000).expect("allineamento");
+        let (vive, tolte) = pubblicata(&c, "sera");
+        assert_eq!(vive, vec!["corretta|uno|album".to_owned()]);
+        assert_eq!(tolte, 1, "il limite: la vecchia voce risulta tolta");
+    }
+
     // ── la sincronia: le statistiche ────────────────────────────────────────────
 
     #[test]

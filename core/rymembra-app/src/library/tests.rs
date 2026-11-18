@@ -125,6 +125,18 @@ impl Libreria {
         .expect("scansione")
     }
 
+    /// L'identificativo della riga **di qui** di un brano (non della riga
+    /// specchio che porta lo stesso titolo).
+    fn id_del_titolo_di_qui(&self, titolo: &str) -> i64 {
+        self.connection
+            .query_row(
+                "SELECT id FROM tracks WHERE title = ?1 AND path NOT LIKE 'lontano://%'",
+                [titolo],
+                |r| r.get(0),
+            )
+            .expect("identificativo")
+    }
+
     fn conta(&self, tabella: &str) -> i64 {
         self.connection
             .query_row(&format!("SELECT COUNT(*) FROM {tabella}"), [], |r| r.get(0))
@@ -2099,7 +2111,7 @@ fn gli_album_di_un_artista_sono_quelli_che_list_artists_conta() {
     let piano: Vec<String> = {
         let sql = format!(
             "EXPLAIN QUERY PLAN {}",
-            sql_degli_album_di_un_artista(&Origine::Tutti).expect("sql")
+            sql_degli_album_di_un_artista(&lib.connection, &Origine::Tutti).expect("sql")
         );
         let mut s = lib.connection.prepare(&sql).expect("piano");
         let righe = s
@@ -7741,4 +7753,166 @@ fn le_regole_e_la_radio_non_vedono_le_copie_nascoste() {
     };
     assert_eq!(crate::smart::quanti(c, &insieme, 0).expect("conto"), 3);
     assert_eq!(crate::smart::brani(c, &insieme, 0).expect("brani").len(), 3);
+}
+
+#[test]
+fn togliere_la_copia_di_qui_rende_visibile_quella_del_pc_da_ogni_strada() {
+    // «Tutti» nasconde la copia del PC dietro quella di qui; `copia_di` non ha una
+    // chiave esterna, quindi se la copia di qui se ne va senza che i doppioni si
+    // rifacciano il brano sparisce da «Tutti». Vale per «Togli dalla libreria» e
+    // per la conferma di una rimozione trattenuta, non solo per la scansione.
+    let (mut lib, pc) = libreria_con_un_pc_collegato();
+    let regole = PathRules::for_current_platform();
+    let visibili = |c: &Connection| counts(c, &Origine::Tutti).expect("numeri").tracks;
+    assert_eq!(visibili(&lib.connection), 3);
+
+    let uno = lib.id_del_titolo_di_qui("Uno");
+    let fatto = cancella_brani(&mut lib.connection, &[uno], &[], regole).expect("cancellazione");
+    assert_eq!(fatto.tolti, 1);
+    assert_eq!(
+        visibili(&lib.connection),
+        3,
+        "il brano c'e' ancora: ora e' la riga del PC"
+    );
+    let (copia, origine): (Option<i64>, String) = lib
+        .connection
+        .query_row(
+            "SELECT copia_di, path FROM tracks WHERE title = 'Uno'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("riga del pc");
+    assert_eq!(copia, None);
+    assert!(origine.starts_with(&format!("lontano://{pc}/")));
+
+    let due = lib.id_del_titolo_di_qui("Due");
+    let path: String = lib
+        .connection
+        .query_row("SELECT path FROM tracks WHERE id = ?1", [due], |r| r.get(0))
+        .expect("percorso");
+    let tolte = applica_rimozioni(&mut lib.connection, &[RimozioneInAttesa { id: due, path }])
+        .expect("rimozione confermata");
+    assert_eq!(tolte, 1);
+    assert_eq!(visibili(&lib.connection), 3);
+    assert_eq!(
+        lib.connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("conto"),
+        0,
+        "nessuna riga punta piu' a un rappresentante che non c'e'"
+    );
+}
+
+/// Una misura, non una prova: `cargo test -p rymembra-app --lib --release --
+/// --ignored --nocapture costo_dell_origine`. Quanto costa `copia_di IS NULL`
+/// a chi non ha nessun dispositivo collegato (il caso comune): 30 000 brani, tremila
+/// album, ottocento artisti.
+#[test]
+#[ignore = "misura: si lancia a mano con --ignored --nocapture"]
+fn costo_dell_origine_su_una_libreria_di_trentamila_brani() {
+    use std::time::Instant;
+    let c = crate::db::open_in_memory().expect("database").connection;
+    {
+        let tx = c.unchecked_transaction().expect("transazione");
+        for i in 0..30_000_i64 {
+            tx.execute(
+                "INSERT INTO tracks (path, track_key, title, artist, album, duration_ms, file_size,
+                                     date_added, date_modified, play_count, last_played_at, liked)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 200000, 1000000, ?6, 1, ?7, ?8, ?9)",
+                rusqlite::params![
+                    format!("/m/{i}.mp3"),
+                    format!("k{i}"),
+                    format!("Titolo {}", (i * 7919) % 30_000),
+                    format!("Artista {}", i % 800),
+                    format!("Album {}", i.div_euclid(10)),
+                    i,
+                    i % 9,
+                    (i % 400 == 0).then_some(i),
+                    i64::from(i % 50 == 0),
+                ],
+            )
+            .expect("riga");
+        }
+        tx.commit().expect("chiusura");
+    }
+    {
+        let tx = c.unchecked_transaction().expect("transazione");
+        rebuild_aggregates(&tx).expect("aggregati");
+        tx.commit().expect("chiusura");
+    }
+    let misura = |nome: &str, f: &dyn Fn()| {
+        f();
+        let inizio = Instant::now();
+        for _ in 0..5 {
+            f();
+        }
+        println!("{nome}: {:?} a chiamata", inizio.elapsed() / 5);
+    };
+    misura("counts (prima)", &|| {
+        c.query_row(
+            "SELECT (SELECT COUNT(*) FROM tracks), (SELECT COUNT(*) FROM albums),
+                    (SELECT COUNT(*) FROM artists),
+                    (SELECT COUNT(*) FROM tracks WHERE liked = 1),
+                    (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .expect("conteggi");
+    });
+    misura("counts (dopo)", &|| {
+        counts(&c, &Origine::Tutti).expect("conteggi");
+    });
+    for ordine in [
+        TrackOrder::Shelf,
+        TrackOrder::Title,
+        TrackOrder::RecentlyAdded,
+    ] {
+        misura(&format!("id_dei_brani {ordine:?} (prima)"), &|| {
+            let mut q = c
+                .prepare(&format!(
+                    "SELECT t.id FROM tracks t ORDER BY {}",
+                    ordine.sql()
+                ))
+                .expect("sql");
+            let n = q
+                .query_map([], |r| r.get::<_, i64>(0))
+                .expect("righe")
+                .count();
+            assert_eq!(n, 30_000);
+        });
+        misura(&format!("id_dei_brani {ordine:?} (dopo)"), &|| {
+            assert_eq!(
+                id_dei_brani(&c, &Origine::Tutti, ordine).expect("id").len(),
+                30_000
+            );
+        });
+    }
+    interrogazioni::assicura_ordine(&c).expect("ordine");
+    misura("list_albums (prima)", &|| {
+        let mut q = c
+            .prepare(&format!(
+                "SELECT {} FROM albums a ORDER BY {} LIMIT 60 OFFSET 0",
+                interrogazioni::COLONNE_ALBUM,
+                interrogazioni::ORDINE_DEGLI_ALBUM
+            ))
+            .expect("sql");
+        let _ = q
+            .query_map([], interrogazioni::album_from_row)
+            .expect("righe")
+            .count();
+    });
+    misura("list_albums (dopo)", &|| {
+        list_albums(&c, &Origine::Tutti, 0, 60).expect("album");
+    });
+    misura("list_artists (prima)", &|| {
+        // la stessa forma, senza il filtro: l'elenco è quello del test
+        let _ = list_artists(&c, &Origine::Locale).expect("artisti");
+    });
+    misura("list_artists (dopo)", &|| {
+        let _ = list_artists(&c, &Origine::Tutti).expect("artisti");
+    });
 }

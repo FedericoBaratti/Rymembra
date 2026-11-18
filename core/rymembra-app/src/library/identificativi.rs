@@ -20,7 +20,7 @@ use rusqlite::Connection;
 use rymembra_domain::errors::AppError;
 
 use super::db_error;
-use super::interrogazioni::{TrackOrder, da_preferiti, da_ricerca, fts_query};
+use super::interrogazioni::{TrackOrder, da_preferiti, da_ricerca, dove, fts_query};
 use crate::specchio::Origine;
 
 /// Gli identificativi di tutta la libreria, nell'ordine di [`super::list_tracks`].
@@ -35,7 +35,7 @@ pub fn id_dei_brani(
 ) -> Result<Vec<i64>, AppError> {
     let sql = format!(
         "SELECT t.id FROM tracks t WHERE {} ORDER BY {}",
-        origine.sql("t.")?,
+        dove(connection, origine, "t.")?,
         order.sql()
     );
     leggi(connection, &sql, &[], "identificativi dei brani")
@@ -47,7 +47,7 @@ pub fn id_dei_brani(
 ///
 /// `db.*` se la lettura fallisce.
 pub fn id_dei_preferiti(connection: &Connection, origine: &Origine) -> Result<Vec<i64>, AppError> {
-    let sql = format!("SELECT t.id {}", da_preferiti(origine)?);
+    let sql = format!("SELECT t.id {}", da_preferiti(connection, origine)?);
     leggi(connection, &sql, &[], "identificativi dei preferiti")
 }
 
@@ -65,7 +65,7 @@ pub fn id_della_ricerca(
     if espressione.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = format!("SELECT t.id {}", da_ricerca(origine)?);
+    let sql = format!("SELECT t.id {}", da_ricerca(connection, origine)?);
     leggi(
         connection,
         &sql,

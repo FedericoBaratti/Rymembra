@@ -470,7 +470,8 @@ pub(crate) fn leggi_libreria(connection: &Connection) -> Result<Vec<LibraryTrack
     let mut statement = connection
         .prepare(
             "SELECT id, track_key, artist, title, duration_ms, isrc FROM tracks
-              WHERE path IS NOT NULL ORDER BY id",
+              WHERE path IS NOT NULL AND NOT (path >= 'lontano://' AND path < 'lontano:/0')
+              ORDER BY id",
         )
         .map_err(|err| db_error("lettura della libreria", &err))?;
     let righe = statement
