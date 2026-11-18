@@ -1630,22 +1630,66 @@ pub fn leggi_a_parte<T>(
     entro: Duration,
     azione: impl FnOnce(&Connection) -> Result<T, AppError>,
 ) -> Option<Result<T, AppError>> {
-    let lettore = stato
-        .cartella_dati()
-        .filter(|_| stato.in_wal.get().copied().unwrap_or(false))
-        .map(|cartella| apri_un_lettore(&cartella.join(NOME_DATABASE), entro));
-    match lettore {
+    match lettore_a_parte(stato, entro) {
         Some(Ok(connessione)) => Some(azione(&connessione)),
         Some(Err(err)) => {
-            nota!(
-                "[stato] la lettura a parte non si apre, si aspetta la libreria codice={} causa={}",
-                err.code().kind().code(),
-                err.cause().unwrap_or("—")
-            );
+            lettore_che_non_si_apre(&err);
             con_libreria_entro(stato, entro, |libreria| azione(&libreria.connection))
         }
         None => con_libreria_entro(stato, entro, |libreria| azione(&libreria.connection)),
     }
+}
+
+/// Quanto una lettura della finestra aspetta, dentro SQLite, un file occupato in
+/// un modo che anche un lettore WAL sente. Le stesse cinque secondi della
+/// connessione principale (`BUSY_TIMEOUT_MS`): non è il filo della finestra a
+/// aspettare — la lettura gira sul pool bloccante (`disparte::leggi_a_parte`).
+const ATTESA_DEL_LETTORE_DELLA_FINESTRA: Duration = Duration::from_secs(5);
+
+/// Come [`leggi_a_parte`], per le letture della **finestra**: quelle non possono
+/// rinunciare. `leggi_a_parte` risponde `None` se, senza WAL, il lucchetto non
+/// arriva entro `entro` — e una lista che non si legge non è una risposta da
+/// mostrare. Qui, se non si può leggere a parte (giornale non WAL, libreria non
+/// ancora aperta, connessione che non si apre) si ripiega su [`con_libreria`],
+/// che aspetta quanto serve, come ogni comando.
+///
+/// Gira sul pool bloccante, mai sul filo della finestra: lo garantisce chi la
+/// chiama (`disparte::leggi_a_parte`).
+///
+/// # Errori
+///
+/// Quelli dell'azione, e quelli di [`con_libreria`] se si ripiega.
+pub fn leggi_o_aspetta<T>(
+    stato: &Stato,
+    azione: impl FnOnce(&Connection) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    match lettore_a_parte(stato, ATTESA_DEL_LETTORE_DELLA_FINESTRA) {
+        Some(Ok(connessione)) => azione(&connessione),
+        Some(Err(err)) => {
+            lettore_che_non_si_apre(&err);
+            con_libreria(stato, |libreria| azione(&libreria.connection))
+        }
+        None => con_libreria(stato, |libreria| azione(&libreria.connection)),
+    }
+}
+
+/// La connessione di sola lettura, se il giornale è WAL e la libreria è aperta;
+/// `None` altrimenti. Una per chiamata: vedi [`leggi_a_parte`].
+fn lettore_a_parte(stato: &Stato, entro: Duration) -> Option<Result<Connection, AppError>> {
+    stato
+        .cartella_dati()
+        .filter(|_| stato.in_wal.get().copied().unwrap_or(false))
+        .map(|cartella| apri_un_lettore(&cartella.join(NOME_DATABASE), entro))
+}
+
+/// Una connessione di sola lettura che non si apre si dice nel diario, e si
+/// ripiega sul lucchetto: la lettura non si perde.
+fn lettore_che_non_si_apre(err: &AppError) {
+    nota!(
+        "[stato] la lettura a parte non si apre, si aspetta la libreria codice={} causa={}",
+        err.code().kind().code(),
+        err.cause().unwrap_or("—")
+    );
 }
 
 /// La connessione di sola lettura di [`leggi_a_parte`].
@@ -2276,3 +2320,12 @@ mod prove_dei_fili {
         assert_eq!(attesa_dopo_la_caduta(40), Duration::from_secs(600));
     }
 }
+
+/// Le misure di FR2: quanto costa la rilettura della pagina di un artista, sotto il
+/// lucchetto e fuori. Vedi `stato/misure.rs`.
+#[cfg(test)]
+mod misure;
+
+/// La lettura della finestra senza il lucchetto: le prove (FR2).
+#[cfg(test)]
+mod prove_a_parte;
