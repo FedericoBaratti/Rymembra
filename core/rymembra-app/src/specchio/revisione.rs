@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use rusqlite::{Connection, params};
 use rymembra_sync::{Contenuto, Documento, fondi};
 
+use crate::db::RITORNO_DALLA_43;
 use crate::sincronia;
 use crate::specchio::archivio::{anteprima_dimentica, dimentica_dispositivo};
 use crate::specchio::comuni::{ADESSO, chiave, giro, libreria, riga};
@@ -343,12 +344,9 @@ fn rev2_05_un_secchio_arrivato_dopo_il_dimentica_non_riporta_le_righe() {
 
 // ── 6. La ricetta di ritorno 43→42 lascia album fantasma ─────────────────────────
 
-/// La ricetta scritta in testa alla 043 (e provata da `db::tests`).
-const RITORNO_DALLA_43: &str = "DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
-     DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
-     DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
-     DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
-     PRAGMA user_version = 42;";
+// `RITORNO_DALLA_43` è la ricetta scritta in testa alla 043: le prove di `db`
+// dicono che è quella che la migrazione porta (`le_ricette_di_ritorno_stanno_in_testa_alla_quarantatre`),
+// così queste provano quel che la migrazione davvero dice.
 
 #[test]
 fn rev2_06_il_ritorno_alla_42_non_lascia_album_senza_brani() {

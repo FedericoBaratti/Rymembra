@@ -49,6 +49,13 @@
 -- esterna: `ALTER TABLE … DROP COLUMN` rifiuta una colonna che ne ha una, e la
 -- ricetta di ritorno qui sotto deve poterla togliere.
 --
+-- Una riga specchio che il proprietario non manda più (`lontano_brani.
+-- sparito_ms`) resta per qualche giorno — la grazia — perché se il brano
+-- ritorna, anche con un id nuovo, trovi ancora il suo posto nelle playlist; e
+-- in quei giorni **non si suona e non si conta da nessuna parte**: ha
+-- `copia_di` uguale al proprio `id`, che per «Tutti» vuol dire «nascosta» e che
+-- nessun rappresentante può essere. Lo schema non cambia.
+--
 -- # Fatti di questa macchina
 --
 -- Niente di tutto questo viaggia nel profilo, nel backup o nella sincronia: le
@@ -71,16 +78,33 @@
 -- brano remoto e non ancora arrivati al proprietario non partono più. Nessun
 -- brano di questa macchina si perde. `DROP COLUMN` riscrive la tabella dei
 -- brani, che su una libreria grande vuol dire qualche secondo e lo spazio di
--- una seconda copia della tabella durante il lavoro:
---   `DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
+-- una seconda copia della tabella durante il lavoro.
+-- La ricetta va lanciata a Rymembra chiusa, e **comincia accendendo le chiavi
+-- esterne**: il programma `sqlite3` le tiene spente di serie, e spente la
+-- cascata non porta via le voci di playlist e la cronologia delle righe
+-- cancellate, che restano a puntare nel vuoto — e `tracks.id`, senza
+-- `AUTOINCREMENT`, può riusare quegli id per brani nuovi, che si ritroverebbero
+-- nelle playlist di altri. Gli album e gli artisti che non hanno più nessun
+-- brano si tolgono a mano, e il segno `aggregati = 0` fa rifare gli altri —
+-- quelli che i brani remoti avevano contribuito a contare — alla prima
+-- scansione:
+--   `PRAGMA foreign_keys = ON;
+--    DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
 --    DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
 --    DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
+--    DELETE FROM albums WHERE album_key NOT IN (SELECT album_key FROM tracks WHERE album_key IS NOT NULL);
+--    DELETE FROM artists WHERE name NOT IN (SELECT DISTINCT TRIM(COALESCE(NULLIF(TRIM(album_artist), ''), artist)) FROM tracks);
+--    UPDATE libreria_stato SET aggregati = 0;
 --    DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
 --    PRAGMA user_version = 42;`
 -- E per tornare alla 038, la 3.2.0, in un blocco solo e in quest'ordine:
---   `DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
+--   `PRAGMA foreign_keys = ON;
+--    DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
 --    DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
 --    DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
+--    DELETE FROM albums WHERE album_key NOT IN (SELECT album_key FROM tracks WHERE album_key IS NOT NULL);
+--    DELETE FROM artists WHERE name NOT IN (SELECT DISTINCT TRIM(COALESCE(NULLIF(TRIM(album_artist), ''), artist)) FROM tracks);
+--    UPDATE libreria_stato SET aggregati = 0;
 --    DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
 --    DROP TRIGGER chiavi_d_ordine_da_rifare;
 --    DROP INDEX idx_tracks_titolo_per_nome; DROP INDEX idx_tracks_scaffale_per_nome;
@@ -145,6 +169,15 @@ CREATE TABLE lontano_brani (
 );
 
 CREATE UNIQUE INDEX idx_lontano_brani_remoto ON lontano_brani(dispositivo, id_remoto);
+
+-- «Dimentica dispositivo» cerca, per ogni voce di playlist, una copia dello
+-- stesso brano con la chiave di contenuto del proprietario: senza l'indice è
+-- una scansione di `lontano_brani` per chiave, dentro la transazione che tiene
+-- il lucchetto (tremila voci su ottantamila righe: oltre due minuti). E la
+-- copertina di una riga si cerca per la sua impronta, per sapere a chi
+-- chiederla.
+CREATE INDEX idx_lontano_brani_content_key ON lontano_brani(content_key);
+CREATE INDEX idx_lontano_brani_cover ON lontano_brani(cover_remota);
 
 CREATE TABLE dispositivi_posta (
   id          INTEGER PRIMARY KEY,
