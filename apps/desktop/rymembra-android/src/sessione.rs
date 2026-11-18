@@ -42,7 +42,9 @@ pub struct Scheda {
     /// La copertina, come percorso **dentro** la cartella delle copertine
     /// (`ab/abcdef….jpg`): Kotlin la serve all'auto e alla schermata di blocco
     /// dal suo `ContentProvider`, perché un file privato dell'app un altro
-    /// processo non lo può aprire. Vedi [`pronta`].
+    /// processo non lo può aprire. Quella di un brano di un altro dispositivo
+    /// è `lontane/<dispositivo>/<impronta>.jpg`, dentro la seconda cartella.
+    /// Vedi [`pronta`].
     pub copertina: Option<String>,
     /// Quanto dura il brano, in millisecondi. `0` se non si sa.
     pub durata_ms: u64,
@@ -119,24 +121,47 @@ pub fn coda(coda: &Coda) -> Result<(), Errore> {
     chiama("sessione.coda", coda)
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct Pronta<'a> {
     copertine: &'a str,
+    /// Assente, e non `null`, senza cache: Kotlin la legge con un `optString`,
+    /// e un `null` di JSON gli arriverebbe come il testo «null».
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lontane: Option<&'a str>,
 }
 
-/// Dice a Kotlin che il nucleo è partito, e dove stanno le copertine.
+/// Quel che `sessione.pronta` porta a Kotlin: le cartelle delle copertine.
+fn argomenti_di_pronta<'a>(
+    copertine: &'a Path,
+    lontane: Option<&'a Path>,
+) -> Result<Pronta<'a>, Errore> {
+    let copertine = copertine
+        .to_str()
+        .ok_or_else(|| Errore::nuovo("la cartella delle copertine non è testo"))?;
+    let lontane = lontane
+        .map(|cartella| {
+            cartella
+                .to_str()
+                .ok_or_else(|| Errore::nuovo("la cartella delle copertine lontane non è testo"))
+        })
+        .transpose()?;
+    Ok(Pronta { copertine, lontane })
+}
+
+/// Dice a Kotlin che il nucleo è partito, e dove stanno le copertine: quelle
+/// di questo dispositivo (`copertine`, lo store) e quelle degli altri
+/// dispositivi collegati (`lontane`, una cache, se c'è). Sono le due radici del
+/// fornitore `Copertine`, e Kotlin le ricorda per quando il sistema chiede una
+/// copertina prima che il nucleo sia su.
 ///
 /// Fino a qui la sessione esiste ma non sa niente: se l'ha svegliata l'auto,
 /// con l'app chiusa, le domande sulla libreria aspettano questo segnale.
 ///
 /// # Errori
 ///
-/// Se il ponte non risponde, o se il percorso non è testo.
-pub fn pronta(copertine: &Path) -> Result<(), Errore> {
-    let copertine = copertine
-        .to_str()
-        .ok_or_else(|| Errore::nuovo("la cartella delle copertine non è testo"))?;
-    chiama("sessione.pronta", &Pronta { copertine })
+/// Se il ponte non risponde, o se un percorso non è testo.
+pub fn pronta(copertine: &Path, lontane: Option<&Path>) -> Result<(), Errore> {
+    chiama("sessione.pronta", &argomenti_di_pronta(copertine, lontane)?)
 }
 
 /// Dice a chi sfoglia la libreria — l'auto — che è cambiata: una scansione
@@ -318,6 +343,31 @@ mod prove {
         assert_eq!(
             da(r#"{"gesto":"cerca"}"#),
             Ok(Gesto::Cerca(Ricerca::default()))
+        );
+    }
+
+    /// F1 (#1): Kotlin riceve anche la cartella delle copertine degli altri
+    /// dispositivi, che è la seconda radice del suo fornitore; senza cache non
+    /// riceve niente, e la seconda radice si toglie.
+    #[test]
+    fn la_sessione_pronta_dice_anche_dove_stanno_le_copertine_lontane() {
+        let con = argomenti_di_pronta(
+            Path::new("/dati/copertine"),
+            Some(Path::new("/cache/copertine-lontane")),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&con).unwrap(),
+            serde_json::json!({
+                "copertine": "/dati/copertine",
+                "lontane": "/cache/copertine-lontane",
+            })
+        );
+        let senza = argomenti_di_pronta(Path::new("/dati/copertine"), None).unwrap();
+        assert_eq!(
+            serde_json::to_value(&senza).unwrap(),
+            serde_json::json!({ "copertine": "/dati/copertine" }),
+            "senza cache la chiave non c'è: Kotlin toglie la seconda radice"
         );
     }
 

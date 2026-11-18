@@ -80,6 +80,8 @@
 #[cfg_attr(mobile, path = "android.rs")]
 mod sistema;
 
+mod lontane;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -202,7 +204,7 @@ pub fn aggiorna(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
     // racconta. Questo è lo stesso numero, tenuto dove serve ai salti.
     media.durata_ms.store(stato.durata_ms, Ordering::Relaxed);
 
-    sistema::aggiorna(&media, stato);
+    sistema::aggiorna(app, &media, stato);
 }
 
 /// Aggiorna dove sta il brano, senza toccare la scheda.

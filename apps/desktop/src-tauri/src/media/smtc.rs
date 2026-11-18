@@ -161,7 +161,7 @@ pub fn stacca(app: &tauri::AppHandle) {
 
 /// La parte di [`super::aggiorna`] che tocca Windows: la scheda e lo stato
 /// della riproduzione. Posizione e durata le ha già segnate chi chiama.
-pub(super) fn aggiorna(media: &StatoMedia, stato: &StatoRiproduzione) {
+pub(super) fn aggiorna(app: &tauri::AppHandle, media: &StatoMedia, stato: &StatoRiproduzione) {
     let mut dentro = media
         .controlli
         .lock()
@@ -170,7 +170,7 @@ pub(super) fn aggiorna(media: &StatoMedia, stato: &StatoRiproduzione) {
         return;
     };
 
-    let scheda = scheda_di(stato, &controlli.copertine);
+    let scheda = scheda_di(app, stato, &controlli.copertine);
     if controlli.mostrata.as_ref() != Some(&scheda) {
         consegna(controlli, scheda);
     }
@@ -192,7 +192,7 @@ pub(super) fn aggiorna(media: &StatoMedia, stato: &StatoRiproduzione) {
 /// la copertina di ripiego. `souvlaki` scrive soltanto i campi che riceve, e
 /// `MediaMetadata::default()` — che era quel che si mandava — non ne conteneva
 /// nessuno: la scheda restava lì a dire il titolo dell'ultimo brano.
-fn scheda_di(stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
+fn scheda_di(app: &tauri::AppHandle, stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
     let Some(brano) = stato.brano.as_ref() else {
         return Scheda {
             track_id: None,
@@ -206,8 +206,7 @@ fn scheda_di(stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
     let copertina = brano
         .cover_art_hash
         .as_ref()
-        .map(|hash| copertine.path_for(hash))
-        .filter(|percorso| percorso.exists())
+        .and_then(|hash| file_della_copertina(app, copertine, hash))
         .and_then(|percorso| url_di_file(&percorso))
         // Un brano senza copertina mostra quella di ripiego, e non è un
         // ornamento: senza, la scheda terrebbe la copertina del brano di prima
@@ -221,6 +220,29 @@ fn scheda_di(stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
         copertina,
         durata_ms: stato.durata_ms,
     }
+}
+
+/// Il file della copertina di un brano, se c'è.
+///
+/// Un brano di questo PC la ha nello store, sotto la sua impronta. Un brano
+/// che suona da un altro dispositivo ha invece una chiave
+/// (`lontano-<dispositivo>-<impronta>`) e la sua copertina sta nella cache
+/// delle copertine lontane: dove non c'è ancora la si chiede in disparte, e
+/// quando arriva la scheda si ripubblica, con lei. Vedi `lontane`.
+fn file_della_copertina(
+    app: &tauri::AppHandle,
+    copertine: &CoverStore,
+    hash: &str,
+) -> Option<PathBuf> {
+    if crate::lontano::e_una_copertina(hash) {
+        return super::lontane::file_di(
+            app,
+            hash,
+            true,
+            crate::riproduzione::insieme::aggiorna_finestra,
+        );
+    }
+    Some(copertine.path_for(hash)).filter(|percorso| percorso.exists())
 }
 
 /// Consegna la scheda a Windows, e ricorda com'è andata.
