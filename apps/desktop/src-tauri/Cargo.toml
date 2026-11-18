@@ -133,7 +133,7 @@ tauri-plugin-opener = "2.6"
 # Un crate nostro e non una dipendenza, contro la regola che vale per
 # `souvlaki` e `trash`: non c'è una dipendenza seria che lo faccia. L'unico
 # plugin per Tauri è alla 0.1.0 con un commit, e perde lo stato dei pulsanti
-# quando la barra li ricrea. Così l'`unsafe` che serve sta in cinque posti
+# quando la barra li ricrea. Così l'`unsafe` che serve sta in sette posti
 # dichiarati di quel crate — il modulo `finestra.rs` dei pulsanti, la
 # funzione di `unita.rs` che chiede a Windows il genere di un'unità
 # (`GetDriveTypeW`: «Elimina dal disco» deve sapere che una chiavetta o un CD
@@ -141,8 +141,10 @@ tauri-plugin-opener = "2.6"
 # le passate dopo la scansione a priorità di sottofondo e chiedono se si va a
 # batteria, e le quattro funzioni di `espulsione.rs` con cui la sorveglianza
 # delle cartelle sa che Windows sta per espellere una chiavetta o un disco USB
-# e lo lascia (`CM_Register_Notification`), e la lettura di Maiusc di
-# `maiusc.rs` (`GetAsyncKeyState`, per l'uscita d'emergenza dalle skin) —
+# e lo lascia (`CM_Register_Notification`), la lettura di Maiusc di
+# `maiusc.rs` (`GetAsyncKeyState`, per l'uscita d'emergenza dalle skin) e le
+# tre funzioni di `registro.rs` per l'avvio con Windows (`HKCU\…\Run`) e la
+# finestra nativa mai mostrata di `messaggi.rs`, su cui stanno le SMTC —
 # con l'eccezione dichiarata nel
 # `Cargo.toml` della radice; vedi `rymembra-barra/src/lib.rs`. Nel `Cargo.lock`
 # non entra nessun pacchetto esterno: usa il `windows` 0.62 che c'era già.

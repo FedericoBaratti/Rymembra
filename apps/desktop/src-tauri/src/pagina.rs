@@ -138,6 +138,20 @@ fn navigazione_ammessa(url: &Url, sviluppo: Option<&Url>) -> bool {
 /// pagina nuova lo riaccenda, e lo stesso filo dà l'ordine. `try_state` perché
 /// la prima pagina può arrivare prima del `setup`, che registra gli stati.
 fn pagina_nuova(app: &AppHandle) {
+    pagina_finita(app);
+}
+
+/// Spegne quel che la pagina aveva acceso: la stessa pulizia di una pagina nuova,
+/// anche quando la pagina **non ne ha una dopo**.
+///
+/// Con la X sul vassoio la finestra è distrutta e il motore resta (`comparsa`):
+/// una pagina nascosta poteva ancora reagire da sé, una distrutta no. Lo spettro
+/// che la pagina aveva acceso continuerebbe a calcolare e a emettere a nessuno
+/// per tutto il tempo del sottofondo, e i conti dei pannelli dei testi aperti
+/// resterebbero quelli di una pagina che non c'è — cioè proprio il consumo che
+/// «resta solo il motore» vuole togliere. La chiama `lib.rs` alla
+/// `Destroyed` della finestra.
+pub(crate) fn pagina_finita(app: &AppHandle) {
     if let Some(testi) = app.try_state::<crate::testi::StatoTesti>() {
         testi.pagina_nuova();
     }
@@ -158,6 +172,20 @@ fn pagina_nuova(app: &AppHandle) {
 /// cambia solo quando cambia.
 #[cfg(desktop)]
 static NASCOSTA: AtomicBool = AtomicBool::new(false);
+
+/// Una finestra **nuova** — il vassoio ha chiuso quella di prima e l'ha
+/// ricreata (`comparsa`) — ha una pagina che si vede: [`NASCOSTA`] ripartirebbe
+/// dal valore della finestra morta. Con la pagina rimasta «nascosta» di una
+/// finestra chiusa a icona, la prima riduzione della nuova non la nasconderebbe
+/// (il confronto di [`cambio`] direbbe «è già così») e la pagina disegnerebbe a
+/// sessanta fotogrammi al secondo dietro una finestra che nessuno guarda
+/// (R21-3). **Non** si azzera a ogni pagina nuova (`pagina_nuova`): una
+/// ricarica a finestra ridotta lascia la pagina nascosta, e azzerare lì la
+/// lascerebbe nascosta anche al ripristino.
+#[cfg(desktop)]
+pub(crate) fn finestra_nuova() {
+    NASCOSTA.store(false, Ordering::Release);
+}
 
 /// La finestra si vede? Non se Windows la dice ridotta a icona, e non se
 /// l'area client non c'è.
@@ -347,7 +375,10 @@ mod prove {
         // del `Resized` non ha mai funzionato (R21-3, 144×19).
         let regola = corpo("fn regola_il_disegno(");
         assert!(regola.contains("finestra.is_minimized()"));
-        let nuova = corpo("fn pagina_nuova(");
+        // La pagina nuova fa la pulizia di una pagina finita, che è la stessa
+        // che serve quando la finestra è distrutta e non ne nasce un'altra.
+        assert!(corpo("fn pagina_nuova(").contains("pagina_finita(app)"));
+        let nuova = corpo("pub(crate) fn pagina_finita(");
         for pulizia in [
             "testi.pagina_nuova()",
             "riproduzione::spettro(lettore, false)",
@@ -356,5 +387,25 @@ mod prove {
         ] {
             assert!(nuova.contains(pulizia), "la pagina nuova non fa {pulizia}");
         }
+        // E **non** azzera `NASCOSTA`: una ricarica a finestra ridotta lascia la
+        // pagina nascosta, e azzerarlo lì la lascerebbe tale al ripristino.
+        assert!(
+            !nuova.contains("NASCOSTA"),
+            "una pagina nuova non è una finestra nuova"
+        );
+    }
+
+    /// Una finestra ricreata dal vassoio riparte con la pagina visibile, non
+    /// con lo stato di quella morta ridotta a icona.
+    #[test]
+    fn una_finestra_nuova_riparte_con_la_pagina_che_si_vede() {
+        NASCOSTA.store(true, Ordering::Release);
+        finestra_nuova();
+        assert!(!NASCOSTA.load(Ordering::Acquire));
+        // La prima riduzione della finestra nuova nasconde la pagina.
+        assert_eq!(
+            cambio(NASCOSTA.load(Ordering::Acquire), si_vede(true, 144, 19)),
+            Some(false)
+        );
     }
 }

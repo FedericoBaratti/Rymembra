@@ -26,6 +26,10 @@ mod account;
 #[cfg_attr(mobile, path = "mobile/aggiornamenti.rs")]
 mod aggiornamenti;
 mod analisi;
+// La riga di comando: l'avvio automatico e il link `rymembra://collega/…`. Solo
+// sul computer: il telefono non ha una riga di comando.
+#[cfg(desktop)]
+mod argomenti;
 mod arricchimento;
 mod browser;
 // Android Auto: l'albero della libreria per lo schermo dell'auto. Sul computer
@@ -37,11 +41,15 @@ mod browser;
     allow(dead_code, reason = "nelle prove sul computer: lo usa solo Android")
 )]
 mod auto;
+mod avvio_con_windows;
 mod barra;
 mod cancellazione;
 mod cartelle;
 mod chiusura;
 mod comandi;
+// Come compare la finestra, e come ricompare dopo la X sul vassoio.
+#[cfg(desktop)]
+mod comparsa;
 mod copertine;
 mod destinazioni;
 mod diario;
@@ -126,8 +134,15 @@ const ATTESA_PRIMO_COLORE: std::time::Duration = std::time::Duration::from_secs(
 ///
 /// È anche il via del controllo aggiornamenti d'avvio: vedi
 /// `aggiornamenti::finestra_pronta`.
+///
+/// Sul computer la comparsa passa da `comparsa::mostra`: lanciata da Windows al
+/// login la finestra compare ridotta a icona, e questa è una delle tre strade
+/// che la mostrano — con [`finestra_mostra`] e la rete di sicurezza.
 #[tauri::command]
-fn pronto(finestra: tauri::Window) {
+fn pronto(finestra: tauri::WebviewWindow) {
+    #[cfg(desktop)]
+    comparsa::mostra(&finestra);
+    #[cfg(mobile)]
     let _ = finestra.show();
     aggiornamenti::finestra_pronta(finestra.app_handle());
 }
@@ -140,7 +155,10 @@ fn pronto(finestra: tauri::Window) {
 /// aggiornamenti: quello vuole la libreria, e parte quando la finestra vera è
 /// pronta.
 #[tauri::command]
-fn finestra_mostra(finestra: tauri::Window) {
+fn finestra_mostra(finestra: tauri::WebviewWindow) {
+    #[cfg(desktop)]
+    comparsa::mostra(&finestra);
+    #[cfg(mobile)]
     let _ = finestra.show();
 }
 
@@ -562,7 +580,9 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
 /// finestra che sta morendo vuol dire toccare l'`AppHandle` durante la
 /// demolizione del ciclo degli eventi — che è esattamente il modo in cui questa
 /// applicazione moriva. Vedi [`spegnimento`].
-fn rete_di_sicurezza(app: &tauri::AppHandle) {
+///
+/// Una finestra ricreata dal vassoio la riprende: `comparsa::finestra_nata`.
+pub(crate) fn rete_di_sicurezza(app: &tauri::AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(ATTESA_PRIMO_COLORE);
@@ -570,6 +590,9 @@ fn rete_di_sicurezza(app: &tauri::AppHandle) {
             return;
         }
         if let Some(finestra) = app.get_webview_window("main") {
+            #[cfg(desktop)]
+            comparsa::mostra(&finestra);
+            #[cfg(mobile)]
             let _ = finestra.show();
         }
     });
@@ -597,6 +620,16 @@ pub fn run() {
     telefono::installa_il_portachiavi();
     // E l'uscita audio, per la stessa ragione: il motore si apre nel `setup`.
     telefono::installa_l_uscita_audio();
+    // Come si è partiti, subito: la riga di comando — l'avvio automatico di
+    // Windows, un link `rymembra://collega/…` cliccato — e, per la copia del
+    // Store, che non passa argomenti, l'attivazione dell'attività di avvio. Quest'ultima
+    // risponde solo la prima volta (vedi `rymembra_barra::avviata_dal_login_store`):
+    // da chiamare qui, e una volta.
+    #[cfg(desktop)]
+    comparsa::registra_l_avvio(
+        argomenti::Argomenti::del_processo(),
+        dallo_store() && rymembra_barra::avviata_dal_login_store(),
+    );
 
     let costruttore = tauri::Builder::default();
     // L'istanza unica per prima, come chiede il plugin: il secondo processo
@@ -759,6 +792,15 @@ pub fn run() {
                 }
             }
 
+            // Il link `rymembra://collega/…` che ha fatto partire il programma,
+            // se c'è: resta in attesa finché la pagina non lo prende — non c'è
+            // ancora — e passa dalla stessa conferma di quello arrivato col
+            // programma già aperto. Vedi `argomenti`.
+            #[cfg(desktop)]
+            if let Some(link) = comparsa::avvio().link.as_deref() {
+                lontano::link_arrivato(app.handle(), link);
+            }
+
             // Per ultima, e dopo tutto il resto: quel che conta è che parta a
             // finestra già costruita, non prima di aprire il database.
             rete_di_sicurezza(app.handle());
@@ -790,9 +832,12 @@ pub fn run() {
                 chiusura::Decisione::Rinvia(_) | chiusura::Decisione::Aspetta => {
                     api.prevent_close();
                 }
+                // Il vassoio c'è: la finestra **si chiude davvero**, con la sua
+                // WebView2 — non si impedisce e non si nasconde — e il programma
+                // resta: vedi `RunEvent::ExitRequested` più sotto, che alla
+                // fine dell'ultima finestra non esce. «Mostra» la ricrea
+                // (`comparsa`).
                 chiusura::Decisione::Nascondi => {
-                    api.prevent_close();
-                    let _ = finestra.hide();
                     // Il QR del collegamento non resta valido nel vassoio, dove
                     // nessuno lo vede (decisione D-30).
                     lontano::finestra_nascosta(mano);
@@ -823,6 +868,10 @@ pub fn run() {
             vassoio::secondo_piano,
             vassoio::secondo_piano_attiva,
             vassoio::vassoio_lingua,
+            avvio_con_windows::avvio_con_windows_stato,
+            avvio_con_windows::avvio_con_windows_imposta,
+            avvio_con_windows::proposta_sottofondo_da_fare,
+            avvio_con_windows::proposta_sottofondo_rispondi,
             comandi::avvio,
             comandi::imposta_cartelle,
             comandi::cartelle_trasloca,
@@ -1203,6 +1252,23 @@ pub fn run() {
                 return;
             }
 
+            // La finestra è morta — la X sul vassoio, e il motore resta — e con
+            // lei la pagina: quel che la pagina aveva acceso (lo spettro, i
+            // pannelli dei testi) non lo spegne più nessuno, e va spento da qui.
+            // Non uscendo: chi esce spegne tutto con `spegnimento::spegni`.
+            #[cfg(desktop)]
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } = &evento
+                && label == "main"
+                && !spegnimento::in_uscita()
+            {
+                pagina::pagina_finita(mano);
+                return;
+            }
+
             // `CloseRequested` è la presa più precoce che Tauri offra: arriva
             // mentre la finestra c'è ancora, prima che `tao` dichiari il ciclo
             // distrutto. Gli altri due sono la cintura oltre le bretelle — se
@@ -1251,9 +1317,29 @@ pub fn run() {
                 }
             }
 
+            // La fine dell'ultima finestra non è la fine del programma, se il
+            // vassoio c'è: con la X sul vassoio la finestra **si chiude**
+            // (`on_window_event`), e a quel punto Tauri chiede di uscire
+            // (`ExitRequested` senza codice). Si impedisce: restano il motore,
+            // l'icona e le scorciatoie multimediali, e «Mostra» ricrea la
+            // finestra (`comparsa`). `spegnimento::spegni` parte solo da
+            // «Esci» — che alza la bandiera ed esce con un codice — e da un
+            // vassoio che non c'è, dove la finestra era l'unica via di ritorno.
+            #[cfg(desktop)]
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = &evento
+                && !spegnimento::in_uscita()
+                && vassoio::nasconde(mano)
+            {
+                api.prevent_exit();
+                nota!("[uscita] la finestra si è chiusa: il motore resta, nel vassoio");
+                return;
+            }
+
             // Con il secondo piano acceso, però, una chiusura non è un'uscita:
-            // `on_window_event` l'ha appena impedita, e la finestra si è solo
-            // nascosta. Alzare qui la bandiera darebbe il guasto peggiore dei
+            // la finestra si chiude e il programma resta. Alzare qui la
+            // bandiera darebbe il guasto peggiore dei
             // due possibili — musica che continua mentre si ferma tutto il
             // resto, perché `spegnimento` non torna mai indietro: orologio,
             // spettro, sorveglianza dei dispositivi, posizione di ripresa,
@@ -1313,9 +1399,12 @@ pub fn run() {
 ///
 /// Il secondo è esattamente quel che fa il callback: [`vassoio::mostra`], che è
 /// già la risposta giusta e fa tutti e tre i gesti — mostra, de-riduce, dà il
-/// fuoco. Nessun controllo aggiornamenti in più e nessun altro effetto: il filo
-/// del primo processo batte anche a finestra nascosta, quindi non c'è niente da
-/// risvegliare.
+/// fuoco — e, se la finestra non c'è perché la X sul vassoio l'ha chiusa, la
+/// ricrea. Nessun controllo aggiornamenti in più e nessun altro effetto: i fili
+/// del primo processo battono anche senza finestra, quindi non c'è niente da
+/// risvegliare. Fanno eccezione due righe di comando — l'avvio automatico di
+/// Windows, che non alza niente, e un link `rymembra://collega/…`, che si
+/// consegna prima: vedi `argomenti`.
 ///
 /// # Perché una cartella scelta a mano e non `debug_assertions`
 ///
@@ -1367,14 +1456,15 @@ fn una_sola_istanza(costruttore: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
     if dati_a_mano(nuova, vecchia) {
         return costruttore;
     }
-    costruttore.plugin(tauri_plugin_single_instance::init(
-        |app, _argomenti, _da| {
-            // Gli argomenti e la cartella del secondo processo non servono: Rymembra
-            // non si apre con un file sulla riga di comando, e non c'è niente da
-            // consegnare. Quel che c'era da fare è riportare davanti la finestra.
-            vassoio::mostra(app);
-        },
-    ))
+    costruttore.plugin(tauri_plugin_single_instance::init(|app, argomenti, _da| {
+        // Della riga di comando del secondo processo contano due cose sole:
+        // `--avvio-automatico` — l'avvio di Windows su un programma che c'è
+        // già, che **non** alza nessuna finestra — e un link
+        // `rymembra://collega/…`, che si consegna e poi alza la finestra.
+        // Tutto il resto è riportare davanti la finestra, ricreandola se il
+        // vassoio l'aveva chiusa. La cartella del secondo processo non serve.
+        comparsa::secondo_avvio(app, &argomenti);
+    }))
 }
 
 /// Il nome della variabile d'ambiente con cui si sceglie a mano la cartella dati:
@@ -2132,5 +2222,96 @@ mod prove {
             guardia.is_some() && guardia < resto,
             "il resto dell'avvio parte anche uscendo"
         );
+    }
+
+    /// Il ciclo degli eventi di `run`, dalla chiusura della callback in poi.
+    fn ciclo_degli_eventi() -> &'static str {
+        include_str!("lib.rs")
+            .split("Ok(app) => app.run(|mano, evento| {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n        }),\n").next())
+            .unwrap_or_default()
+    }
+
+    /// §8.5: la X col vassoio non spegne il nucleo. La fine dell'ultima finestra
+    /// (`ExitRequested` senza codice) si impedisce se il vassoio c'è e non si sta
+    /// uscendo, **prima** che il ciclo arrivi a `spegnimento::spegni`; e un'uscita
+    /// vera — «Esci», con un codice — passa.
+    #[test]
+    fn la_x_col_vassoio_non_spegne_il_nucleo() {
+        let ciclo = ciclo_degli_eventi();
+        assert!(!ciclo.is_empty(), "il ciclo degli eventi non si trova");
+        let impedisce = ciclo
+            .find("tauri::RunEvent::ExitRequested {\n                code: None, api, ..\n            } = &evento")
+            .expect("manca il ramo di ExitRequested senza codice");
+        let blocco = ciclo.get(impedisce..).unwrap_or_default();
+        let fine = blocco.find("return;").expect("il ramo non torna");
+        let ramo = blocco.get(..fine).unwrap_or_default();
+        assert!(
+            ramo.contains("api.prevent_exit()"),
+            "non impedisce l'uscita"
+        );
+        assert!(
+            ramo.contains("!spegnimento::in_uscita()"),
+            "impedirebbe anche un'uscita voluta"
+        );
+        assert!(
+            ramo.contains("vassoio::nasconde(mano)"),
+            "impedirebbe l'uscita anche senza un'icona a cui tornare"
+        );
+        // Solo `code: None`: un'uscita con un codice è «Esci» o l'aggiornatore.
+        assert!(!ramo.contains("code: Some"));
+        // E sta **prima** della sequenza di spegnimento.
+        let spegni = ciclo
+            .find("spegnimento::spegni(mano)")
+            .expect("la sequenza di spegnimento non si trova");
+        assert!(
+            impedisce < spegni,
+            "l'uscita si impedisce dopo aver spento tutto"
+        );
+        assert!(ciclo.contains("crate::chiusura::CHIUSURA.rinviata()"));
+    }
+
+    /// Alla X col vassoio la finestra si chiude davvero: non si impedisce e non
+    /// si nasconde, o la pagina — con la sua WebView2 — resterebbe viva.
+    #[test]
+    fn la_x_col_vassoio_chiude_la_finestra_invece_di_nasconderla() {
+        let lib = include_str!("lib.rs");
+        let gestore = lib
+            .split(".on_window_event(|finestra, evento| {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n        })\n").next())
+            .unwrap_or_default();
+        assert!(
+            !gestore.is_empty(),
+            "il gestore della chiusura non si trova"
+        );
+        let nascondi = gestore
+            .split("chiusura::Decisione::Nascondi => {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n                }\n").next())
+            .unwrap_or_default();
+        assert!(!nascondi.is_empty(), "il ramo Nascondi non si trova");
+        assert!(
+            !nascondi.contains("prevent_close") && !nascondi.contains(".hide()"),
+            "il ramo Nascondi impedisce la chiusura o nasconde la finestra"
+        );
+        assert!(nascondi.contains("lontano::finestra_nascosta(mano)"));
+    }
+
+    /// Morta la finestra, quel che la pagina aveva acceso — lo spettro, i
+    /// pannelli dei testi — non lo spegne più nessuno: lo spegne il nucleo, alla
+    /// `Destroyed`, e non se si sta uscendo.
+    #[test]
+    fn alla_fine_della_finestra_si_spegne_quel_che_la_pagina_aveva_acceso() {
+        let ciclo = ciclo_degli_eventi();
+        let da = ciclo
+            .find("tauri::WindowEvent::Destroyed")
+            .expect("il ciclo non guarda la fine della finestra");
+        let ramo = ciclo.get(da..).unwrap_or_default();
+        let fine = ramo.find("return;").expect("il ramo non torna");
+        let ramo = ramo.get(..fine).unwrap_or_default();
+        assert!(ramo.contains("pagina::pagina_finita(mano)"));
+        assert!(ramo.contains("!spegnimento::in_uscita()"));
     }
 }

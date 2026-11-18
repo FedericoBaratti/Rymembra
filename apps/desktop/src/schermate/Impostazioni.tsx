@@ -33,9 +33,11 @@ import type {
   AvanzamentoNuvola,
   AvanzamentoVolume,
   Avvio,
+  AvvioConWindows,
   ContoNuvola,
   EsitoArricchimento,
   EsitoScansione,
+  ImpedimentoAvvio,
   ModoLivello,
   Normalizzazione,
   QuadroSorveglianza,
@@ -404,6 +406,12 @@ function voci(): readonly {
     // Nessuno cerca «secondo piano»: si cerca «chiudi», «x», «tray», o
     // «continua a suonare». I sinonimi qui sono la voce, più del titolo.
     ...(MOBILE ? [] : [v("chiusura", "background", "settings.background.title")]),
+    // Nessuno cerca «avvio con Windows» sapendo che si chiama così: si cerca
+    // «parti all'accesso», «autostart», «login», «ridotta a icona». Sta nella
+    // stessa scheda della X: è la stessa domanda, cosa fa Rymembra quando non
+    // la si guarda. Sul telefono non c'è: l'avvio all'accensione è un'altra
+    // cosa, e ha la sua voce.
+    ...(MOBILE ? [] : [v("chiusura", "startup", "settings.background.title")]),
     v("dati", "numbers", "settings.data.title"),
     v("dati", "profile", "settings.profile.title"),
     // Nessuno cerca «manutenzione»: si cerca «spazio», «cache», o «pulisci» —
@@ -1354,9 +1362,21 @@ function InterruttoreAutoplay({
  * non c'è niente da vedere — l'effetto è quel che farà la X fra tre ore — e un
  * interruttore acceso su una scrittura fallita mentirebbe fino alla prima volta
  * che qualcuno chiude Rymembra credendo di nasconderlo.
+ *
+ * # «Avvia con Windows»
+ *
+ * Sta qui perché è la stessa domanda — cosa fa Rymembra quando non la si sta
+ * guardando — e con la stessa regola, ma il suo stato **non è una preferenza
+ * nostra**: lo dice il sistema (il registro, o l'attività di avvio del Store),
+ * e l'utente può spegnerlo da Gestione attività. L'interruttore si disegna da
+ * quel che il comando **rilegge**, e quando la scelta è stata fatta altrove — o
+ * non si può fare, come nella copia di prova — dice perché con `impedito`,
+ * invece di mostrarsi acceso per un avvio che non parte.
  */
 function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
   const [acceso, setAcceso] = useState(false);
+  /** L'avvio con Windows, secondo il sistema; `null` finché non si è letto. */
+  const [avvio, setAvvio] = useState<AvvioConWindows | null>(null);
 
   useEffect(() => {
     let annullato = false;
@@ -1369,9 +1389,17 @@ function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
         /* Spento, che è il valore di serie e il comportamento di sempre: una
            preferenza che non si legge non deve poter far sparire la finestra. */
       });
+    ipc
+      .avvioConWindowsStato()
+      .then((letto) => {
+        if (!annullato) setAvvio(letto);
+      })
+      .catch(onErrore);
     return () => {
       annullato = true;
     };
+    // Una volta, all'apertura della scheda: `onErrore` non è una dipendenza
+    // perché cambiarlo non deve rileggere il registro.
   }, []);
 
   return (
@@ -1380,6 +1408,18 @@ function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
       titolo={t("settings.background.title")}
       guida="background"
     >
+      {/* Finché non si è letto lo stato non si disegna: un interruttore
+          spento per un attimo e poi acceso è un avvio che sembra cambiato. */}
+      {avvio !== null && (
+        <Interruttore
+          etichetta={t("settings.startup.toggle")}
+          acceso={avvio.acceso}
+          impedito={motivoDelloStartup(avvio.impedito)}
+          onCambia={(valore) => {
+            ipc.avvioConWindowsImposta(valore).then(setAvvio).catch(onErrore);
+          }}
+        />
+      )}
       <Interruttore
         etichetta={t("settings.background.toggle")}
         acceso={acceso}
@@ -1389,6 +1429,27 @@ function SchedaChiusura({ onErrore }: { onErrore: (e: unknown) => void }) {
       />
     </Scheda>
   );
+}
+
+/**
+ * Perché «Avvia con Windows» non si tocca, a parole; `undefined` se si può.
+ *
+ * Uno `switch` e non una chiave composta: ogni testo si nomina per esteso, così
+ * `check:lingue` lo vede usato e una chiave tolta non passa inosservata.
+ */
+function motivoDelloStartup(impedito: ImpedimentoAvvio | null): string | undefined {
+  switch (impedito) {
+    case null:
+      return undefined;
+    case "sistema":
+      return t("settings.startup.blocked.system");
+    case "criterio":
+      return t("settings.startup.blocked.policy");
+    case "prova":
+      return t("settings.startup.blocked.test");
+    case "nonDisponibile":
+      return t("settings.startup.blocked.unavailable");
+  }
 }
 
 /** Da byte a una misura che si legge: nessun decimale sotto il megabyte. */

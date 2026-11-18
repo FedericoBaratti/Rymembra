@@ -1,5 +1,8 @@
 ﻿; Rymembra - hook dell'installer NSIS per togliere la versione precedente.
 ;
+; (Fa anche altro, in fondo al file: registra il protocollo rymembra:// e, alla
+; disinstallazione, lo toglie insieme all'avvio con Windows.)
+;
 ; Il programma si chiamava in un altro modo e viveva in un'altra cartella, con
 ; un'altra voce in "App e funzionalità". Un'installazione di Rymembra non la
 ; toccherebbe mai (nome, cartella e chiavi di registro sono diversi), e
@@ -289,7 +292,27 @@
 ; viene DOPO questa macro e che quindi non si deve anticipare. `/NS` (nessun
 ; collegamento) vale anche qui. Le due variabili le accende solo
 ; NSIS_HOOK_PREINSTALL, e solo per un Aether riconosciuto.
+;
+; IL PROTOCOLLO rymembra://. Un link `rymembra://collega/...` cliccato in una
+; chat o in una pagina deve arrivare a Rymembra: Windows lo manda a chi ha
+; registrato il protocollo, e il registro è questo (HKCU\Software\Classes, che
+; per l'utente corrente vale come HKCR e non chiede amministratore). Si scrive
+; sempre, anche in /UPDATE: un aggiornamento che arriva dal disinstallatore
+; della versione di prima non lascia niente da conservare, e un percorso
+; d'installazione cambiato deve riscriversi. Il comando è `"<exe>" "%1"`: il
+; link arriva come un argomento solo, e il programma lo tratta come un input
+; che non è suo (src-tauri/src/argomenti.rs: prefisso, lunghezza, caratteri) e lo
+; mostra a chi decide prima di collegare qualcosa.
+; Non si usa `plugins.deep-link` della configurazione di Tauri, che il modello
+; saprebbe leggere (`deep_link_protocols`, installer.nsi): senza costruire un
+; installer non si può dire che il suo gancio parta, e un registro scritto qui
+; si legge a occhio.
 !macro NSIS_HOOK_POSTINSTALL
+  WriteRegStr HKCU "Software\Classes\rymembra" "" "URL:Rymembra"
+  WriteRegStr HKCU "Software\Classes\rymembra" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\rymembra\DefaultIcon" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
+  WriteRegStr HKCU "Software\Classes\rymembra\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
+
   ${If} $UpdateMode = 1
   ${AndIf} $NoShortcutMode <> 1
     ${If} $PrecedenteMenuStart == 1
@@ -311,5 +334,35 @@
       CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
       !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
     ${EndIf}
+  ${EndIf}
+!macroend
+
+; La disinstallazione: il protocollo, e l'avvio con Windows.
+;
+; Espansa dal template in fondo a `Section Uninstall` (NSIS_HOOK_POSTUNINSTALL,
+; installer.nsi del CLI npm 2.12.0). Niente qui dentro in modalità aggiornamento
+; (/UPDATE): il disinstallatore della versione di prima gira per far posto alla
+; nuova, e il registro che l'utente ha acceso — l'avvio, il protocollo — è suo.
+;
+; IL PROTOCOLLO si toglie solo se è il nostro: se il comando punta a questa
+; cartella. È la stessa cautela che il modello ha per i suoi protocolli
+; (`deep_link_protocols`): un altro programma può essersi registrato su
+; `rymembra` dopo di noi, e toglierglielo non spetta a questo disinstallatore.
+;
+; L'AVVIO CON WINDOWS lo toglie già il modello (`DeleteRegValue HKCU "...\Run"
+; "${PRODUCTNAME}"`, sempre fuori da /UPDATE): il valore si chiama come il
+; prodotto proprio perché sia lui a toglierlo, e una prova in src-tauri lo tiene
+; uguale a `productName`. Qui si ripete, e si toglie anche lo `StartupApproved`
+; che Windows scrive quando l'utente lo spegne da Gestione attività e non toglie
+; mai da solo: una copia che si disinstalla non deve lasciare né l'avvio né il
+; ricordo di averlo spento, che bloccherebbe l'interruttore di una copia nuova.
+!macro NSIS_HOOK_POSTUNINSTALL
+  ${If} $UpdateMode <> 1
+    ReadRegStr $R7 HKCU "Software\Classes\rymembra\shell\open\command" ""
+    ${If} $R7 == "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
+      DeleteRegKey HKCU "Software\Classes\rymembra"
+    ${EndIf}
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "${PRODUCTNAME}"
   ${EndIf}
 !macroend

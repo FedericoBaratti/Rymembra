@@ -368,6 +368,7 @@ const FUORI: &[&str] = &[
     "«Ascolta insieme»: i PC associati, il nome di questo PC e gli indirizzi (fatti di questa macchina)",
     "le cartelle dal cloud: gli account collegati, le app registrate presso Google, Microsoft e Dropbox, e lo specchio dei servizi (fatti di questa macchina; le cartelle scelte viaggiano)",
     "il sottofondo del telefono: «Resta attiva in sottofondo» (fatto di questo telefono: la sua batteria, e il produttore che lo lascia vivere o no)",
+    "il sottofondo del computer: le etichette del vassoio e la risposta alla proposta di partire con Windows (fatti di questa macchina e di questa installazione; «Avvia con Windows» sta nel registro di Windows, non nella libreria)",
 ];
 
 /// Il file v1, come sta sul disco.

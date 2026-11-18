@@ -2,11 +2,16 @@
 //!
 //! # Cosa cambia, e cosa no
 //!
-//! Con la preferenza accesa il tasto di chiusura **nasconde** la finestra invece
-//! di far uscire il processo: la musica continua, perché non è mai stata nella
-//! finestra. Sta tutta in `rymembra-play`, nei fili `rymembra-uscita` e
-//! `rymembra-decodifica`, e la pagina non contiene un solo `<audio>` — non c'è
-//! niente, dalla parte della finestra, che nascondendola si fermi.
+//! Con la preferenza accesa il tasto di chiusura **chiude la finestra** — la
+//! distrugge, con la sua WebView2 — e lascia vivo il programma: la musica
+//! continua, perché non è mai stata nella finestra. Sta tutta in
+//! `rymembra-play`, nei fili `rymembra-uscita` e `rymembra-decodifica`, e la
+//! pagina non contiene un solo `<audio>`. Una volta bastava nasconderla; ma una
+//! finestra nascosta tiene viva la pagina, e coi suoi processi `msedgewebview2`
+//! costava memoria per un programma che si voleva solo in sottofondo. Adesso
+//! resta il motore, e la finestra si ricrea dalla configurazione quando serve:
+//! vedi [`crate::comparsa`], e `lib.rs` per come il programma sopravvive
+//! all'ultima finestra.
 //!
 //! Il tasto «riduci a icona» resta quel che era. Chi lo preme sta chiedendo di
 //! togliere di mezzo la finestra e sa dove ritrovarla, sulla barra delle
@@ -15,15 +20,15 @@
 //!
 //! # Perché serve un'icona, e non è un ornamento
 //!
-//! Una finestra nascosta senza un modo di tornare è un programma perso: resta
-//! nell'elenco dei processi, continua a suonare, e l'unico modo di riprenderlo è
-//! il Gestione attività. L'icona **è** la via di ritorno, ed è per questo che
-//! [`nasconde`] non chiede soltanto se la preferenza è accesa: chiede se
-//! l'icona c'è davvero. Se il sistema l'ha rifiutata, o se le etichette del
-//! menù non sono ancora scese dalla finestra, la X torna a chiudere — che è il
+//! Un programma senza finestra e senza un modo di tornare è un programma perso:
+//! resta nell'elenco dei processi, continua a suonare, e l'unico modo di
+//! riprenderlo è il Gestione attività. L'icona **è** la via di ritorno, ed è per
+//! questo che [`nasconde`] non chiede soltanto se la preferenza è accesa: chiede
+//! se l'icona c'è davvero. Se il sistema l'ha rifiutata, o se le etichette del
+//! menù non ci sono ancora, la X torna a chiudere il programma — che è il
 //! guasto giusto fra i due possibili.
 //!
-//! # Perché le etichette arrivano dalla finestra
+//! # Perché le etichette arrivano dalla finestra, e si ricordano
 //!
 //! «Mostra Rymembra» ed «Esci» sono due testi che l'utente legge, e tutti i testi
 //! che l'utente legge stanno in `apps/desktop/src/lingue/`, dove
@@ -33,7 +38,12 @@
 //! nessuno segnala perché sembra una svista di traduzione e non un difetto.
 //!
 //! La finestra li manda con [`vassoio_lingua`] appena ha applicato la lingua, e
-//! di nuovo a ogni cambio.
+//! di nuovo a ogni cambio. **Il nucleo li ricorda**, in `settings`
+//! (`ui.trayLabels`): l'avvio automatico può non avere una pagina per un pezzo —
+//! e il programma, dopo la X, non ne ha più — e senza etichette non c'è un menù,
+//! e senza menù non c'è un'icona a cui tornare. Si ricordano nella lingua
+//! dell'ultima finestra, e si riscrivono solo se cambiano. Il valore è di questa
+//! macchina e della sua lingua: non entra nel profilo.
 //!
 //! # La musica dal vassoio
 //!
@@ -64,6 +74,10 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use rymembra_app::preferenze::CHIAVE_ETICHETTE_VASSOIO;
+use rymembra_app::settings;
+use rymembra_domain::errors::AppError;
+use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
 use tauri::State;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -115,7 +129,7 @@ const SUGGERIMENTO_A_RIPOSO: &str = "Rymembra";
 const SUGGERIMENTO_MASSIMO: usize = 100;
 
 /// Le etichette del menù, come le manda la finestra.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Etichette {
     /// «Mostra Rymembra».
     mostra: String,
@@ -127,7 +141,7 @@ struct Etichette {
 }
 
 /// Le etichette delle voci della musica.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Trasporto {
     /// «Riproduci», quando la musica è ferma.
     riproduci: String,
@@ -255,8 +269,24 @@ pub fn nasconde(app: &tauri::AppHandle) -> bool {
 /// stessa richiesta — «rimettimi davanti la finestra» — e due funzioni che la
 /// soddisfano sono due funzioni che il giorno in cui i gesti giusti diventano
 /// quattro ne fanno tre.
+///
+/// # Se la finestra non c'è
+///
+/// Con la X sul vassoio la finestra è **distrutta**, non nascosta: «Mostra»,
+/// un clic sull'icona, un secondo avvio la fanno rinascere dalla configurazione
+/// ([`crate::comparsa::ricrea_se_manca`]). La nuova non è ancora lì quando
+/// questa funzione torna: nasce sul filo della finestra, e si mostra da sé
+/// quando la pagina dice `pronto`.
+///
+/// # E chi aspettava l'avvio automatico
+///
+/// Chi chiama questa funzione sta chiedendo la finestra **adesso**, e chi
+/// l'ha chiesta non vuole che un attimo dopo `pronto` la riduca a icona come si
+/// riduce la comparsa dell'avvio con Windows: la richiesta di ridurla cade qui.
 pub(crate) fn mostra(app: &tauri::AppHandle) {
+    crate::comparsa::annulla_la_riduzione();
     let Some(finestra) = app.get_webview_window("main") else {
+        crate::comparsa::ricrea_se_manca(app);
         return;
     };
     let _ = finestra.show();
@@ -572,6 +602,10 @@ pub fn avvia(app: &tauri::AppHandle) {
         None => {}
     });
     let stato_app = app.state::<Stato>();
+    // Le etichette dell'ultima finestra, se il nucleo le ricorda: con loro
+    // l'icona nasce senza aspettare una pagina. Prima di `ricorda`, che le
+    // legge. Una finestra che arriva dopo le riscrive, e vincono le sue.
+    carica_le_etichette_ricordate(app, &stato_app);
     let letto = con_libreria(&stato_app, |libreria| {
         rymembra_app::preferenze::secondo_piano(&libreria.connection)
     });
@@ -580,6 +614,70 @@ pub fn avvia(app: &tauri::AppHandle) {
         // Senza libreria non c'è preferenza da leggere, e spento è il valore
         // giusto: la X chiude, come ha sempre fatto.
         Err(err) => nota!("[vassoio] la preferenza non si legge: {err}"),
+    }
+}
+
+/// Rimette in `StatoVassoio` le etichette che il nucleo ricorda, se la finestra
+/// non ne ha ancora mandate. Vedi il preambolo del modulo.
+///
+/// Una riga che non si legge — corrotta, di una versione che le scriveva
+/// altrimenti — è una riga che non c'è: il vassoio aspetta la finestra, come
+/// prima, e la riga si riscrive alla prima lingua applicata.
+fn carica_le_etichette_ricordate(app: &tauri::AppHandle, stato: &Stato) {
+    let Some(vassoio) = app.try_state::<StatoVassoio>() else {
+        return;
+    };
+    let ricordate = con_libreria(stato, |libreria| {
+        settings::read_json::<Etichette>(&libreria.connection, CHIAVE_ETICHETTE_VASSOIO)
+    });
+    let ricordate = match ricordate {
+        Ok(ricordate) => ricordate,
+        Err(err) => {
+            nota!("[vassoio] le etichette ricordate non si leggono: {err}");
+            return;
+        }
+    };
+    let Some(ricordate) = ricordate else {
+        return;
+    };
+    {
+        let mut dentro = vassoio
+            .etichette
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if dentro.is_some() {
+            return;
+        }
+        *dentro = Some(ricordate.clone());
+    }
+    if let Some(trasporto) = &ricordate.trasporto {
+        crate::barra::etichette(app, per_la_barra(trasporto));
+    }
+}
+
+/// Le etichette della musica, come le vogliono i suggerimenti dei pulsanti
+/// nell'anteprima.
+fn per_la_barra(trasporto: &Trasporto) -> rymembra_barra::Etichette {
+    rymembra_barra::Etichette {
+        precedente: trasporto.precedente.clone(),
+        riproduci: trasporto.riproduci.clone(),
+        pausa: trasporto.pausa.clone(),
+        successivo: trasporto.successivo.clone(),
+    }
+}
+
+/// Scrive le etichette nel nucleo, perché sopravvivano alla finestra. Un guasto
+/// si dice e non ferma niente: l'icona c'è lo stesso, e la riga si riscrive al
+/// prossimo cambio.
+fn ricorda_le_etichette(app: &tauri::AppHandle, etichette: &Etichette) {
+    let Some(stato) = app.try_state::<Stato>() else {
+        return;
+    };
+    let scritta = con_libreria(&stato, |libreria| {
+        settings::write_json(&libreria.connection, CHIAVE_ETICHETTE_VASSOIO, etichette)
+    });
+    if let Err(err) = scritta {
+        nota!("[vassoio] le etichette non si ricordano: {err}");
     }
 }
 
@@ -605,15 +703,24 @@ pub fn secondo_piano_attiva(
     stato: State<'_, Stato>,
     attivo: bool,
 ) -> Esito<bool> {
-    let rimasto = con_libreria(&stato, |libreria| {
+    imposta_il_secondo_piano(&app, &stato, attivo).map_err(errore)
+}
+
+/// Il corpo di [`secondo_piano_attiva`], per chi non è la finestra: la proposta
+/// «parti con Windows e resta nel vassoio» lo accende allo stesso modo.
+pub(crate) fn imposta_il_secondo_piano(
+    app: &tauri::AppHandle,
+    stato: &Stato,
+    attivo: bool,
+) -> Result<bool, AppError> {
+    let rimasto = con_libreria(stato, |libreria| {
         rymembra_app::preferenze::imposta_secondo_piano(&libreria.connection, attivo)?;
         rymembra_app::preferenze::secondo_piano(&libreria.connection)
-    })
-    .map_err(errore)?;
+    })?;
     // Fuori da `con_libreria`, a lucchetto già lasciato: costruire l'icona
     // parla col filo principale e aspetta la sua risposta, e farlo tenendo la
     // libreria vorrebbe dire tenerla per tutto quel tempo.
-    ricorda(&app, rimasto);
+    ricorda(app, rimasto);
     Ok(rimasto)
 }
 
@@ -647,26 +754,27 @@ pub fn vassoio_lingua(
     // Le stesse etichette fanno da suggerimento ai pulsanti nell'anteprima:
     // vedi `crate::barra`.
     if let Some(trasporto) = &trasporto {
-        crate::barra::etichette(
-            &app,
-            rymembra_barra::Etichette {
-                precedente: trasporto.precedente.clone(),
-                riproduci: trasporto.riproduci.clone(),
-                pausa: trasporto.pausa.clone(),
-                successivo: trasporto.successivo.clone(),
-            },
-        );
+        crate::barra::etichette(&app, per_la_barra(trasporto));
     }
-    if let Some(stato) = app.try_state::<StatoVassoio>() {
+    let nuove = Etichette {
+        mostra,
+        esci,
+        trasporto,
+    };
+    let cambiate = app.try_state::<StatoVassoio>().is_some_and(|stato| {
         let mut dentro = stato
             .etichette
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        *dentro = Some(Etichette {
-            mostra,
-            esci,
-            trasporto,
-        });
+        let cambiate = dentro.as_ref() != Some(&nuove);
+        *dentro = Some(nuove.clone());
+        cambiate
+    });
+    // Il nucleo le ricorda per il vassoio senza pagina, ma le riscrive solo se
+    // sono cambiate: la finestra le manda a ogni cambio di lingua, e a ogni
+    // finestra nuova.
+    if cambiate {
+        ricorda_le_etichette(&app, &nuove);
     }
     riallinea(&app);
 }
@@ -839,6 +947,69 @@ mod prove {
     #[test]
     fn spenta_e_senza_etichette_non_c_e_niente_da_montare() {
         assert!(!deve_esserci(false, None));
+    }
+
+    #[test]
+    fn le_etichette_ricordate_tornano_come_sono_state_mandate() {
+        let con_musica = Etichette {
+            trasporto: Some(trasporto()),
+            ..etichette()
+        };
+        for prima in [etichette(), con_musica] {
+            let scritte = serde_json::to_string(&prima).expect("serializza");
+            let lette: Etichette = serde_json::from_str(&scritte).expect("legge");
+            assert!(lette == prima, "{scritte}");
+        }
+    }
+
+    #[test]
+    fn le_etichette_di_prima_della_musica_si_leggono_lo_stesso() {
+        // Una riga scritta da una finestra che non mandava le voci della musica
+        // non ha il campo: il menù resta quello di due voci.
+        let lette: Etichette =
+            serde_json::from_str(r#"{"mostra":"Mostra","esci":"Esci"}"#).expect("legge");
+        assert!(lette.trasporto.is_none());
+    }
+
+    #[test]
+    fn una_riga_che_non_si_legge_non_diventa_un_menu() {
+        for storta in [r#"{"mostra":"Mostra"}"#, "[]", r#"{"mostra":1,"esci":2}"#] {
+            assert!(
+                serde_json::from_str::<Etichette>(storta).is_err(),
+                "{storta}"
+            );
+        }
+    }
+
+    /// Il vassoio si costruisce anche senza la pagina: all'avvio il nucleo
+    /// rimette le etichette che ricorda **prima** di leggere la preferenza e
+    /// costruire l'icona, e la finestra le riscrive solo se cambiano.
+    #[test]
+    fn il_vassoio_ricorda_le_etichette_e_le_rimette_prima_dell_icona() {
+        let avvia = corpo(sorgente(), "pub fn avvia(");
+        let carica = avvia.find("carica_le_etichette_ricordate(");
+        let icona = avvia.find("ricorda(app, attivo)");
+        assert!(
+            carica.is_some() && carica < icona,
+            "l'icona nascerebbe prima delle etichette ricordate"
+        );
+        let lingua = corpo(sorgente(), "pub fn vassoio_lingua(");
+        assert!(lingua.contains("ricorda_le_etichette("));
+        assert!(
+            lingua.contains("if cambiate"),
+            "le etichette si riscrivono a ogni finestra, anche uguali"
+        );
+        assert!(corpo(sorgente(), "fn ricorda_le_etichette(").contains("CHIAVE_ETICHETTE_VASSOIO"));
+    }
+
+    /// Chi chiede la finestra adesso — «Mostra», un clic, un secondo avvio —
+    /// non deve vedersela ridurre a icona dalla comparsa dell'avvio
+    /// automatico, e se la finestra non c'è la fa rinascere.
+    #[test]
+    fn mostra_ricrea_la_finestra_e_annulla_la_riduzione() {
+        let mostra = corpo(sorgente(), "pub(crate) fn mostra(");
+        assert!(mostra.contains("comparsa::annulla_la_riduzione()"));
+        assert!(mostra.contains("comparsa::ricrea_se_manca(app)"));
     }
 
     /// Il sorgente di questo file senza le prove: le prove sul sorgente non

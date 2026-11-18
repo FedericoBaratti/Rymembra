@@ -128,6 +128,16 @@ pub const CHIAVE_LINGUA: &str = "ui.language";
 /// Se la X chiude davvero, o manda in secondo piano.
 pub const CHIAVE_SECONDO_PIANO: &str = "ui.closeToTray";
 
+/// Le etichette del menù dell'icona nell'area di notifica, come le ha mandate
+/// l'ultima finestra (JSON): il vassoio si costruisce anche senza una pagina.
+/// Vedi `vassoio.rs`. Non entra nel profilo: è un fatto di questa macchina.
+pub const CHIAVE_ETICHETTE_VASSOIO: &str = "ui.trayLabels";
+
+/// La risposta alla proposta «parti con Windows e resta nel vassoio»: vedi
+/// [`proposta_sottofondo`]. Non entra nel profilo: è la storia di questa
+/// installazione, come il giro.
+pub const CHIAVE_PROPOSTA_SOTTOFONDO: &str = "ui.proposta.sottofondo";
+
 /// Se chi guarda ha chiesto meno movimento di quanto la skin ne dichiari.
 pub const CHIAVE_MOVIMENTO_RIDOTTO: &str = "ui.reducedMotion";
 
@@ -644,12 +654,90 @@ pub fn imposta_giro_visto(connection: &Connection, versione: &str) -> Result<(),
     settings::write(connection, CHIAVE_GIRO_VISTO, versione)
 }
 
+/// Come ha risposto chi ha visto la proposta «parti con Windows e resta nel
+/// vassoio».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RispostaProposta {
+    /// «Sì»: ha acceso quel che la proposta diceva.
+    Si,
+    /// «No, grazie»: non si è acceso niente.
+    No,
+    /// Non c'era niente da proporre: l'aveva già acceso da sé.
+    Gia,
+}
+
+/// La risposta alla proposta, o `None` se non è ancora stata fatta.
+///
+/// Una proposta si fa **una volta sola**: assente vuol dire «mai fatta», e
+/// qualunque altra riga — anche una scritta da una versione che conosce risposte
+/// che questa non sa leggere — vuol dire «fatta»: ripeterla a chi ha già
+/// risposto è il difetto, e quello contrario non si nota. Una riga vuota è come
+/// assente, per la stessa disciplina di [`giro_visto`].
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn proposta_sottofondo(connection: &Connection) -> Result<Option<RispostaProposta>, AppError> {
+    Ok(settings::read(connection, CHIAVE_PROPOSTA_SOTTOFONDO)?
+        .filter(|riga| !riga.trim().is_empty())
+        .map(|riga| match riga.trim() {
+            "yes" => RispostaProposta::Si,
+            "already" => RispostaProposta::Gia,
+            _ => RispostaProposta::No,
+        }))
+}
+
+/// Segna come si è risposto alla proposta, e non la si ripropone.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn imposta_proposta_sottofondo(
+    connection: &Connection,
+    risposta: RispostaProposta,
+) -> Result<(), AppError> {
+    let riga = match risposta {
+        RispostaProposta::Si => "yes",
+        RispostaProposta::No => "no",
+        RispostaProposta::Gia => "already",
+    };
+    settings::write(connection, CHIAVE_PROPOSTA_SOTTOFONDO, riga)
+}
+
 #[cfg(test)]
 mod prove {
     use super::*;
 
     fn libreria() -> Connection {
         crate::db::open_in_memory().expect("database").connection
+    }
+
+    #[test]
+    fn la_proposta_del_sottofondo_si_fa_una_volta_sola() {
+        let c = libreria();
+        // Mai fatta: nessuna risposta, e la proposta si può fare.
+        assert_eq!(proposta_sottofondo(&c), Ok(None));
+        for risposta in [
+            RispostaProposta::Si,
+            RispostaProposta::No,
+            RispostaProposta::Gia,
+        ] {
+            imposta_proposta_sottofondo(&c, risposta).expect("scrittura");
+            assert_eq!(proposta_sottofondo(&c), Ok(Some(risposta)));
+        }
+    }
+
+    #[test]
+    fn una_riga_che_non_si_capisce_vale_come_risposta_data() {
+        let c = libreria();
+        // Una versione futura può scrivere una risposta che questa non conosce:
+        // ripetere la domanda a chi ha già risposto è il difetto.
+        settings::write(&c, CHIAVE_PROPOSTA_SOTTOFONDO, "later").expect("scrittura");
+        assert_eq!(proposta_sottofondo(&c), Ok(Some(RispostaProposta::No)));
+        // Una riga vuota è come assente: una scrittura andata a metà non deve
+        // togliere la proposta a chi non l'ha mai vista.
+        settings::write(&c, CHIAVE_PROPOSTA_SOTTOFONDO, "  ").expect("scrittura");
+        assert_eq!(proposta_sottofondo(&c), Ok(None));
     }
 
     #[test]

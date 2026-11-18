@@ -36,6 +36,13 @@ pub(super) struct Controlli {
     /// L'ultima scheda che Windows ha rifiutato: serve a scriverlo nel diario
     /// una volta sola invece che a ogni stato.
     rifiutata: Option<Scheda>,
+    /// La finestra nativa a cui sono appesi i controlli: vedi [`avvia`].
+    ///
+    /// **Per ultima**, ed è l'ordine che conta: i campi cadono nell'ordine in cui
+    /// sono scritti, e il `Drop` di `controlli` chiama `detach` su questa
+    /// finestra, che dev'essere ancora viva. Nessuno la legge: la si tiene perché
+    /// viva quanto i controlli.
+    _finestra: rymembra_barra::FinestraDeiMessaggi,
 }
 
 /// Quel che la scheda di Windows mostra, per sapere se è cambiato.
@@ -62,24 +69,32 @@ struct Scheda {
 
 /// Registra i controlli e collega i tasti.
 ///
-/// Va chiamata **dopo** che la finestra esiste: su Windows le SMTC si
-/// appendono a una finestra, e senza il suo puntatore non c'è niente a cui
-/// appenderle. Ogni motivo per cui potrebbe non riuscire — niente finestra,
-/// niente puntatore, il sistema che rifiuta — finisce nella stessa riga di
-/// registro e lascia l'applicazione intera: un lettore senza scheda nel
-/// riquadro del volume è un lettore, un lettore che non si apre no.
+/// # A quale finestra si appendono
+///
+/// Su Windows le SMTC si appendono a una finestra, e non a quella
+/// dell'applicazione: con la X sul vassoio quella si chiude e il motore resta,
+/// e con lei i tasti multimediali morirebbero proprio quando chi ascolta si
+/// aspetta di poter ancora mettere in pausa dalla tastiera. Si appendono a una
+/// finestra **nativa nostra**, mai mostrata, che nasce qui e vive quanto i
+/// controlli: vedi `rymembra_barra::FinestraDeiMessaggi`. Va chiamata sul filo
+/// della finestra — dove la finestra dei messaggi deve nascere, perché è lì che
+/// i messaggi si pompano — e non dipende più da `main`.
+///
+/// Ogni motivo per cui potrebbe non riuscire — la finestra che non nasce, il
+/// sistema che rifiuta — finisce nella stessa riga di registro e lascia
+/// l'applicazione intera: un lettore senza scheda nel riquadro del volume è un
+/// lettore, un lettore che non si apre no.
 pub fn avvia(app: &tauri::AppHandle) {
-    let Some(finestra) = app.get_webview_window("main") else {
-        nota!("[media] nessuna finestra: i tasti multimediali restano spenti");
-        return;
-    };
-    let punt: *mut c_void = match finestra.hwnd() {
-        Ok(hwnd) => hwnd.0.cast(),
+    let finestra = match rymembra_barra::FinestraDeiMessaggi::crea() {
+        Ok(finestra) => finestra,
         Err(err) => {
-            nota!("[media] la finestra non ha un puntatore: {err}");
+            nota!(
+                "[media] la finestra dei messaggi non nasce, i tasti multimediali restano spenti: {err}"
+            );
             return;
         }
     };
+    let punt: *mut c_void = finestra.hwnd();
 
     let config = PlatformConfig {
         // Il nome che il sistema mostra accanto ai comandi. Non tradotto: è
@@ -127,6 +142,7 @@ pub fn avvia(app: &tauri::AppHandle) {
         copertine,
         mostrata: None,
         rifiutata: None,
+        _finestra: finestra,
     });
 }
 
@@ -136,15 +152,24 @@ pub fn avvia(app: &tauri::AppHandle) {
 ///
 /// Perché i controlli stanno in uno stato **gestito**, e uno stato gestito
 /// viene lasciato cadere alla fine di tutto — dopo che il ciclo degli eventi si
-/// è dichiarato distrutto e `DestroyWindow` ha smontato la finestra. Ma questi
+/// è dichiarato distrutto e `DestroyWindow` ha smontato le finestre. Ma questi
 /// controlli non sono un oggetto qualunque: su Windows sono agganciati
-/// all'`HWND` della finestra, che `souvlaki` si è fatto dare all'avvio
-/// (`GetForWindow`), e il loro `Drop` chiama `detach` su quella finestra. Cioè
-/// parla a una finestra che non c'è più.
+/// all'`HWND` della finestra dei messaggi, che `souvlaki` si è fatto dare
+/// all'avvio (`GetForWindow`), e il loro `Drop` chiama `detach` su quella
+/// finestra. Cioè parla a una finestra che non c'è più.
 ///
 /// Chiamata dal `RunEvent` d'uscita in `main`, il distacco succede quando la
 /// finestra è ancora al suo posto e la domanda ha ancora una risposta.
 /// Lasciarli cadere una seconda volta dopo non fa niente: il posto è già vuoto.
+///
+/// # L'ordine, e il filo
+///
+/// Cadono i controlli, **poi** la finestra dei messaggi (`Controlli::_finestra`
+/// è l'ultimo campo). E la finestra si distrugge solo sul filo che l'ha creata:
+/// la sequenza di spegnimento gira sul filo della finestra per «Esci» e per
+/// la chiusura, ma l'aggiornatore la chiama dal suo filo, e lì la finestra
+/// dei messaggi non si può distruggere — si chiude con un messaggio, e se il
+/// suo filo non pompa se ne va con il processo, che è sull'uscire.
 pub fn stacca(app: &tauri::AppHandle) {
     let Some(stato) = app.try_state::<StatoMedia>() else {
         return;
@@ -446,6 +471,62 @@ mod prove {
     fn percorso_che_souvlaki_consegna(url: &str) -> Option<&str> {
         url.starts_with("file://")
             .then(|| url.trim_start_matches("file://"))
+    }
+
+    /// Il sorgente di questo file senza le prove.
+    fn sorgente() -> &'static str {
+        let tutto = include_str!("smtc.rs");
+        tutto.split("#[cfg(test)]").next().unwrap_or(tutto)
+    }
+
+    /// Le SMTC non dipendono dalla finestra dell'applicazione: con la X sul
+    /// vassoio quella si chiude, e i tasti multimediali devono restare.
+    #[test]
+    fn le_smtc_non_si_appendono_alla_finestra_dell_applicazione() {
+        let avvia = sorgente()
+            .split("pub fn avvia(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        assert!(!avvia.is_empty(), "avvia non si trova");
+        assert!(
+            avvia.contains("FinestraDeiMessaggi::crea()"),
+            "le SMTC non nascono sulla finestra dei messaggi"
+        );
+        assert!(
+            !avvia.contains("get_webview_window") && !avvia.contains(".hwnd()?"),
+            "avvia chiede ancora la finestra dell'applicazione"
+        );
+    }
+
+    /// Lo smontaggio: la finestra dei messaggi è **l'ultimo** campo, così cade
+    /// dopo i controlli, il cui `Drop` chiama `detach` su di lei.
+    #[test]
+    fn la_finestra_dei_messaggi_cade_dopo_i_controlli() {
+        let struttura = sorgente()
+            .split("pub(super) struct Controlli {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        let campi: Vec<&str> = struttura
+            .lines()
+            .map(str::trim)
+            .filter(|riga| !riga.starts_with("//") && riga.contains(": "))
+            .collect();
+        assert_eq!(
+            campi
+                .first()
+                .map(|riga| riga.split(':').next().unwrap_or("")),
+            Some("controlli"),
+            "i controlli devono essere il primo campo"
+        );
+        assert_eq!(
+            campi
+                .last()
+                .map(|riga| riga.split(':').next().unwrap_or("")),
+            Some("_finestra"),
+            "la finestra dei messaggi dev'essere l'ultimo campo: cade dopo i controlli"
+        );
     }
 
     #[test]

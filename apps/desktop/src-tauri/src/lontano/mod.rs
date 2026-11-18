@@ -197,12 +197,9 @@ pub fn cambio_di_rete(app: &AppHandle) {
 static LINK_IN_ATTESA: Mutex<Option<String>> = Mutex::new(None);
 
 /// Un link di collegamento aperto da fuori (Android: l'intento della
-/// fotocamera). Se ha la forma giusta, lo si tiene e lo si dice alla
+/// fotocamera; Windows: `rymembra://collega/…` cliccato, dalla riga di comando
+/// — vedi `argomenti`). Se ha la forma giusta, lo si tiene e lo si dice alla
 /// finestra, che chiede conferma prima di collegarsi.
-#[cfg_attr(
-    not(target_os = "android"),
-    expect(dead_code, reason = "serve al telefono")
-)]
 pub fn link_arrivato(app: &AppHandle, link: &str) {
     if rymembra_lontano::Invito::da_link(link).is_err() {
         crate::nota!("[lontano] un link aperto da fuori non è un link di collegamento");

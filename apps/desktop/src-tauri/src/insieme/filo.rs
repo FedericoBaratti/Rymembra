@@ -2126,11 +2126,12 @@ fn chiave_per_la_finestra(err: &AppError, ripiego: Option<ErrorCodeKind>) -> Opt
     ripiego.map(ErrorCodeKind::i18n_key)
 }
 
-/// Porta la finestra davanti se è nascosta nel vassoio.
+/// Porta la finestra davanti se è nascosta nel vassoio — o se non c'è, perché
+/// la X sul vassoio l'ha chiusa: allora nasce di nuovo (`comparsa`).
 fn mostra_finestra(app: &AppHandle) {
     let nascosta = app
         .get_webview_window("main")
-        .is_some_and(|f| !f.is_visible().unwrap_or(true));
+        .is_none_or(|f| !f.is_visible().unwrap_or(true));
     if nascosta {
         crate::vassoio::mostra(app);
     }

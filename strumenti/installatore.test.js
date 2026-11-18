@@ -103,3 +103,63 @@ test("l'aggancio tocca solo l'Aether di Federico Baratti, nella sua cartella", (
   // altrimenti in /UPDATE comparirebbero collegamenti di Rymembra mai chiesti.
   assert.ok(CODICE.indexOf('"Publisher"') < CODICE.indexOf("StrCpy $PrecedenteMenuStart 1"));
 });
+
+/** Il corpo di una macro del gancio, senza i commenti. */
+function macro(nome) {
+  const da = CODICE.indexOf(`!macro ${nome}`);
+  assert.ok(da >= 0, `il gancio non ha la macro ${nome}`);
+  return CODICE.slice(da, CODICE.indexOf("!macroend", da));
+}
+
+/** Il comando del protocollo, com'è scritto in NSIS: `"<exe>" "%1"`, con `$\"` per le virgolette. */
+const COMANDO_NSIS = '"$\\"$INSTDIR\\${MAINBINARYNAME}.exe$\\" $\\"%1$\\""';
+
+test("il protocollo rymembra:// si registra a ogni installazione, per l'utente corrente", () => {
+  const dopo = macro("NSIS_HOOK_POSTINSTALL");
+  // HKCU e non HKLM: l'installer è «per l'utente corrente», senza amministratore.
+  assert.ok(!dopo.includes("HKLM"), "il protocollo non si scrive in HKLM");
+  assert.ok(dopo.includes('WriteRegStr HKCU "Software\\Classes\\rymembra" "URL Protocol" ""'));
+  // Il comando passa il link come **un** argomento, fra virgolette: `"<exe>" "%1"`.
+  assert.ok(
+    dopo.includes(`WriteRegStr HKCU "Software\\Classes\\rymembra\\shell\\open\\command" "" ${COMANDO_NSIS}`),
+    "il comando del protocollo non è `\"<exe>\" \"%1\"`",
+  );
+  // Anche in modalità aggiornamento: un percorso cambiato deve riscriversi. La
+  // scrittura sta fuori dal blocco dei collegamenti, che è solo di /UPDATE.
+  const scrittura = dopo.indexOf('"URL Protocol"');
+  assert.ok(scrittura >= 0 && scrittura < dopo.indexOf("${If} $UpdateMode = 1"));
+});
+
+test("la disinstallazione toglie il protocollo solo se è il nostro, e l'avvio, ma non in /UPDATE", () => {
+  const dopo = macro("NSIS_HOOK_POSTUNINSTALL");
+  assert.match(dopo, /^!macro NSIS_HOOK_POSTUNINSTALL\s+\$\{If\} \$UpdateMode <> 1/);
+  // Il protocollo si toglie se il comando punta a questa cartella, come fa il
+  // modello coi suoi (`deep_link_protocols`).
+  assert.ok(dopo.includes('ReadRegStr $R7 HKCU "Software\\Classes\\rymembra\\shell\\open\\command" ""'));
+  assert.ok(dopo.includes(`\${If} $R7 == ${COMANDO_NSIS}`));
+  const lettura = dopo.indexOf("$R7 ==");
+  const cancella = dopo.indexOf('DeleteRegKey HKCU "Software\\Classes\\rymembra"');
+  assert.ok(lettura >= 0 && cancella > lettura, "il protocollo si toglie senza guardare di chi è");
+  // L'avvio con Windows: il valore col nome del prodotto, e lo spento di Windows.
+  assert.ok(
+    dopo.includes('DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "${PRODUCTNAME}"'),
+  );
+  assert.ok(
+    dopo.includes(
+      'DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run" "${PRODUCTNAME}"',
+    ),
+  );
+  assert.ok(!dopo.includes("HKLM"));
+});
+
+test("il valore Run dell'avvio si chiama come il prodotto: è così che lo toglie il modello di Tauri", () => {
+  // Il modello toglie `Run\${PRODUCTNAME}` e nient'altro (installer.nsi del CLI
+  // 2.12.0, «Removes the Autostart entry»): il nome che il programma scrive
+  // deve essere `productName`, lettera per lettera.
+  const avvio = fs.readFileSync(path.join(REPO, "apps/desktop/rymembra-barra/src/avvio.rs"), "utf8");
+  const nome = /pub const NOME_VALORE: &str = "([^"]+)";/.exec(avvio);
+  assert.ok(nome, "NOME_VALORE non si trova in rymembra-barra/src/avvio.rs");
+  assert.equal(nome[1], CONF.productName);
+  // E l'argomento che il registro passa è quello che il programma capisce.
+  assert.ok(avvio.includes('pub const ARGOMENTO_AVVIO_AUTOMATICO: &str = "--avvio-automatico";'));
+});

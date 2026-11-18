@@ -26,6 +26,7 @@ import type {
 } from "./ipc/lontano";
 import type { AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
+import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
 import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
@@ -36,6 +37,7 @@ export * from "./ipc/importazioni";
 export * from "./ipc/skin";
 export * from "./ipc/servizi";
 export * from "./ipc/lontano";
+export * from "./ipc/sottofondo";
 
 export const ipc = {
   // La finestra nasce nascosta: il fondo che il sistema operativo dipinge
@@ -104,6 +106,23 @@ export const ipc = {
       successivo,
       precedente,
     }),
+
+  // ── l'avvio con Windows ───────────────────────────────────────────────────
+  // Lo dice il **sistema** — il registro, o l'attività di avvio del Store —, e
+  // l'utente può spegnerlo anche da fuori (Gestione attività): l'interruttore
+  // si disegna da qui. Vedi `src-tauri/src/avvio_con_windows.rs`.
+  avvioConWindowsStato: () => invoke<AvvioConWindows>("avvio_con_windows_stato"),
+  // Torna com'è rimasto, **riletto** dal sistema, come `secondoPianoAttiva`:
+  // un interruttore che mostra quel che si è chiesto direbbe «acceso» per un
+  // avvio che un criterio ha tolto.
+  avvioConWindowsImposta: (acceso: boolean) =>
+    invoke<AvvioConWindows>("avvio_con_windows_imposta", { acceso }),
+  // La proposta «parti con Windows e resta nel vassoio», una volta sola: il
+  // nucleo ricorda la risposta (`ui.proposta.sottofondo`) e dice se c'è da
+  // farla. Sul telefono risponde sempre di no.
+  propostaSottofondoDaFare: () => invoke<boolean>("proposta_sottofondo_da_fare"),
+  propostaSottofondoRispondi: (accetta: boolean) =>
+    invoke<RispostaProposta>("proposta_sottofondo_rispondi", { accetta }),
 
   avvio: () => invoke<Avvio>("avvio"),
   // Scrive le cartelle sorvegliate e dice cosa ne ha fatto: le annidate si

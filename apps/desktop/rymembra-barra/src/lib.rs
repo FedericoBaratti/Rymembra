@@ -14,13 +14,14 @@
 //! pacchetto che lo offre per Tauri è alla prima versione, ha un solo commit, e
 //! perde lo stato dei pulsanti quando la barra li ricrea.
 //!
-//! Così il codice `unsafe` sta tutto in cinque posti, il modulo `finestra`, una
+//! Così il codice `unsafe` sta tutto in sette posti, il modulo `finestra`, una
 //! funzione di [`unita`](crate::unita_di), le tre chiamate di
 //! [`sottofondo`](crate::Sottofondo), le quattro di
-//! [`espulsione`](crate::osserva_volume) e la lettura di Maiusc di
-//! [`maiusc`](crate::maiusc_giu), dentro un crate che dichiara
-//! l'eccezione nel suo `Cargo.toml` e nel `Cargo.toml` della radice. Il resto
-//! di questo crate, e tutto il resto di Rymembra, resta senza.
+//! [`espulsione`](crate::osserva_volume), la lettura di Maiusc di
+//! [`maiusc`](crate::maiusc_giu), le tre del [`registro`](crate::Registro) e la
+//! finestra nativa di [`messaggi`](crate::FinestraDeiMessaggi), dentro un crate
+//! che dichiara l'eccezione nel suo `Cargo.toml` e nel `Cargo.toml` della
+//! radice. Il resto di questo crate, e tutto il resto di Rymembra, resta senza.
 //!
 //! # L'altra domanda al sistema: il genere di un'unità
 //!
@@ -58,7 +59,27 @@
 //! tenuto, entro quanto dalla comparsa della finestra — è pura: vedi [`Ascolto`]
 //! e [`maiusc_giu`].
 //!
-//! # La sesta: dove sta la cartella privata del pacchetto MSIX
+//! # La sesta: il registro, per l'avvio con Windows
+//!
+//! Partire con Windows, per la copia installata dal sito, vuol dire un valore
+//! in `HKCU\…\Run`; e dire se parte davvero vuol dire leggere anche
+//! `…\StartupApproved\Run`, dove Windows scrive che l'utente l'ha spento da
+//! Gestione attività. Sono tre chiamate `unsafe` (`RegGetValueW`,
+//! `RegSetKeyValueW`, `RegDeleteKeyValueW`) dietro l'interfaccia [`Registro`],
+//! e la regola che le usa — [`avvio_leggi`], [`avvio_imposta`] — si prova con un
+//! registro finto: nessuna prova tocca quello vero. La copia del Store usa
+//! invece l'API WinRT `StartupTask`, che è sicura: vedi
+//! [`avvio_leggi_dal_store`].
+//!
+//! # La settima: una finestra per le SMTC, che sopravvive alla finestra
+//!
+//! I tasti multimediali si chiedono a una finestra (`GetForWindow`). Con la X
+//! sul vassoio la finestra dell'applicazione si chiude e il motore resta, e i
+//! tasti devono restare con lui: si appendono a una finestra nativa nostra, mai
+//! mostrata e senza genitore, che vive quanto il motore. Sono la classe, la
+//! creazione e la distruzione: vedi [`FinestraDeiMessaggi`].
+//!
+//! # E una domanda che non vuole `unsafe`: dove sta la cartella del pacchetto MSIX
 //!
 //! Nella copia del Microsoft Store i file che l'app crea in `%APPDATA%` e in
 //! `%LOCALAPPDATA%` stanno nella cartella privata del pacchetto, che Esplora
@@ -90,6 +111,7 @@
     )
 )]
 mod aspetto;
+mod avvio;
 mod espulsione;
 #[cfg(windows)]
 mod finestra;
@@ -102,14 +124,28 @@ mod finestra;
 )]
 mod glifi;
 mod maiusc;
+#[cfg(windows)]
+mod messaggi;
 mod pacchetto;
+mod registro;
 mod sottofondo;
 mod unita;
 
 pub use aspetto::{Aspetto, Etichette};
+pub use avvio::{
+    ARGOMENTO_AVVIO_AUTOMATICO, ID_ATTIVITA_STORE, Impedimento, NOME_VALORE, Stato as StatoAvvio,
+    StatoAttivita, avviata_dal_login_store, comando_di_avvio, e_spento_dal_sistema,
+    imposta as avvio_imposta, imposta_dal_store as avvio_imposta_dal_store, leggi as avvio_leggi,
+    leggi_dal_store as avvio_leggi_dal_store, stato_dell_attivita,
+};
 pub use espulsione::{Avviso, Registrazione, osserva_volume, volume_di};
 pub use maiusc::{Ascolto, Esito, FINESTRA, PASSO, TENUTO, maiusc_giu};
+#[cfg(windows)]
+pub use messaggi::FinestraDeiMessaggi;
 pub use pacchetto::cartella_cache_del_pacchetto;
+pub use registro::Registro;
+#[cfg(windows)]
+pub use registro::RegistroDiWindows;
 pub use sottofondo::{Sottofondo, a_batteria};
 pub use unita::{Unita, unita_di};
 
