@@ -1071,6 +1071,7 @@ pub fn run() {
             lontano::lontano_relay,
             lontano::lontano_dati_mobili,
             lontano::lontano_sottofondo,
+            lontano::lontano_parti_con_auto,
             lontano::lontano_qr_crea,
             lontano::lontano_qr_annulla,
             lontano::lontano_collega,

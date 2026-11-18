@@ -1476,6 +1476,11 @@ export const ipc = {
   // da internet», che è un sì a parte.
   lontanoSottofondo: (attivo: boolean) =>
     invoke<StatoLontano>("lontano_sottofondo", { attivo }),
+  // «Parti con l'auto» (solo il telefono, e solo con il sottofondo acceso): al
+  // collegamento dell'auto Rymembra riprende da sola la coda salvata. Con il
+  // sottofondo spento è `lontano.sottofondoSpento`.
+  lontanoPartiConAuto: (attivo: boolean) =>
+    invoke<StatoLontano>("lontano_parti_con_auto", { attivo }),
   // Un QR nuovo: quello di prima non vale più. Con «Raggiungibile da
   // internet» spento è `lontano.spento`: lo si accende prima, con un sì a
   // parte (`lontanoAttiva`).

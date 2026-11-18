@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { noteDelSottofondo } from "../src/sottofondo";
+import { noteDelSottofondo, rigaDellAuto } from "../src/sottofondo";
 
 const sorgente = (percorso: string) =>
   readFileSync(new URL(percorso, import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -104,4 +104,60 @@ test("i tre comandi nuovi della finestra esistono nel nucleo e hanno lo stesso n
     assert.match(ipc, new RegExp(lato + ":[^]*?invoke<[^>]*>[(]\"" + comando + "\""));
     assert.match(nucleo, new RegExp(`::${comando},`), `lib.rs non registra ${comando}`);
   }
+});
+
+// ── «Parti con l'auto» (F7) ──────────────────────────────────────────────────
+
+test("la riga dell'auto non c'è dove la build non la offre, e dice che serve il sottofondo", () => {
+  // La variante per Google Play toglie la funzione con la costante di build
+  // `PARTENZA_CON_AUTO`: lì l'interruttore non compare, né spento né impedito.
+  assert.equal(rigaDellAuto(false, true), "nascosta");
+  assert.equal(rigaDellAuto(false, false), "nascosta");
+  // Offerta ma col sottofondo spento: impedita, con la sua ragione.
+  assert.equal(rigaDellAuto(true, false), "serveIlSottofondo");
+  assert.equal(rigaDellAuto(true, true), "libera");
+});
+
+test("la riga dell'auto sta sotto il sottofondo, spenta di serie, e chiama il suo comando", () => {
+  const riga = senzaCommenti(sorgente("../src/parti/SottofondoTelefono.tsx"));
+  assert.match(riga, /rigaDellAuto\(stato\.partenzaConAuto, stato\.sottofondo\)/);
+  assert.match(riga, /auto !== "nascosta" && \(/);
+  assert.match(riga, /ipc\.lontanoPartiConAuto\(acceso\)/);
+  assert.match(riga, /acceso=\{stato\.partiConAuto\}/);
+  assert.match(riga, /impedito=\{auto === "serveIlSottofondo"/);
+  // Dopo il sottofondo e le sue note, non prima.
+  assert.ok(riga.indexOf("settings.devices.background.makers") < riga.indexOf("settings.devices.car\""));
+});
+
+test("«Parti con l'auto» dice la cosa com'è, in italiano e in inglese, nello spazio settings.devices.car", () => {
+  for (const lingua of ["it", "en"]) {
+    const frasi = JSON.parse(sorgente(`../src/lingue/${lingua}.json`)) as Record<string, string>;
+    for (const chiave of [
+      "settings.devices.car",
+      "settings.devices.car.sub",
+      "settings.devices.car.needsBackground",
+    ]) {
+      assert.ok(frasi[chiave], `${lingua}: manca ${chiave}`);
+    }
+  }
+  const it = JSON.parse(sorgente("../src/lingue/it.json")) as Record<string, string>;
+  // Il testo onesto della guida: riparte da sola, **al posto** dell'ultima app.
+  assert.ok(
+    (it["settings.devices.car.sub"] ?? "").startsWith(
+      "Quando colleghi l'auto, Rymembra riparte da sola al posto dell'ultima app usata",
+    ),
+  );
+});
+
+test("il pannello porta alla finestra la scelta e se la build la offre, e il comando esiste", () => {
+  const tipi = sorgente("../src/ipc/lontano.ts");
+  assert.match(tipi, /partiConAuto: boolean;/);
+  assert.match(tipi, /partenzaConAuto: boolean;/);
+  const ipc = sorgente("../src/ipc.ts");
+  assert.match(ipc, /lontanoPartiConAuto:[^]*?invoke<StatoLontano>\("lontano_parti_con_auto"/);
+  assert.match(sorgente("../src-tauri/src/lib.rs"), /::lontano_parti_con_auto,/);
+  // Il pannello Rust ha gli stessi campi, con gli stessi nomi (camelCase).
+  const pannello = sorgente("../src-tauri/src/lontano/ipc.rs");
+  assert.match(pannello, /pub parti_con_auto: bool,/);
+  assert.match(pannello, /pub partenza_con_auto: bool,/);
 });
