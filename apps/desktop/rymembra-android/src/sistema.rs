@@ -237,6 +237,19 @@ pub enum Installazione {
     AltraChiave,
 }
 
+/// Quale distribuzione è questa copia: `github` (l'APK delle release, con
+/// l'aggiornatore) o `play` (il Google Play Store, senza aggiornatore e senza il
+/// permesso di installare app). La dice la costante di build
+/// `BuildConfig.DISTRIBUZIONE`, che `app/build.gradle.kts` imposta dalla
+/// proprietà `distribuzione`: così un solo `.so` serve tutte e due.
+///
+/// # Errori
+///
+/// Se il ponte non risponde.
+pub fn distribuzione() -> Result<String, Errore> {
+    chiama("sistema.distribuzione", &())
+}
+
 /// Com'è andato il controllo del certificato di un APK.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]

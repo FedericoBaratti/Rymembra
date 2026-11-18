@@ -25,6 +25,17 @@
 //! in attesa finché l'app vive; se l'installatore si chiude senza installare,
 //! «Installa» è ancora lì.
 //!
+//! # Due distribuzioni
+//!
+//! Questa è la distribuzione `github`: l'APK delle release, con l'aggiornatore.
+//! La distribuzione `play` — la build per il Google Play Store, che per la policy
+//! si aggiorna solo dal Play e non può chiedere `REQUEST_INSTALL_PACKAGES` — non
+//! ha aggiornatore: non controlla niente, non contatta nessuno, e la finestra lo
+//! dice come dice del Microsoft Store sul computer (`gestito_dal_store`). Quale
+//! delle due sia lo dice `BuildConfig.DISTRIBUZIONE`, impostata dalla proprietà
+//! Gradle `distribuzione` (`app/build.gradle.kts`), e Rust la legge una volta
+//! ([`senza_aggiornatore`]): un `.so` solo serve tutte e due.
+//!
 //! # Che cosa si verifica
 //!
 //! Sul computer l'installer è firmato con una chiave nostra, e l'updater ne
@@ -162,6 +173,33 @@ pub enum Quando {
     AllaChiusura,
 }
 
+/// Questa copia non ha l'aggiornatore: è la distribuzione `play`.
+///
+/// Si chiede ad Android una volta — la distribuzione non cambia mentre l'app
+/// gira — e si ricorda solo una risposta che c'è stata. **Se il ponte non
+/// risponde si sta dalla parte prudente**: niente aggiornatore, niente richieste
+/// a GitHub da una build che forse non le deve fare, e una riga nel diario, una
+/// volta sola. Il ponte non risponde solo se l'app è in uno stato in cui non c'è
+/// niente da aggiornare comunque.
+fn senza_aggiornatore() -> bool {
+    static PLAY: OnceLock<bool> = OnceLock::new();
+    static DETTO: AtomicBool = AtomicBool::new(false);
+    if let Some(valore) = PLAY.get() {
+        return *valore;
+    }
+    match rymembra_android::sistema::distribuzione() {
+        Ok(nome) => *PLAY.get_or_init(|| nome == "play"),
+        Err(err) => {
+            if !DETTO.swap(true, Ordering::Relaxed) {
+                nota!(
+                    "[aggiornamenti] la distribuzione non si legge: {err}. Niente aggiornamenti,                      per prudenza"
+                );
+            }
+            true
+        }
+    }
+}
+
 /// L'APK scaricato e verificato che aspetta «Installa».
 struct Pronto {
     /// Il file nella cache degli aggiornamenti.
@@ -295,7 +333,8 @@ pub struct StatoAggiornamentiIpc {
     /// Questa copia sa dove guardare: c'è un progetto GitHub nella
     /// configurazione.
     pub configurato: bool,
-    /// Sul telefono nessun negozio tiene aggiornata Rymembra.
+    /// Nella distribuzione `play` è il Google Play a tenerla aggiornata; in quella
+    /// `github` nessun negozio lo fa.
     pub gestito_dal_store: bool,
     /// La versione installata adesso.
     pub versione_corrente: String,
@@ -473,6 +512,11 @@ pub fn aggiornamenti_installa(
     if quando == Quando::AllaChiusura {
         return Err(errore(AppError::new(ErrorCode::InternalAborted {
             what: Some("sul telefono non c'è l'installazione alla chiusura".to_owned()),
+        })));
+    }
+    if senza_aggiornatore() {
+        return Err(errore(AppError::new(ErrorCode::InternalAborted {
+            what: Some("questa distribuzione si aggiorna dal Google Play".to_owned()),
         })));
     }
     let Some(trovato) = aggiornamenti
@@ -689,6 +733,11 @@ fn versione_rifiutata(app: &AppHandle) -> Option<String> {
 
 /// Un giro: controlla, deposita quel che ha trovato, racconta.
 fn passata(app: &AppHandle, a_mano: bool) -> Giro {
+    // Nella distribuzione `play` non si controlla e non si contatta nessuno: gli
+    // aggiornamenti li fa il Play.
+    if senza_aggiornatore() {
+        return Giro::Saltato;
+    }
     // Senza la chiave dell'updater un APK non si verifica: annunciarlo sarebbe
     // solo un modo più lungo di fallire. Come sul computer.
     let Some(progetto) = progetto(app).filter(|_| chiave_pubblica(app).is_some()) else {
@@ -1252,8 +1301,12 @@ fn stato_ipc(
     });
     Ok(StatoAggiornamentiIpc {
         attivo,
-        configurato: progetto(app).is_some() && chiave_pubblica(app).is_some(),
-        gestito_dal_store: false,
+        configurato: !senza_aggiornatore()
+            && progetto(app).is_some()
+            && chiave_pubblica(app).is_some(),
+        // Sul Play a tenerla aggiornata è il Play: la finestra lo dice invece di
+        // «manca la chiave» (`settings.update.play`).
+        gestito_dal_store: senza_aggiornatore(),
         versione_corrente: app.package_info().version.to_string(),
         ultimo_ms,
         disponibile,

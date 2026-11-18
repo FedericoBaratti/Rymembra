@@ -50,14 +50,28 @@ object Installatore {
    * ripete questo controllo: costa poco, e il file ha aspettato nella cache).
    * Vedi `sistema::controlla_apk` in Rust.
    */
-  fun controlla(attivita: MainActivity, percorso: String): String =
-    if (verifica(attivita, apk(attivita, percorso))) "buono" else "altraChiave"
+  fun controlla(attivita: MainActivity, percorso: String): String {
+    soloFuoriDalPlay()
+    return if (verifica(attivita, apk(attivita, percorso))) "buono" else "altraChiave"
+  }
+
+  /**
+   * L'aggiornatore APK c'è solo nella distribuzione `github`: nel Play Store gli
+   * aggiornamenti passano dal Play, e il manifesto non ha nemmeno il permesso
+   * `REQUEST_INSTALL_PACKAGES` (`app/build.gradle.kts`, la proprietà
+   * `distribuzione`). Rust non lo chiama, e qui se arrivasse è un errore, non
+   * un'installazione.
+   */
+  private fun soloFuoriDalPlay() {
+    check(BuildConfig.AGGIORNATORE_APK) { "l'aggiornatore APK non c'è nella distribuzione play" }
+  }
 
   /**
    * `installatore`, `permesso` o `altraChiave`: vedi `sistema::Installazione`
    * in Rust.
    */
   fun installa(attivita: MainActivity, percorso: String): String {
+    soloFuoriDalPlay()
     val file = apk(attivita, percorso)
     // Prima del permesso: un APK che non è Rymembra non vale la domanda.
     if (!verifica(attivita, file)) return "altraChiave"
