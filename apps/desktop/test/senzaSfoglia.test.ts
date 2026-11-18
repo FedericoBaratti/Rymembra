@@ -76,3 +76,16 @@ test("il server risponde ancora alle domande di un dispositivo con una versione 
   assert.match(servizio, /Domanda::Album/);
   assert.match(servizio, /Domanda::Brani\b/);
 });
+
+test("le maniglie e la coda salvata di «Sfoglia» sono tolte dal nucleo", () => {
+  const sfoglia = leggi("src-tauri/src/lontano/sfoglia.rs");
+  assert.doesNotMatch(sfoglia, /pub async fn lontano_(album|artisti|brani|cerca|suona|accoda|dopo)/);
+  const ospiti = leggi("src-tauri/src/riproduzione/ospiti.rs");
+  assert.doesNotMatch(ospiti, /registra_lontana|struct Lontana\b/);
+  const coda = leggi("src-tauri/src/riproduzione/coda.rs");
+  assert.doesNotMatch(coda, /save_queue_remote|riapri_la_coda_intera/);
+  // La coda salvata di prima passa alle righe specchio una volta, all'avvio.
+  assert.match(coda, /migra_coda_lontana/);
+  const lib = leggi("src-tauri/src/lib.rs");
+  assert.doesNotMatch(lib, /sfoglia::lontano_/);
+});

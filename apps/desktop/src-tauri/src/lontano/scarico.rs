@@ -137,7 +137,7 @@ struct Coda {
 enum Prossimo {
     /// Un altro brano del suo dispositivo.
     Lavoro {
-        lavoro: Lavoro,
+        lavoro: Box<Lavoro>,
         giro: u64,
         /// Il numero del brano nella coda e quanti sono in tutto, per la notifica.
         numero: u32,
@@ -245,7 +245,7 @@ impl Coda {
             .saturating_add(1);
         let di = numero.saturating_add(u32::try_from(self.in_attesa()).unwrap_or(u32::MAX));
         Prossimo::Lavoro {
-            lavoro,
+            lavoro: Box::new(lavoro),
             giro: self.giro,
             numero,
             di,

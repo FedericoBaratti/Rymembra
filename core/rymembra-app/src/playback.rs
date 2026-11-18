@@ -428,26 +428,19 @@ pub fn load_queue(connection: &Connection) -> Result<QueueSnapshot, AppError> {
 
 // ── la coda con i brani degli altri dispositivi ─────────────────────────────
 
-/// La chiave con cui sta la coda **intera**, quando ha anche brani di un altro
-/// dispositivo collegato via internet («Sfoglia»).
+/// La chiave con cui stava la coda **intera**, quando aveva anche brani di un
+/// altro dispositivo collegato via internet: li metteva in coda «Sfoglia»,
+/// come maniglie che al prossimo avvio non volevano dire niente.
 ///
-/// # Perché accanto a [`CHIAVE_CODA`] e non al suo posto
-///
-/// Perché [`CHIAVE_CODA`] resta quella che è: solo righe della libreria, letta
-/// da chi non sa niente dei dispositivi — la Home, «Riprendi», un Rymembra più
-/// vecchio — e scritta da [`save_queue`], che rifiuta le maniglie. Questa la
-/// legge chi sa ritrovare i brani degli altri, e vale solo se la sua parte di
-/// righe è la coda di [`CHIAVE_CODA`] ([`CodaIntera::righe`]): una chiave
-/// rimasta indietro — scritta da un'altra versione, o prima di un guasto —
-/// si ignora invece di riportare una coda che non era più quella.
-///
-/// Come `player.queue`, non va nei profili né nei backup: parla di questa
-/// libreria e dei dispositivi collegati a questa macchina.
+/// Non si scrive più: con la libreria unica un brano di un altro dispositivo è
+/// una riga di `tracks`, e sta in [`CHIAVE_CODA`] come ogni altra. Si **legge**
+/// ancora una volta, per chi aggiorna: [`migra_coda_lontana`] porta quelle voci
+/// sulle righe specchio e toglie la chiave. Come `player.queue`, non andava nei
+/// profili né nei backup.
 pub const CHIAVE_CODA_LONTANA: &str = "player.queue.remote";
 
-/// Una voce della coda intera: una riga della libreria, o un brano di un altro
-/// dispositivo, descritto da chi sa riaprirlo (`lontano::sfoglia`). Qui il
-/// descrittore è opaco.
+/// Una voce della coda intera di prima: una riga della libreria, o un brano di
+/// un altro dispositivo con il suo descrittore (di chi è, e la sua scheda).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum VoceSalvata {
@@ -549,53 +542,6 @@ impl CodaIntera {
             repeat: ripetizione_da_nome(&self.repeat),
         }
     }
-
-    /// La coda intera di una coda del lettore, con `voce` che dice cos'è ogni
-    /// id. Un id che non si sa descrivere si lascia fuori, con le regole di
-    /// [`CodaIntera::tenendo`].
-    #[must_use]
-    pub fn da(coda: &QueueSnapshot, mut voce: impl FnMut(i64) -> Option<VoceSalvata>) -> Self {
-        let tutta = Self {
-            voci: coda
-                .tracks
-                .iter()
-                .map(|id| VoceSalvata::Riga(*id))
-                .collect(),
-            order: coda.order.clone(),
-            order_pos: coda.order_pos,
-            shuffle: coda.shuffle,
-            repeat: nome_ripetizione(coda.repeat).to_owned(),
-        };
-        let (voci, order, order_pos) = tutta.tenendo(|salvata| match salvata {
-            VoceSalvata::Riga(id) => voce(*id),
-            VoceSalvata::Lontana(_) => None,
-        });
-        Self {
-            voci,
-            order,
-            order_pos,
-            ..tutta
-        }
-    }
-}
-
-/// Scrive la coda intera, o la toglie (`None`: la coda non ha brani di altri
-/// dispositivi). Vedi [`CHIAVE_CODA_LONTANA`].
-///
-/// # Errori
-///
-/// `db.queryFailed` se il database non risponde.
-pub fn save_queue_remote(
-    connection: &Connection,
-    coda: Option<&CodaIntera>,
-) -> Result<(), AppError> {
-    match coda {
-        Some(coda) => {
-            let json = serde_json::to_string(coda).unwrap_or_else(|_| "{}".to_owned());
-            crate::settings::write(connection, CHIAVE_CODA_LONTANA, &json)
-        }
-        None => crate::settings::forget(connection, CHIAVE_CODA_LONTANA).map(|_| ()),
-    }
 }
 
 /// La coda intera, se c'è e se la sua parte di righe è `righe` — la coda di
@@ -621,6 +567,70 @@ pub fn load_queue_remote(
         && sue.order_pos == righe.order_pos
         && intera.voci.len() == intera.order.len();
     Ok(coincide.then_some(intera))
+}
+
+/// La coda salvata da chi aveva «Sfoglia», portata sulle righe della libreria
+/// unica; si fa una volta, all'avvio.
+///
+/// Le voci lontane (`VoceSalvata::Lontana`) si mappano sulla riga specchio con
+/// lo stesso (dispositivo, id nella sua libreria); quelle che una riga specchio
+/// non ce l'hanno — il dispositivo non c'è più, o non manda più quel brano —
+/// si scartano **senza errore**, con la permutazione rinumerata e la posizione
+/// sulla voce che veniva dopo (vedi [`CodaIntera::tenendo`]). La coda che ne
+/// esce si scrive in [`CHIAVE_CODA`], e la chiave vecchia si toglie: la volta
+/// dopo non c'è niente da fare.
+///
+/// Una coda intera rimasta indietro rispetto a quella di righe, o illeggibile,
+/// non si usa — resta `righe` com'è — ma la chiave si toglie lo stesso: non ha
+/// più chi la legga.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn migra_coda_lontana(
+    connection: &Connection,
+    righe: QueueSnapshot,
+) -> Result<QueueSnapshot, AppError> {
+    let Some(intera) = load_queue_remote(connection, &righe)? else {
+        crate::settings::forget(connection, CHIAVE_CODA_LONTANA)?;
+        return Ok(righe);
+    };
+    let (tracks, order, order_pos) = intera.tenendo(|voce| match voce {
+        VoceSalvata::Riga(id) => Some(*id),
+        VoceSalvata::Lontana(descrittore) => riga_specchio_di(connection, descrittore),
+    });
+    let migrata = intera.snapshot(tracks, order, order_pos);
+    save_queue(connection, &migrata)?;
+    crate::settings::forget(connection, CHIAVE_CODA_LONTANA)?;
+    Ok(migrata)
+}
+
+/// Come «Sfoglia» descriveva un brano nella coda intera: del dispositivo
+/// `dispositivo`, con la scheda `brano` (di cui qui basta l'id).
+#[derive(serde::Deserialize)]
+struct Descrittore {
+    dispositivo: String,
+    brano: DescrittoreBrano,
+}
+
+#[derive(serde::Deserialize)]
+struct DescrittoreBrano {
+    id: i64,
+}
+
+/// La riga specchio di un brano che «Sfoglia» aveva in coda, se c'è: quella con
+/// lo stesso dispositivo e lo stesso id nella sua libreria, e che il
+/// proprietario non ha tolto.
+fn riga_specchio_di(connection: &Connection, descrittore: &serde_json::Value) -> Option<i64> {
+    let suo = serde_json::from_value::<Descrittore>(descrittore.clone()).ok()?;
+    connection
+        .query_row(
+            "SELECT track_id FROM lontano_brani
+              WHERE dispositivo = ?1 AND id_remoto = ?2 AND sparito_ms IS NULL",
+            rusqlite::params![suo.dispositivo, suo.brano.id],
+            |riga| riga.get(0),
+        )
+        .ok()
 }
 
 // ── dov'eri rimasto ─────────────────────────────────────────────────────────
