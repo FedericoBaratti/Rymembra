@@ -630,6 +630,12 @@ pub fn ascolto_da_ricontare(connection: &Connection, chiave: &str) -> Result<(),
 /// Il tipo della posta per un voto o un mi piace.
 pub const POSTA_VALUTA: &str = "valuta";
 
+/// Il tipo della posta per una correzione al testo di un brano: lo scarto, il
+/// testo sincronizzato a mano, la voce scelta dal catalogo, il rifiuto. La
+/// chiave è l'id del brano nella libreria del proprietario; il corpo, una
+/// [`crate::testi::condiviso::Correzione`].
+pub const POSTA_TESTO: &str = "testo";
+
 /// Quanto aspetta in posta una voce che il dispositivo rifiuta sempre (una
 /// versione che non la capisce): oltre, si lascia.
 pub const SCADENZA_POSTA_MS: i64 = 30 * 24 * 3600 * 1000;
