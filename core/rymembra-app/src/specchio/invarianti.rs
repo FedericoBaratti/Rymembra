@@ -11,7 +11,7 @@
 //! |---|---|---|
 //! | `library/condivisa.rs` (`CONDIVISO`) | mai ricondivise: un terzo dispositivo non vede i brani del primo attraverso il secondo | `library::prove_catalogo` |
 //! | `sincronia.rs`, ascolti e statistiche | le statistiche di una riga specchio sono una copia di quelle del proprietario: non entrano nei contatori, non si sommano, non partono, non si riscrivono da fuori | `le_statistiche_di_una_riga_specchio_non_entrano_nella_sincronia`, `quel_che_arriva_dalla_sincronia_non_scrive_sulle_righe_specchio` |
-//! | `sincronia.rs`, playlist (FSYNC) | una riga specchio è un membro di playlist come un altro (viaggia per `track_key`), ma **non** conta come «avere il file»: se se ne va, la voce resta e torna con lei | i quattro scenari `fsync_*` (l'ultimo in `library::tests`) |
+//! | `sincronia.rs`, playlist (FSYNC) | due regole: **per agganciare** una riga specchio conta come presente (una voce viva entra in `playlist_tracks` anche su una riga del PC); **per seppellire** una chiave presente qui solo attraverso righe specchio conta come assente (invisibile, non tolta). Una riga che nasce, cambia chiave o sparisce non è mai un gesto: la lapide la scrive solo il gesto dell'utente, esplicita | gli scenari `fsync_*` (l'ultimo in `library::tests`), `specchio::gesti` e `specchio::revisione` |
 //! | `backup.rs`, `profilo/biblioteca.rs` | né brani né cronologia né copertine né cartelle: sono fatti di questa macchina, come `nuvola_voci` | `backup_e_profilo_non_portano_le_righe_specchio` |
 //! | `library/righe.rs`, `library/scansione.rs` | la scansione non le conosce: non le toglie, non le riscrive, non le trova doppie (`RemoveReason::DuplicateRow`), «Rileggi tutti i tag» non le segna | `library::tests::una_scansione_non_toglie_ne_riscrive_le_righe_specchio` e due sorelle |
 //! | `library/righe.rs`, `cancella_brani` | non si tolgono a mano: tornerebbero al giro dopo | `le_righe_specchio_non_si_tolgono_a_mano` |
@@ -34,7 +34,7 @@ mod prove {
     use rymembra_domain::errors::ErrorCodeKind;
     use rymembra_domain::paths::PathRules;
 
-    use crate::specchio::archivio::dimentica_dispositivo;
+    use crate::specchio::archivio::{GRAZIA_MS, dimentica_dispositivo};
     use crate::specchio::comuni::{ADESSO, chiave, giro, libreria, riga};
     use crate::{backup, sincronia};
 
@@ -205,9 +205,16 @@ mod prove {
         let prima = pubblicata(&c, "sera");
         assert_eq!(prima.0.len(), 3);
 
-        // Il PC toglie il brano 2: l'altro giro non lo manda più, e (pochi brani)
-        // la riga se ne va subito, come per una scansione.
-        let chiusura = giro(&c, &chiave(PC), &[riga(3)], ADESSO + 10_000);
+        // Il PC toglie il brano 2: l'altro giro non lo manda più, la riga resta
+        // nascosta per la grazia, e passata quella (pochi brani) se ne va, come
+        // per una scansione.
+        giro(&c, &chiave(PC), &[riga(3)], ADESSO + 10_000);
+        let chiusura = giro(
+            &c,
+            &chiave(PC),
+            &[riga(3)],
+            ADESSO + 10_000 + GRAZIA_MS + 1_000,
+        );
         assert_eq!(chiusura.tolte, 1, "{chiusura:?}");
         assert_eq!(
             in_playlist(&c, "sera"),
@@ -237,8 +244,19 @@ mod prove {
         let prima = pubblicata(&c, "sera");
 
         giro(&c, &chiave(PC), &[riga(3)], ADESSO + 10_000);
+        giro(
+            &c,
+            &chiave(PC),
+            &[riga(3)],
+            ADESSO + 10_000 + GRAZIA_MS + 1_000,
+        );
         assert_eq!(in_playlist(&c, "sera").len(), 2);
-        giro(&c, &chiave(PC), &[riga(2), riga(3)], ADESSO + 20_000);
+        giro(
+            &c,
+            &chiave(PC),
+            &[riga(2), riga(3)],
+            ADESSO + 20_000 + GRAZIA_MS,
+        );
 
         let fatto = sincronia::allinea(&mut c, "telefono", 3_000).expect("allineamento");
         assert_eq!(fatto.agganciate, 1, "{fatto:?}");
@@ -250,21 +268,20 @@ mod prove {
     }
 
     #[test]
-    fn fsync_limite_dichiarato_una_correzione_di_chiave_con_una_copia_specchio() {
-        // Il limite della scelta «una riga specchio è un membro di playlist ma non
-        // conta come avere il file», scritto perché non lo si scopra a posteriori.
+    fn fsync_limite_rovesciato_una_correzione_di_chiave_con_una_copia_specchio() {
+        // Era il limite dichiarato di F2 («una riga specchio è un membro di
+        // playlist, ma non conta come avere il file»): qui si correggeva un tag e
+        // la lapide partiva verso il PC. La revisione ha mostrato che era una
+        // perdita di dati su un altro dispositivo, e la prova adesso asserisce che
+        // non si perde niente.
         //
         // Il brano sta qui (riga 1) e sul PC (riga specchio) con la stessa chiave.
         // Qui si corregge un tag e la chiave della riga di qui cambia. Il PC ha
         // ancora la vecchia chiave, quindi per questa libreria la vecchia chiave
-        // «c'è ancora» — è la riga specchio — e la sua voce non è un brano
-        // assente: la sincronia la legge come tolta dalla playlist, e la lapide
-        // parte. Senza una riga specchio la voce sarebbe rimasta invisibile.
-        //
-        // Non si risolve contando le righe specchio come «assenti»: allora
-        // togliere da una playlist un brano solo remoto non resterebbe tolto. La
-        // stessa cosa succede già oggi con due file locali dello stesso brano,
-        // uno solo corretto.
+        // «c'è ancora» solo come riga specchio: per la lapide un brano che c'è
+        // solo così conta come assente (`sincronia::brani_assenti`), la voce viva
+        // resta com'è, e la lapide non parte. Quel che toglie una voce così è il
+        // gesto dell'utente, che la scrive da sé (`specchio::gesti`).
         let mut c = libreria();
         brano_di_qui(&c, 1, 1);
         giro(&c, &chiave(PC), &[riga(1)], ADESSO);
@@ -279,8 +296,14 @@ mod prove {
         .expect("correzione");
         sincronia::allinea(&mut c, "telefono", 2_000).expect("allineamento");
         let (vive, tolte) = pubblicata(&c, "sera");
-        assert_eq!(vive, vec!["corretta|uno|album".to_owned()]);
-        assert_eq!(tolte, 1, "il limite: la vecchia voce risulta tolta");
+        assert_eq!(
+            tolte, 0,
+            "nessuna lapide: la vecchia voce non è stata tolta"
+        );
+        assert!(
+            vive.contains(&riga(1).track_key) && vive.contains(&"corretta|uno|album".to_owned()),
+            "la vecchia voce resta viva e la nuova la affianca: {vive:?}"
+        );
     }
 
     // ── la sincronia: le statistiche ────────────────────────────────────────────

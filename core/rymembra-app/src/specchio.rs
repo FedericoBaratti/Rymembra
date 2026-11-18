@@ -27,11 +27,21 @@
 
 pub mod archivio;
 #[cfg(test)]
+#[path = "specchio/prove_comuni.rs"]
 pub(crate) mod comuni;
 pub mod convalida;
 pub mod doppioni;
 #[cfg(test)]
+#[path = "specchio/prove_gesti.rs"]
+mod gesti;
+#[cfg(test)]
 mod invarianti;
+#[cfg(test)]
+#[path = "specchio/prove_rev3.rs"]
+mod rev3;
+#[cfg(test)]
+#[path = "specchio/prove_revisione.rs"]
+mod revisione;
 pub mod scarico;
 pub mod scelta;
 pub mod valutazioni;
@@ -128,8 +138,11 @@ pub enum Origine {
     ///
     /// Una copia di qui che «Tutti» nasconde perché un altro dispositivo ne ha
     /// una migliore resta visibile quando quel dispositivo non risponde: il
-    /// brano non sparisce dall'auto perché il PC è spento. Non viaggia sull'IPC:
-    /// la finestra non sa chi è raggiungibile, lo sa chi risponde all'auto.
+    /// brano non sparisce dall'auto perché il PC è spento. Lo stesso per la
+    /// copia di un **altro** dispositivo che risponde — se il rappresentante
+    /// tace e non c'è una copia di qui — e una sola per brano. Non viaggia
+    /// sull'IPC: la finestra non sa chi è raggiungibile, lo sa chi risponde
+    /// all'auto.
     #[serde(skip)]
     Raggiungibili(Vec<String>),
 }
@@ -158,6 +171,12 @@ fn di_questa_macchina(alias: &str) -> String {
 /// Le righe di un dispositivo: un intervallo di prefisso, che l'indice di `path`
 /// sa servire.
 ///
+/// **Meno quelle in grazia**: una riga che il proprietario non manda più resta
+/// per qualche giorno in libreria (`archivio::GRAZIA_MS`) con `copia_di` uguale
+/// al proprio `id`, e non si suona né si conta da nessuna parte — nemmeno nel
+/// filtro del dispositivo. `IS NOT` e non `<>`: per le righe senza copia
+/// (`copia_di` NULL) il confronto è vero.
+///
 /// # Errori
 ///
 /// `ipc.payloadInvalid` per una chiave che non è di 64 cifre esadecimali:
@@ -171,7 +190,8 @@ fn del_dispositivo(chiave: &str, alias: &str) -> Result<String, AppError> {
         }));
     }
     Ok(format!(
-        "({alias}path >= 'lontano://{chiave}/' AND {alias}path < 'lontano://{chiave}0')"
+        "({alias}path >= 'lontano://{chiave}/' AND {alias}path < 'lontano://{chiave}0'
+          AND {alias}copia_di IS NOT {alias}id)"
     ))
 }
 
@@ -185,40 +205,81 @@ impl Origine {
     /// esadecimali.
     pub fn sql(&self, prefisso: &str) -> Result<String, AppError> {
         Ok(match self {
-            Self::Tutti => format!("{prefisso}copia_di IS NULL"),
+            // «Tutti»: le righe che nessuna copia migliore (o la grazia) nasconde. Come
+            // `NOT IN` dei nascosti e non `copia_di IS NULL`: i nascosti sono pochi, e
+            // l'indice parziale di `copia_di` li dà da solo, mentre il confronto
+            // riga per riga costringeva a leggere ogni riga di `tracks` anche dove
+            // l'indice d'ordine da solo bastava (id_dei_brani: tre volte più lento).
+            Self::Tutti => {
+                format!("{prefisso}id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)")
+            }
             Self::Locale => di_questa_macchina(prefisso),
             Self::Dispositivo(chiave) => del_dispositivo(chiave, prefisso)?,
             Self::Raggiungibili(chiavi) => {
+                // Dentro una sottoquery `copia_di` e `id` da soli si risolvono
+                // sulla riga **più interna**: senza alias per la riga di fuori
+                // (`list_artists`, `albums_by_artist`) il ripiego sulla copia di
+                // qui non scattava mai. Con la tabella per nome la riga di fuori
+                // si nomina lo stesso: le sottoquery danno alle loro un alias.
+                let fuori = if prefisso.is_empty() {
+                    "tracks."
+                } else {
+                    prefisso
+                };
                 let sue = chiavi
                     .iter()
                     .map(|chiave| del_dispositivo(chiave, prefisso))
                     .collect::<Result<Vec<_>, _>>()?;
-                // Una riga di questa macchina: visibile se «Tutti» la mostra, o
-                // se la copia che la nasconde sta su un dispositivo che non
+                // Le righe dei dispositivi che rispondono, per una tabella con
+                // l'alias dato.
+                let risponde = |alias: &str| -> Result<String, AppError> {
+                    Ok(chiavi
+                        .iter()
+                        .map(|chiave| del_dispositivo(chiave, alias))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join(" OR "))
+                };
+                // Il rappresentante di una copia sta su un dispositivo che non
                 // risponde.
-                let non_risponde = chiavi
-                    .iter()
-                    .map(|chiave| del_dispositivo(chiave, "r."))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .join(" OR ");
-                let nascosta_da_chi_tace = if non_risponde.is_empty() {
-                    format!("EXISTS (SELECT 1 FROM tracks r WHERE r.id = {prefisso}copia_di)")
+                let risponde_r = risponde("r.")?;
+                let rappresentante_tace = if risponde_r.is_empty() {
+                    format!("EXISTS (SELECT 1 FROM tracks r WHERE r.id = {fuori}copia_di)")
                 } else {
                     format!(
                         "EXISTS (SELECT 1 FROM tracks r
-                                  WHERE r.id = {prefisso}copia_di
-                                    AND NOT ({non_risponde}))"
+                                  WHERE r.id = {fuori}copia_di
+                                    AND NOT ({risponde_r}))"
                     )
                 };
+                // Una riga di questa macchina: visibile se «Tutti» la mostra, o
+                // se la copia che la nasconde sta su un dispositivo che non
+                // risponde.
                 let qui = format!(
-                    "({} AND ({prefisso}copia_di IS NULL OR {nascosta_da_chi_tace}))",
+                    "({} AND ({prefisso}copia_di IS NULL OR {rappresentante_tace}))",
                     di_questa_macchina(prefisso)
                 );
                 if sue.is_empty() {
                     qui
                 } else {
+                    // La riga di un dispositivo che risponde: visibile se «Tutti»
+                    // la mostra; o, se il rappresentante tace, se è la copia che
+                    // si suonerebbe — non quando ce n'è una di qui, né un'altra di
+                    // un dispositivo che risponde con l'id più basso. Il brano
+                    // non sparisce dall'auto perché il PC migliore è spento.
+                    let copia_di_qui = format!(
+                        "NOT EXISTS (SELECT 1 FROM tracks x
+                                      WHERE x.copia_di = {fuori}copia_di AND {})",
+                        di_questa_macchina("x.")
+                    );
+                    let risponde_x = risponde("x.")?;
+                    let altra_raggiungibile = format!(
+                        "NOT EXISTS (SELECT 1 FROM tracks x
+                                      WHERE x.copia_di = {fuori}copia_di
+                                        AND x.id < {fuori}id AND ({risponde_x}))"
+                    );
                     format!(
-                        "({qui} OR (({}) AND {prefisso}copia_di IS NULL))",
+                        "({qui} OR (({}) AND ({prefisso}copia_di IS NULL
+                            OR ({rappresentante_tace} AND {copia_di_qui} AND {altra_raggiungibile}))))",
                         sue.join(" OR ")
                     )
                 }
@@ -294,8 +355,10 @@ mod prove {
     #[test]
     fn l_intervallo_di_prefisso_prende_le_righe_specchio_e_nient_altro() {
         let c = rusqlite::Connection::open_in_memory().unwrap();
-        c.execute_batch("CREATE TABLE tracks (id INTEGER PRIMARY KEY, path TEXT)")
-            .unwrap();
+        c.execute_batch(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY, path TEXT, copia_di INTEGER)",
+        )
+        .unwrap();
         let k = chiave('c');
         for (id, p) in [
             (1, "C:/Musica/a.flac".to_owned()),
@@ -307,11 +370,18 @@ mod prove {
             (7, "Lontano://x".to_owned()),
         ] {
             c.execute(
-                "INSERT INTO tracks VALUES (?1, ?2)",
+                "INSERT INTO tracks (id, path) VALUES (?1, ?2)",
                 rusqlite::params![id, p],
             )
             .unwrap();
         }
+        // Una riga di quel dispositivo in grazia (il proprietario non la manda
+        // più): `copia_di` uguale al proprio id, e fuori da ogni elenco.
+        c.execute(
+            "INSERT INTO tracks (id, path, copia_di) VALUES (8, ?1, 8)",
+            [percorso(&k, 9)],
+        )
+        .unwrap();
         let ids = |condizione: &str| -> Vec<i64> {
             let mut q = c
                 .prepare(&format!(
@@ -323,7 +393,7 @@ mod prove {
                 .map(Result::unwrap)
                 .collect()
         };
-        assert_eq!(ids(SQL_SPECCHIO), vec![3]);
+        assert_eq!(ids(SQL_SPECCHIO), vec![3, 8]);
         assert_eq!(ids(SQL_NON_SPECCHIO), vec![1, 2, 4, 5, 6, 7]);
         assert_eq!(
             ids(&Origine::Locale.sql("t.").unwrap()),
@@ -419,8 +489,14 @@ mod prove {
                 "{storta}"
             );
         }
-        assert_eq!(Origine::Tutti.sql("t.").unwrap(), "t.copia_di IS NULL");
-        assert_eq!(Origine::Tutti.sql("").unwrap(), "copia_di IS NULL");
+        assert_eq!(
+            Origine::Tutti.sql("t.").unwrap(),
+            "t.id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)"
+        );
+        assert_eq!(
+            Origine::Tutti.sql("").unwrap(),
+            "id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)"
+        );
     }
 
     #[test]

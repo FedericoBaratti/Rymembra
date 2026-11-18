@@ -67,6 +67,14 @@ pub struct TrackSummary {
     /// apre la pagina di quello. Senza, una raccolta porterebbe alla pagina
     /// dell'interprete del brano, che nella griglia degli artisti non c'è.
     pub album_artist: Option<String>,
+    /// La riga è di un altro dispositivo che non la manda più, e resta in
+    /// libreria per la grazia (`copia_di` uguale al proprio `id`): nascosta da
+    /// ogni elenco, ma la sua voce di playlist c'è ancora. La riempie solo chi
+    /// mostra una playlist a mano (`playlists::tracks`), che non può nasconderla
+    /// senza spostare gli indici dei gesti; per le altre righe è sempre `false`
+    /// e non viaggia.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_grazia: bool,
 }
 
 /// Le colonne di [`TrackSummary`], nell'ordine in cui le legge `track_from_row`.
@@ -105,6 +113,7 @@ pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
         fonte_pagina: row.get(15)?,
         licenza: row.get(16)?,
         album_artist: row.get(17)?,
+        in_grazia: false,
     })
 }
 
@@ -212,6 +221,17 @@ pub(super) fn dove(
     Ok(filtro(connection, origine, alias)?.unwrap_or_else(|| "1".to_owned()))
 }
 
+/// Gli album i cui brani sono **tutti** nascosti da «Tutti» (dietro una copia
+/// migliore di un altro dispositivo, o in grazia): partono dalle sole righe
+/// nascoste, che l'indice parziale di `copia_di` serve da solo, e per ognuna
+/// chiedono se l'album ha anche un brano visibile.
+const ALBUM_TUTTI_NASCOSTI: &str = "SELECT h.album_key
+       FROM (SELECT DISTINCT album_key FROM tracks
+              WHERE id IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)
+                AND album_key IS NOT NULL) h
+      WHERE NOT EXISTS (SELECT 1 FROM tracks v
+                         WHERE v.album_key = h.album_key AND v.copia_di IS NULL)";
+
 /// I numeri della libreria, in una query sola.
 ///
 /// Gli album e gli artisti sono quelli che hanno almeno un brano di questa
@@ -227,6 +247,31 @@ pub fn counts(connection: &Connection, origine: &Origine) -> Result<Counts, AppE
                         (SELECT COUNT(*) FROM tracks WHERE liked = 1),
                         (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)"
             .to_owned(),
+        // «Tutti» con righe nascoste: i totali meno i nascosti. Le righe nascoste
+        // sono poche (l'indice parziale di `copia_di` le trova da solo) e il
+        // filtro riga per riga costava, su sessantamila brani, tredici volte il
+        // conteggio senza: una scansione di `tracks` per ogni numero, e un album
+        // dopo l'altro con la sua sottoquery.
+        Some(_) if origine.e_tutti() => format!(
+            "SELECT (SELECT COUNT(*) FROM tracks)
+                      - (SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL),
+                    (SELECT COUNT(*) FROM albums)
+                      - (SELECT COUNT(*) FROM ({ALBUM_TUTTI_NASCOSTI})),
+                    (SELECT COUNT(*) FROM artists)
+                      - (SELECT COUNT(*)
+                           FROM (SELECT DISTINCT {ARTISTA_EFFETTIVO} AS nome FROM tracks
+                                  WHERE id IN (SELECT id FROM tracks
+                                                WHERE copia_di IS NOT NULL)) h
+                          WHERE h.nome <> ''
+                            AND NOT EXISTS (SELECT 1 FROM tracks v
+                                             WHERE {ARTISTA_EFFETTIVO} = h.nome
+                                               AND v.copia_di IS NULL)),
+                    (SELECT COUNT(*) FROM tracks WHERE liked = 1)
+                      - (SELECT COUNT(*) FROM tracks WHERE liked = 1 AND copia_di IS NOT NULL),
+                    (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)
+                      - (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks
+                          WHERE copia_di IS NOT NULL)"
+        ),
         Some(t) => {
             let senza_alias = origine.sql("")?;
             format!(
@@ -599,6 +644,15 @@ pub struct VoceCronologia {
 /// `ON DELETE CASCADE`, quindi il caso è già impossibile per un brano tolto
 /// davvero; la `JOIN` è ciò che rende impossibile anche il resto — una riga
 /// senza titolo né interprete in mezzo a un elenco di canzoni.
+///
+/// # Una riga in grazia non compare
+///
+/// Una riga di un altro dispositivo che il proprietario non manda più resta in
+/// libreria per la grazia, nascosta (`copia_di` uguale al proprio `id`): non si
+/// suona e non si conta da nessuna parte, e nemmeno qui — un tocco su una voce
+/// della cronologia che non parte, con un «non raggiungibile» che a PC acceso
+/// sarebbe falso. Gli ascolti restano nella tabella, e tornano in lista con la
+/// riga, se il proprietario la rimanda.
 pub fn list_history(
     connection: &Connection,
     offset: i64,
@@ -608,6 +662,7 @@ pub fn list_history(
         "SELECT {COLONNE_BRANO}, h.id, h.played_at, h.ms_played, h.source
            FROM play_history AS h
            JOIN tracks AS t ON t.id = h.track_id
+          WHERE t.copia_di IS NOT t.id
           ORDER BY h.played_at DESC, h.id DESC
           LIMIT ?1 OFFSET ?2"
     );
@@ -641,9 +696,18 @@ pub fn list_history(
 /// tabella di centomila righe con un indice su `played_at` costa poco, e la
 /// alternativa — chiedere una riga in più e guardare se arriva — mente sul
 /// totale, che qui è l'unica cosa che dice «hai importato dieci anni».
+///
+/// Come [`list_history`], senza gli ascolti di una riga in grazia: il totale
+/// dice quante voci ci sono nella lista, e le righe in grazia sono poche — si
+/// sottraggono, invece di rifare la `JOIN` su tutta la cronologia.
 pub fn count_history(connection: &Connection) -> Result<i64, AppError> {
     connection
-        .prepare_cached("SELECT COUNT(*) FROM play_history")
+        .prepare_cached(
+            "SELECT (SELECT COUNT(*) FROM play_history)
+                  - (SELECT COUNT(*) FROM play_history
+                      WHERE track_id IN
+                            (SELECT id FROM tracks WHERE copia_di IS NOT NULL AND copia_di = id))",
+        )
         .and_then(|mut statement| statement.query_row([], |row| row.get(0)))
         .map_err(|err| db_error("conteggio della cronologia", &err))
 }
@@ -1094,6 +1158,12 @@ pub fn list_albums(
     // tutto dietro una copia migliore di un altro dispositivo no.
     let con_brani = match filtro(connection, origine, "t.")? {
         None => "1".to_owned(),
+        // «Tutti» con righe nascoste: si tolgono gli album i cui brani sono
+        // **tutti** nascosti, trovati una volta dalle sole righe nascoste, e non
+        // si chiede a ogni album se ha un brano visibile.
+        Some(_) if origine.e_tutti() => {
+            format!("a.album_key NOT IN ({ALBUM_TUTTI_NASCOSTI})")
+        }
         Some(t) => {
             format!("EXISTS (SELECT 1 FROM tracks t WHERE t.album_key = a.album_key AND {t})")
         }

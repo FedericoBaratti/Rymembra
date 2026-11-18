@@ -127,7 +127,7 @@ mod prove {
         let uno = &brani_del_pc[0];
         assert_eq!(uno.title, "Titolo 1");
         assert_eq!(uno.estensione, "mp3");
-        assert_eq!(uno.dimensione, 5_000_000);
+        assert_eq!(uno.dimensione, 8_000_000);
         assert_eq!(uno.versione, "5000000-1700000000000");
         assert!(uno.segmento.is_none());
         assert_eq!(

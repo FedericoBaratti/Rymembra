@@ -865,6 +865,10 @@ pub(super) fn remove_tracks(
     // che l'utente ha tolto da quella playlist, e la rimozione partirebbe verso
     // il dispositivo che il file ce l'ha (FSYNC). Si guarda una volta sola se di
     // righe specchio ce ne sono: chi non collega nessuno non paga niente.
+    //
+    // **Non** su una riga specchio segnata sparita (`lontano_brani.sparito_ms`):
+    // il proprietario non la manda più, e alla conferma la cascata si porterebbe
+    // via la voce che le si è appena data.
     let ce_uno_specchio: bool = tx
         .query_row(
             "SELECT EXISTS (SELECT 1 FROM tracks
@@ -882,13 +886,19 @@ pub(super) fn remove_tracks(
                                                            WHERE t.id = ?1)
                                        AND m.id <> ?1
                                        AND m.path >= 'lontano://' AND m.path < 'lontano:/0'
+                                       AND NOT EXISTS (SELECT 1 FROM lontano_brani l
+                                                        WHERE l.track_id = m.id
+                                                          AND l.sparito_ms IS NOT NULL)
                                      ORDER BY m.id LIMIT 1)
                   WHERE track_id = ?1
                     AND EXISTS (SELECT 1 FROM tracks m
                                  WHERE m.track_key = (SELECT t.track_key FROM tracks t
                                                        WHERE t.id = ?1)
                                    AND m.id <> ?1
-                                   AND m.path >= 'lontano://' AND m.path < 'lontano:/0')",
+                                   AND m.path >= 'lontano://' AND m.path < 'lontano:/0'
+                                   AND NOT EXISTS (SELECT 1 FROM lontano_brani l
+                                                    WHERE l.track_id = m.id
+                                                      AND l.sparito_ms IS NOT NULL))",
             )
             .map_err(|err| db_error("voci di playlist verso la riga specchio", &err))?,
         )
