@@ -490,6 +490,19 @@ fn aggiorna(
     adesso_ms: i64,
 ) -> Result<(), AppError> {
     let cosa = "aggiornamento di una riga specchio";
+    // Il proprietario ha corretto un tag e la chiave del brano è cambiata. Le voci
+    // di playlist di questa riga portavano la chiave vecchia, e se la chiave
+    // vecchia c'è ancora su un'altra riga — il file di qui, il caso comune —
+    // restano lì: per la sincronia la voce che avesse seguito la riga alla
+    // chiave nuova sarebbe una voce **tolta** dalla playlist (la chiave vecchia
+    // ha un file, non è assente e non è solo specchio), e la lapide partirebbe
+    // verso chi quel brano ce l'ha, senza che nessuno abbia toccato niente.
+    // Senza un'altra riga con la chiave vecchia non si sposta niente: la chiave
+    // vecchia non ha più righe, e per la sincronia è un brano assente,
+    // invisibile e non tolto. È la regola di quando una riga se ne va.
+    if cambia_la_chiave_di_una_riga_con_voci(tx, track_id, &riga.track_key)? {
+        sposta_le_voci(tx, &[track_id])?;
+    }
     let cover = registra_la_copertina(tx, riga.cover_art_hash.as_deref(), adesso_ms)?;
     tx.execute(
         "UPDATE tracks SET
@@ -987,6 +1000,20 @@ pub fn sparite_in_attesa(connection: &Connection, dispositivo: &str) -> Result<u
         )
         .map(|n| usize::try_from(n).unwrap_or(0))
         .map_err(|err| db_error("righe specchio sparite", &err))
+}
+
+/// La riga ha delle voci di playlist e sta per cambiare `track_key`.
+fn cambia_la_chiave_di_una_riga_con_voci(
+    tx: &Connection,
+    track_id: i64,
+    nuova: &str,
+) -> Result<bool, AppError> {
+    tx.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM tracks WHERE id = ?1 AND track_key <> ?2)
+            AND EXISTS (SELECT 1 FROM playlist_tracks WHERE track_id = ?1)",
+    )
+    .and_then(|mut st| st.query_row(params![track_id, nuova], |r| r.get(0)))
+    .map_err(|err| db_error("chiave di una riga specchio", &err))
 }
 
 /// Prima di togliere delle righe specchio: le loro voci di playlist passano a

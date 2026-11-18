@@ -273,6 +273,63 @@ fn un_tag_corretto_qui_con_la_riga_specchio_ancora_viva_non_lascia_lapidi() {
 }
 
 #[test]
+fn un_tag_corretto_dal_proprietario_porta_la_voce_sulla_copia_con_la_chiave_di_prima() {
+    // Il PC corregge un tag e il telefono lo legge: la riga specchio ha la chiave
+    // nuova, il file di qui ha ancora la vecchia. La voce, che stava sulla riga
+    // specchio, passa al file di qui — come quando una riga se ne va — e resta
+    // la voce della chiave che la sequenza ha viva: nessuna lapide da dedurre.
+    let mut c = libreria();
+    locale(&c, 1, 1);
+    giro(&c, &chiave(PC), &[riga(1)], ADESSO);
+    let specchio = id_specchio(&c, PC, 1);
+    let sera = playlist_con(&c, "sera", &[specchio]);
+    sincronia::allinea(&mut c, "telefono", 1_000).expect("allineamento");
+    let mut corretta = riga(1);
+    corretta.track_key = "corretta|uno|album".to_owned();
+    giro(&c, &chiave(PC), &[corretta], ADESSO + 10_000);
+    let voci: Vec<i64> = c
+        .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1")
+        .and_then(|mut st| st.query_map([sera], |r| r.get(0))?.collect())
+        .expect("voci");
+    assert_eq!(voci, vec![1], "la voce sta sul file di qui");
+    for quando in [2_000, 3_000] {
+        sincronia::allinea(&mut c, "telefono", quando).expect("allineamento");
+        assert_eq!(in_playlist(&c, "sera"), vec![k(1)]);
+        assert_eq!(tolte_di(&documento(&c, "telefono"), "sera"), 0);
+    }
+}
+
+#[test]
+fn un_tag_corretto_dal_proprietario_senza_una_copia_di_qui_lascia_la_voce_dov_e() {
+    // Niente file di qui con la chiave vecchia: non ci sono righe a cui passare
+    // la voce, e non serve. La chiave vecchia non ha più righe, per la sincronia
+    // è un brano assente, e nessuna lapide parte.
+    let mut c = libreria();
+    giro(&c, &chiave(PC), &[riga(1)], ADESSO);
+    let specchio = id_specchio(&c, PC, 1);
+    let sera = playlist_con(&c, "sera", &[specchio]);
+    sincronia::allinea(&mut c, "telefono", 1_000).expect("allineamento");
+    let mut corretta = riga(1);
+    corretta.track_key = "corretta|uno|album".to_owned();
+    giro(&c, &chiave(PC), &[corretta], ADESSO + 10_000);
+    let voce: i64 = c
+        .query_row(
+            "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1",
+            [sera],
+            |r| r.get(0),
+        )
+        .expect("voce");
+    assert_eq!(voce, specchio, "la voce resta sulla riga specchio");
+    sincronia::allinea(&mut c, "telefono", 2_000).expect("allineamento");
+    sincronia::allinea(&mut c, "telefono", 3_000).expect("allineamento");
+    assert_eq!(
+        in_playlist(&c, "sera"),
+        vec!["corretta|uno|album".to_owned()]
+    );
+    assert_eq!(tolte_di(&documento(&c, "telefono"), "sera"), 0);
+}
+
+#[test]
 fn dimenticare_un_dispositivo_non_lascia_lapidi_neanche_con_una_copia_di_qui() {
     let mut c = libreria();
     locale(&c, 1, 1);
