@@ -91,6 +91,15 @@ pub const CHIAVE_RELAY: &str = "lontano.relay";
 /// I brani degli altri dispositivi sui dati mobili: vedi [`DatiMobili`].
 pub const CHIAVE_DATI_MOBILI: &str = "lontano.dati_mobili";
 
+/// L'interruttore «Resta attiva in sottofondo» del telefono: il servizio in
+/// primo piano che tiene il nodo acceso anche con l'app chiusa.
+///
+/// Sta fuori dal profilo e dal backup, come `lontano.*`, e per la stessa
+/// ragione ma più forte: è un fatto **di questo telefono** — la batteria che
+/// vuole spendere, il produttore che lo lascia o no vivere — e portarlo su un
+/// altro accenderebbe da sé un servizio sempre in primo piano.
+pub const CHIAVE_SOTTOFONDO: &str = "daemon.attivo";
+
 /// Il relay più lungo che si accetta: un indirizzo, non un testo.
 pub const MASSIMO_RELAY: usize = 300;
 
@@ -119,6 +128,10 @@ pub struct Impostazioni {
     pub relay: Option<String>,
     /// «Solo Wi-Fi».
     pub dati_mobili: DatiMobili,
+    /// «Resta attiva in sottofondo» (solo sul telefono): il nodo non va più a
+    /// dormire. Spento di serie, e **indipendente** da `attivo`: non
+    /// accende la porta verso internet, che è un sì a parte.
+    pub sottofondo: bool,
 }
 
 /// Le impostazioni. Un valore illeggibile vale quello di serie: è
@@ -138,11 +151,25 @@ pub fn impostazioni(connection: &Connection) -> Result<Impostazioni, AppError> {
         .ok()
         .flatten()
         .unwrap_or_default();
+    let sottofondo = crate::settings::read_json::<bool>(connection, CHIAVE_SOTTOFONDO)
+        .ok()
+        .flatten()
+        .unwrap_or(false);
     Ok(Impostazioni {
         attivo,
         relay,
         dati_mobili,
+        sottofondo,
     })
+}
+
+/// Accende o spegne «Resta attiva in sottofondo».
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn sottofondo(connection: &Connection, acceso: bool) -> Result<(), AppError> {
+    crate::settings::write_json(connection, CHIAVE_SOTTOFONDO, &acceso)
 }
 
 /// Accende o spegne «Raggiungibile da internet».
@@ -683,6 +710,29 @@ mod prove {
         let rotte = impostazioni(c).unwrap();
         assert_eq!(rotte.dati_mobili, DatiMobili::Chiedi);
         assert!(!rotte.attivo);
+    }
+
+    #[test]
+    fn il_sottofondo_e_spento_di_serie_e_un_valore_rotto_vale_spento() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        assert!(!impostazioni(c).unwrap().sottofondo, "spento di serie");
+        sottofondo(c, true).unwrap();
+        let acceso = impostazioni(c).unwrap();
+        assert!(acceso.sottofondo);
+        assert!(
+            !acceso.attivo,
+            "il sottofondo non accende «Raggiungibile da internet»: è un sì a parte"
+        );
+        attiva(c, true).unwrap();
+        sottofondo(c, false).unwrap();
+        let spento = impostazioni(c).unwrap();
+        assert!(!spento.sottofondo);
+        assert!(spento.attivo, "spegnere il sottofondo non tocca il resto");
+        // Un valore illeggibile vale spento: è la scelta prudente, un servizio
+        // in primo piano non si accende per un'impostazione che non si legge.
+        crate::settings::write(c, CHIAVE_SOTTOFONDO, "{").unwrap();
+        assert!(!impostazioni(c).unwrap().sottofondo);
     }
 
     #[test]
