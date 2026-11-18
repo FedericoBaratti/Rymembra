@@ -31,6 +31,7 @@ import type {
   ErroreIpc,
   FidatoInsieme,
   LinkLontano,
+  RichiestaLontano,
   StatoLontano,
   ScaricoLontano,
 } from "./ipc";
@@ -468,6 +469,62 @@ export function passoIndietroSfoglia(stato: {
 /** Il nome di una piattaforma, per l'icona e il testo. */
 export function eTelefono(piattaforma: string): boolean {
   return piattaforma === "android";
+}
+
+/**
+ * Le richieste di collegamento in fila: quella che si chiede adesso, e quante
+ * aspettano dietro.
+ *
+ * Con più PC che leggono lo stesso link (o più link in giro) le domande
+ * possono essere più d'una. La finestrella ne mostra una alla volta — un sì dato
+ * alla cieca a un'altra sarebbe peggio — nell'ordine in cui sono arrivate; chi
+ * aspetta dietro si dice, perché altrimenti sparirebbe finché non tocca a lui.
+ */
+export function richiesteInFila(richieste: readonly RichiestaLontano[]): {
+  adesso: RichiestaLontano | null;
+  dietro: number;
+} {
+  return { adesso: richieste[0] ?? null, dietro: Math.max(0, richieste.length - 1) };
+}
+
+/**
+ * Quanto un collegamento resta «appena fatto»: il tempo che serve alla
+ * persona per dare un nome, e il pannello per arrivare con la riga.
+ */
+export const FINESTRA_COLLEGATO_MS = 60_000;
+
+/**
+ * Il dispositivo appena collegato, se si riconosce.
+ *
+ * Chi mostrava il QR sente solo il nome che l'altro dichiara
+ * (`lontano:collegato`); chi incollava il link ha il nome del link, se c'è, e la
+ * risposta del comando con l'elenco. In tutti e due i casi la riga è quella con
+ * quel nome collegata da meno di [`FINESTRA_COLLEGATO_MS`]; senza nome, l'ultima
+ * collegata. Una riga revocata dall'altra parte non è un collegamento riuscito,
+ * e una dal futuro — un orologio che è andato indietro — non vale come «adesso».
+ */
+export function appenaCollegato(
+  dispositivi: readonly DispositivoLontano[],
+  nome: string | null,
+  adesso: number,
+): DispositivoLontano | null {
+  let trovato: DispositivoLontano | null = null;
+  for (const d of dispositivi) {
+    if (d.revocato || (nome !== null && d.nome !== nome)) continue;
+    const eta = adesso - d.associatoMs;
+    if (eta < 0 || eta > FINESTRA_COLLEGATO_MS) continue;
+    if (trovato === null || d.associatoMs > trovato.associatoMs) trovato = d;
+  }
+  return trovato;
+}
+
+/**
+ * Si propone di dare un nome a un dispositivo appena collegato solo se è un
+ * computer: porta il nome del sistema (`DESKTOP-7K2L9QF`), che con due PC non
+ * dice quale sia. Un telefono ha già quello che l'utente ha scelto in Android.
+ */
+export function proponiNome(dispositivo: DispositivoLontano): boolean {
+  return !dispositivo.revocato && !eTelefono(dispositivo.piattaforma);
 }
 
 /**

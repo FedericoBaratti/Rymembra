@@ -182,3 +182,101 @@ test("la notifica del sottofondo ha le sue frasi in inglese e in italiano, e la 
   const icona = leggi(`${APP}src/main/res/drawable/notifica_presenza.xml`);
   assert.match(icona, /<vector\b/);
 });
+
+// ── il fornitore delle copertine (F1, #1) ───────────────────────────────────
+
+const COPERTINE_KT = leggi(`${KOTLIN}Copertine.kt`);
+const SFOGLIA_RS = leggi("../src-tauri/src/lontano/sfoglia.rs");
+
+/**
+ * Un `Regex("…")` di `Copertine.kt`, come espressione di JavaScript che deve
+ * combaciare per intero (come `Regex.matches` in Kotlin). Il sorgente porta le
+ * barre rovesce raddoppiate (`\\.`): in memoria ne resta una.
+ */
+function regolaKotlin(nome: string): RegExp {
+  const riga = new RegExp(`^\\s*private val ${nome} = Regex\\("(.*)"\\)\\s*$`, "m");
+  const letterale = riga.exec(COPERTINE_KT)?.[1];
+  assert.ok(letterale, `Copertine.kt non ha più ${nome}`);
+  return new RegExp(`^(?:${letterale.replace(/\\\\/g, "\\")})$`);
+}
+
+const DISPOSITIVO = "a".repeat(64);
+
+test("il fornitore apre le copertine degli altri dispositivi solo nella forma lontane/<64 hex>/<hex 2-128>.jpg", () => {
+  // Rust scrive `lontane/<dispositivo>/<impronta>.jpg` (`percorso_per_android`),
+  // e Kotlin riconosce lo stesso nome: i due non si parlano, e un disaccordo
+  // si scopre solo sul telefono, con un'auto senza immagine.
+  assert.ok(
+    SFOGLIA_RS.includes('format!("lontane/{dispositivo}/{impronta}.jpg")'),
+    "Rust non scrive più lontane/<dispositivo>/<impronta>.jpg",
+  );
+  assert.match(COPERTINE_KT, /private const val LONTANE = "lontane"/);
+  const dispositivo = regolaKotlin("DISPOSITIVO");
+  const impronta = regolaKotlin("IMPRONTA_LONTANA");
+
+  assert.ok(dispositivo.test(DISPOSITIVO));
+  for (const buona of ["0123456789abcdef.jpg", "ab.jpg", `${"f".repeat(128)}.jpg`]) {
+    assert.ok(impronta.test(buona), buona);
+  }
+  // Il dispositivo: 64 cifre esadecimali minuscole, né una di più né una di meno.
+  for (const cattivo of ["a".repeat(63), "a".repeat(65), "A".repeat(64), "g".repeat(64), `${"a".repeat(63)}/`, ".."]) {
+    assert.ok(!dispositivo.test(cattivo), cattivo);
+  }
+  // L'impronta: esadecimale minuscolo, da 2 a 128, e `.jpg` e basta (niente
+  // `.m`/`.t` dello store, niente trattini del vecchio nome della cache).
+  for (const cattiva of [
+    "a.jpg",
+    `${"f".repeat(129)}.jpg`,
+    "ABCDEF.jpg",
+    "0123456789abcdeg.jpg",
+    "0123456789abcdef.m.jpg",
+    "0123456789abcdef.png",
+    "0123456789abcdef.jpg/",
+    `${DISPOSITIVO}-0123456789abcdef.jpg`,
+    "../0123456789abcdef.jpg",
+    "..%2F..%2Fx.jpg",
+    "..jpg",
+    ".jpg",
+    "",
+  ]) {
+    assert.ok(!impronta.test(cattiva), cattiva);
+  }
+});
+
+test("il fornitore tiene i due controlli: la forma del percorso e il percorso canonico dentro la radice", () => {
+  // Due radici, tre segmenti per la seconda: la forma si guarda prima di
+  // costruire un File, e il percorso canonico dopo.
+  assert.match(COPERTINE_KT, /parti\.size == 3 && parti\[0\] == LONTANE && DISPOSITIVO\.matches\(parti\[1\]\)/);
+  assert.match(COPERTINE_KT, /IMPRONTA_LONTANA\.matches\(parti\[2\]\)/);
+  assert.match(COPERTINE_KT, /parti\.size == 2 && SOTTOCARTELLA\.matches\(parti\[0\]\) && NOME\.matches\(parti\[1\]\)/);
+  // Il controllo è su `canonicalFile`, con la radice canonicalizzata ogni
+  // volta (`/data/user/0` e `/data/data` sono lo stesso posto), e col
+  // separatore: `…/copertine-lontane-altra` non è dentro `…/copertine-lontane`.
+  assert.match(COPERTINE_KT, /file\.canonicalFile/);
+  assert.match(COPERTINE_KT, /canonico\.path\.startsWith\(radice\.canonicalPath \+ File\.separator\)/);
+  // Una seconda radice che Rust non ha detto non apre niente.
+  assert.match(COPERTINE_KT, /cartellaLontane\(contesto\)\s*\?: throw FileNotFoundException/);
+  // E sempre in sola lettura.
+  assert.match(COPERTINE_KT, /mode != "r"\) throw SecurityException/);
+});
+
+test("Rust dice a Kotlin la seconda radice in sessione.pronta, e Kotlin la ricorda o la toglie", () => {
+  const ponte = leggi(`${KOTLIN}Ponte.kt`);
+  assert.match(
+    ponte,
+    /"sessione\.pronta"\s*->\s*Nucleo\.pronta\(contesto\(\), a\.getString\("copertine"\), a\.optString\("lontane", ""\)\.ifEmpty \{ null \}\)/,
+  );
+  const nucleo = leggi(`${KOTLIN}Nucleo.kt`);
+  assert.match(nucleo, /fun pronta\(contesto: Context, copertine: String, lontane: String\?\)/);
+  assert.match(nucleo, /Copertine\.ricorda\(contesto, copertine, lontane\)/);
+  // `putString(…, null)` toglie la voce: una cache che non c'è più non resta.
+  assert.match(COPERTINE_KT, /\.putString\("lontane", lontane\)/);
+});
+
+test("il ricordo dell'ultimo brano si riscrive anche quando cambia solo la copertina", () => {
+  // La copertina di un brano di un altro dispositivo arriva dopo il brano: con
+  // l'id uguale e la copertina nuova il ricordo restava senza immagine.
+  const nucleo = leggi(`${KOTLIN}Nucleo.kt`);
+  assert.match(nucleo, /if \(scheda\.id != scritto \|\| scheda\.copertina != copertinaScritta\)/);
+  assert.match(nucleo, /copertinaScritta = scheda\.copertina/);
+});

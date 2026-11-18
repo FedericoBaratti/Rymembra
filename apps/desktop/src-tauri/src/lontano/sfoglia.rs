@@ -376,6 +376,32 @@ pub(crate) fn e_una_copertina(chiave: &str) -> bool {
     parti_della_copertina(chiave).is_some()
 }
 
+/// Il file, nella cache delle copertine lontane in `cartella`, di una chiave
+/// lontana: `<cartella>/<dispositivo>/<impronta>.jpg`. `None` se la chiave non
+/// è una chiave lontana intera.
+///
+/// È **l'unico** posto dove una chiave diventa un nome di file: la validazione
+/// ([`parti_della_copertina`]) lascia passare solo cifre esadecimali minuscole,
+/// quindi niente `..`, niente separatori, niente nomi di Windows. Da qui il
+/// nome arriva a un `file://` (le SMTC di Windows) e al `ContentProvider` di
+/// Android: nessuno dei due deve rifare la validazione per fidarsi.
+#[must_use]
+pub(crate) fn percorso_in_cache(cartella: &Path, chiave: &str) -> Option<PathBuf> {
+    let (dispositivo, impronta) = parti_della_copertina(chiave)?;
+    Some(file_della_copertina(cartella, dispositivo, impronta))
+}
+
+/// Lo stesso file come lo chiede Android: `lontane/<dispositivo>/<impronta>.jpg`,
+/// con `lontane` al posto della cartella della cache, che Rust dice a Kotlin
+/// una volta sola (`sessione.pronta`). Kotlin accetta solo questa forma: vedi
+/// `Copertine.kt`.
+#[cfg(any(mobile, test))]
+#[must_use]
+pub(crate) fn percorso_per_android(chiave: &str) -> Option<String> {
+    let (dispositivo, impronta) = parti_della_copertina(chiave)?;
+    Some(format!("lontane/{dispositivo}/{impronta}.jpg"))
+}
+
 /// La voce di un brano dell'altro, con l'`uid` che le dà il registro.
 fn voce_da(
     comune: &Arc<Comune>,
@@ -889,8 +915,26 @@ static SCRITTE: AtomicUsize = AtomicUsize::new(0);
 /// e per la stessa ragione fuori dai dati che vanno in giro coi profili. La
 /// regola è quella di [`crate::cartella_di_cache`]; `None` vuol dire nessuna
 /// cache.
-fn cartella_copertine(app: &AppHandle) -> Option<PathBuf> {
+pub(crate) fn cartella_copertine(app: &AppHandle) -> Option<PathBuf> {
     crate::cartella_di_cache(app, "copertine-lontane")
+}
+
+/// Il file di una copertina lontana, per chi la vuole **come file** — le
+/// schede del sistema, che non parlano `rymembra-cover` — se è già in cache e
+/// il dispositivo è ancora collegato. Non chiede niente alla rete: vedi
+/// `media::lontane`, che la richiede quando manca.
+///
+/// Il cancello prima della cache, come in [`copertina_in`]: le copertine di un
+/// dispositivo dimenticato non escono più nemmeno da lì, e non restano sulla
+/// schermata di blocco.
+#[must_use]
+pub(crate) fn file_in_cache(app: &AppHandle, chiave: &str) -> Option<PathBuf> {
+    let (dispositivo, _) = parti_della_copertina(chiave)?;
+    let file = percorso_in_cache(&cartella_copertine(app)?, chiave)?;
+    if !comune(app).ok()?.associato(dispositivo) {
+        return None;
+    }
+    file.is_file().then_some(file)
 }
 
 /// Una copertina dell'altro, per il protocollo `rymembra-cover`: solo di un
@@ -916,16 +960,24 @@ pub(crate) fn copertina(app: &AppHandle, chiave: &str) -> Result<Option<Vec<u8>>
 }
 
 /// Il file di una copertina dell'altro nella cache:
-/// `<dispositivo>-<impronta>.jpg`, tutti e due già controllati
+/// `<dispositivo>/<impronta>.jpg`, tutti e due già controllati
 /// ([`parti_della_copertina`]: solo cifre esadecimali).
 ///
 /// Per dispositivo, e non per sola impronta: l'impronta la dice chi risponde,
 /// e con una cache comune un dispositivo che rispondeva a `Copertina{H}` con
 /// byte qualunque decideva la copertina di ogni album con l'impronta H, anche
-/// di un altro (reperto 02-10). I file di prima, `<impronta>.jpg`, non si
-/// leggono più e se ne vanno con la potatura.
+/// di un altro (reperto 02-10).
+///
+/// In una cartella per dispositivo, e non più `<dispositivo>-<impronta>.jpg`
+/// nella cartella della cache: il nome di prima, con i suoi 64 + 1 + 16
+/// caratteri, non passava dal `ContentProvider` di Android (che accetta nomi
+/// fino a 128 e senza trattini), e con la cartella il percorso è
+/// `lontane/<dispositivo>/<impronta>.jpg`, tre segmenti che Kotlin controlla
+/// uno per uno. È una cache: cambiare forma non chiede una migrazione. I file
+/// di prima, `<dispositivo>-<impronta>.jpg` e `<impronta>.jpg`, non si leggono
+/// più e se ne vanno con la potatura ([`pota`]).
 fn file_della_copertina(cartella: &Path, dispositivo: &str, impronta: &str) -> PathBuf {
-    cartella.join(format!("{dispositivo}-{impronta}.jpg"))
+    cartella.join(dispositivo).join(format!("{impronta}.jpg"))
 }
 
 /// [`copertina`], con la cache in `cartella`.
@@ -1011,8 +1063,11 @@ fn dalla_cache(file: &Path) -> Option<Vec<u8>> {
 
 /// Mette una copertina in cache: un file temporaneo rinominato, così una
 /// lettura non trova mai un file a metà. Ogni tanto pota.
+///
+/// La cartella del dispositivo, dove sta `file`, la fa lei (e con lei quella
+/// della cache): [`file_della_copertina`] la mette sotto `cartella`.
 fn in_cache(cartella: &Path, file: &Path, byte: &[u8]) {
-    if std::fs::create_dir_all(cartella).is_err() {
+    if std::fs::create_dir_all(file.parent().unwrap_or(cartella)).is_err() {
         return;
     }
     let provvisorio = file.with_extension("part");
@@ -1030,25 +1085,50 @@ fn in_cache(cartella: &Path, file: &Path, byte: &[u8]) {
     }
 }
 
-/// Toglie le copertine meno usate finché la cache non scende a
-/// [`CACHE_DOPO`], se ha passato [`CACHE_MASSIMA`].
-fn pota(cartella: &Path) {
+/// Un file della cache: quando è stato usato l'ultima volta, quanto pesa, dov'è.
+type FileDellaCache = (SystemTime, u64, PathBuf);
+
+/// I file di `cartella`, e quelli delle sue sottocartelle (una per
+/// dispositivo, [`file_della_copertina`]): anche i file di prima della
+/// sottocartella e i `.part` lasciati a metà, perché pesano allo stesso modo e
+/// vanno via con le altre. Non scende oltre: la cache ha due livelli.
+fn file_della_cache(cartella: &Path) -> Vec<FileDellaCache> {
+    let (mut file, sottocartelle) = un_livello(cartella);
+    for sottocartella in sottocartelle {
+        file.extend(un_livello(&sottocartella).0);
+    }
+    file
+}
+
+/// I file e le sottocartelle direttamente dentro `cartella`.
+fn un_livello(cartella: &Path) -> (Vec<FileDellaCache>, Vec<PathBuf>) {
+    let mut file = Vec::new();
+    let mut sottocartelle = Vec::new();
     let Ok(voci) = std::fs::read_dir(cartella) else {
-        return;
+        return (file, sottocartelle);
     };
-    let mut file: Vec<(SystemTime, u64, PathBuf)> = voci
-        .filter_map(Result::ok)
-        .filter_map(|voce| {
-            let metadati = voce.metadata().ok()?;
-            metadati.is_file().then(|| {
-                (
-                    metadati.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                    metadati.len(),
-                    voce.path(),
-                )
-            })
-        })
-        .collect();
+    for voce in voci.filter_map(Result::ok) {
+        let Ok(metadati) = voce.metadata() else {
+            continue;
+        };
+        if metadati.is_file() {
+            file.push((
+                metadati.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                metadati.len(),
+                voce.path(),
+            ));
+        } else if metadati.is_dir() {
+            sottocartelle.push(voce.path());
+        }
+    }
+    (file, sottocartelle)
+}
+
+/// Toglie le copertine meno usate finché la cache non scende a
+/// [`CACHE_DOPO`], se ha passato [`CACHE_MASSIMA`]. Le cartelle dei dispositivi
+/// restano (vuote, se hanno perso tutto): costano un nome.
+fn pota(cartella: &Path) {
+    let mut file = file_della_cache(cartella);
     let mut totale: u64 = file.iter().map(|(_, peso, _)| *peso).sum();
     if totale <= CACHE_MASSIMA {
         return;
@@ -1237,6 +1317,82 @@ mod prove {
         )));
     }
 
+    /// Da una chiave lontana al file della cache, e al percorso che Android
+    /// serve (F1, #1): la validazione sta qui, perché da qui il nome passa a
+    /// un `ContentProvider` e a un `file://`.
+    #[test]
+    fn da_chiave_a_percorso_in_cache() {
+        let dispositivo = "a".repeat(64);
+        let impronta = "0123456789abcdef";
+        let chiave = format!("lontano-{dispositivo}-{impronta}");
+        let cartella = Path::new("cache").join("copertine-lontane");
+
+        // Valida: `<dispositivo>/<impronta>.jpg`, una sottocartella per
+        // dispositivo (si dimentica d'un colpo, e le cartelle non crescono).
+        assert_eq!(
+            percorso_in_cache(&cartella, &chiave),
+            Some(cartella.join(&dispositivo).join(format!("{impronta}.jpg")))
+        );
+        assert_eq!(
+            percorso_per_android(&chiave).as_deref(),
+            Some(format!("lontane/{dispositivo}/{impronta}.jpg").as_str())
+        );
+        // Lo stesso nome, dall'una e dall'altra parte: Kotlin apre dentro la
+        // cartella della cache quel che Rust ci ha scritto.
+        let relativo = percorso_per_android(&chiave).unwrap();
+        assert_eq!(
+            percorso_in_cache(&cartella, &chiave),
+            Some(cartella.join(relativo.strip_prefix("lontane/").unwrap()))
+        );
+
+        // Malformate: niente percorso, né da una parte né dall'altra.
+        let brutte = [
+            String::new(),
+            "lontano-".to_owned(),
+            format!("lontano-{dispositivo}"),
+            format!("lontano-{dispositivo}-"),
+            // La chiave del dispositivo: corta, maiuscola, non esadecimale.
+            format!("lontano-{}-{impronta}", "a".repeat(63)),
+            format!("lontano-{}-{impronta}", "A".repeat(64)),
+            format!("lontano-{}-{impronta}", "g".repeat(64)),
+            // L'impronta: troppo corta o lunga, maiuscola, non esadecimale.
+            format!("lontano-{dispositivo}-abc"),
+            format!("lontano-{dispositivo}-{}", "a".repeat(129)),
+            format!("lontano-{dispositivo}-0123456789ABCDEF"),
+            format!("lontano-{dispositivo}-0123456789abcdeg"),
+            // Un'altra famiglia di chiavi.
+            format!("insieme-{dispositivo}-{impronta}"),
+            "insieme-7".to_owned(),
+        ];
+        for brutta in &brutte {
+            assert_eq!(percorso_in_cache(&cartella, brutta), None, "{brutta}");
+            assert_eq!(percorso_per_android(brutta), None, "{brutta}");
+        }
+
+        // `..`, separatori e nomi di Windows: mai un percorso, comunque li si
+        // metta (nel dispositivo, nell'impronta, in fondo alla chiave).
+        let fuggitive = [
+            format!("lontano-{dispositivo}-../../../x"),
+            format!("lontano-{dispositivo}-{impronta}/../x"),
+            format!("lontano-{dispositivo}-{impronta}/.."),
+            format!("lontano-{dispositivo}-..{impronta}"),
+            format!("lontano-{dispositivo}-{impronta}\\..\\x"),
+            format!("lontano-..-{impronta}"),
+            format!("lontano-{}..-{impronta}", "a".repeat(62)),
+            format!("lontano-{dispositivo}/../{impronta}-{impronta}"),
+            format!("lontano-C:\\x-{impronta}"),
+            format!("lontano-{dispositivo}-{impronta}\0"),
+        ];
+        for fuggitiva in &fuggitive {
+            assert_eq!(
+                percorso_in_cache(&cartella, fuggitiva),
+                None,
+                "{fuggitiva:?}"
+            );
+            assert_eq!(percorso_per_android(fuggitiva), None, "{fuggitiva:?}");
+        }
+    }
+
     #[test]
     fn le_estensioni() {
         assert_eq!(estensione_buona("FLAC").as_deref(), Some("flac"));
@@ -1351,6 +1507,100 @@ mod prove {
         assert_eq!(
             copertina_in(&cartella, &comune, &a, impronta).unwrap(),
             Some(png)
+        );
+        let _ = std::fs::remove_dir_all(&cartella);
+    }
+
+    /// F1 (#1): la cache ha una cartella per dispositivo, e `in_cache` la crea.
+    #[test]
+    fn la_copertina_arrivata_sta_in_una_cartella_per_dispositivo() {
+        let cartella = std::env::temp_dir().join(format!(
+            "rymembra-prova-copertine-sottocartelle-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&cartella);
+        let dispositivo = "d".repeat(64);
+        let impronta = "0123456789abcdef";
+        let chiave = format!("lontano-{dispositivo}-{impronta}");
+        let file = file_della_copertina(&cartella, &dispositivo, impronta);
+        // La cartella della cache non c'è ancora, e nemmeno quella del
+        // dispositivo: `in_cache` le fa tutte e due.
+        in_cache(&cartella, &file, b"\xFF\xD8\xFFcopertina");
+        assert_eq!(
+            percorso_in_cache(&cartella, &chiave).as_deref(),
+            Some(file.as_path())
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"\xFF\xD8\xFFcopertina");
+        let nella_cartella: Vec<_> = std::fs::read_dir(cartella.join(&dispositivo))
+            .unwrap()
+            .map(|v| v.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            nella_cartella,
+            vec![format!("{impronta}.jpg")],
+            "niente .part rimasti"
+        );
+        let _ = std::fs::remove_dir_all(&cartella);
+    }
+
+    /// F1 (#1): la potatura guarda anche dentro le cartelle dei dispositivi, e
+    /// porta via con le altre i file di prima della sottocartella
+    /// (`<dispositivo>-<impronta>.jpg`) e quelli lasciati a metà (`.part`).
+    /// Prima guardava solo il livello alto, e con la forma nuova la cache non
+    /// scendeva mai.
+    #[test]
+    fn la_cache_si_pota_anche_nelle_cartelle_dei_dispositivi() {
+        let cartella = std::env::temp_dir().join(format!(
+            "rymembra-prova-copertine-potatura-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&cartella);
+        let mega = vec![0_u8; 1024 * 1024];
+        let adesso = SystemTime::now();
+        let scrivi = |file: &Path, secondi_fa: u64| {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, &mega).unwrap();
+            let aperto = std::fs::File::options().write(true).open(file).unwrap();
+            aperto
+                .set_modified(adesso - Duration::from_secs(secondi_fa))
+                .unwrap();
+        };
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        // Il più vecchio di tutti: un file di prima, al livello alto.
+        let vecchio = cartella.join(format!("{a}-0123456789abcdef.jpg"));
+        scrivi(&vecchio, 5000);
+        // Un `.part` rimasto a metà, in una cartella di dispositivo.
+        let a_meta = cartella.join(&a).join("0123456789abcdef.part");
+        scrivi(&a_meta, 4000);
+        // Cinquanta copertine nuove, due dispositivi.
+        for i in 0..50_u64 {
+            let di = if i % 2 == 0 { &a } else { &b };
+            scrivi(&cartella.join(di).join(format!("{i:016x}.jpg")), 1000 - i);
+        }
+        // 52 MiB in tutto: sopra i 50 della soglia, quindi si scende a 40.
+        pota(&cartella);
+        let mut rimasti = 0;
+        let mut peso = 0;
+        for voce in std::fs::read_dir(&cartella).unwrap() {
+            let voce = voce.unwrap().path();
+            if voce.is_file() {
+                rimasti += 1;
+                peso += voce.metadata().unwrap().len();
+                continue;
+            }
+            for file in std::fs::read_dir(&voce).unwrap() {
+                rimasti += 1;
+                peso += file.unwrap().metadata().unwrap().len();
+            }
+        }
+        assert_eq!(rimasti, 40, "si scende a 40 MiB");
+        assert_eq!(peso, 40 * 1024 * 1024);
+        assert!(!vecchio.exists(), "il file di prima se ne va per primo");
+        assert!(!a_meta.exists(), "e il .part, che è il secondo");
+        assert!(
+            cartella.join(&b).join(format!("{:016x}.jpg", 49)).exists(),
+            "le più recenti restano"
         );
         let _ = std::fs::remove_dir_all(&cartella);
     }

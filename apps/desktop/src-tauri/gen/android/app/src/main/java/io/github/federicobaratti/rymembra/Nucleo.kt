@@ -44,9 +44,13 @@ object Nucleo {
 
   @Volatile private var svegliatoAlle = 0L
 
-  /** Rust ha finito di partire: d'ora in poi le domande hanno risposta. */
-  fun pronta(contesto: Context, copertine: String) {
-    Copertine.ricorda(contesto, copertine)
+  /**
+   * Rust ha finito di partire: d'ora in poi le domande hanno risposta. Porta le
+   * cartelle delle copertine: lo store, e la cache degli altri dispositivi
+   * (`lontane`, `null` se non c'è).
+   */
+  fun pronta(contesto: Context, copertine: String, lontane: String?) {
+    Copertine.ricorda(contesto, copertine, lontane)
     principale.post {
       pronto = true
       Sessione.nucleoPronto()
@@ -89,13 +93,18 @@ object Nucleo {
 object Ricordo {
   private const val FILE = "ricordo"
   private var scritto: Long = -1
+  private var copertinaScritta: String? = null
 
   fun scrivi(contesto: Context, scheda: Scheda) {
     if (!scheda.brano) return
     val preferenze = contesto.getSharedPreferences(FILE, Context.MODE_PRIVATE)
     val editor = preferenze.edit().putLong("posizioneMs", scheda.posizioneMs)
-    if (scheda.id != scritto) {
+    // Anche quando cambia solo la copertina: quella di un brano di un altro
+    // dispositivo arriva dopo il brano, e un ricordo con l'id giusto e la
+    // copertina vuota mostrerebbe, dopo un riavvio, una scheda senza immagine.
+    if (scheda.id != scritto || scheda.copertina != copertinaScritta) {
       scritto = scheda.id
+      copertinaScritta = scheda.copertina
       editor
         .putLong("id", scheda.id)
         .putString("titolo", scheda.titolo)

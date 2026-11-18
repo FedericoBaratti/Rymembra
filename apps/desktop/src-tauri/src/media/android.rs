@@ -57,8 +57,19 @@ const CODA_PRIMA: usize = 10;
 /// Quanti dopo.
 const CODA_DOPO: usize = 40;
 
-/// Un tratto di coda da comporre: da quale posto parte, e i brani.
-type Tratto = (usize, Vec<i64>);
+/// Un tratto di coda da comporre: da quale posto parte, i brani, e quale è il
+/// brano dopo quello che suona.
+///
+/// Il brano dopo sta qui perché è l'unico della coda per cui si va a cercare la
+/// copertina di un altro dispositivo: vedi [`copertina_di`]. Se cambiasse senza
+/// che cambi il resto — un tratto tutto dentro la coda, che scorre — il tratto
+/// non sarebbe più lo stesso, e si ricompone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Tratto {
+    inizio: usize,
+    brani: Vec<i64>,
+    prossimo: Option<i64>,
+}
 
 /// Quel che serve a riempire la sessione, e quel che le si è già mandato.
 pub(super) struct Controlli {
@@ -119,7 +130,11 @@ pub fn avvia(app: &tauri::AppHandle) {
         nota!("[media] il filo dell'auto non è partito: l'auto non vede la libreria: {err}");
     }
 
-    if let Err(err) = sessione::pronta(&radice) {
+    // La cartella delle copertine degli altri dispositivi è la seconda radice
+    // del fornitore di Kotlin, che altrimenti non le apre: vedi
+    // `Copertine.kt`. Senza cache (`None`) la seconda radice non c'è.
+    let lontane = crate::lontano::sfoglia::cartella_copertine(app);
+    if let Err(err) = sessione::pronta(&radice, lontane.as_deref()) {
         nota!("[media] la sessione non sa che il nucleo è partito: {err}");
     }
 
@@ -344,7 +359,11 @@ fn componi_la_coda(app: &tauri::AppHandle, ricevi: &Receiver<Tratto>) {
 
 /// Un tratto di coda per l'auto: le sue righe, alla sessione.
 fn componi(app: &tauri::AppHandle, tratto: Tratto) {
-    let (inizio, ids) = tratto;
+    let Tratto {
+        inizio,
+        brani: ids,
+        prossimo,
+    } = tratto;
     let righe = match crate::riproduzione::righe_della_coda(app, &ids) {
         Ok(righe) => righe,
         Err(err) => {
@@ -370,9 +389,18 @@ fn componi(app: &tauri::AppHandle, tratto: Tratto) {
                 titolo: riga.title,
                 artista: riga.artist,
                 album: riga.album,
-                copertina: copertine
-                    .as_ref()
-                    .and_then(|store| auto::copertina(store, riga.cover_art_hash.as_deref())),
+                // Delle voci di un altro dispositivo, solo quel che è già in
+                // cache e il brano dopo: una coda di cinquanta voci non deve
+                // mettere in fila cinquanta richieste al PC.
+                copertina: copertine.as_ref().and_then(|store| {
+                    copertina_di(
+                        app,
+                        store,
+                        riga.cover_art_hash.as_deref(),
+                        false,
+                        Some(riga.id) == prossimo,
+                    )
+                }),
                 durata_ms: u64::try_from(riga.duration_ms).unwrap_or(0),
             })
         })
@@ -415,7 +443,7 @@ pub(super) fn non_riuscito(codice: &str) {
 ///
 /// Se è cambiato il tratto di coda attorno al brano, lo si manda a comporre al
 /// filo della coda: qui si confrontano numeri e basta.
-pub(super) fn aggiorna(media: &StatoMedia, stato: &StatoRiproduzione) {
+pub(super) fn aggiorna(app: &tauri::AppHandle, media: &StatoMedia, stato: &StatoRiproduzione) {
     let mut dentro = media
         .controlli
         .lock()
@@ -423,7 +451,7 @@ pub(super) fn aggiorna(media: &StatoMedia, stato: &StatoRiproduzione) {
     let Some(controlli) = dentro.as_mut() else {
         return;
     };
-    let scheda = scheda_di(stato, &controlli.copertine);
+    let scheda = scheda_di(app, stato, &controlli.copertine);
     let senza_posizione = Scheda {
         posizione_ms: 0,
         ..scheda.clone()
@@ -461,11 +489,62 @@ fn tratto_di(coda: &[i64], posto: Option<usize>) -> Tratto {
         .saturating_add(CODA_DOPO)
         .saturating_add(1)
         .min(coda.len());
-    (inizio, coda.get(inizio..fine).unwrap_or_default().to_vec())
+    Tratto {
+        inizio,
+        brani: coda.get(inizio..fine).unwrap_or_default().to_vec(),
+        // Dopo il brano che suona; senza un brano che suona, nessuno.
+        prossimo: posto.and_then(|dove| coda.get(dove.saturating_add(1)).copied()),
+    }
+}
+
+/// La copertina di un brano, come la sessione la vuole: il percorso dentro la
+/// cartella delle copertine di Kotlin.
+///
+/// Per un brano di questo telefono è quello dello store (`grande`: la piena
+/// prima della media). Per uno di un altro dispositivo la chiave non è
+/// un'impronta e lo store non la trova: la copertina sta nella cache delle
+/// copertine lontane, e Kotlin la serve da una seconda radice
+/// (`lontane/<dispositivo>/<impronta>.jpg`). Se in cache non c'è ancora,
+/// `chiedi` la fa venire in disparte, e quando arriva si ripubblica la scheda
+/// e si ricompone la coda: vedi [`super::lontane`].
+fn copertina_di(
+    app: &tauri::AppHandle,
+    store: &CoverStore,
+    hash: Option<&str>,
+    grande: bool,
+    chiedi: bool,
+) -> Option<String> {
+    let hash = hash?;
+    if !crate::lontano::e_una_copertina(hash) {
+        return if grande {
+            auto::copertina_grande(store, Some(hash))
+        } else {
+            auto::copertina(store, Some(hash))
+        };
+    }
+    super::lontane::file_di(app, hash, chiedi, copertina_arrivata)?;
+    crate::lontano::sfoglia::percorso_per_android(hash)
+}
+
+/// È arrivata una copertina di un altro dispositivo: la scheda si ripubblica,
+/// e il tratto di coda si rifà (`tratto = None`, così `aggiorna` lo rimanda al
+/// filo della coda, che adesso la trova in cache). Si ripubblica lo stato, non
+/// solo la scheda: la scheda la compone `aggiorna`, da un posto solo.
+fn copertina_arrivata(app: &tauri::AppHandle) {
+    if let Some(media) = app.try_state::<StatoMedia>()
+        && let Some(controlli) = media
+            .controlli
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+    {
+        controlli.tratto = None;
+    }
+    crate::riproduzione::insieme::aggiorna_finestra(app);
 }
 
 /// Quel che la notifica deve mostrare per questo stato.
-fn scheda_di(stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
+fn scheda_di(app: &tauri::AppHandle, stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
     let dopo = stato
         .posizione_coda
         .is_some_and(|dove| dove.saturating_add(1) < stato.coda.len())
@@ -493,7 +572,7 @@ fn scheda_di(stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
         titolo: brano.title.clone(),
         artista: brano.artist.clone(),
         album: brano.album.clone(),
-        copertina: auto::copertina_grande(copertine, brano.cover_art_hash.as_deref()),
+        copertina: copertina_di(app, copertine, brano.cover_art_hash.as_deref(), true, true),
         durata_ms: stato.durata_ms,
         posizione_ms: stato.posizione_ms,
         suona: !stato.in_pausa,
