@@ -57,6 +57,19 @@
     <string name="scarico_titolo">Rymembra is downloading</string>
     <string name="scarico_testo">%1$d of %2$d · %3$s</string>
 
+    <!-- La notifica di «Resta attiva in sottofondo» (vedi `Presenza`): una riga
+         sola, e un tasto per spegnerla senza aprire l'app. «Resting» è il caso
+         in cui il sistema ha chiuso Rymembra e il servizio è tornato da solo,
+         ma il nucleo no: finché non si apre l'app non c'è nessuno da
+         raggiungere, e la notifica non deve dire il contrario. -->
+    <string name="presenza_canale">Staying active in the background</string>
+    <string name="presenza_titolo">Rymembra is active</string>
+    <string name="presenza_titolo_uno">Rymembra is active · connected to %1$s</string>
+    <string name="presenza_titolo_piu">Rymembra is active · connected to %1$d devices</string>
+    <string name="presenza_titolo_riposo">Rymembra is resting</string>
+    <string name="presenza_testo_riposo">Open Rymembra so your devices can reach this phone again.</string>
+    <string name="presenza_spegni">Turn off</string>
+
     <!-- Lo scanner del QR di «Collega un dispositivo» (vedi `ScansioneQr`). -->
     <string name="qr_istruzioni">Point the camera at the QR code shown by Rymembra on your other device.</string>
     <string name="qr_torcia">Flashlight</string>

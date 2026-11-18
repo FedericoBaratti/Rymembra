@@ -33,12 +33,19 @@ test("il dialogo dei permessi del primo avvio non chiede le notifiche", () => {
   assert.doesNotMatch(corpo(permessi, "chiedi"), /POST_NOTIFICATIONS/);
 });
 
-test("le notifiche si chiedono quando partono «Scarica qui» e l'attesa del consenso", () => {
+test("le notifiche si chiedono quando partono «Scarica qui», l'attesa del consenso e il sottofondo", () => {
   const ponte = leggi(`${KOTLIN}Ponte.kt`);
-  for (const comando of ['"sistema.scarico"', '"sistema.attesaConsenso"']) {
+  for (const comando of ['"sistema.scarico"', '"sistema.attesaConsenso"', '"sistema.sottofondo"']) {
     const da = ponte.indexOf(comando);
     assert.ok(da >= 0, `manca ${comando}`);
     const ramo = ponte.slice(da, ponte.indexOf("\n      \"", da + comando.length));
     assert.match(ramo, /Permessi\.notificheAlBisogno\(/, `${comando} non chiede le notifiche`);
   }
+});
+
+test("il sottofondo chiede le notifiche solo quando lo accende la persona, non a ogni giro del nucleo", () => {
+  const ponte = leggi(`${KOTLIN}Ponte.kt`);
+  const da = ponte.indexOf('"sistema.sottofondo"');
+  const ramo = ponte.slice(da, ponte.indexOf('\n      "', da + 20));
+  assert.match(ramo, /if \(acceso && dallaPersona\) Permessi\.notificheAlBisogno\(/);
 });

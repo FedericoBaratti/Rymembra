@@ -26,6 +26,13 @@
     <!-- «Scarica qui» dei dispositivi collegati, che finisce anche a schermo
          spento (vedi `ScaricoInCorso.kt`). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- «Resta attiva in sottofondo»: il servizio che tiene aperto il
+         collegamento con i PC (vedi `Presenza.kt`). `connectedDevice`, che da
+         Android 14 vuole uno dei permessi di rete: qui `CHANGE_WIFI_MULTICAST_STATE`,
+         dichiarato sopra. Niente `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`: la
+         policy di Google Play lo riserva ad altre app, e le impostazioni
+         portano alla pagina di sistema da cui togliere il risparmio. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- La libreria. Il permesso «musica e audio» basta ai brani e alle
@@ -187,6 +194,19 @@
         <service
             android:name=".ScaricoInCorso"
             android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <!-- «Resta attiva in sottofondo»: tiene vivo il processo, e con lui il
+             nucleo e il collegamento con i PC, anche con l'app tolta dalle
+             recenti. Non è `mediaPlayback` — non c'è una riproduzione — e non
+             è `specialUse`, che è per ciò che nessun altro tipo copre: il
+             collegamento con altri dispositivi su una rete è proprio
+             `connectedDevice`. Senza un tempo massimo, e non fra i tipi che da
+             Android 15 un `BOOT_COMPLETED` non può avviare (vedi `Presenza`).
+             Non esportato: lo avvia solo l'app. -->
+        <service
+            android:name=".Presenza"
+            android:foregroundServiceType="connectedDevice"
             android:exported="false" />
 
         <!-- Le copertine per l'auto e la schermata di blocco, che stanno in un

@@ -40,8 +40,14 @@ class ServizioMusica : MediaLibraryService() {
   /**
    * L'app tolta dalle recenti: se suona, continua — è il punto di un lettore —
    * altrimenti il servizio se ne va, e con lui la notifica.
+   *
+   * Con «Resta attiva in sottofondo» acceso (vedi [Presenza]) non si ferma
+   * niente: tolta dalle recenti l'app deve restare com'era, e la sessione
+   * resta dov'è, pronta. Il processo lo tiene `Presenza`; qui basta non
+   * spegnere l'unico pezzo che il gesto di togliere l'app spegnerebbe.
    */
   override fun onTaskRemoved(rootIntent: Intent?) {
+    if (Presenza.voluto(this)) return
     val giocatore = sessione?.player
     if (giocatore == null || !giocatore.playWhenReady) stopSelf()
   }

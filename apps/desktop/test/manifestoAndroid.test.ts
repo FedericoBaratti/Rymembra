@@ -93,3 +93,92 @@ test("il telefono resta in verticale (D-77)", () => {
   assert.ok(attivita, "MainActivity non c'è");
   assert.match(attivita, /android:screenOrientation="portrait"/);
 });
+
+// ── «Resta attiva in sottofondo» (F6, `Presenza.kt`) ─────────────────────────
+
+/** Un sorgente Kotlin, senza commenti: i commenti nominano quel che il codice non usa. */
+const kotlin = (nome: string) =>
+  leggi(`${KOTLIN}${nome}`).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+
+/** I permessi che il manifesto chiede, per nome corto. */
+function permessiChiesti(): Set<string> {
+  return new Set(
+    [...manifesto.matchAll(/<uses-permission\s+android:name="android\.permission\.([A-Z_]+)"/g)].map(
+      (m) => m[1] ?? "",
+    ),
+  );
+}
+
+test("il servizio del sottofondo è connectedDevice, interno, e ha tutto quel che Android 14 vuole", () => {
+  const servizio = /<service\b[^>]*android:name="\.Presenza"[^>]*>/.exec(manifesto)?.[0] ?? "";
+  assert.ok(servizio, "il servizio .Presenza non c'è");
+  assert.match(servizio, /android:foregroundServiceType="connectedDevice"/);
+  assert.match(servizio, /android:exported="false"/, "lo avvia solo l'app");
+
+  const permessi = permessiChiesti();
+  assert.ok(permessi.has("FOREGROUND_SERVICE"));
+  assert.ok(
+    permessi.has("FOREGROUND_SERVICE_CONNECTED_DEVICE"),
+    "senza il permesso del tipo, da Android 14 startForeground dà SecurityException",
+  );
+  // Uno dei prerequisiti di `connectedDevice` (developer.android.com, «Foreground
+  // service types»): senza, ancora SecurityException, e solo sul telefono.
+  const prerequisiti = ["CHANGE_NETWORK_STATE", "CHANGE_WIFI_STATE", "CHANGE_WIFI_MULTICAST_STATE", "NFC", "TRANSMIT_IR"];
+  assert.ok(
+    prerequisiti.some((p) => permessi.has(p)),
+    `connectedDevice vuole uno fra ${prerequisiti.join(", ")}`,
+  );
+});
+
+test("Presenza passa il tipo giusto a startForeground e risorge da sola", () => {
+  const presenza = kotlin("Presenza.kt");
+  assert.match(presenza, /startForeground\(ID, notifica, ServiceInfo\.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE\)/);
+  assert.match(presenza, /return START_STICKY/);
+  // Il tasto «Spegni» e la notifica minima: canale a bassa importanza.
+  assert.match(presenza, /IMPORTANCE_LOW/);
+  assert.match(presenza, /addAction\(/);
+});
+
+test("il risparmio batteria si toglie dalla pagina di sistema, non con la richiesta diretta", () => {
+  // La policy di Google Play vieta `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` a chi
+  // non rompe il proprio compito senza (developer.android.com, «Doze e App
+  // Standby»): il pulsante apre l'elenco, e basta.
+  assert.ok(!permessiChiesti().has("REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"));
+  assert.doesNotMatch(manifesto, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
+  for (const nome of ["Presenza.kt", "Ponte.kt", "Permessi.kt", "MainActivity.kt"]) {
+    assert.doesNotMatch(kotlin(nome), /ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/, nome);
+  }
+  assert.match(kotlin("Presenza.kt"), /Settings\.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS/);
+});
+
+test("tolta dalle recenti, con il sottofondo acceso, la musica ferma non si spegne", () => {
+  const musica = kotlin("ServizioMusica.kt");
+  const da = musica.indexOf("override fun onTaskRemoved");
+  assert.ok(da >= 0, "manca onTaskRemoved");
+  const corpo = musica.slice(da, musica.indexOf("override fun onDestroy"));
+  assert.ok(
+    corpo.indexOf("Presenza.voluto(this)") >= 0 &&
+      corpo.indexOf("Presenza.voluto(this)") < corpo.indexOf("stopSelf()"),
+    "onTaskRemoved deve guardare il sottofondo prima di fermarsi",
+  );
+});
+
+test("la notifica del sottofondo ha le sue frasi in inglese e in italiano, e la sua icona", () => {
+  const nomi = [
+    "presenza_canale",
+    "presenza_titolo",
+    "presenza_titolo_uno",
+    "presenza_titolo_piu",
+    "presenza_titolo_riposo",
+    "presenza_testo_riposo",
+    "presenza_spegni",
+  ];
+  for (const cartella of ["values", "values-it"]) {
+    const frasi = leggi(`${APP}src/main/res/${cartella}/strings.xml`);
+    for (const nome of nomi) {
+      assert.match(frasi, new RegExp(`<string name="${nome}">`), `${cartella}: manca ${nome}`);
+    }
+  }
+  const icona = leggi(`${APP}src/main/res/drawable/notifica_presenza.xml`);
+  assert.match(icona, /<vector\b/);
+});
