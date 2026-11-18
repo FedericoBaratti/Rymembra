@@ -111,6 +111,12 @@ impl Ospite for Finta {
 }
 
 fn nodo(nome: &str) -> (Nodo, Arc<Finta>) {
+    nodo_su(nome, "prova")
+}
+
+/// Come [`nodo`], con la piattaforma che dichiara: due PC dicono tutti e due
+/// `windows`, e si distinguono solo per il nome.
+fn nodo_su(nome: &str, piattaforma: &str) -> (Nodo, Arc<Finta>) {
     let finta = Arc::new(Finta::default());
     let nodo = Nodo::avvia(
         Impostazioni {
@@ -118,13 +124,13 @@ fn nodo(nome: &str) -> (Nodo, Arc<Finta>) {
             rete: Rete::SoloQuesta,
             io: Presentazione {
                 nome: nome.to_owned(),
-                piattaforma: "prova".to_owned(),
+                piattaforma: piattaforma.to_owned(),
                 dispositivo: format!("d-{nome}"),
                 chiave_insieme: Some(format!("insieme-{nome}")),
             },
             presenza: Presenza {
                 nome: nome.to_owned(),
-                piattaforma: "prova".to_owned(),
+                piattaforma: piattaforma.to_owned(),
                 versione: "0".to_owned(),
                 ..Presenza::default()
             },
@@ -249,6 +255,82 @@ fn col_gettone_giusto_ci_si_associa_e_ci_si_parla() {
         .unwrap(),
         Risposta::Presenza(Presenza { ref nome, .. }) if nome == "Telefono"
     ));
+}
+
+/// Due PC, e un terzo: il link copiato dall'uno e incollato sull'altro
+/// collega come una scansione (F4, richiesta #2). Dicono tutti `windows`, e si
+/// distinguono solo per il nome; la chiave di «Ascolta insieme» di ciascuno
+/// arriva all'altro nella stretta di mano — `Presentazione.chiave_insieme` — e
+/// non nel link, che porta il nome, la chiave del nodo, il gettone, gli
+/// indirizzi e il relay.
+#[test]
+fn due_pc_si_collegano_col_link_e_si_distinguono_dal_nome() {
+    let (studio, dello_studio) = nodo_su("STUDIO", "windows");
+    let (salotto, del_salotto) = nodo_su("SALOTTO", "windows");
+    let (portatile, del_portatile) = nodo_su("PORTATILE", "windows");
+    *dello_studio.consente.lock().unwrap() = true;
+
+    // Il link dello STUDIO, com'esce da «Copia il link».
+    let invito = studio.invita().unwrap();
+    let link = invito.link();
+    let letto = rymembra_lontano::Invito::da_link(&link).unwrap();
+    assert_eq!(letto.nome.as_deref(), Some("STUDIO"));
+    assert_eq!(letto.chiave, invito.chiave);
+    // La chiave di «Ascolta insieme» non sta nel link: né per intero né come
+    // testo, né nella forma letta.
+    assert!(!link.contains("insieme-STUDIO"));
+    assert!(!format!("{letto:?}").contains("insieme-"));
+
+    // Il SALOTTO lo incolla.
+    let (chiave, chi) = salotto.collega(&link).expect("il salotto si collega");
+    assert_eq!(chiave, studio.chiave());
+    assert_eq!(
+        (chi.nome.as_str(), chi.piattaforma.as_str()),
+        ("STUDIO", "windows")
+    );
+    // Nella stretta di mano: la chiave dello STUDIO al salotto...
+    assert_eq!(chi.chiave_insieme.as_deref(), Some("insieme-STUDIO"));
+    // ... e quella del SALOTTO allo STUDIO.
+    let visti = dello_studio.nuovi.lock().unwrap().clone();
+    assert_eq!(visti.len(), 1);
+    assert_eq!(visti[0].0, salotto.chiave());
+    assert_eq!(visti[0].1.nome, "SALOTTO");
+    assert_eq!(visti[0].1.piattaforma, "windows");
+    assert_eq!(
+        visti[0].1.chiave_insieme.as_deref(),
+        Some("insieme-SALOTTO")
+    );
+    assert!(del_salotto.associato(&studio.chiave()));
+
+    // Un link nuovo, e il PORTATILE: lo STUDIO ha due dispositivi, uguali
+    // nella piattaforma e diversi nel nome. Il link di prima, nel frattempo
+    // usato, non vale più.
+    let secondo = studio.invita().unwrap();
+    assert_eq!(
+        codice(portatile.collega(&link)),
+        ErrorCodeKind::LontanoGettoneScaduto,
+        "il link di prima non collega più"
+    );
+    portatile
+        .collega(&secondo.link())
+        .expect("il portatile si collega");
+    let visti = dello_studio.nuovi.lock().unwrap().clone();
+    assert_eq!(visti.len(), 2);
+    let nomi: HashSet<&str> = visti.iter().map(|(_, chi)| chi.nome.as_str()).collect();
+    assert_eq!(nomi, HashSet::from(["SALOTTO", "PORTATILE"]));
+    assert!(del_portatile.associato(&studio.chiave()));
+
+    // E si parlano, in tutte e due le direzioni.
+    for (chi, a) in [
+        (&salotto, &studio),
+        (&portatile, &studio),
+        (&studio, &portatile),
+    ] {
+        assert!(matches!(
+            chi.chiedi(&a.chiave(), Domanda::Presenza, Duration::from_secs(10)).unwrap(),
+            Risposta::Presenza(Presenza { ref piattaforma, .. }) if piattaforma == "windows"
+        ));
+    }
 }
 
 #[test]

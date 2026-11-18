@@ -4,7 +4,8 @@
  * Esiste perché `window.prompt` non c'è: in un webview Tauri è disabilitata, e
  * anche dove funziona è una finestra del sistema operativo che non conosce i
  * token della skin. Serve a creare e a rinominare una playlist, che sono la
- * stessa domanda fatta due volte.
+ * stessa domanda fatta due volte, e a dare un nome a un dispositivo appena
+ * collegato (con la frase che dice perché, `descrizione`).
  */
 import { useState } from "react";
 
@@ -14,6 +15,7 @@ import { unaVolta } from "./modale";
 
 export function Chiedi({
   titolo,
+  descrizione,
   etichetta,
   iniziale = "",
   conferma,
@@ -21,6 +23,8 @@ export function Chiedi({
   onChiudi,
 }: {
   titolo: string;
+  /** La frase sotto il titolo, se la domanda ne ha bisogno. */
+  descrizione?: string;
   etichetta: string;
   iniziale?: string;
   conferma: string;
@@ -44,6 +48,7 @@ export function Chiedi({
   return (
     <Dialogo
       titolo={titolo}
+      descrizione={descrizione}
       classe="finestrella stretta glass-modal"
       onChiudi={chiudi}
       onInvia={() => {

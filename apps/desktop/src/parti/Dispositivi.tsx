@@ -14,6 +14,8 @@
  *   collegamento spento; il nucleo non lo accende da sé.
  * - «Usare i dati mobili?»: un brano dell'altro su una rete a consumo, con
  *   «Solo Wi-Fi» su «Chiedi» (`gestoLontano` in `lontano.ts`).
+ * - «Come lo chiami?»: appena collegato un computer, che porta il nome del
+ *   sistema e con due PC non dice quale sia (`proponiNome`).
  *
  * Sono tutte domande di consenso: `consenso` su `Dialogo`, che le skin non
  * ridisegnano.
@@ -24,6 +26,7 @@
 import { useEffect, useId, useState } from "react";
 
 import { useArchivio } from "../archivio";
+import { Chiedi } from "../Chiedi";
 import { Dialogo } from "../Dialogo";
 import { ConfermaGesto, type Domanda } from "../ConfermaGesto";
 import { dataOraBreve } from "../formato";
@@ -44,6 +47,7 @@ import { t, tSe } from "../lingue";
 import {
   accendiPoiCollega,
   annullatoDaQui,
+  appenaCollegato,
   archivioDatiMobili,
   archivioLink,
   archivioLontano,
@@ -53,10 +57,13 @@ import {
   eTelefono,
   eventoDelPannello,
   fraseScaricoFinito,
+  FINESTRA_COLLEGATO_MS,
   linkDa,
   percorsoQr,
+  proponiNome,
   qrScaduto,
   qrSoloInVista,
+  richiesteInFila,
   scaricoConNonAudio,
   scaricoFinito,
   serveAccendere,
@@ -153,6 +160,11 @@ export function LontanoInApp({
   const [accendere, setAccendere] = useState(false);
   // «Smetti di aspettare» vale anche mentre il collegamento si accende.
   const [tentativi] = useState(tentativiDiCollegamento);
+  // «Come lo chiami?»: il dispositivo appena collegato. Chi incollava il link lo
+  // sa dalla risposta del comando; chi mostrava il QR sente solo il nome, e la
+  // riga arriva col pannello (`attesaNome`).
+  const [daNominare, setDaNominare] = useState<DispositivoLontano | null>(null);
+  const [attesaNome, setAttesaNome] = useState<string | null>(null);
 
   useAscolto<StatoLontano>("lontano:stato", eventoDelPannello, true, () => {
     // La fotografia dopo l'apertura dell'ascolto: se nel frattempo è arrivato
@@ -176,9 +188,23 @@ export function LontanoInApp({
 
   // Qui si mostrava il QR, e chi l'ha letto è stato accolto: lo si dice anche
   // qui (chi l'ha letto lo sa dal suo comando).
-  useAscolto<string>("lontano:collegato", (nome) =>
-    onNotizia(t("devices.linkedHere", { nome })),
-  );
+  useAscolto<string>("lontano:collegato", (nome) => {
+    onNotizia(t("devices.linkedHere", { nome }));
+    setAttesaNome(nome);
+  });
+  useEffect(() => {
+    if (attesaNome === null || stato === null) return;
+    const nuovo = appenaCollegato(stato.dispositivi, attesaNome, Date.now());
+    if (nuovo === null) return;
+    setAttesaNome(null);
+    if (proponiNome(nuovo)) setDaNominare(nuovo);
+  }, [attesaNome, stato]);
+  // Un nome che non si riconosce non resta in attesa per sempre.
+  useEffect(() => {
+    if (attesaNome === null) return;
+    const fine = window.setTimeout(() => setAttesaNome(null), FINESTRA_COLLEGATO_MS);
+    return () => window.clearTimeout(fine);
+  }, [attesaNome]);
 
   // «Scarica qui»: l'avanzamento per la pagina «Sfoglia», e una notizia quando
   // la coda finisce — la pagina può non essere più aperta.
@@ -201,14 +227,22 @@ export function LontanoInApp({
     },
   );
 
-  const richiesta = stato?.richieste[0] ?? null;
+  // Una alla volta, nell'ordine in cui sono arrivate; chi aspetta si dice.
+  const { adesso: richiesta, dietro } = richiesteInFila(stato?.richieste ?? []);
 
   const collega = (daCollegare: LinkLontano) => {
     setCollegando(true);
     comandoDelPannello(() => ipc.lontanoCollega(daCollegare.link))
-      .then(() => {
+      .then((dopo) => {
         onNotizia(t("devices.linked"));
         archivioLink.scrivi(null);
+        // Il nome del link, e se non combacia l'ultimo collegato: la riga porta
+        // il nome come l'altro si è presentato, il link quello che dichiarava.
+        const adesso = Date.now();
+        const nuovo =
+          appenaCollegato(dopo.dispositivi, daCollegare.nome, adesso) ??
+          appenaCollegato(dopo.dispositivi, null, adesso);
+        if (nuovo !== null && proponiNome(nuovo)) setDaNominare(nuovo);
       })
       .catch((errore) => {
         archivioLink.scrivi(null);
@@ -288,6 +322,7 @@ export function LontanoInApp({
         >
           <ChiE nome={richiesta.nome} impronta={richiesta.impronta} />
           <p>{t("devices.request.compare")}</p>
+          {dietro > 0 && <p className="nota">{t("devices.link.queue", { n: dietro })}</p>}
           <div className="tasti-finestrella">
             {/* Il no per primo, e col fuoco: un Invio battuto per riflesso non
                 deve collegare un dispositivo che non si conosce. */}
@@ -383,6 +418,23 @@ export function LontanoInApp({
             </button>
           </div>
         </Dialogo>
+      )}
+
+      {/* Dopo le domande di consenso: un nome non toglie il passo a un sì. */}
+      {daNominare !== null && richiesta === null && link === null && riprova === null && (
+        <Chiedi
+          titolo={t("devices.link.rename.title")}
+          descrizione={t("devices.link.rename.sub", { nome: daNominare.nome })}
+          etichetta={t("devices.link.rename.field")}
+          iniziale={daNominare.nome}
+          conferma={t("devices.rename")}
+          onRispondi={(nome) => {
+            setDaNominare(null);
+            if (nome === daNominare.nome) return;
+            comandoDelPannello(() => ipc.lontanoRinomina(daNominare.chiave, nome)).catch(onErrore);
+          }}
+          onChiudi={() => setDaNominare(null)}
+        />
       )}
     </>
   );
@@ -787,6 +839,7 @@ export function SchedaDispositivi({
   const [domanda, setDomanda] = useState<Domanda | null>(null);
   const scadenza = useScadenzaQr(stato?.invito?.scadeMs ?? null);
   const idIncolla = useId();
+  const idSpiegazione = useId();
   // Il QR vale finché questa scheda lo mostra: vedi `qrSoloInVista`.
   const [qr] = useState(() => qrSoloInVista(ipc.lontanoQrAnnulla));
 
@@ -935,6 +988,7 @@ export function SchedaDispositivi({
           <p className="nota">
             {t("settings.devices.qr.expires", { n: scadenza?.minuti ?? 0 })}
           </p>
+          <p className="nota">{t("devices.link.replaces")}</p>
           <div className="azioni">
             <Copia testo={stato.invito.link} etichetta={t("settings.devices.qr.copy")} />
             <button
@@ -977,6 +1031,13 @@ export function SchedaDispositivi({
         />
       )}
 
+      {/* Il link copiato da un altro PC (o mandato in una chat) si incolla qui:
+          con un titoletto e una riga che dicono dove si prende, perché senza
+          sembrava un campo di servizio. */}
+      <h3 className="titoletto">{t("devices.link.paste.title")}</h3>
+      <p className="nota" id={idSpiegazione}>
+        {t("devices.link.paste.sub")}
+      </p>
       <form
         className="azioni"
         onSubmit={(e) => {
@@ -990,6 +1051,7 @@ export function SchedaDispositivi({
           className="campo field-input"
           placeholder="rymembra://collega/…"
           aria-label={t("settings.devices.paste")}
+          aria-describedby={idSpiegazione}
           value={incollato}
           onChange={(e) => setIncollato(e.target.value)}
         />
