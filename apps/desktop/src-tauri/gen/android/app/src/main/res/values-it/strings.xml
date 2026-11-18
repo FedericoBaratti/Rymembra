@@ -55,6 +55,11 @@
     <string name="presenza_testo_riposo">Apri Rymembra perché i tuoi dispositivi raggiungano di nuovo questo telefono.</string>
     <string name="presenza_spegni">Spegni</string>
 
+    <string name="aggiornamento_canale">Aggiornamenti dell\'app</string>
+    <string name="aggiornamento_titolo">Aggiornamento pronto da installare</string>
+    <string name="aggiornamento_testo">Rymembra %1$s è scaricata e verificata. Apri Rymembra per installarla.</string>
+    <string name="aggiornamento_apri">Apri</string>
+
     <string name="qr_istruzioni">Inquadra il QR mostrato da Rymembra sull\'altro dispositivo.</string>
     <string name="qr_torcia">Torcia</string>
     <string name="qr_annulla">Annulla</string>

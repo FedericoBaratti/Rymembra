@@ -497,6 +497,31 @@ pub fn scarico(acceso: bool, numero: u32, di: u32, titolo: &str) -> Result<(), E
 }
 
 #[derive(Serialize)]
+struct AggiornamentoPronto<'a> {
+    acceso: bool,
+    versione: &'a str,
+}
+
+/// Accende, o spegne, la notifica «Pronto da installare» (`AggiornamentoPronto`
+/// in Kotlin): l'APK di `versione` è scaricato e verificato, e aspetta il tocco
+/// su «Installa». Toccarla riapre l'app, dov'è la scheda dell'aggiornamento.
+///
+/// Kotlin decide se mostrarla: non con l'app in vista (la scheda è lì), non con
+/// le notifiche spente (non si chiedono), non nella distribuzione `play`. Per
+/// spegnerla `versione` non conta.
+///
+/// # Errori
+///
+/// Se il ponte non risponde, o se la distribuzione non ha l'aggiornatore (è un
+/// errore di chi chiama: lì non c'è nessun APK da installare).
+pub fn aggiornamento_pronto(acceso: bool, versione: &str) -> Result<(), Errore> {
+    chiama(
+        "sistema.aggiornamentoPronto",
+        &AggiornamentoPronto { acceso, versione },
+    )
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Sottofondo<'a> {
     acceso: bool,

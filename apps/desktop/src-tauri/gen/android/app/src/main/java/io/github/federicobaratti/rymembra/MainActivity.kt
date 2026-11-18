@@ -176,6 +176,9 @@ class MainActivity : TauriActivity() {
   override fun onStart() {
     super.onStart()
     Ponte.inVista = true
+    // La scheda dell'aggiornamento è di nuovo davanti: la notifica «Pronto da
+    // installare» ha fatto il suo.
+    AggiornamentoPronto.togli(this)
   }
 
   override fun onStop() {

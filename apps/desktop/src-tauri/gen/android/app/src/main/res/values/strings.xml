@@ -70,6 +70,14 @@
     <string name="presenza_testo_riposo">Open Rymembra so your devices can reach this phone again.</string>
     <string name="presenza_spegni">Turn off</string>
 
+    <!-- La notifica «Pronto da installare» (vedi `AggiornamentoPronto`): solo
+         nella distribuzione `github`, quando l'APK nuovo è scaricato e
+         verificato. Toccarla, o il tasto, riapre l'app sulla scheda. -->
+    <string name="aggiornamento_canale">App updates</string>
+    <string name="aggiornamento_titolo">Update ready to install</string>
+    <string name="aggiornamento_testo">Rymembra %1$s is downloaded and verified. Open Rymembra to install it.</string>
+    <string name="aggiornamento_apri">Open</string>
+
     <!-- Lo scanner del QR di «Collega un dispositivo» (vedi `ScansioneQr`). -->
     <string name="qr_istruzioni">Point the camera at the QR code shown by Rymembra on your other device.</string>
     <string name="qr_torcia">Flashlight</string>
