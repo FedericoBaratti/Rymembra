@@ -30,7 +30,6 @@ import {
   archivioSpecchio,
   daFotografia,
   domandaSullePerdite,
-  ricordiDaDimenticare,
 } from "./lontano";
 import { unaVolta } from "./modale";
 import { dispositiviDiLibreria } from "./origine";
@@ -128,23 +127,6 @@ export function DomandaSpecchio({
     // Una lettura sola, all'apertura: dopo, il ricordo lo scrive questo componente.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // Le righe tornate: il ricordo non serve più, e se un giorno ne mancassero
-  // altrettante sarebbe un'altra domanda (`ricordiDaDimenticare`).
-  useEffect(() => {
-    if (lasciate === null) return;
-    const vecchi = ricordiDaDimenticare(avanzamenti, lasciate);
-    if (vecchi.length === 0) return;
-    setLasciate((prima) => {
-      const resto = new Map(prima);
-      for (const chiave of vecchi) resto.delete(chiave);
-      return resto;
-    });
-    for (const chiave of vecchi) {
-      ipc.lontanoSpecchioLascia(chiave, null).catch(onErrore);
-    }
-    // `onErrore` è quello di sempre: non è una ragione per rifare il conto.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [avanzamenti, lasciate]);
   const nomi = new Map(dispositiviDiLibreria(stato).map((d) => [d.chiave, d.nome]));
   const domanda = domandaSullePerdite(avanzamenti, nomi, lasciate);
   if (domanda === undefined) return null;

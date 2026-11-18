@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import type { AvanzamentoSpecchio, FaseSpecchio } from "../src/ipc";
-import { daFotografia, domandaSullePerdite, ricordiDaDimenticare } from "../src/lontano";
+import { daFotografia, domandaSullePerdite } from "../src/lontano";
 
 const leggi = (percorso: string) =>
   readFileSync(new URL(percorso, import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -87,36 +87,6 @@ test("non si chiede di un dispositivo che non c'è più, né di uno che non ha n
   assert.equal(domandaSullePerdite(stato, NOMI, new Map()), undefined);
 });
 
-test("un ricordo si dimentica quando le righe sono tornate: a giro finito, e non prima", () => {
-  const ricordi = new Map([
-    [A, 120],
-    [B, 60],
-  ]);
-  // A ha ancora le sue righe in attesa: resta com'è. B è tornato intero: a giro
-  // finito non aspetta più niente, e se perdesse di nuovo altrettante righe sarebbe
-  // un'altra domanda.
-  const stato = daFotografia([
-    avanzamento(A, "fine", { righe: 900, inAttesa: 120 }),
-    avanzamento(B, "fine", { righe: 400, inAttesa: 0 }),
-  ]);
-  assert.deepEqual(ricordiDaDimenticare(stato, ricordi), [B]);
-  // Durante la lettura, o dopo un errore, il conto non è quello vero: non si tocca.
-  for (const fase of ["leggo", "errore", "nonSupportato", "inattivo"] as const) {
-    assert.deepEqual(
-      ricordiDaDimenticare(daFotografia([avanzamento(B, fase, { inAttesa: 0 })]), ricordi),
-      [],
-      fase,
-    );
-  }
-  // Un dispositivo di cui non si sa niente (non ancora riletto dopo l'avvio) non si tocca.
-  assert.deepEqual(ricordiDaDimenticare(daFotografia([]), ricordi), []);
-  // E quel che non si ricordava non c'è da dimenticare.
-  assert.deepEqual(
-    ricordiDaDimenticare(daFotografia([avanzamento(B, "fine", { inAttesa: 0 })]), new Map()),
-    [],
-  );
-});
-
 test("il ricordo passa dal nucleo: si legge all'apertura, si scrive con «Lasciali», si toglie con «Togli»", () => {
   const conferma = leggi("../src/ConfermaSpecchio.tsx");
   const dom = conferma.slice(conferma.indexOf("export function DomandaSpecchio"));
@@ -124,10 +94,18 @@ test("il ricordo passa dal nucleo: si legge all'apertura, si scrive con «Lascia
   assert.match(dom, /useState<ReadonlyMap<string, number> \| null>\(null\)/);
   assert.match(dom, /ipc\s*\.lontanoSpecchioLasciati\(\)/);
   assert.match(dom, /domandaSullePerdite\(/);
-  assert.match(dom, /ricordiDaDimenticare\(/);
   // «Lasciali» lo scrive col numero, «Togli» lo cancella.
   assert.match(dom, /ipc\.lontanoSpecchioLascia\(domanda\.dispositivo, domanda\.inAttesa\)/);
   assert.match(dom, /ipc\.lontanoSpecchioLascia\(domanda\.dispositivo, null\)/);
+  // E **solo** lì: un giro finito con zero righe in attesa non cancella il ricordo,
+  // perché quello zero non è affidabile (un guasto nel giro lo dà lo stesso:
+  // `togli_le_scadute` in `lontano/specchio.rs` parte da zero).
+  assert.equal(
+    (dom.match(/lontanoSpecchioLascia\(/g) ?? []).length,
+    2,
+    "un ricordo si scrive con «Lasciali» e si toglie con «Togli», e basta",
+  );
+  assert.doesNotMatch(dom, /ricordiDaDimenticare|inAttesa === 0/);
 
   const ipc = leggi("../src/ipc.ts");
   assert.match(ipc, /invoke<Record<string, number>>\("lontano_specchio_lasciati"\)/);

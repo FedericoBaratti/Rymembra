@@ -616,6 +616,14 @@ export function daConfermare(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecc
  *
  * `null` è «il nucleo non ha ancora risposto»: non si chiede niente. Partire da
  * una mappa vuota farebbe lampeggiare, a ogni avvio, una domanda già risolta.
+ *
+ * Il ricordo **non** si dimentica da solo quando le righe tornano (un giro finito
+ * con `inAttesa` a zero): quello zero non è un segnale di cui fidarsi. Un giro
+ * che non riesce a leggere, o a togliere le righe scadute, finisce lo stesso
+ * `fine` con zero in attesa (`togli_le_scadute` in `lontano/specchio.rs` parte da
+ * zero e un guasto non rompe il giro), e il ricordo si perderebbe per un guasto:
+ * la domanda tornerebbe alla stessa cifra, che è proprio quel che il ricordo
+ * evita. Si dimentica con «Togli» e con «Dimentica», che sono gesti.
  */
 export function domandaSullePerdite(
   avanzamenti: AvanzamentiSpecchio,
@@ -626,26 +634,6 @@ export function domandaSullePerdite(
   return daConfermare(avanzamenti).find(
     (a) => nomi.has(a.dispositivo) && lasciate.get(a.dispositivo) !== a.inAttesa,
   );
-}
-
-/**
- * I «Lasciali» da dimenticare: quelli dei dispositivi che a giro finito non hanno
- * più righe in attesa.
- *
- * Le righe sono tornate — il disco riattaccato, la cartella rimessa —, e un
- * ricordo vecchio resterebbe lì a nascondere la domanda se un giorno ne
- * mancassero altrettante: sarebbe un'altra situazione, a cui si risponde da capo.
- * Si guarda solo a giro finito (`fine`): in lettura o dopo un errore il conto non
- * è quello vero, e un dispositivo di cui non si sa ancora niente non si tocca.
- */
-export function ricordiDaDimenticare(
-  avanzamenti: AvanzamentiSpecchio,
-  lasciate: ReadonlyMap<string, number>,
-): string[] {
-  return [...lasciate.keys()].filter((chiave) => {
-    const adesso = avanzamenti[chiave];
-    return adesso?.fase === "fine" && adesso.inAttesa === 0;
-  });
 }
 
 /** Ogni quanto, al più, la libreria si rilegge mentre un catalogo sta arrivando. */
