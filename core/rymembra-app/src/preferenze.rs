@@ -229,6 +229,14 @@ pub const CHIAVE_CARTELLA_SCELTA: &str = "ui.folders.selected";
 /// Vedi il preambolo: una versione e non un booleano, e fuori dal profilo.
 pub const CHIAVE_GIRO_VISTO: &str = "ui.tour.seenVersion";
 
+/// La versione di cui si è già vista la finestra delle Novità.
+///
+/// Una versione e non un booleano, per la stessa ragione del giro: la domanda
+/// non è «le Novità sono state viste» ma «**queste**». Il confronto è un `!=`
+/// (vedi [`novita_da_mostrare`]). Non entra nel profilo: è la storia di questa
+/// installazione, come il giro e la risposta alla proposta del sottofondo.
+pub const CHIAVE_NOVITA_VISTA: &str = "ui.novita.vista";
+
 /// Quanti percorsi aperti si conservano.
 ///
 /// Duecento sono molti più dei nodi che stanno su uno schermo e molti meno di
@@ -654,6 +662,99 @@ pub fn imposta_giro_visto(connection: &Connection, versione: &str) -> Result<(),
     settings::write(connection, CHIAVE_GIRO_VISTO, versione)
 }
 
+/// Che cosa fare, all'avvio, della finestra delle Novità.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EsitoNovita {
+    /// Mostrare la finestra: c'è una versione nuova con le sue novità.
+    Mostra,
+    /// Un'installazione nuova: si registra la versione e non si mostra niente.
+    Registra,
+    /// Niente: già viste, o questa versione non ne ha.
+    Niente,
+}
+
+/// La tabella di §11.3.2: quando la finestra delle Novità si mostra.
+///
+/// Pura, perché è l'unica riga che si può sbagliare, e il database non c'entra.
+/// `ci_sono` lo sa la finestra — le novità sono scritte a mano in
+/// `apps/desktop/src/novita.ts`, non in Rust — e senza novità la finestra non
+/// compare, e non è un errore.
+///
+/// - **Chiave assente, libreria vuota**: un'installazione nuova. Si registra la
+///   versione e non si mostra niente: chi ha appena installato non ha un «prima»
+///   di cui sentire le novità.
+/// - **Chiave assente, libreria piena**: un aggiornamento da una versione che le
+///   Novità non le aveva. Si mostrano, se ci sono.
+/// - **Chiave diversa dalla versione**: si mostrano, se ci sono. Il confronto è
+///   un `!=` e non «maggiore di», come in `giro.rs`: una versione più bassa è
+///   comunque un'altra, e chi torna indietro non ha visto le sue novità.
+/// - **Chiave uguale**: già viste.
+#[must_use]
+pub fn novita_da_mostrare(
+    visto: Option<&str>,
+    versione: &str,
+    libreria_vuota: bool,
+    ci_sono: bool,
+) -> EsitoNovita {
+    match visto {
+        Some(visto) if visto == versione => EsitoNovita::Niente,
+        None if libreria_vuota => EsitoNovita::Registra,
+        _ if ci_sono => EsitoNovita::Mostra,
+        _ => EsitoNovita::Niente,
+    }
+}
+
+/// La versione di cui si sono già viste le Novità, o `None`. Una riga vuota
+/// vale come assente, per la stessa disciplina di [`giro_visto`].
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn novita_viste(connection: &Connection) -> Result<Option<String>, AppError> {
+    Ok(settings::read(connection, CHIAVE_NOVITA_VISTA)?.filter(|v| !v.trim().is_empty()))
+}
+
+/// Segna le Novità di questa versione come viste. Una stringa vuota dimentica.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn imposta_novita_viste(connection: &Connection, versione: &str) -> Result<(), AppError> {
+    let versione = versione.trim();
+    if versione.is_empty() {
+        settings::forget(connection, CHIAVE_NOVITA_VISTA)?;
+        return Ok(());
+    }
+    settings::write(connection, CHIAVE_NOVITA_VISTA, versione)
+}
+
+/// Questa è una libreria nuova: nessun brano e nessuna cartella scelta.
+///
+/// È la stessa idea del primo avvio (`App.tsx`, `nessunaCartella`): chi non ha
+/// né l'uno né l'altro non ha mai usato Rymembra, e non c'è un «prima» di cui
+/// raccontare le novità.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn libreria_vuota(connection: &Connection) -> Result<bool, AppError> {
+    let brani: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM tracks)", [], |riga| {
+            riga.get(0)
+        })
+        .map_err(|err| crate::library::db_error("la libreria è vuota?", &err))?;
+    if brani {
+        return Ok(false);
+    }
+    let cartelle = settings::read(connection, "library.roots")?;
+    // Un elenco vuoto, `[]`, è come niente: la chiave può esserci senza
+    // nessuna cartella dentro.
+    Ok(cartelle
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(|elenco| elenco.is_empty() || elenco == "[]"))
+}
+
 /// Come ha risposto chi ha visto la proposta «parti con Windows e resta nel
 /// vassoio».
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -710,6 +811,97 @@ mod prove {
 
     fn libreria() -> Connection {
         crate::db::open_in_memory().expect("database").connection
+    }
+
+    // ── le Novità ──────────────────────────────────────────────────────────
+
+    /// La tabella di §11.3.2, riga per riga: quando la finestra delle Novità si
+    /// mostra, quando si registra la versione senza mostrare, quando non c'è
+    /// niente da fare.
+    #[test]
+    fn la_tabella_delle_novita() {
+        use EsitoNovita::{Mostra, Niente, Registra};
+        // Chiave assente, libreria vuota: un'installazione nuova. Registra la
+        // versione e non mostra niente — chi ha appena installato non ha un
+        // «prima» da confrontare — anche se la versione ha novità.
+        assert_eq!(novita_da_mostrare(None, "3.2.1", true, true), Registra);
+        assert_eq!(novita_da_mostrare(None, "3.2.1", true, false), Registra);
+        // Chiave assente, libreria piena: un aggiornamento da una versione che
+        // non aveva le Novità. Mostra, se ci sono.
+        assert_eq!(novita_da_mostrare(None, "3.2.1", false, true), Mostra);
+        assert_eq!(novita_da_mostrare(None, "3.2.1", false, false), Niente);
+        // Chiave diversa dalla versione: mostra, se ci sono novità. Il confronto
+        // è un `!=`, come in `giro.rs`: una versione più bassa è comunque
+        // un'altra.
+        assert_eq!(
+            novita_da_mostrare(Some("3.2.1"), "3.3.0", false, true),
+            Mostra
+        );
+        assert_eq!(
+            novita_da_mostrare(Some("3.3.0"), "3.2.1", false, true),
+            Mostra
+        );
+        assert_eq!(
+            novita_da_mostrare(Some("3.2.1"), "3.3.0", false, false),
+            Niente
+        );
+        // Con la chiave presente la libreria vuota non conta: chi ha già visto
+        // una versione ha una storia, anche se ha svuotato tutto.
+        assert_eq!(
+            novita_da_mostrare(Some("3.2.1"), "3.3.0", true, true),
+            Mostra
+        );
+        // Chiave uguale alla versione: già vista.
+        assert_eq!(
+            novita_da_mostrare(Some("3.3.0"), "3.3.0", false, true),
+            Niente
+        );
+        assert_eq!(
+            novita_da_mostrare(Some("3.3.0"), "3.3.0", true, true),
+            Niente
+        );
+    }
+
+    #[test]
+    fn le_novita_viste_si_rileggono_e_una_riga_vuota_vale_assente() {
+        let c = libreria();
+        assert_eq!(novita_viste(&c), Ok(None));
+        imposta_novita_viste(&c, "3.2.1").expect("scrittura");
+        assert_eq!(novita_viste(&c), Ok(Some("3.2.1".to_owned())));
+        // Una riga vuota non è «visto niente di nuovo»: è assente, come per il
+        // giro (una scrittura andata a metà non deve nascondere le novità).
+        settings::write(&c, CHIAVE_NOVITA_VISTA, "  ").expect("scrittura");
+        assert_eq!(novita_viste(&c), Ok(None));
+        imposta_novita_viste(&c, "3.2.1").expect("scrittura");
+        imposta_novita_viste(&c, "").expect("azzeramento");
+        assert_eq!(novita_viste(&c), Ok(None));
+    }
+
+    #[test]
+    fn una_libreria_nuova_e_vuota_e_con_un_brano_o_una_cartella_no() {
+        let c = libreria();
+        assert_eq!(libreria_vuota(&c), Ok(true), "una libreria appena creata");
+        settings::write(&c, "library.roots", "[]").expect("scrittura");
+        assert_eq!(
+            libreria_vuota(&c),
+            Ok(true),
+            "un elenco di cartelle vuoto è niente"
+        );
+        settings::write(&c, "library.roots", r#"["D:Musica"]"#).expect("scrittura");
+        assert_eq!(
+            libreria_vuota(&c),
+            Ok(false),
+            "con una cartella scelta non è nuova"
+        );
+        settings::write(&c, "library.roots", "[]").expect("scrittura");
+        c.execute(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, album_key, genre,
+                                 duration_ms, file_size, date_added, date_modified)
+             VALUES (1, 'x.mp3', 'kx', 'x', 'x', 'x', 'x|x', 'x', 1000, 1, 1, 1)",
+            [],
+        )
+        .expect("un brano");
+        assert_eq!(libreria_vuota(&c), Ok(false), "con un brano non è nuova");
     }
 
     #[test]

@@ -222,6 +222,22 @@
     transform var(--transition-foglio);
 }
 
+/* Le Novità sono a schermo intero, non un foglio: sono una piccola storia da
+   sfogliare col dito, e un foglio che sale a metà lascerebbe la pagina viva
+   dietro la scena. Quattro classi dopo il prefisso, più pesante del foglio qui
+   sopra. */
+:root[data-forma="telefono"] .velo.scuro > .finestrella.novita {
+  height: 100dvh;
+  max-height: none;
+  border-radius: 0;
+  justify-content: space-between;
+}
+:root[data-forma="telefono"] .velo.scuro > .finestrella.novita .novita-corpo {
+  flex: 1;
+  display: grid;
+  place-items: center;
+}
+
 /* La maniglia disegnata: dice «questo è un foglio», anche se non si trascina.
 
    Un fondo e non uno pseudo-elemento. `.finestrella` porta `glass-modal`, una

@@ -117,6 +117,13 @@ jobs:
       - name: Le lingue dicono tutte le stesse cose
         run: node strumenti/lingue.js
 
+      # Le novità della finestra «Novità» (`apps/desktop/src/novita.ts`): da due a
+      # quattro passi, i testi in italiano e in inglese, nessuna chiave rimasta di
+      # una versione di prima. Una versione che ne è senza è un avviso, non un
+      # errore: vedi `strumenti/novita.js`.
+      - name: Le novità sono scritte bene
+        run: node strumenti/novita.js
+
       # Lo script `verify` di `package.json` lo esegue da sempre; qui mancava, e
       # una classe che nessun foglio disegna passava `tsc`, passava `vite build`
       # e arrivava fino alla schermata storta.

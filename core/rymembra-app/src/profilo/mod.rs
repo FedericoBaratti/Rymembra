@@ -369,6 +369,7 @@ const FUORI: &[&str] = &[
     "le cartelle dal cloud: gli account collegati, le app registrate presso Google, Microsoft e Dropbox, e lo specchio dei servizi (fatti di questa macchina; le cartelle scelte viaggiano)",
     "il sottofondo del telefono: «Resta attiva in sottofondo» (fatto di questo telefono: la sua batteria, e il produttore che lo lascia vivere o no)",
     "il sottofondo del computer: le etichette del vassoio e la risposta alla proposta di partire con Windows (fatti di questa macchina e di questa installazione; «Avvia con Windows» sta nel registro di Windows, non nella libreria)",
+    "le Novità già viste: la versione di cui si è letta la finestra delle Novità (la storia di questa installazione: portata su un altro computer nasconderebbe le novità che lì sono nuove)",
 ];
 
 /// Il file v1, come sta sul disco.

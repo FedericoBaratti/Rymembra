@@ -152,6 +152,7 @@ import { notaDelPermesso, useAccessoTelefono } from "./parti/AccessoTelefono";
 import { AvvisoCoda } from "./parti/AvvisoCoda";
 import { AvvisoDatabase } from "./parti/Avvisi";
 import { LibreriaDiPrima } from "./parti/LibreriaDiPrima";
+import { NovitaAllAvvio } from "./parti/Novita";
 import { PropostaSottofondo } from "./parti/PropostaSottofondo";
 import { AvvisoConti } from "./parti/AvvisoConti";
 import { Fascia } from "./parti/Fascia";
@@ -541,15 +542,24 @@ export function App() {
   /** Il giro guidato è aperto adesso. */
   const [giroAperto, setGiroAperto] = useStatoPresente(false);
   /**
+   * Le Novità dopo un aggiornamento sono ancora da mostrare: il nucleo non ha
+   * ancora risposto, o la finestra deve ancora aprirsi, o è aperta. Parte vero e
+   * lo abbassa `NovitaAllAvvio`: quando il nucleo dice di no (installazione
+   * nuova, versione senza novità, già viste), quando la domanda fallisce, o
+   * quando la finestra si chiude. Vedi `parti/Novita.tsx`.
+   */
+  const [novitaInAttesa, setNovitaInAttesa] = useState(true);
+  /**
    * La proposta «parti con Windows e resta nel vassoio» può comparire adesso.
    *
    * Mai durante `Primo`, né durante il giro — né quando il giro sta per
-   * partire: chi comincia ha altro da guardare. **È il solo posto** in cui si
-   * decide quando aspettare: la finestra delle Novità (§11 della guida) vi
-   * aggiungerà «e la finestra è chiusa», perché la proposta viene dopo di lei.
-   * `PropostaSottofondo` non conosce né il giro né le Novità, e non deve.
+   * partire: chi comincia ha altro da guardare — e **dopo** la finestra delle
+   * Novità: non solo «non aperta», ma «già risposta e chiusa», o la proposta
+   * comparirebbe per il tempo che il nucleo impiega a rispondere. **È il solo
+   * posto** in cui si decide quando aspettare: `PropostaSottofondo` non conosce
+   * né il giro né le Novità, e non deve.
    */
-  const propostaPuoMostrarsi = !primoVisibile && !giroDaFare && !giroAperto;
+  const propostaPuoMostrarsi = !primoVisibile && !giroDaFare && !giroAperto && !novitaInAttesa;
   const [codaAperta, setCodaAperta] = useStatoPresente(false);
   const [daImportare, setDaImportare] = useStatoPresente<string | null>(null);
   /**
@@ -1250,8 +1260,11 @@ export function App() {
    * documento, e solo finché c'è da aspettare.
    */
   useEffect(() => {
+    // `daFare` aspetta anche le Novità: mai due veli sulla stessa finestra. Il
+    // giro ha già l'occhio ai modali (`modaleAperto`), ma la finestra delle
+    // Novità nasce dopo la risposta del nucleo, e in quel tempo non c'è ancora.
     const come = comeParteIlGiro({
-      daFare: giroDaFare,
+      daFare: giroDaFare && !novitaInAttesa,
       aperto: giroAperto,
       avviato: avvio !== null,
       primoVisibile,
@@ -1281,7 +1294,7 @@ export function App() {
       attributeFilter: ["aria-modal", "role", "hidden"],
     });
     return () => osserva.disconnect();
-  }, [giroDaFare, giroAperto, avvio, primoVisibile, vista, studioVisibile]);
+  }, [giroDaFare, giroAperto, avvio, primoVisibile, vista, studioVisibile, novitaInAttesa]);
 
   /**
    * Quando il giro si apre senza niente in coda, ci si mette qualcosa — fermo.
@@ -4946,6 +4959,17 @@ export function App() {
             del computer — la barra laterale, la terza colonna, le scorciatoie —
             e sul telefono indicherebbero posti che non ci sono. */}
         {giroAperto && !MOBILE && <Giro onPrepara={preparaGiro} onChiudi={chiudiGiro} />}
+        {/* Le Novità dopo un aggiornamento, una volta: un Dialogo modale, a schermo
+            intero sul telefono. Si apre da sola quando non c'è il primo avvio,
+            lo Studio, il giro o un altro dialogo, e la proposta del sottofondo
+            aspetta che si chiuda. */}
+        <NovitaAllAvvio
+          avviato={avvio !== null}
+          primoVisibile={primoVisibile}
+          studioVisibile={studioVisibile}
+          giroAperto={giroAperto}
+          onInAttesa={setNovitaInAttesa}
+        />
        </MenuDellaCoda>
       </div>
 

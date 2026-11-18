@@ -29,7 +29,7 @@ import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, Di
 import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
-import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, QuandoInstallare, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
+import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, NovitaDaMostrare, QuandoInstallare, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
 
 export * from "./ipc/errori";
 export * from "./ipc/libreria";
@@ -264,6 +264,14 @@ export const ipc = {
   // La chiama sia chi il giro lo finisce sia chi lo salta: sono due modi di
   // dire «questo l'ho visto».
   giroFatto: () => invoke<void>("giro_fatto"),
+  // Le Novità dopo un aggiornamento. Si manda l'elenco delle versioni che ne
+  // hanno (`novita.ts`): la versione di questa copia la sa il nucleo, e il
+  // confronto sta con lei. In un'installazione nuova registra la versione e
+  // risponde di no. `novitaViste` la chiama la finestra quando si chiude,
+  // comunque si chiuda.
+  novitaDaMostrare: (conNovita: readonly string[]) =>
+    invoke<NovitaDaMostrare>("novita_da_mostrare", { conNovita }),
+  novitaViste: (versione: string) => invoke<void>("novita_viste", { versione }),
   // Un archivio `.ryprofile`, non più un `.json`: dentro ci sono anche la
   // libreria, le copertine e i pacchetti skin. Il vecchio formato si **legge**
   // ancora e non si scrive più.

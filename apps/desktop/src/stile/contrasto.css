@@ -302,6 +302,17 @@
     border-width: 2px;
   }
 
+  /* I puntini delle Novità: lo stesso rischio dei passi dell'aggiornamento — il
+     motore toglie lo sfondo, e «visto», «adesso» e «dopo» sarebbero un cerchio
+     vuoto. Pieno di testo = visto; `Highlight` = adesso; solo contorno = dopo. */
+  .novita-puntino[data-stato='fatto'] {
+    background: CanvasText;
+  }
+  .novita-puntino[data-stato='corrente'] {
+    background: Highlight;
+    border-color: Highlight;
+  }
+
   /* I cursori: la barra di posizione, il volume, la dissolvenza e la latenza
      (`.scorrimento`), e le dieci bande dell'equalizzatore. La loro pista è
      **solo** un gradiente, cioè quel che il motore toglie del tutto, e l'input

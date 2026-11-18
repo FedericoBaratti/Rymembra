@@ -613,6 +613,14 @@ export interface StatoAggiornamenti {
   errore: ErroreIpc | null;
 }
 
+/** La risposta a «c'è la finestra delle Novità da mostrare?». */
+export interface NovitaDaMostrare {
+  /** La versione di questa copia: quella di cui si mostrano le novità. */
+  versione: string;
+  /** Aprire la finestra. */
+  mostra: boolean;
+}
+
 /**
  * I passi di un aggiornamento: scarico, verifica della firma, installazione,
  * riavvio; `pronto` è il pacchetto già verificato che aspetta.

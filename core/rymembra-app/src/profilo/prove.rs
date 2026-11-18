@@ -240,6 +240,25 @@ fn il_sottofondo_del_computer_non_viaggia_nel_profilo() {
 }
 
 #[test]
+fn le_novita_viste_non_viaggiano_nel_profilo() {
+    // La versione di cui si sono viste le Novità è la storia di questa
+    // installazione: portata su un'altra, nasconderebbe le novità che lì sono
+    // nuove — o le mostrerebbe a chi le ha già lette su questo computer. Sta fuori
+    // dal catalogo, e il manifesto lo dice.
+    assert!(
+        CATALOGO
+            .iter()
+            .all(|(nel_catalogo, _)| *nel_catalogo != crate::preferenze::CHIAVE_NOVITA_VISTA),
+        "«{}» è la storia di questa installazione e non deve viaggiare",
+        crate::preferenze::CHIAVE_NOVITA_VISTA
+    );
+    assert!(
+        FUORI.iter().any(|riga| riga.contains("Novità già viste")),
+        "il manifesto del profilo non dichiara che le Novità viste restano fuori"
+    );
+}
+
+#[test]
 fn le_cartelle_aperte_non_escono() {
     // La prova è scritta sul **prefisso** e non sui due nomi, e la differenza
     // non è cosmetica: un confronto sui nomi passa anche se la chiave viene

@@ -915,3 +915,94 @@ button.briciola:hover {
   display: grid;
   gap: var(--spazio-1);
 }
+
+/* ── le Novità dopo un aggiornamento ──────────────────────────────────────
+
+   Una finestrella a passi: la scena, un titolo, due frasi, e i puntini. Sul
+   telefono è a schermo intero (`telefono-fogli.css`) e si sfoglia col dito, e
+   `touch-action: pan-y` lascia al browser lo scorrimento in verticale e a
+   `dito.ts` quello di lato. */
+.finestrella.novita {
+  width: min(520px, calc(100vw - var(--spazio-5) * 2));
+}
+/* Il contenitore delle frecce della tastiera: non è una scatola, serve solo a
+   ricevere l'evento da tutti i figli. */
+.novita-tastiera {
+  display: contents;
+}
+.novita-corpo {
+  touch-action: pan-y;
+}
+.novita-passo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spazio-2);
+  text-align: center;
+  /* Una dissolvenza che entra: finita, e con la durata che passa dalla scala del
+     movimento — a movimento ridotto è istantanea. */
+  animation: novita-entra calc(240ms * var(--motion-scale, 1)) ease-out;
+}
+@keyframes novita-entra {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.novita-passo h3 {
+  margin: 0;
+  font-size: 17px;
+}
+.novita-passo p {
+  max-width: 44ch;
+  margin: 0;
+}
+/* La scena: tratto spento, e l'accento sulle forme che contano. */
+.novita-scena {
+  width: 100%;
+  max-width: 280px;
+  height: auto;
+  color: var(--color-text-3);
+}
+.novita-scena .accento {
+  stroke: var(--accent);
+  color: var(--accent);
+}
+.novita-puntini {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* Il pallino è piccolo e il bersaglio no: lo `::after` lo allarga a misura di
+   dito senza spostare niente. */
+.novita-puntino {
+  position: relative;
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+}
+.novita-puntino::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+}
+.novita-puntino[data-stato="fatto"] {
+  background: currentColor;
+}
+.novita-puntino[data-stato="corrente"] {
+  border-color: var(--accent);
+  background: var(--accent);
+}

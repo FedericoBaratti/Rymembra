@@ -65,6 +65,7 @@ mod maiusc;
 mod manutenzione;
 mod media;
 mod metadati;
+mod novita;
 mod nuvola;
 mod nuvola_app;
 mod nuvola_musica;
@@ -872,6 +873,8 @@ pub fn run() {
             avvio_con_windows::avvio_con_windows_imposta,
             avvio_con_windows::proposta_sottofondo_da_fare,
             avvio_con_windows::proposta_sottofondo_rispondi,
+            novita::novita_da_mostrare,
+            novita::novita_viste,
             comandi::avvio,
             comandi::imposta_cartelle,
             comandi::cartelle_trasloca,

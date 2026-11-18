@@ -12,6 +12,7 @@
     "tauri": "tauri",
     "check:version": "node ../../strumenti/versione.js",
     "check:lingue": "node ../../strumenti/lingue.js",
+    "check:novita": "node ../../strumenti/novita.js",
     "check:classi": "node ../../strumenti/classi.js",
     "check:docs": "node ../../strumenti/docs.js",
     "check:sito": "node ../../strumenti/sito.js --controlla",
@@ -19,7 +20,7 @@
     "version:set": "node ../../strumenti/versione.js",
     "licenze": "node ../../strumenti/licenze.js",
     "test:strumenti": "node --test \"../../strumenti/*.test.js\"",
-    "verify": "npm run check:version && npm run check:lingue && npm run check:docs && npm run check:sito && npm run check:classi && npm run build:web && npm run test:web && npm run test:strumenti && cargo fmt --all --check --manifest-path ../../Cargo.toml && cargo clippy --workspace --all-targets --locked --manifest-path ../../Cargo.toml && cargo test --workspace --locked --manifest-path ../../Cargo.toml",
+    "verify": "npm run check:version && npm run check:lingue && npm run check:novita && npm run check:docs && npm run check:sito && npm run check:classi && npm run build:web && npm run test:web && npm run test:strumenti && cargo fmt --all --check --manifest-path ../../Cargo.toml && cargo clippy --workspace --all-targets --locked --manifest-path ../../Cargo.toml && cargo test --workspace --locked --manifest-path ../../Cargo.toml",
     "verify:ci": "node ../../strumenti/come-la-ci.js"
   },
   "dependencies": {
