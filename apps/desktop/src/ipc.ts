@@ -31,7 +31,7 @@ import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, Di
 import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
-import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
+import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, NovitaDaMostrare, QuandoInstallare, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
 
 export * from "./ipc/errori";
 export * from "./ipc/libreria";
@@ -266,6 +266,14 @@ export const ipc = {
   // La chiama sia chi il giro lo finisce sia chi lo salta: sono due modi di
   // dire «questo l'ho visto».
   giroFatto: () => invoke<void>("giro_fatto"),
+  // Le Novità dopo un aggiornamento. Si manda l'elenco delle versioni che ne
+  // hanno (`novita.ts`): la versione di questa copia la sa il nucleo, e il
+  // confronto sta con lei. In un'installazione nuova registra la versione e
+  // risponde di no. `novitaViste` la chiama la finestra quando si chiude,
+  // comunque si chiuda.
+  novitaDaMostrare: (conNovita: readonly string[]) =>
+    invoke<NovitaDaMostrare>("novita_da_mostrare", { conNovita }),
+  novitaViste: (versione: string) => invoke<void>("novita_viste", { versione }),
   // Un archivio `.ryprofile`, non più un `.json`: dentro ci sono anche la
   // libreria, le copertine e i pacchetti skin. Il vecchio formato si **legge**
   // ancora e non si scrive più.
@@ -1113,13 +1121,18 @@ export const ipc = {
     invoke<StatoAggiornamenti>("aggiornamenti_salta", { versione }),
   // Torna **subito**: scaricare settanta megabyte e lanciare un installer non
   // sta dentro una chiamata IPC. Quel che succede arriva da
-  // `aggiornamenti:avanzamento`, e se va bene l'ultima cosa che questa finestra
-  // fa è chiudersi — su Windows è l'installer NSIS a terminare Rymembra e a
-  // riaprirlo.
-  aggiornamentiInstalla: () => invoke<void>("aggiornamenti_installa"),
-  // Ferma lo scaricamento in corso. Torna subito; lo stato con
-  // `installazione: false` arriva da `aggiornamenti:stato`. Dopo che
-  // l'installer è partito non ferma più niente.
+  // `aggiornamenti:stato` (la `fase`) e da `aggiornamenti:avanzamento` (i byte).
+  // `subito`: sul computer, se va bene, l'ultima cosa che questa finestra fa è
+  // chiudersi — l'installer NSIS termina Rymembra e la riapre. Con un pacchetto
+  // già pronto lo installa senza riscaricare. Sul telefono scarica e verifica, e
+  // con la fase `pronto` un secondo tocco consegna l'APK ad Android.
+  // `allaChiusura` (solo computer): scarica e verifica adesso, e installa quando
+  // si esce davvero da Rymembra, senza riaprirla.
+  aggiornamentiInstalla: (quando: QuandoInstallare) =>
+    invoke<void>("aggiornamenti_installa", { quando }),
+  // Ferma lo scaricamento in corso, o butta il pacchetto che aspetta. Torna
+  // subito; lo stato arriva da `aggiornamenti:stato`. Dopo che l'installer è
+  // partito non ferma più niente.
   aggiornamentiAnnulla: () => invoke<void>("aggiornamenti_annulla"),
 
   // ── il diario ────────────────────────────────────────────────────────────

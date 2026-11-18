@@ -201,6 +201,8 @@ const ATTESE_MOVIMENTO = {
     "Il luccichio dei segnaposto. È una posizione di sfondo che si muove, non uno pseudo-elemento, perché `skeleton` promette il suo `::after` alle skin. Spento da `.skeleton { animation: none }`: resta il riquadro — quello che dice «qui arriverà qualcosa» — e sparisce solo la banda.",
   "lettura-scorre":
     "La barra indeterminata della lettura di un collegamento: quante pagine saranno non si sa, e la barra non lo stima. Spenta da `.lettura-link .barra[data-indeterminata] .riempimento`, che resta ferma al 30% — cioè quel che quella barra vuol dire anche mentre si muove.",
+  "aggiornamento-respiro":
+    "L'icona della scheda di aggiornamento, che respira mentre scarica, verifica o installa: ferma direbbe «non sta succedendo niente». Spenta da `.aggiornamento .icona-fase[data-attiva] svg { animation: none }`, sia con `prefers-reduced-motion` (`libreria.css`) sia con «Riduci tutto» (`movimento.css`): l'icona resta, e il passo lo dice la fila di parole.",
 };
 
 /*

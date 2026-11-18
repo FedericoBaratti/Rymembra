@@ -35,6 +35,46 @@ val firma = Properties().apply {
     }
 }
 
+// ── due distribuzioni, una proprietà ────────────────────────────────────────
+//
+// `github` (di serie): l'APK delle release di GitHub, con l'aggiornatore di
+// sempre — scarica l'APK nuovo e lo consegna all'installatore di Android — e
+// il permesso `REQUEST_INSTALL_PACKAGES` che gli serve.
+// `play`: la build per il Google Play Store. Per la policy gli aggiornamenti
+// passano solo dal Play, e `REQUEST_INSTALL_PACKAGES` è un permesso ristretto:
+// qui non c'è né l'aggiornatore né il permesso, e il nucleo (Rust) lo sa dalla
+// costante `BuildConfig.DISTRIBUZIONE`.
+//
+//   gradlew … -Pdistribuzione=play
+//   ORG_GRADLE_PROJECT_distribuzione=play  npx tauri android build …
+//
+// La seconda forma è quella che serve alla CLI di Tauri, che non inoltra
+// proprietà a Gradle: Gradle legge dall'ambiente le variabili
+// `ORG_GRADLE_PROJECT_<nome>`.
+//
+// **Perché una proprietà e non una flavor.** La CLI di Tauri dà per scontata la
+// forma di questo progetto: una sola dimensione di flavor, `abi` (la crea il
+// plugin `rust` di `buildSrc`), compiti `assemble<Arco><Profilo>` e un APK in
+// `outputs/apk/<arco>/<profilo>/`. Una seconda dimensione — `distribuzione` con
+// `github` e `play` — ha fatto fallire Gradle già alla configurazione:
+// «Task with name 'mergeUniversalDebugJniLibFolders' not found in project ':app'»,
+// perché il plugin cerca i compiti con il nome a una dimensione sola. E anche se
+// non fallisse, cambierebbero i nomi dei compiti (`assembleArm64GithubRelease`) e
+// le cartelle d'uscita, cioè la CI (`release.yml`, `strumenti/apk.js`) e il
+// lint (`lintArm64Debug`). Con la proprietà i nomi restano quelli di oggi.
+val distribuzione: String = (findProperty("distribuzione") as? String) ?: "github"
+require(distribuzione == "github" || distribuzione == "play") {
+    "distribuzione: «$distribuzione» non è né github né play"
+}
+/**
+ * Questa è la build per il Play Store. Una costante sola, per chi deve decidere
+ * di una cosa in base alla distribuzione: l'aggiornatore, il permesso e le
+ * costanti del blocco più sotto (`DISTRIBUZIONE`, `AGGIORNATORE_APK`, e la
+ * partenza con l'auto, `PARTENZA_CON_AUTO`, che il `defaultConfig` dichiara
+ * `true` e qui si riscrive a `false`).
+ */
+val distribuzionePlay: Boolean = distribuzione == "play"
+
 android {
     compileSdk = 37
     namespace = "io.github.federicobaratti.rymembra"
@@ -104,6 +144,38 @@ android {
     }
     buildFeatures {
         buildConfig = true
+    }
+}
+
+// Le due costanti della distribuzione e, sul Play, il manifesto senza il permesso.
+// Un blocco a parte: tiene separato quel che dipende dalla proprietà dal resto
+// della configurazione, che è quella di Tauri.
+android {
+    defaultConfig {
+        // `github` o `play`: il nucleo la legge con `sistema.distribuzione` e
+        // spegne l'aggiornatore del telefono (Rust e finestra) sul Play.
+        buildConfigField("String", "DISTRIBUZIONE", "\"$distribuzione\"")
+        // L'aggiornatore APK c'è solo fuori dal Play: `Installatore` lo controlla.
+        buildConfigField("boolean", "AGGIORNATORE_APK", (!distribuzionePlay).toString())
+    }
+    if (distribuzionePlay) {
+        // «Parti con l'auto» (F7) è spenta sul Play: la regola di qualità di Google
+        // per le app delle auto, `MA-1`, vieta di partire da sole quando l'auto si
+        // collega, e la revisione di Play può contestare anche un'opzione dell'utente.
+        // Questa riscrive la costante che il `defaultConfig` dichiara `true`: è
+        // l'unica che la toglie, e Kotlin la passa alla finestra, che senza di lei non
+        // disegna l'interruttore.
+        defaultConfig {
+            buildConfigField("boolean", "PARTENZA_CON_AUTO", "false")
+        }
+        // Un manifesto che si somma a quello di `main` e toglie
+        // `REQUEST_INSTALL_PACKAGES`. Sta in una cartella che Android Gradle
+        // **non** conosce (`src/debug` e `src/release` le prenderebbe da sola,
+        // anche senza la proprietà) e si attacca ai due tipi di build solo qui.
+        // Un manifesto di tipo di build vince su quello di `main`: è l'ordine di
+        // priorità del fusore.
+        sourceSets.getByName("debug").manifest.srcFile("src/distribuzione-play/AndroidManifest.xml")
+        sourceSets.getByName("release").manifest.srcFile("src/distribuzione-play/AndroidManifest.xml")
     }
 }
 

@@ -14,6 +14,28 @@
 //! scritto una volta sola. Una release senza un APK per questo telefono non è
 //! un aggiornamento: è una versione per il computer, e qui non si annuncia.
 //!
+//! # Scarico, verifico, «Installa»
+//!
+//! L'aggiornamento è in tre passi, e l'ultimo è di chi usa il telefono. Il
+//! tocco su «Aggiorna» scarica l'APK e lo **verifica** — la firma minisign e il
+//! certificato di questa app, due controlli sotto lo stesso «Verifico» — e si
+//! ferma a `pronto`. Solo il tocco su «Installa» apre l'installatore di Android,
+//! con la sua schermata di conferma: così la schermata di sistema compare quando
+//! la persona la sta aspettando, e non mentre guarda altro. Il pacchetto resta
+//! in attesa finché l'app vive; se l'installatore si chiude senza installare,
+//! «Installa» è ancora lì.
+//!
+//! # Due distribuzioni
+//!
+//! Questa è la distribuzione `github`: l'APK delle release, con l'aggiornatore.
+//! La distribuzione `play` — la build per il Google Play Store, che per la policy
+//! si aggiorna solo dal Play e non può chiedere `REQUEST_INSTALL_PACKAGES` — non
+//! ha aggiornatore: non controlla niente, non contatta nessuno, e la finestra lo
+//! dice come dice del Microsoft Store sul computer (`gestito_dal_store`). Quale
+//! delle due sia lo dice `BuildConfig.DISTRIBUZIONE`, impostata dalla proprietà
+//! Gradle `distribuzione` (`app/build.gradle.kts`), e Rust la legge una volta
+//! ([`senza_aggiornatore`]): un `.so` solo serve tutte e due.
+//!
 //! # Che cosa si verifica
 //!
 //! Sul computer l'installer è firmato con una chiave nostra, e l'updater ne
@@ -66,10 +88,11 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use rymembra_android::sistema::ControlloApk;
 use rymembra_app::settings;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_net::{Cancello, Corpo, Metodo, Rete, Richiesta, Rimandi};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager as _, State};
 
 use crate::errore::{ErroreIpc, Esito, errore};
@@ -129,6 +152,84 @@ const TETTO_DELLA_FIRMA: u64 = 16 * 1024;
 /// Il tetto di `latest.json`, per le note: qualche chilobyte, e un margine.
 const TETTO_DEL_MANIFESTO: u64 = 256 * 1024;
 
+/// A che passo è l'aggiornamento: gli stessi nomi del computer
+/// (`crate::aggiornamenti`), di cui qui se ne usano tre. `Pronto` è l'APK già
+/// scaricato e verificato, che aspetta il tocco su «Installa».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FaseAggiornamento {
+    Scarico,
+    Verifico,
+    Pronto,
+}
+
+/// Quando installare. Sul telefono c'è solo `Subito`: scarica e verifica, e la
+/// consegna ad Android è un secondo tocco. `AllaChiusura` esiste perché il
+/// comando ha la stessa firma del computer, e qui si rifiuta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Quando {
+    Subito,
+    AllaChiusura,
+}
+
+/// Questa copia non ha l'aggiornatore: è la distribuzione `play`.
+///
+/// Si chiede ad Android una volta — la distribuzione non cambia mentre l'app
+/// gira — e si ricorda solo una risposta che c'è stata. **Se il ponte non
+/// risponde si sta dalla parte prudente**: niente aggiornatore, niente richieste
+/// a GitHub da una build che forse non le deve fare, e una riga nel diario, una
+/// volta sola. Il ponte non risponde solo se l'app è in uno stato in cui non c'è
+/// niente da aggiornare comunque.
+fn senza_aggiornatore() -> bool {
+    static PLAY: OnceLock<bool> = OnceLock::new();
+    static DETTO: AtomicBool = AtomicBool::new(false);
+    if let Some(valore) = PLAY.get() {
+        return *valore;
+    }
+    match rymembra_android::sistema::distribuzione() {
+        Ok(nome) => *PLAY.get_or_init(|| nome == "play"),
+        Err(err) => {
+            if !DETTO.swap(true, Ordering::Relaxed) {
+                nota!(
+                    "[aggiornamenti] la distribuzione non si legge: {err}. Niente aggiornamenti,                      per prudenza"
+                );
+            }
+            true
+        }
+    }
+}
+
+/// L'APK scaricato e verificato che aspetta «Installa».
+struct Pronto {
+    /// Il file nella cache degli aggiornamenti.
+    apk: std::path::PathBuf,
+    /// La versione che porta.
+    versione: String,
+    /// Da quando aspetta, in millisecondi.
+    dal_ms: i64,
+}
+
+/// La fase che la pagina legge: il passo in corso vince; senza, un APK in
+/// attesa vale `Pronto`.
+fn fase_dello_stato(
+    in_corso: Option<FaseAggiornamento>,
+    apk_pronto: bool,
+) -> Option<FaseAggiornamento> {
+    in_corso.or_else(|| apk_pronto.then_some(FaseAggiornamento::Pronto))
+}
+
+/// Cambia il passo e lo racconta alla pagina.
+fn imposta_fase(app: &AppHandle, fase: Option<FaseAggiornamento>) {
+    if let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() {
+        *aggiornamenti
+            .fase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = fase;
+    }
+    riferisci(app);
+}
+
 /// Perché il filo si è svegliato.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sveglia {
@@ -144,6 +245,10 @@ pub struct StatoAggiornamenti {
     in_corso: AtomicBool,
     installazione: AtomicBool,
     trovato: Mutex<Option<Trovato>>,
+    /// A che passo è lo scaricamento o la verifica in corso.
+    fase: Mutex<Option<FaseAggiornamento>>,
+    /// L'APK verificato che aspetta «Installa».
+    pronto: Mutex<Option<Pronto>>,
     ultimo_errore: Mutex<Option<ErroreIpc>>,
     annulla: AtomicBool,
     pronto_detto: AtomicBool,
@@ -167,6 +272,8 @@ impl StatoAggiornamenti {
                 in_corso: AtomicBool::new(false),
                 installazione: AtomicBool::new(false),
                 trovato: Mutex::new(None),
+                fase: Mutex::new(None),
+                pronto: Mutex::new(None),
                 ultimo_errore: Mutex::new(None),
                 annulla: AtomicBool::new(false),
                 pronto_detto: AtomicBool::new(false),
@@ -226,7 +333,8 @@ pub struct StatoAggiornamentiIpc {
     /// Questa copia sa dove guardare: c'è un progetto GitHub nella
     /// configurazione.
     pub configurato: bool,
-    /// Sul telefono nessun negozio tiene aggiornata Rymembra.
+    /// Nella distribuzione `play` è il Google Play a tenerla aggiornata; in quella
+    /// `github` nessun negozio lo fa.
     pub gestito_dal_store: bool,
     /// La versione installata adesso.
     pub versione_corrente: String,
@@ -238,6 +346,11 @@ pub struct StatoAggiornamentiIpc {
     pub in_corso: bool,
     /// Uno scaricamento è in corso adesso.
     pub installazione: bool,
+    /// A che passo è l'aggiornamento, o `pronto` se l'APK verificato aspetta
+    /// «Installa»: vedi [`fase_dello_stato`].
+    pub fase: Option<FaseAggiornamento>,
+    /// Da quando l'APK verificato aspetta, in millisecondi.
+    pub pronto_dal_ms: Option<i64>,
     /// L'ultimo guasto.
     pub errore: Option<ErroreIpc>,
 }
@@ -313,6 +426,9 @@ pub fn aggiornamenti_attivo(
             .trovato
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = None;
+        // Anche l'APK già verificato: chi ha detto di non voler essere avvisato
+        // non vuole nemmeno un «Installa» che aspetta.
+        scarta_pronto(&aggiornamenti);
         *aggiornamenti
             .ultimo_errore
             .lock()
@@ -354,16 +470,29 @@ pub fn aggiornamenti_salta(
         settings::write(&libreria.connection, CHIAVE_SALTATA, &versione)
     })
     .map_err(errore)?;
+    // Saltare una versione è non volerla: se il suo APK aspettava «Installa», se
+    // ne va.
+    let aspetta_questa = aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|pronto| pronto.versione == versione);
+    if aspetta_questa {
+        scarta_pronto(&aggiornamenti);
+    }
     riferisci(&app);
     stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
 }
 
-/// Scarica l'APK trovato e lo consegna all'installatore di Android.
+/// Scarica l'APK trovato e lo verifica; con l'APK già verificato in attesa, lo
+/// consegna all'installatore di Android.
 ///
-/// Torna subito: lo scaricamento sta su un filo suo e si racconta con
-/// `aggiornamenti:avanzamento`. Da lì in poi decide chi usa il telefono: il
-/// sistema gli chiede di confermare, e la prima volta di permettere a Rymembra
-/// di installare app — vedi [`consegna`].
+/// Torna subito: il lavoro sta su un filo suo e si racconta con
+/// `aggiornamenti:stato` (la `fase`: scarico, verifico, pronto) e
+/// `aggiornamenti:avanzamento` (i byte). Sono due tocchi, e il secondo è
+/// «Installa»: il sistema gli chiede di confermare, e la prima volta di
+/// permettere a Rymembra di installare app — vedi [`consegna`].
 ///
 /// Un APK che Android non installerebbe sopra questa copia — firmato con
 /// un'altra chiave ([`crate::rilasci::non_installabile`]) — non si scarica: la
@@ -372,12 +501,24 @@ pub fn aggiornamenti_salta(
 /// # Errori
 ///
 /// `internal.aborted` se non c'è niente da installare, se uno scaricamento è
-/// già in corso, o se l'APK di questa versione è firmato con un'altra chiave.
+/// già in corso, se l'APK di questa versione è firmato con un'altra chiave, o
+/// se si chiede `AllaChiusura`, che sul telefono non esiste.
 #[tauri::command]
 pub fn aggiornamenti_installa(
     app: AppHandle,
     aggiornamenti: State<'_, StatoAggiornamenti>,
+    quando: Quando,
 ) -> Esito<()> {
+    if quando == Quando::AllaChiusura {
+        return Err(errore(AppError::new(ErrorCode::InternalAborted {
+            what: Some("sul telefono non c'è l'installazione alla chiusura".to_owned()),
+        })));
+    }
+    if senza_aggiornatore() {
+        return Err(errore(AppError::new(ErrorCode::InternalAborted {
+            what: Some("questa distribuzione si aggiorna dal Google Play".to_owned()),
+        })));
+    }
     let Some(trovato) = aggiornamenti
         .trovato
         .lock()
@@ -409,11 +550,21 @@ pub fn aggiornamenti_installa(
             what: Some("uno scaricamento è già in corso".to_owned()),
         })));
     }
+    // L'APK in attesa di *questa* versione, se c'è: «Installa» lo consegna senza
+    // riscaricare niente. Non si toglie dal posto: se l'installatore di Android
+    // si chiude senza installare, «Installa» è ancora lì.
+    let pronto = aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .filter(|pronto| pronto.versione == trovato.versione)
+        .map(|pronto| pronto.apk.clone());
     riferisci(&app);
     let suo = app.clone();
     if let Err(err) = std::thread::Builder::new()
         .name("rymembra-aggiornamento".to_owned())
-        .spawn(move || scarica_e_consegna(&suo, &trovato))
+        .spawn(move || lavora(&suo, &trovato, pronto))
     {
         aggiornamenti.installazione.store(false, Ordering::Release);
         riferisci(&app);
@@ -427,12 +578,33 @@ pub fn aggiornamenti_installa(
     Ok(())
 }
 
-/// Ferma lo scaricamento in corso. Dopo che l'APK è arrivato non ferma più
-/// niente: l'installatore è del sistema.
+/// Ferma lo scaricamento in corso, o butta l'APK che aspetta «Installa». Dopo
+/// che l'APK è arrivato non ferma più niente: l'installatore è del sistema.
+///
+/// Con un APK in attesa e nessuno scaricamento, «Annulla» è il ripensamento:
+/// «Installa» se ne va, e l'avviso torna com'era. Il file resta nella cache, e
+/// il prossimo «Aggiorna» lo riusa senza riscaricarlo ([`scarica`]).
 #[tauri::command]
-pub fn aggiornamenti_annulla(aggiornamenti: State<'_, StatoAggiornamenti>) -> Esito<()> {
-    aggiornamenti.annulla.store(true, Ordering::Release);
+pub fn aggiornamenti_annulla(
+    app: AppHandle,
+    aggiornamenti: State<'_, StatoAggiornamenti>,
+) -> Esito<()> {
+    if aggiornamenti.installazione.load(Ordering::Acquire) {
+        aggiornamenti.annulla.store(true, Ordering::Release);
+    } else if scarta_pronto(&aggiornamenti) {
+        riferisci(&app);
+    }
     Ok(())
+}
+
+/// Butta l'APK in attesa, se c'è. `true` se c'era.
+fn scarta_pronto(aggiornamenti: &StatoAggiornamenti) -> bool {
+    aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .is_some()
 }
 
 // ── il filo di sottofondo ───────────────────────────────────────────────────
@@ -561,6 +733,11 @@ fn versione_rifiutata(app: &AppHandle) -> Option<String> {
 
 /// Un giro: controlla, deposita quel che ha trovato, racconta.
 fn passata(app: &AppHandle, a_mano: bool) -> Giro {
+    // Nella distribuzione `play` non si controlla e non si contatta nessuno: gli
+    // aggiornamenti li fa il Play.
+    if senza_aggiornatore() {
+        return Giro::Saltato;
+    }
     // Senza la chiave dell'updater un APK non si verifica: annunciarlo sarebbe
     // solo un modo più lungo di fallire. Come sul computer.
     let Some(progetto) = progetto(app).filter(|_| chiave_pubblica(app).is_some()) else {
@@ -609,6 +786,19 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
                     .trovato
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner) = trovato;
+                // Un APK in attesa di una versione che il controllo non annuncia
+                // più — è uscita la successiva, o la release è stata ritirata — non
+                // si offre da installare.
+                let mut pronto = aggiornamenti
+                    .pronto
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if pronto
+                    .as_ref()
+                    .is_some_and(|pronto| versione.as_deref() != Some(pronto.versione.as_str()))
+                {
+                    *pronto = None;
+                }
             }
             *aggiornamenti
                 .ultimo_errore
@@ -754,24 +944,44 @@ fn controlla(progetto: &str, corrente: &str) -> Result<Option<Trovato>, AppError
 
 // ── l'installazione ─────────────────────────────────────────────────────────
 
-/// Scarica la firma e l'APK nella cache — o riusa quello già sceso —, verifica
-/// l'uno con l'altra, e lo consegna.
+/// Il filo dell'aggiornamento: con l'APK già verificato lo consegna ad Android;
+/// senza, scarica la firma e l'APK nella cache — o riusa quello già sceso —, li
+/// verifica, e si ferma a `pronto`.
+///
+/// «Verifico» sono due controlli di fila, e vengono prima di qualunque
+/// schermata di sistema: la firma minisign dell'APK ([`verifica`]) e il
+/// certificato di questa app ([`controlla`], in `Installatore.kt`). Un APK che
+/// non passa si cancella, e «Installa» non compare.
 ///
 /// La firma prima dell'APK: una firma che non arriva non vale quaranta
 /// megabyte scaricati per niente.
-fn scarica_e_consegna(app: &AppHandle, trovato: &Trovato) {
+fn lavora(app: &AppHandle, trovato: &Trovato, pronto: Option<std::path::PathBuf>) {
     let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
         return;
     };
     let turno = Turno::adotta(&aggiornamenti.installazione);
     aggiornamenti.annulla.store(false, Ordering::Release);
-    let esito = scarica_la_firma(trovato).and_then(|firma| {
-        let percorso = scarica(app, &aggiornamenti, trovato)?;
-        verifica(app, trovato, &firma, &percorso)?;
+
+    // Consegna: l'APK è già verificato, si apre l'installatore e basta.
+    let esito = if let Some(percorso) = pronto {
         consegna(&percorso)
-    });
+    } else {
+        imposta_fase(app, Some(FaseAggiornamento::Scarico));
+        scarica_la_firma(trovato).and_then(|firma| {
+            let percorso = scarica(app, &aggiornamenti, trovato)?;
+            imposta_fase(app, Some(FaseAggiornamento::Verifico));
+            verifica(app, trovato, &firma, &percorso)?;
+            match controlla_il_certificato(&percorso)? {
+                ControlloApk::AltraChiave => Ok(Consegnato::AltraChiave),
+                ControlloApk::Buono => {
+                    tieni_per_installa(&aggiornamenti, trovato, percorso);
+                    Ok(Consegnato::InAttesa)
+                }
+            }
+        })
+    };
     match esito {
-        Ok(Consegnato::AlSistema) => {}
+        Ok(Consegnato::AlSistema | Consegnato::InAttesa) => {}
         Ok(Consegnato::AltraChiave) => {
             // Non un guasto da mostrare in rosso: un esito che la fascia
             // spiega (`altraChiave`), e che si ricorda perché il prossimo tocco
@@ -786,6 +996,8 @@ fn scarica_e_consegna(app: &AppHandle, trovato: &Trovato) {
                 .ultimo_errore
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = None;
+            // L'APK pronto, se c'era, non vale più.
+            scarta_pronto(&aggiornamenti);
             if let Some(stato) = app.try_state::<Stato>()
                 && let Err(err) = con_libreria(&stato, |libreria| {
                     settings::write(&libreria.connection, CHIAVE_RIFIUTATA, &trovato.versione)
@@ -798,6 +1010,9 @@ fn scarica_e_consegna(app: &AppHandle, trovato: &Trovato) {
             }
         }
         Err(err) => {
+            // Un APK che non si consegna non è più un APK da offrire: se era
+            // quello in attesa, Kotlin lo ha cancellato.
+            scarta_pronto(&aggiornamenti);
             // Annullato a mano non è un guasto: la fascia torna com'era.
             if !matches!(err.code(), ErrorCode::InternalAborted { .. }) {
                 nota!(
@@ -813,7 +1028,39 @@ fn scarica_e_consegna(app: &AppHandle, trovato: &Trovato) {
         }
     }
     drop(turno);
-    riferisci(app);
+    imposta_fase(app, None);
+}
+
+/// Il controllo del certificato di un APK già verificato con minisign: vedi
+/// [`rymembra_android::sistema::controlla_apk`].
+///
+/// # Errori
+///
+/// `internal.unexpected` con la causa se l'APK non è questa app (Kotlin l'ha
+/// cancellato) o se il ponte non risponde.
+fn controlla_il_certificato(percorso: &std::path::Path) -> Result<ControlloApk, AppError> {
+    rymembra_android::sistema::controlla_apk(percorso).map_err(|err| {
+        AppError::new(ErrorCode::InternalUnexpected {
+            detail: Some("il certificato dell'aggiornamento".to_owned()),
+        })
+        .with_cause(err.to_string())
+    })
+}
+
+/// L'APK verificato aspetta «Installa»: vedi [`StatoAggiornamenti::pronto`].
+fn tieni_per_installa(
+    aggiornamenti: &StatoAggiornamenti,
+    trovato: &Trovato,
+    percorso: std::path::PathBuf,
+) {
+    *aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(Pronto {
+        apk: percorso,
+        versione: trovato.versione.clone(),
+        dal_ms: adesso_ms(),
+    });
 }
 
 /// La firma minisign dell'APK, il testo del `.sig` della release.
@@ -965,6 +1212,8 @@ enum Consegnato {
     /// L'installatore di Android è aperto, o la pagina del permesso di
     /// installare app: da lì decide chi usa il telefono.
     AlSistema,
+    /// L'APK è scaricato e verificato e aspetta il tocco su «Installa».
+    InAttesa,
     /// L'APK è firmato con un'altra chiave di questa copia, e Android non lo
     /// installerebbe sopra: `Installatore.kt` l'ha già cancellato.
     AltraChiave,
@@ -1028,6 +1277,16 @@ fn stato_ipc(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
+    let in_corso_fase = *aggiornamenti
+        .fase
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let pronto_dal_ms = aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|pronto| pronto.dal_ms);
     // Fuori dal lucchetto: la prima volta chiede la firma ad Android.
     let disponibile = trovato.map(|trovato| AggiornamentoIpc {
         altra_chiave: non_installabile(
@@ -1042,13 +1301,19 @@ fn stato_ipc(
     });
     Ok(StatoAggiornamentiIpc {
         attivo,
-        configurato: progetto(app).is_some() && chiave_pubblica(app).is_some(),
-        gestito_dal_store: false,
+        configurato: !senza_aggiornatore()
+            && progetto(app).is_some()
+            && chiave_pubblica(app).is_some(),
+        // Sul Play a tenerla aggiornata è il Play: la finestra lo dice invece di
+        // «manca la chiave» (`settings.update.play`).
+        gestito_dal_store: senza_aggiornatore(),
         versione_corrente: app.package_info().version.to_string(),
         ultimo_ms,
         disponibile,
         in_corso: aggiornamenti.in_corso.load(Ordering::Relaxed),
         installazione: aggiornamenti.installazione.load(Ordering::Relaxed),
+        fase: fase_dello_stato(in_corso_fase, pronto_dal_ms.is_some()),
+        pronto_dal_ms,
         errore: aggiornamenti
             .ultimo_errore
             .lock()

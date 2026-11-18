@@ -1,14 +1,15 @@
 /**
- * Gli aggiornamenti: la fascia che avvisa e la scheda che comanda.
+ * Gli aggiornamenti: la scheda che avvisa e la scheda che comanda.
  *
  * # Perché due componenti in un file solo
  *
- * Perché guardano lo stesso stato e devono dire la stessa cosa. La fascia
- * compare sopra qualunque schermata quando c'è una versione nuova; la scheda
- * sta in Impostazioni e serve a spegnere il controllo, a farne partire uno a
- * mano, e a vedere quale versione è installata — che, fino a oggi, l'interfaccia
- * non diceva da nessuna parte. Tenerle in due file vorrebbe dire due copie
- * dell'ascolto e due idee di quando l'avviso vada nascosto.
+ * Perché guardano lo stesso stato e devono dire la stessa cosa. La scheda che
+ * avvisa compare nella pila delle notifiche quando c'è una versione nuova e
+ * racconta come procede l'aggiornamento; quella di Impostazioni serve a
+ * spegnere il controllo, a farne partire uno a mano, e a vedere quale versione
+ * è installata — che, fino a oggi, l'interfaccia non diceva da nessuna parte.
+ * Tenerle in due file vorrebbe dire due copie dell'ascolto e due idee di
+ * quando l'avviso vada nascosto.
  *
  * # Perché lo stato non passa da `App`
  *
@@ -16,32 +17,35 @@
  * comando restituisce quello nuovo, quindi non esiste un istante in cui la
  * schermata mostra la situazione di prima. Farlo scendere da `App` vorrebbe
  * dire tre prop e un aggiornatore per una cosa che si tocca due volte l'anno.
- *
- * # «Non ora» e «Salta questa versione» sono due gesti
- *
- * Erano uno solo: la X della fascia si chiamava «Non ora» e scriveva nel
- * database che **quella versione** non andava più proposta. Chi voleva soltanto
- * finire di ascoltare un disco non la rivedeva mai più — per quella versione,
- * cioè fino alla prossima release — e senza sapere di aver deciso qualcosa.
- *
- * Adesso «Non ora» chiude la fascia per questa sessione, in un `useState`: al
- * prossimo avvio torna. «Salta questa versione» è il rifiuto vero, e si scrive
- * nel database, perché un avviso che riappare a ogni riavvio dopo che si è detto
- * di no è un avviso che si impara a chiudere senza leggerlo.
  */
 import { useCallback, useEffect, useReducer, useState } from "react";
 
-import type { AvanzamentoAggiornamento, StatoAggiornamenti } from "../ipc";
+import type {
+  AvanzamentoAggiornamento,
+  FaseAggiornamento,
+  QuandoInstallare,
+  StatoAggiornamenti,
+} from "../ipc";
 import { conCopiaLocale, type ConCopiaLocale } from "../documentoLocale";
 import { ipc, testoErrore } from "../ipc";
 import { dataOra, numero } from "../formato";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
-import { Icona } from "./Icone";
+import { MOBILE } from "../piattaforma";
+import { Presenza } from "../presenza";
+import { Icona, type NomeIcona } from "./Icone";
 import { Annuncio } from "./Annuncio";
 import { DocumentoLocale } from "./DocumentoLocale";
 import { Interruttore } from "./Interruttore";
-import { avanzamentoDopo } from "./avanzamentoAggiornamento";
+import {
+  attesaLunga,
+  avanzamentoDopo,
+  passiDi,
+  quantoManca,
+  SOLLECITO_MS,
+  type ChiavePasso,
+  type Forma,
+} from "./avanzamentoAggiornamento";
 
 /**
  * Lo stato del controllo aggiornamenti, tenuto vivo dagli eventi.
@@ -67,7 +71,7 @@ function useAggiornamenti(
 /**
  * «Non ora», per il resto della sessione.
  *
- * Fuori dal componente e non solo nel suo `useState`: la fascia si smonta ogni
+ * Fuori dal componente e non solo nel suo `useState`: la scheda si smonta ogni
  * volta che la finestra cambia faccia — lo Studio delle skin prende il posto di
  * tutto — e rimontandosi ripartiva da capo, cioè l'avviso chiuso tornava. La
  * sessione è quella del processo, non quella del componente.
@@ -82,11 +86,104 @@ function peso(byte: number): string {
   return t("update.size.mb", { n: numero(mb, 1) });
 }
 
+/** Dove gira la scheda: i passi sono quattro sul computer e tre sul telefono. */
+const FORMA: Forma = MOBILE ? "telefono" : "computer";
+
 /**
- * La fascia che avvisa che c'è una versione nuova.
+ * L'icona di ogni fase: nessun simbolo nuovo nello sprite, e `currentColor`
+ * ovunque, cioè i colori della skin.
+ */
+const ICONA_DELLA_FASE: Record<FaseAggiornamento | "disponibile", NomeIcona> = {
+  disponibile: "i-cloud",
+  scarico: "i-import",
+  verifico: "i-eye",
+  installo: "i-sync",
+  riavvio: "i-sync",
+  pronto: "i-check",
+};
+
+/** Il nome breve di un passo, quello che sta nella fila. */
+function nomeDelPasso(chiave: ChiavePasso): string {
+  switch (chiave) {
+    case "scarico":
+      return t("update.step.download");
+    case "verifico":
+      return t("update.step.verify");
+    case "installo":
+      return t("update.step.install");
+    case "riavvio":
+      return t("update.step.restart");
+    case "installa":
+      return t("update.step.confirm");
+  }
+}
+
+/** La frase che dice cosa sta succedendo, sotto la barra. */
+function fraseDellaFase(fase: FaseAggiornamento, prontaDaTempo: boolean): string {
+  switch (fase) {
+    case "scarico":
+      return t("update.status.download");
+    case "verifico":
+      return t("update.status.verify");
+    case "installo":
+      return t("update.status.install");
+    case "riavvio":
+      return t("update.status.restart");
+    case "pronto":
+      if (MOBILE) return t("update.status.ready.phone");
+      return prontaDaTempo
+        ? t("update.status.ready.late")
+        : t("update.status.ready.close");
+  }
+}
+
+/**
+ * La scheda che avvisa che c'è una versione nuova, e racconta come procede.
  *
- * Non compare mai da sola in mezzo a niente: sta dove stanno l'errore e la
- * notizia, in cima al contenuto, e si comporta come loro.
+ * Sta nella pila delle notifiche (`PilaToast`), come `toast-card`, e non nel
+ * flusso della pagina: nel flusso spingeva giù il titolo, l'indice e il filtro
+ * proprio mentre si stava per cliccarci (R18-17), e un aggiornamento che dura
+ * minuti merita un posto che non si muove.
+ *
+ * # I passi
+ *
+ * Sul computer: **Scarico** (percentuale, megabyte, velocità, tempo rimasto) →
+ * **Verifico** la firma → **Installo** → **Riavvio**. Sul telefono: Scarico →
+ * Verifico → **Installa**, con la schermata di conferma di Android. Il nucleo
+ * dice a che punto è con `fase` (`StatoAggiornamenti`), e la scheda si
+ * ricostruisce da lì a ogni apertura: con il motore nel vassoio la finestra può
+ * chiudersi e riaprirsi nel mezzo di uno scaricamento, e gli eventi mandati
+ * senza finestra si perdono. L'avanzamento dei byte, invece, è un evento a sé
+ * (`aggiornamenti:avanzamento`), e il riduttore che ne ricava velocità e tempo
+ * rimasto sta in `avanzamentoAggiornamento.ts`.
+ *
+ * # «Aggiorna» e «Alla chiusura» (computer)
+ *
+ * «Aggiorna» scarica, verifica e installa: l'installer chiude Rymembra e la
+ * riapre. «Alla chiusura» scarica e verifica **adesso** — un gesto di chi
+ * guarda: la regola «niente senza un tasto» regge — e installa quando si esce
+ * davvero, senza riaprire. Con l'avvio con Windows e la X nel vassoio il
+ * programma può non uscire mai: per questo dopo tre giorni la scheda ripropone
+ * «Installa ora», e «Esci» dal vassoio installa.
+ *
+ * # «Non ora» e «Salta questa versione» sono due gesti
+ *
+ * Erano uno solo: la X della fascia si chiamava «Non ora» e scriveva nel
+ * database che **quella versione** non andava più proposta. Chi voleva soltanto
+ * finire di ascoltare un disco non la rivedeva mai più — per quella versione,
+ * cioè fino alla prossima release — e senza sapere di aver deciso qualcosa.
+ *
+ * Adesso «Non ora» chiude la scheda per questa sessione: al prossimo avvio
+ * torna. «Salta questa versione» è il rifiuto vero, e si scrive nel database,
+ * perché un avviso che riappare a ogni riavvio dopo che si è detto di no è un
+ * avviso che si impara a chiudere senza leggerlo.
+ *
+ * # Il movimento
+ *
+ * L'icona respira mentre il lavoro è in corso, e la barra scorre senza gradini
+ * (`stile/libreria.css`). Tutto si spegne con `prefers-reduced-motion` e con
+ * «Riduci tutto» (`movimento.css`), e nei colori forzati i passi restano
+ * leggibili (`contrasto.css`).
  */
 export function AvvisoAggiornamento({
   onErrore,
@@ -99,32 +196,63 @@ export function AvvisoAggiornamento({
   const [avanzamento, segnaAvanzamento] = useReducer(avanzamentoDopo, null);
 
   useAscolto<AvanzamentoAggiornamento>("aggiornamenti:avanzamento", (valore) =>
-    segnaAvanzamento({ tipo: "avanzamento", valore }),
+    segnaAvanzamento({ tipo: "avanzamento", valore, adesso: Date.now() }),
   );
 
   const disponibile = stato?.disponibile ?? null;
+  const fase: FaseAggiornamento | null =
+    stato?.fase ?? (stato?.installazione === true ? "scarico" : null);
+  const prontoDalMs = stato?.prontoDalMs ?? null;
+
+  // Finito, annullato o fallito: i byte del tentativo di prima non restano.
+  useEffect(() => {
+    if (fase === null) segnaAvanzamento({ tipo: "annulla" });
+  }, [fase]);
 
   /**
-   * Qualcuno ha premuto «Aggiorna» in questa sessione della fascia.
+   * L'ora, per la sola ragione di sapere se il pacchetto aspetta da troppo.
+   *
+   * Si rinfresca una volta, quando il sollecito scade: tre giorni stanno dentro
+   * il massimo di un `setTimeout`, e la scheda deve cambiare faccia senza che
+   * nessuno la tocchi.
+   */
+  const [adesso, setAdesso] = useState(() => Date.now());
+  useEffect(() => {
+    if (prontoDalMs === null) return;
+    const mancano = SOLLECITO_MS - (Date.now() - prontoDalMs);
+    if (mancano <= 0) {
+      setAdesso(Date.now());
+      return;
+    }
+    const attesa = window.setTimeout(() => setAdesso(Date.now()), mancano + 1_000);
+    return () => window.clearTimeout(attesa);
+  }, [prontoDalMs]);
+  const prontaDaTempo = attesaLunga(prontoDalMs, adesso);
+
+  /**
+   * Qualcuno ha premuto «Aggiorna» in questa sessione della scheda.
    *
    * Serve a distinguere due guasti che arrivano dallo stesso campo. Un
    * controllo periodico che non trova la rete finisce anche lui in
-   * `stato.errore`, e mostrarlo qui vorrebbe dire una fascia rossa ogni volta
+   * `stato.errore`, e mostrarlo qui vorrebbe dire una scheda rossa ogni volta
    * che il wifi cade — per una cosa che si ritenta da sola fra mezz'ora e che
    * nessuno deve fare. Uno scaricamento fallito è l'opposto: è la risposta a un
    * gesto, e chi lo ha fatto sta guardando.
    */
   const [tentato, setTentato] = useState(false);
 
-  const installa = useCallback(() => {
-    setTentato(true);
-    segnaAvanzamento({ tipo: "installa" });
-    ipc.aggiornamentiInstalla().catch(onErrore);
-  }, [onErrore]);
+  const installa = useCallback(
+    (quando: QuandoInstallare) => {
+      setTentato(true);
+      segnaAvanzamento({ tipo: "installa" });
+      ipc.aggiornamentiInstalla(quando).catch(onErrore);
+    },
+    [onErrore],
+  );
 
   /**
-   * Ferma lo scaricamento. Non è un errore: la fascia torna com'era, con
-   * «Aggiorna» di nuovo premibile, e lo stato arriva da `aggiornamenti:stato`.
+   * Ferma lo scaricamento, o butta il pacchetto che aspettava. Non è un errore:
+   * la scheda torna com'era, e lo stato arriva da `aggiornamenti:stato`.
    */
   const annulla = useCallback(() => {
     setTentato(false);
@@ -147,11 +275,11 @@ export function AvvisoAggiornamento({
     setNonOraQui(versione);
   };
 
-  const nascosta =
-    disponibile === null ||
-    disponibile.saltata ||
-    disponibile.versione === nonOra;
-  const scaricando = stato?.installazione === true;
+  // Dopo tre giorni di attesa «Non ora» non regge più: un pacchetto che aspetta
+  // la chiusura di un programma che non si chiude mai non può restare muto.
+  const chiusaPerOra =
+    disponibile !== null && disponibile.versione === nonOra && !prontaDaTempo;
+  const nascosta = disponibile === null || disponibile.saltata || chiusaPerOra;
   /**
    * Sul telefono, l'APK di questa versione non si installa sopra questa copia:
    * è firmato con un'altra chiave. «Aggiorna» non c'è — scaricherebbe decine di
@@ -159,13 +287,15 @@ export function AvvisoAggiornamento({
    * versione pubblica senza perdere la libreria. Vedi `altraChiave`.
    */
   const altraChiave = disponibile?.altraChiave === true;
-  const guasto = tentato && !scaricando && stato?.errore != null ? stato.errore : null;
+  const inCorso = fase !== null && fase !== "pronto";
+  const guasto = tentato && !inCorso && stato?.errore != null ? stato.errore : null;
+  const pronto = fase === "pronto";
+
   /*
    * Quel che si dice a chi ascolta lo schermo, da una regione sempre montata
-   * (`Annuncio.tsx`): la versione nuova, e lo scaricamento che non è riuscito.
-   * La fascia era lei stessa `role="status"` e nasceva già piena, cioè nel
-   * solo modo in cui una regione viva spesso non dice niente. L'avanzamento non
-   * si annuncia: cambia a ogni pacchetto, e lo dice la barra a chi la chiede.
+   * (`Annuncio.tsx`): la versione nuova, il pacchetto pronto, e lo scaricamento
+   * che non è riuscito. L'avanzamento non si annuncia: cambia a ogni pacchetto,
+   * e lo dice la barra a chi la chiede.
    */
   const annuncio = (
     <Annuncio
@@ -174,99 +304,210 @@ export function AvvisoAggiornamento({
           ? null
           : guasto !== null
             ? testoErrore(guasto)
-            : t("update.available", { v: disponibile.versione })
+            : pronto
+              ? fraseDellaFase("pronto", prontaDaTempo)
+              : t("update.available", { v: disponibile.versione })
       }
     />
   );
   if (nascosta) return <>{annuncio}</>;
 
+  const passi = passiDi(fase, FORMA);
+  const iconaDi = fase === null ? "disponibile" : fase;
   // `totale` manca quando il server non manda `Content-Length`. Una barra che
   // non sa dove arriva è una barra che mente: in quel caso si mostrano i
-  // megabyte scesi e basta.
-  const totale = avanzamento?.totale ?? null;
-  const quota =
-    avanzamento !== null && totale !== null && totale > 0
-      ? Math.min(100, (avanzamento.scaricati / totale) * 100)
-      : null;
+  // megabyte scesi e basta, e la barra scorre senza dire quanto.
+  const quota = fase === "scarico" ? (avanzamento?.quota ?? null) : null;
+  const barra = inCorso;
+  // Verifico, installo e riavvio non hanno una percentuale: la barra è piena
+  // ma ferma, e il passo corrente lo dice la fila.
+  const barraPiena = fase !== "scarico";
+  const titolo =
+    pronto && !MOBILE
+      ? t("update.ready.title", { v: disponibile.versione })
+      : t("update.available", { v: disponibile.versione });
 
   return (
     <>
-    {annuncio}
-    <div className="notizia aggiornamento toast-card">
-      <Icona nome="i-cloud" dim={16} />
-      <span>
-        <strong>{t("update.available", { v: disponibile.versione })}</strong>
-        {disponibile.note !== null && (
-          <details className="note-versione">
-            <summary>{t("update.notes")}</summary>
-            <p>{disponibile.note}</p>
-          </details>
-        )}
-        {altraChiave && (
-          <details className="note-versione">
-            <summary>{t("update.otherKey", { v: disponibile.versione })}</summary>
-            <p>{t("update.otherKey.steps", { v: disponibile.versione })}</p>
-          </details>
-        )}
-        {scaricando && (
-          <span className="scaricamento">
-            <span className="toast-progress">
-              <span
-                style={quota === null ? undefined : { width: `${quota}%` }}
-              />
-            </span>
-            <span className="quanto">
-              {avanzamento === null
-                ? t("update.starting")
-                : totale === null
-                  ? peso(avanzamento.scaricati)
-                  : `${peso(avanzamento.scaricati)} / ${peso(totale)}`}
-            </span>
-          </span>
-        )}
-        {guasto !== null && <span className="guasto">{testoErrore(guasto)}</span>}
-      </span>
-      {scaricando && (
-        <button
-          type="button"
-          className="bottone minuto btn-ghost"
-          title={t("update.cancel.hint")}
-          onClick={annulla}
+      {annuncio}
+      <Presenza parte="toast-card">
+        <div
+          className="notizia aggiornamento toast-card"
+          data-fase={fase ?? "disponibile"}
+          {...(pronto && prontaDaTempo ? { "data-sollecito": "" } : {})}
         >
-          {t("update.cancel")}
-        </button>
-      )}
-      {!scaricando && (
-        <>
-          {!altraChiave && (
+          <div
+            className="icona-fase"
+            // Respira solo mentre il lavoro è in corso: a pacchetto fermo, o
+            // prima di cominciare, l'icona sta ferma.
+            {...(inCorso ? { "data-attiva": "" } : {})}
+          >
+            <Icona nome={ICONA_DELLA_FASE[iconaDi]} dim={16} />
+          </div>
+          <div className="corpo-aggiornamento">
+            <strong>{titolo}</strong>
+            {disponibile.note !== null && !inCorso && (
+              <details className="note-versione">
+                <summary>{t("update.notes")}</summary>
+                <p>{disponibile.note}</p>
+              </details>
+            )}
+            {altraChiave && (
+              <details className="note-versione">
+                <summary>{t("update.otherKey", { v: disponibile.versione })}</summary>
+                <p>{t("update.otherKey.steps", { v: disponibile.versione })}</p>
+              </details>
+            )}
+            {passi.length > 0 && (
+              <ol className="passi-aggiornamento" aria-label={t("update.steps")}>
+                {passi.map((passo) => (
+                  <li
+                    key={passo.chiave}
+                    className="passo"
+                    data-stato={passo.stato}
+                    {...(passo.stato === "corrente" ? { "aria-current": "step" as const } : {})}
+                  >
+                    {nomeDelPasso(passo.chiave)}
+                  </li>
+                ))}
+              </ol>
+            )}
+            {barra && (
+              <span className="scaricamento">
+                <span
+                  className="toast-progress"
+                  role="progressbar"
+                  aria-label={t("update.progress")}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  {...(quota === null
+                    ? { "aria-valuetext": fraseDellaFase(fase, false) }
+                    : { "aria-valuenow": Math.round(quota) })}
+                >
+                  <span
+                    
+                    style={
+                      barraPiena
+                        ? { width: "100%" }
+                        : quota === null
+                          ? undefined
+                          : { width: `${quota}%` }
+                    }
+                  />
+                </span>
+                {fase === "scarico" && (
+                  <span className="quanto">
+                    {avanzamento === null
+                      ? t("update.starting")
+                      : [
+                          avanzamento.totale === null
+                            ? peso(avanzamento.scaricati)
+                            : `${peso(avanzamento.scaricati)} / ${peso(avanzamento.totale)}`,
+                          avanzamento.velocita === null
+                            ? null
+                            : t("update.speed", { v: peso(avanzamento.velocita) }),
+                          avanzamento.restanti === null
+                            ? null
+                            : t(
+                                quantoManca(avanzamento.restanti).unita === "s"
+                                  ? "update.eta.s"
+                                  : "update.eta.min",
+                                { n: quantoManca(avanzamento.restanti).n },
+                              ),
+                        ]
+                          .filter((pezzo) => pezzo !== null)
+                          .join(" · ")}
+                  </span>
+                )}
+              </span>
+            )}
+            {fase !== null && (
+              <span className="stato-fase">{fraseDellaFase(fase, prontaDaTempo)}</span>
+            )}
+            {pronto && !MOBILE && !prontaDaTempo && (
+              <span className="stato-fase">{t("update.ready.tray")}</span>
+            )}
+            {guasto !== null && <span className="guasto">{testoErrore(guasto)}</span>}
+            <div className="azioni-aggiornamento">
+              {inCorso && fase === "scarico" && (
+                <button
+                  type="button"
+                  className="bottone minuto btn-ghost"
+                  title={t("update.cancel.hint")}
+                  onClick={annulla}
+                >
+                  {t("update.cancel")}
+                </button>
+              )}
+              {pronto && (
+                <>
+                  <button
+                    type="button"
+                    className={
+                      prontaDaTempo || MOBILE
+                        ? "bottone minuto btn-accent"
+                        : "bottone minuto btn-ghost"
+                    }
+                    onClick={() => installa("subito")}
+                  >
+                    {MOBILE ? t("update.ready.install") : t("update.ready.now")}
+                  </button>
+                  <button
+                    type="button"
+                    className="bottone minuto btn-ghost"
+                    title={t("update.ready.cancel.hint")}
+                    onClick={annulla}
+                  >
+                    {t("update.ready.cancel")}
+                  </button>
+                </>
+              )}
+              {fase === null && (
+                <>
+                  {!altraChiave && (
+                    <button
+                      type="button"
+                      className="bottone minuto btn-ghost"
+                      onClick={() => installa("subito")}
+                    >
+                      {t("update.install")}
+                    </button>
+                  )}
+                  {!altraChiave && !MOBILE && (
+                    <button
+                      type="button"
+                      className="bottone minuto btn-ghost"
+                      title={t("update.atClose.hint")}
+                      onClick={() => installa("allaChiusura")}
+                    >
+                      {t("update.atClose")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="bottone minuto btn-ghost"
+                    title={t("update.skip.hint")}
+                    onClick={salta}
+                  >
+                    {t("update.skip")}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          {!inCorso && (
             <button
               type="button"
-              className="bottone minuto btn-ghost"
-              onClick={installa}
+              className="tasto icon-btn"
+              aria-label={t("update.later")}
+              title={t("update.later.hint")}
+              onClick={() => setNonOra(disponibile.versione)}
             >
-              {t("update.install")}
+              <Icona nome="i-x" dim={14} />
             </button>
           )}
-          <button
-            type="button"
-            className="bottone minuto btn-ghost"
-            title={t("update.skip.hint")}
-            onClick={salta}
-          >
-            {t("update.skip")}
-          </button>
-          <button
-            type="button"
-            className="tasto icon-btn"
-            aria-label={t("update.later")}
-            title={t("update.later.hint")}
-            onClick={() => setNonOra(disponibile.versione)}
-          >
-            <Icona nome="i-x" dim={14} />
-          </button>
-        </>
-      )}
-    </div>
+        </div>
+      </Presenza>
     </>
   );
 }
@@ -378,7 +619,8 @@ export function Aggiornamenti({
         onCambia={accendi}
         impedito={
           stato?.gestitoDalStore === true
-            ? t("settings.update.store")
+            ? // Sul telefono il negozio è Google Play (la distribuzione `play`).
+              t(MOBILE ? "settings.update.play" : "settings.update.store")
             : stato?.configurato === false
               ? t("settings.update.unsigned")
               : undefined

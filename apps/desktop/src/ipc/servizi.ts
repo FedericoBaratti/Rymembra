@@ -595,8 +595,49 @@ export interface StatoAggiornamenti {
   inCorso: boolean;
   /** Uno scaricamento è in corso adesso. Dura minuti e ha una barra. */
   installazione: boolean;
+  /**
+   * A che passo è l'aggiornamento che si sta portando in casa, o `null` se non
+   * ce n'è uno in corso e nessun pacchetto aspetta.
+   *
+   * La pagina la ricostruisce da qui a ogni apertura: sul computer la finestra
+   * può chiudersi e ricrearsi (il motore resta nel vassoio), e gli eventi mandati
+   * senza finestra si perdono.
+   */
+  fase: FaseAggiornamento | null;
+  /**
+   * Da quando un pacchetto già scaricato e verificato aspetta — sul computer di
+   * essere installato alla chiusura, sul telefono di essere consegnato ad
+   * Android — in millisecondi. `null` se non ce n'è uno.
+   */
+  prontoDalMs: number | null;
   errore: ErroreIpc | null;
 }
+
+/** La risposta a «c'è la finestra delle Novità da mostrare?». */
+export interface NovitaDaMostrare {
+  /** La versione di questa copia: quella di cui si mostrano le novità. */
+  versione: string;
+  /** Aprire la finestra. */
+  mostra: boolean;
+}
+
+/**
+ * I passi di un aggiornamento: scarico, verifica della firma, installazione,
+ * riavvio; `pronto` è il pacchetto già verificato che aspetta.
+ *
+ * Il riavvio lo vede la pagina solo un istante: l'installatore chiude il
+ * programma e lo riapre. Sul telefono la sequenza si ferma a `pronto`: la
+ * schermata di conferma è di Android.
+ */
+export type FaseAggiornamento = "scarico" | "verifico" | "installo" | "riavvio" | "pronto";
+
+/**
+ * Quando installare: `subito` scarica, verifica e installa; `allaChiusura`
+ * scarica e verifica subito e installa quando si esce davvero da Rymembra. Sul
+ * telefono c'è solo `subito`: scarica e verifica, e la consegna ad Android è un
+ * secondo tocco.
+ */
+export type QuandoInstallare = "subito" | "allaChiusura";
 
 /** Quanto è sceso di un aggiornamento in corso di scaricamento. */
 export interface AvanzamentoAggiornamento {

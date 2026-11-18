@@ -359,15 +359,16 @@
  * accessibilità — quindi chi ha spento le animazioni nel sistema resta spento
  * comunque, qualunque cosa dica la skin e qualunque cosa dica questa.
  *
- * **Le righe che spengono le animazioni infinite ci sono tutte e quattro, ed è
+ * **Le righe che spengono le animazioni infinite ci sono tutte e cinque, ed è
  * l'unica ragione per cui questo blocco non è una riga sola.** Azzerare
  * `--motion-scale` ferma ogni durata che passa di lì; un ciclo `infinite` di
  * durata zero però non è un ciclo fermo, è un ciclo infinitamente veloce — cioè
- * peggio del difetto che si voleva togliere. Le quattro che ripetono per sempre
+ * peggio del difetto che si voleva togliere. Le cinque che ripetono per sempre
  * sono quelle elencate in `ATTESE_MOVIMENTO` di `strumenti/classi.js` — il
  * riflesso della scansione, il luccichio dei segnaposto, la barra di un
  * aggiornamento senza `Content-Length`, la barra indeterminata della lettura di
- * un collegamento — e si spengono una per una. Dimenticarne una qui vorrebbe
+ * un collegamento, il respiro dell'icona della scheda di aggiornamento — e si
+ * spengono una per una. Dimenticarne una qui vorrebbe
  * dire che «Riduci tutto» accelera proprio quel che doveva fermare.
  *
  * `!important` per la stessa ragione di sopra: il foglio della skin arriva
@@ -381,7 +382,7 @@
   --motion-scale: 0 !important;
 }
 
-/* Le quattro che ripetono all'infinito, una per una. I motivi per cui si
+/* Le cinque che ripetono all'infinito, una per una. I motivi per cui si
    spengono così — e non ferme a metà, che sarebbe una bugia invece di una
    quiete — stanno accanto ai loro gemelli qui sopra. */
 :root[data-motion-utente='ridotto'] .avanzamento-scansione .riflesso {
@@ -395,6 +396,9 @@
   .toast-progress
   > span:not([style]) {
   width: 100%;
+  animation: none;
+}
+:root[data-motion-utente='ridotto'] .aggiornamento .icona-fase[data-attiva] svg {
   animation: none;
 }
 :root[data-motion-utente='ridotto']

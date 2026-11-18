@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- La distribuzione `play` (vedi `app/build.gradle.kts`, la proprietà
+     `distribuzione`): il manifesto di `main` meno quel che il Google Play non
+     ammette. Si somma a `main` solo con `-Pdistribuzione=play`.
+
+     Il permesso di installare pacchetti serve all'aggiornatore APK, che sul Play
+     non c'è: per la policy gli aggiornamenti passano solo dal Play, e quel
+     permesso è ristretto. Senza di lui `Installatore` non potrebbe aprire
+     l'installatore di Android, e non lo cerca nemmeno (`AGGIORNATORE_APK`). Il nome
+     del permesso sta solo nell'elemento qui sotto, e non nel manifesto fuso. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+</manifest>

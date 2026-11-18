@@ -228,7 +228,13 @@ fn rifai(app: &tauri::AppHandle, gesto: Gesto) {
 }
 
 /// Esce davvero: la bandiera **prima** dell'uscita (vedi `vassoio::esci`).
+///
+/// È una chiusura voluta da una persona: l'aggiornamento che aspetta la chiusura
+/// si installa (`aggiornamenti::alla_chiusura`). Prima dell'uscita, perché
+/// `app.exit` torna subito e l'`Exit` arriva dopo.
 fn esci_adesso(app: &tauri::AppHandle) {
+    #[cfg(desktop)]
+    crate::aggiornamenti::uscita_voluta();
     crate::spegnimento::chiedi();
     app.exit(0);
 }
@@ -485,6 +491,27 @@ mod prove {
         assert!(
             esci[..esci.find('}').expect("fine")].contains("crate::chiusura::esci(app)"),
             "«Esci» dal vassoio non aspetta lo Studio"
+        );
+    }
+
+    /// «Esci» dal vassoio è una chiusura voluta: l'aggiornamento in attesa si
+    /// installa (§11.2.4). Quella di `manutenzione.rs` — la libreria di prima
+    /// rimessa a posto — no: lì non passa da `esci_adesso`.
+    #[test]
+    fn esci_dal_vassoio_segna_la_chiusura_voluta() {
+        let sorgente = include_str!("chiusura.rs");
+        let esci = &sorgente[sorgente.find("fn esci_adesso(").expect("esci_adesso")..];
+        let corpo = &esci[..esci
+            .find(
+                "
+}
+",
+            )
+            .expect("fine")];
+        assert!(corpo.contains("aggiornamenti::uscita_voluta()"));
+        assert!(
+            corpo.find("uscita_voluta()") < corpo.find("app.exit(0)"),
+            "la chiusura voluta si segna dopo l'uscita"
         );
     }
 
