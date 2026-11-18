@@ -174,6 +174,35 @@ pub enum Domanda {
         /// Rende innocuo un invio ripetuto.
         chiave: String,
     },
+    /// Il catalogo condiviso, in riassunto: la generazione della libreria e,
+    /// per ogni secchio di righe, l'impronta di quel che contiene. Risponde
+    /// [`Risposta::Dati`]. Dietro [`CAPACITA_CATALOGO`].
+    CatalogoRiassunto,
+    /// Le righe di un secchio del catalogo, per id: da `da_id` a `a_id`
+    /// compresi, al più [`MASSIMA_PAGINA`]. Risponde [`Risposta::Dati`].
+    /// Dietro [`CAPACITA_CATALOGO`].
+    CatalogoSecchio {
+        /// Il primo id del secchio, come l'ha detto il riassunto.
+        da_id: i64,
+        /// L'ultimo.
+        a_id: i64,
+    },
+    /// Un mi piace o un voto dato qui a un brano dell'altro: lo scrive lui, e
+    /// vince l'orologio più recente, per campo. Innocuo se arriva due volte,
+    /// come [`Domanda::Ascoltato`]. Dietro [`CAPACITA_CATALOGO`].
+    Valuta {
+        /// Il brano, con l'id della libreria dell'altro.
+        brano: i64,
+        /// È fra i preferiti; `None` se chi manda non l'ha cambiato: un voto
+        /// dato qui non deve riscrivere un preferito che là è più nuovo.
+        liked: Option<bool>,
+        /// Le stelle, da 0 a 5; `None` se non le ha cambiate.
+        rating: Option<i64>,
+        /// Quando si è deciso, ms: l'orologio con cui l'altro sceglie.
+        quando_ms: i64,
+        /// Distingue questo invio dall'altro per lo stesso brano.
+        chiave: String,
+    },
     /// Dimentica questo dispositivo.
     Dimenticami,
     /// Una domanda di una versione più nuova.
@@ -182,6 +211,27 @@ pub enum Domanda {
 }
 
 impl Domanda {
+    /// La capacità che il dispositivo a cui la si fa deve dichiarare, se la
+    /// domanda è di quelle nuove. Le domande di prima non ne chiedono: a
+    /// ogni versione si continua a fare quelle di oggi.
+    #[must_use]
+    pub const fn capacita_richiesta(&self) -> Option<&'static str> {
+        match self {
+            Self::CatalogoRiassunto | Self::CatalogoSecchio { .. } | Self::Valuta { .. } => {
+                Some(CAPACITA_CATALOGO)
+            }
+            _ => None,
+        }
+    }
+
+    /// Scrive qualcosa nella libreria di chi risponde (esclusi gli ascolti,
+    /// che hanno il loro tetto all'ora): chi risponde ne ammette al più
+    /// [`SCRITTURE_AL_MINUTO`] da ogni dispositivo.
+    #[must_use]
+    pub const fn e_una_scrittura(&self) -> bool {
+        matches!(self, Self::Valuta { .. })
+    }
+
     /// La stessa domanda coi tetti di questo protocollo: pagine e pezzi non
     /// più grandi di quanto si serve.
     #[must_use]
@@ -217,6 +267,26 @@ impl Domanda {
     }
 }
 
+/// La capacità di servire e usare il catalogo intero (libreria unica): le
+/// domande [`Domanda::CatalogoRiassunto`], [`Domanda::CatalogoSecchio`] e
+/// [`Domanda::Valuta`]. Un dispositivo che non la dichiara — una build di
+/// prima — non le riceve: [`crate::Nodo::chiedi`] le rifiuta con
+/// `lontano.protocollo` senza mandarle, e quelle di sempre continuano a
+/// funzionare.
+pub const CAPACITA_CATALOGO: &str = "catalogo";
+
+/// Quante capacità, al più, si ricordano di un altro dispositivo.
+pub const MASSIME_CAPACITA: usize = 8;
+
+/// Quanto può essere lunga una sigla di capacità.
+pub const MASSIMA_CAPACITA: usize = 24;
+
+/// Scritture ([`Domanda::e_una_scrittura`]) servite al minuto per ogni
+/// dispositivo: un voto dato a mano ne fa una ogni tanto, e la coda di chi
+/// torna dopo ore senza rete se ne sente fermare le ultime e le rimanda al
+/// giro dopo.
+pub const SCRITTURE_AL_MINUTO: usize = 60;
+
 /// Quanti caratteri, al più, ha ogni testo di una [`Presenza`] che arriva da
 /// un altro dispositivo: quanti ne ha il nome che l'associazione scrive.
 pub const MASSIMO_TESTO_PRESENZA: usize = 64;
@@ -234,9 +304,37 @@ impl Presenza {
             nome: testo_puro(&self.nome),
             piattaforma: testo_puro(&self.piattaforma),
             versione: testo_puro(&self.versione),
+            capacita: sigle_buone(&self.capacita),
             ..self
         }
     }
+
+    /// Questo dispositivo dichiara la capacità `sigla`?
+    #[must_use]
+    pub fn dichiara(&self, sigla: &str) -> bool {
+        self.capacita.iter().any(|c| c == sigla)
+    }
+}
+
+/// Le sigle di capacità che stanno nei tetti: minuscole, cifre e trattini,
+/// brevi, e non più di [`MASSIME_CAPACITA`]. Le altre si scartano e non si
+/// tagliano: una sigla tagliata direbbe un'altra cosa.
+fn sigle_buone(grezze: &[String]) -> Vec<String> {
+    let mut buone: Vec<String> = Vec::new();
+    for sigla in grezze {
+        let valida = !sigla.is_empty()
+            && sigla.len() <= MASSIMA_CAPACITA
+            && sigla
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if valida && !buone.contains(sigla) {
+            buone.push(sigla.clone());
+        }
+        if buone.len() >= MASSIME_CAPACITA {
+            break;
+        }
+    }
+    buone
 }
 
 /// Un testo di un altro dispositivo come testo puro, con le regole dei nomi
@@ -290,6 +388,10 @@ pub struct Presenza {
     pub insieme_acceso: bool,
     /// E sta ospitando una sessione.
     pub insieme_ospita: bool,
+    /// Cosa sa fare oltre a quel che sapevano tutte le versioni
+    /// ([`CAPACITA_CATALOGO`]). Una build di prima non manda il campo: vale
+    /// «niente», e a lei le domande nuove non si fanno.
+    pub capacita: Vec<String>,
 }
 
 /// La risposta a una domanda.
@@ -413,6 +515,17 @@ pub(crate) fn cornice(valore: &impl Serialize, tetto: usize) -> Result<Vec<u8>, 
     Ok(tutto)
 }
 
+/// Quanto pesa sul filo una risposta di dati — la cornice intera, compressa se
+/// è grande — o il perché non ci sta ([`MASSIMA_CORNICE`]). Per chi serve una
+/// pagina di righe lunghe e vuole sapere, nelle prove, che parte.
+///
+/// # Errori
+///
+/// `lontano.protocollo` se la cornice non si compone o supera i tetti.
+pub fn peso_della_risposta(dati: &serde_json::Value) -> Result<usize, AppError> {
+    cornice(&Testa::Dati { dati: dati.clone() }, MASSIMA_TESTA).map(|byte| byte.len())
+}
+
 /// Quanti byte segue la testa di una cornice, e se sono compressi.
 ///
 /// Il tetto lo decide chi legge, secondo cosa si aspetta: [`MASSIMA_ASSOCIA`],
@@ -515,11 +628,208 @@ mod prove {
             Domanda::Annuncio(Presenza {
                 nome: "PC di Mario".to_owned(),
                 insieme_acceso: true,
+                capacita: vec![CAPACITA_CATALOGO.to_owned()],
                 ..Presenza::default()
             }),
+            Domanda::CatalogoRiassunto,
+            Domanda::CatalogoSecchio {
+                da_id: 1,
+                a_id: 4_120,
+            },
+            Domanda::Valuta {
+                brano: 3,
+                liked: Some(true),
+                rating: Some(4),
+                quando_ms: 1_700_000_000_000,
+                chiave: "v1".to_owned(),
+            },
+            Domanda::Valuta {
+                brano: 3,
+                liked: None,
+                rating: Some(0),
+                quando_ms: 1_700_000_000_001,
+                chiave: "v2".to_owned(),
+            },
         ] {
             assert_eq!(andata_e_ritorno(&domanda), domanda);
         }
+    }
+
+    #[test]
+    fn le_domande_nuove_dicono_a_quale_capacita_appartengono() {
+        // Solo le domande nuove stanno dietro `catalogo`: quelle di prima
+        // non chiedono niente a nessuno, e continuano ad avere risposta da
+        // ogni versione.
+        for nuova in [
+            Domanda::CatalogoRiassunto,
+            Domanda::CatalogoSecchio { da_id: 1, a_id: 2 },
+            Domanda::Valuta {
+                brano: 1,
+                liked: Some(false),
+                rating: None,
+                quando_ms: 0,
+                chiave: String::new(),
+            },
+        ] {
+            assert_eq!(
+                nuova.capacita_richiesta(),
+                Some(CAPACITA_CATALOGO),
+                "{nuova:?}"
+            );
+        }
+        for vecchia in [
+            Domanda::Presenza,
+            Domanda::Album { da: 0, quanti: 1 },
+            Domanda::Brani {
+                ordine: "titolo".to_owned(),
+                da: 0,
+                quanti: 1,
+            },
+            Domanda::Copertina {
+                impronta: "ab".to_owned(),
+            },
+            Domanda::Leggi {
+                brano: 1,
+                da: 0,
+                quanti: 1,
+            },
+            Domanda::Ascoltato {
+                brano: 1,
+                quando_ms: 0,
+                ascoltato_ms: 0,
+                chiave: String::new(),
+            },
+            Domanda::Dimenticami,
+            Domanda::Sconosciuta,
+        ] {
+            assert_eq!(vecchia.capacita_richiesta(), None, "{vecchia:?}");
+        }
+    }
+
+    #[test]
+    fn solo_valuta_e_una_scrittura_verso_il_proprietario() {
+        // Gli ascolti hanno il loro tetto (all'ora, e dura quanto la
+        // ricezione); `Valuta` è la scrittura che si limita per pari.
+        assert!(
+            Domanda::Valuta {
+                brano: 1,
+                liked: Some(true),
+                rating: Some(5),
+                quando_ms: 1,
+                chiave: "k".to_owned(),
+            }
+            .e_una_scrittura()
+        );
+        assert!(!Domanda::CatalogoRiassunto.e_una_scrittura());
+        assert!(!Domanda::Album { da: 0, quanti: 1 }.e_una_scrittura());
+    }
+
+    #[test]
+    fn la_presenza_di_una_versione_di_prima_non_dichiara_capacita() {
+        // Un telefono o un PC con una build di prima non manda il campo: vale
+        // «niente», e a lui le domande nuove non si fanno.
+        let vecchia: Presenza =
+            serde_json::from_str(r#"{"nome":"PC","piattaforma":"windows","versione":"3.2.1"}"#)
+                .unwrap();
+        assert!(vecchia.capacita.is_empty());
+        assert!(!vecchia.dichiara(CAPACITA_CATALOGO));
+
+        // E quella di adesso la dichiara, nella forma che una build di prima
+        // ignora senza fiatare (non ha `deny_unknown_fields`).
+        let nuova = Presenza {
+            capacita: vec![CAPACITA_CATALOGO.to_owned()],
+            ..Presenza::default()
+        };
+        let json = serde_json::to_string(&nuova).unwrap();
+        assert!(json.contains(r#""capacita":["catalogo"]"#), "{json}");
+        assert!(nuova.dichiara(CAPACITA_CATALOGO));
+        assert_eq!(serde_json::from_str::<Presenza>(&json).unwrap(), nuova);
+    }
+
+    #[test]
+    fn le_capacita_dell_altro_hanno_un_tetto() {
+        // Come nome, piattaforma e versione (reperto 02-13): quel che l'altro
+        // dice di sé non arriva intero, e una capacità è una sigla.
+        let enorme = Presenza {
+            capacita: (0..100)
+                .map(|n| format!("capacita-{n}-{}", "x".repeat(1000)))
+                .chain([
+                    "CATALOGO".to_owned(),
+                    "cata logo".to_owned(),
+                    "catalogo\u{0}".to_owned(),
+                    "catalogo".to_owned(),
+                ])
+                .collect(),
+            ..Presenza::default()
+        };
+        let Domanda::Annuncio(tagliata) = Domanda::Annuncio(enorme).nei_tetti() else {
+            panic!("resta un annuncio");
+        };
+        assert!(
+            tagliata.capacita.len() <= MASSIME_CAPACITA,
+            "{}",
+            tagliata.capacita.len()
+        );
+        assert!(
+            tagliata.capacita.iter().all(|c| c.len() <= MASSIMA_CAPACITA
+                && c.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')),
+            "{:?}",
+            tagliata.capacita
+        );
+        // La sigla vera, scritta bene, passa: anche dopo cento sconosciute.
+        let giusta = Presenza {
+            capacita: vec!["x".repeat(3), CAPACITA_CATALOGO.to_owned()],
+            ..Presenza::default()
+        }
+        .nei_tetti();
+        assert!(giusta.dichiara(CAPACITA_CATALOGO));
+    }
+
+    #[test]
+    fn cinquecento_righe_lunghe_stanno_nella_cornice() {
+        // Il catalogo di un secchio: `MASSIMA_PAGINA` righe, ognuna coi campi
+        // al massimo di quel che chi riceve accetta. Casuali, e quindi poco
+        // comprimibili: se qui sta, sta ovunque. (Le righe vere sono
+        // `library::condivisa::BranoCatalogo`; qui conta il peso sul filo.)
+        let mut seme = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut a_caso = |lunghezza: usize| -> String {
+            (0..lunghezza)
+                .map(|_| {
+                    seme ^= seme << 13;
+                    seme ^= seme >> 7;
+                    seme ^= seme << 17;
+                    let cifra = u8::try_from(seme % 36).unwrap();
+                    char::from(if cifra < 10 {
+                        b'0' + cifra
+                    } else {
+                        b'a' + cifra - 10
+                    })
+                })
+                .collect()
+        };
+        let righe: Vec<serde_json::Value> = (0..MASSIMA_PAGINA)
+            .map(|n| {
+                serde_json::json!({
+                    "id": n,
+                    "title": a_caso(200), "artist": a_caso(200), "album": a_caso(200),
+                    "albumArtist": a_caso(200), "genre": a_caso(64), "codec": a_caso(24),
+                    "trackKey": a_caso(300), "contentKey": a_caso(300),
+                    "albumKey": a_caso(32), "coverArtHash": a_caso(64),
+                    "mbRecordingId": a_caso(36), "mbReleaseGroupId": a_caso(36),
+                    "mbReleaseId": a_caso(36), "versione": a_caso(32),
+                })
+            })
+            .collect();
+        let testa = Testa::Dati {
+            dati: serde_json::json!({ "generazione": 1, "brani": righe }),
+        };
+        let byte = cornice(&testa, MASSIMA_TESTA).expect("la cornice di un secchio lungo parte");
+        assert!(
+            byte.len() - 4 <= MASSIMA_CORNICE,
+            "{} byte sul filo",
+            byte.len()
+        );
     }
 
     #[test]
@@ -665,6 +975,7 @@ mod prove {
             versione: format!("3.2.0\n{}", "9".repeat(1 << 20)),
             insieme_acceso: true,
             insieme_ospita: true,
+            capacita: Vec::new(),
         };
         let Domanda::Annuncio(tagliata) = Domanda::Annuncio(enorme).nei_tetti() else {
             panic!("resta un annuncio");

@@ -83,7 +83,13 @@ pub fn rispondi(app: &AppHandle, da: &str, domanda: Domanda) -> Result<Risposta,
             ascoltato_ms,
             chiave,
         } => ascoltato(app, da, brano, quando_ms, ascoltato_ms, &chiave),
-        Domanda::Presenza | Domanda::Annuncio(_) | Domanda::Dimenticami | Domanda::Sconosciuta => {
+        Domanda::Presenza
+        | Domanda::Annuncio(_)
+        | Domanda::Dimenticami
+        | Domanda::Sconosciuta
+        | Domanda::CatalogoRiassunto
+        | Domanda::CatalogoSecchio { .. }
+        | Domanda::Valuta { .. } => {
             Err(AppError::new(ErrorCode::LontanoProtocollo)
                 .with_cause("una domanda a cui risponde il nodo"))
         }

@@ -1093,6 +1093,7 @@ impl Filo {
                 crate::insieme::ruolo(&self.app),
                 crate::insieme::Ruolo::Host
             ),
+            capacita: Vec::new(),
         }
     }
 

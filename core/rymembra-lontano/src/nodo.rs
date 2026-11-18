@@ -28,6 +28,17 @@
 //! connessione cada (il keepalive di QUIC se ne accorge). Un cambio di rete,
 //! o l'altro che si collega da sé, sveglia chi sta aspettando.
 //!
+//! # Le capacità
+//!
+//! Ogni dispositivo dice cosa sa fare nella sua [`Presenza`] (`capacita`).
+//! Il nodo ricorda quel che dichiara ciascun pari — da `Presenza` e da
+//! `Annuncio` — e [`Nodo::chiedi`] **non manda** una domanda nuova
+//! ([`Domanda::capacita_richiesta`]) a chi non dichiara la sua capacità, o di
+//! cui ancora non sa: la rifiuta in locale con `lontano.protocollo`, lo stesso
+//! codice con cui risponderebbe una build di prima. Le domande di sempre non
+//! chiedono niente a nessuno. Chi serve limita le scritture
+//! ([`Domanda::e_una_scrittura`]) a [`SCRITTURE_AL_MINUTO`] per dispositivo.
+//!
 //! # Il cancello
 //!
 //! - [`ALPN_LONTANO`]: una chiave che l'[`Ospite`] non dice associata viene
@@ -75,8 +86,8 @@ use crate::errori::{chiave, da_testo, dal_rifiuto, errore, inatteso, irraggiungi
 use crate::flusso::Flusso;
 use crate::protocollo::{
     ALPN_ASSOCIA, ALPN_INSIEME, ALPN_LONTANO, Associa, Domanda, MASSIMA_ASSOCIA, MASSIMA_DOMANDA,
-    MASSIMA_TESTA, MASSIMO_PEZZO, Presentazione, Presenza, Risposta, Testa, cornice,
-    lunghezza_entro, valore_entro,
+    MASSIMA_TESTA, MASSIMO_PEZZO, Presentazione, Presenza, Risposta, SCRITTURE_AL_MINUTO, Testa,
+    cornice, lunghezza_entro, valore_entro,
 };
 
 /// Quanto vale un QR.
@@ -348,6 +359,12 @@ struct Condiviso {
     /// insieme a un dispositivo senza connessione ne aprono una, non dieci.
     turni: Mutex<HashMap<EndpointId, Arc<tokio::sync::Mutex<()>>>>,
     noti: Mutex<HashMap<EndpointId, Vec<SocketAddr>>>,
+    /// Le capacità che ogni dispositivo ha dichiarato nell'ultima presenza
+    /// ricevuta: vedi «Le capacità» nel `//!`. Chi non c'è, non si sa.
+    capacita: Mutex<HashMap<EndpointId, Vec<String>>>,
+    /// Le scritture servite nell'ultimo minuto, per chi le ha fatte: vedi
+    /// [`SCRITTURE_AL_MINUTO`].
+    scritture: Mutex<HashMap<EndpointId, VecDeque<Instant>>>,
     /// Sveglia i compiti della presenza: un cambio di rete, un dispositivo
     /// che si è collegato da sé.
     sveglia: Notify,
@@ -447,6 +464,8 @@ impl Condiviso {
         let sue = chiave(&self.aperte).remove(&pari).unwrap_or_default();
         chiave(&self.connessioni).remove(&pari);
         chiave(&self.posti).remove(&pari);
+        chiave(&self.capacita).remove(&pari);
+        chiave(&self.scritture).remove(&pari);
         for conn in sue {
             conn.close(VarInt::from_u32(1), CHIUSA_NON_ASSOCIATO);
         }
@@ -469,6 +488,38 @@ impl Condiviso {
     /// Il cancello: `pari` è associato, adesso.
     fn associato(&self, pari: EndpointId) -> bool {
         self.ospite.associato(&pari.to_string())
+    }
+
+    /// Ricorda cosa ha dichiarato `pari` nella sua ultima presenza.
+    fn ricorda_capacita(&self, pari: EndpointId, presenza: &Presenza) {
+        chiave(&self.capacita).insert(pari, presenza.capacita.clone());
+    }
+
+    /// `pari` ha dichiarato `sigla`? Chi non si è ancora presentato, no.
+    fn dichiara(&self, pari: EndpointId, sigla: &str) -> bool {
+        chiave(&self.capacita)
+            .get(&pari)
+            .is_some_and(|capacita| capacita.iter().any(|c| c == sigla))
+    }
+
+    /// Una scrittura in più da `da`: `false` oltre il suo tetto
+    /// ([`SCRITTURE_AL_MINUTO`]). Gli altri non ne risentono.
+    fn scrittura_ammessa(&self, da: EndpointId) -> bool {
+        let mut scritture = chiave(&self.scritture);
+        let adesso = Instant::now();
+        let minuto = Duration::from_secs(60);
+        let sue = scritture.entry(da).or_default();
+        while sue
+            .front()
+            .is_some_and(|quando| adesso.duration_since(*quando) > minuto)
+        {
+            sue.pop_front();
+        }
+        if sue.len() >= SCRITTURE_AL_MINUTO {
+            return false;
+        }
+        sue.push_back(adesso);
+        true
     }
 
     fn indirizzo_di(&self, pari: EndpointId) -> EndpointAddr {
@@ -595,6 +646,8 @@ impl Nodo {
             posti: Mutex::new(HashMap::new()),
             turni: Mutex::new(HashMap::new()),
             noti: Mutex::new(HashMap::new()),
+            capacita: Mutex::new(HashMap::new()),
+            scritture: Mutex::new(HashMap::new()),
             sveglia: Notify::new(),
             annullo: Notify::new(),
             vivo: Arc::new(AtomicBool::new(true)),
@@ -964,6 +1017,14 @@ impl Nodo {
         EndpointId::from_str(pari).is_ok_and(|id| self.condiviso.viva(id).is_some())
     }
 
+    /// Il dispositivo ha dichiarato `sigla` fra le sue capacità
+    /// ([`crate::protocollo::CAPACITA_CATALOGO`])? Falso finché non si è
+    /// presentato.
+    #[must_use]
+    pub fn dichiara(&self, pari: &str, sigla: &str) -> bool {
+        EndpointId::from_str(pari).is_ok_and(|id| self.condiviso.dichiara(id, sigla))
+    }
+
     /// Gli indirizzi diretti da cui risponde adesso, da ricordare.
     #[must_use]
     pub fn indirizzi_di(&self, pari: &str) -> Vec<SocketAddr> {
@@ -1026,15 +1087,31 @@ impl Nodo {
         let runtime = self.runtime()?;
         let id =
             EndpointId::from_str(pari).map_err(|_| errore(ErrorCodeKind::LontanoNonAssociato))?;
+        // Una domanda nuova non si manda a chi non dichiara la sua capacità:
+        // vedi «Le capacità» nel `//!`.
+        if let Some(sigla) = domanda.capacita_richiesta()
+            && !self.condiviso.dichiara(id, sigla)
+        {
+            return Err(protocollo(format!(
+                "il dispositivo non dichiara la capacità «{sigla}»"
+            )));
+        }
+        let e_la_presenza = domanda == Domanda::Presenza;
         let condiviso = Arc::clone(&self.condiviso);
         let endpoint = self.endpoint.clone();
         self.finche_acceso(runtime.block_on(async move {
-            tokio::time::timeout(scadenza, async {
+            let risposta = tokio::time::timeout(scadenza, async {
                 let conn = connessione(&condiviso, &endpoint, id).await?;
                 chiedi_su(&conn, domanda.nei_tetti()).await
             })
             .await
-            .map_err(|_| irraggiungibile("la domanda è scaduta"))?
+            .map_err(|_| irraggiungibile("la domanda è scaduta"))??;
+            // Chi risponde alla presenza dice cosa sa fare: da qui in poi lo
+            // si sa, anche senza passare dal compito che lo segue.
+            if e_la_presenza && let Risposta::Presenza(presenza) = &risposta {
+                condiviso.ricorda_capacita(id, presenza);
+            }
+            Ok(risposta)
         }))
     }
 
@@ -1162,6 +1239,9 @@ async fn segui(condiviso: Arc<Condiviso>, endpoint: Endpoint, pari: EndpointId) 
                 )
                 .await
                 {
+                    // Prima dell'evento: chi lo riceve sa già cosa si può
+                    // chiedere a questo dispositivo.
+                    condiviso.ricorda_capacita(pari, &presenza);
                     condiviso.evento(Evento::Presente {
                         chiave: testo.clone(),
                         presenza,
@@ -1280,9 +1360,18 @@ async fn rispondi_a(
     }
     let testo = da.to_string();
     let mut dimentica = false;
-    let esito = match domanda.nei_tetti() {
+    let domanda = domanda.nei_tetti();
+    // Le scritture di un dispositivo hanno un tetto al minuto: chi lo supera
+    // sente `lontano.irraggiungibile`, tiene la scrittura in coda e riprova.
+    if domanda.e_una_scrittura() && !condiviso.scrittura_ammessa(da) {
+        let esito = Err(irraggiungibile("troppe scritture da questo dispositivo"));
+        scrivi_risposta(&mut invio, esito).await?;
+        return Ok(());
+    }
+    let esito = match domanda {
         Domanda::Presenza => Ok(Risposta::Presenza(chiave(&condiviso.presenza).clone())),
         Domanda::Annuncio(presenza) => {
+            condiviso.ricorda_capacita(da, &presenza);
             condiviso.evento(Evento::Presente {
                 chiave: testo,
                 presenza,
