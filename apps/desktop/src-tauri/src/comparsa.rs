@@ -268,7 +268,7 @@ mod prove {
         }
     }
 
-    /// Una finestra nata dopo l'avvio riavere tutto quel che l'avvio le dava.
+    /// Una finestra nata dopo l'avvio deve riavere tutto quel che l'avvio le dava.
     #[test]
     fn una_finestra_nuova_riprende_guardia_pulsanti_e_rete_di_sicurezza() {
         let sorgente = include_str!("comparsa.rs");
