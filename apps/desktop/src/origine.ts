@@ -134,6 +134,11 @@ export interface StatoDellaRiga {
   telefono: boolean;
   /** Non si può suonare adesso: il dispositivo non risponde, o non è più collegato. */
   spenta: boolean;
+  /**
+   * Il dispositivo risponde, ma non manda più questo brano: la riga resta per la
+   * grazia, e la sua voce di playlist con lei. Presente — e `true` — solo allora.
+   */
+  inGrazia?: true;
 }
 
 /**
@@ -147,9 +152,23 @@ export interface StatoDellaRiga {
 export function statoDellaRiga(
   percorso: string | null | undefined,
   stato: StatoLontano | null,
+  inGrazia = false,
 ): StatoDellaRiga | null {
   const chiave = dispositivoDellaRiga(percorso);
   if (chiave === null) return null;
+  if (inGrazia) {
+    // Il dispositivo può rispondere benissimo: è il brano che lui non manda più.
+    // Spenta e non suonabile in ogni caso, e non per colpa della rete: chi la dice
+    // all'utente non deve parlare di un dispositivo irraggiungibile.
+    const suo = stato?.dispositivi.find((d) => d.chiave === chiave && !d.revocato);
+    return {
+      chiave,
+      nome: suo?.nome ?? "",
+      telefono: suo?.piattaforma === "android",
+      spenta: true,
+      inGrazia: true,
+    };
+  }
   if (stato === null) return { chiave, nome: "", telefono: false, spenta: false };
   const suo = stato.dispositivi.find((d) => d.chiave === chiave && !d.revocato);
   if (suo === undefined) return { chiave, nome: "", telefono: false, spenta: true };
@@ -170,7 +189,7 @@ export function statoDellaRiga(
  * Una lista senza niente di suonabile torna vuota: chi chiama lo dice — con
  * l'avviso, non con un errore — e non manda niente al lettore.
  */
-export function suonabili<T extends { path: string | null }>(
+export function suonabili<T extends { path: string | null; inGrazia?: boolean }>(
   brani: readonly T[],
   da: number,
   stato: StatoLontano | null,
@@ -178,7 +197,7 @@ export function suonabili<T extends { path: string | null }>(
   const tenuti: T[] = [];
   let indice = 0;
   brani.forEach((brano, posto) => {
-    if (statoDellaRiga(brano.path, stato)?.spenta === true) return;
+    if (statoDellaRiga(brano.path, stato, brano.inGrazia === true)?.spenta === true) return;
     if (posto < da) indice += 1;
     tenuti.push(brano);
   });
@@ -190,12 +209,12 @@ export function suonabili<T extends { path: string | null }>(
  * dire «<PC> non raggiungibile»: il primo che ha un nome, o `null` se nessuno
  * dei brani è spento.
  */
-export function primoSpento<T extends { path: string | null }>(
+export function primoSpento<T extends { path: string | null; inGrazia?: boolean }>(
   brani: readonly T[],
   stato: StatoLontano | null,
 ): StatoDellaRiga | null {
   for (const brano of brani) {
-    const riga = statoDellaRiga(brano.path, stato);
+    const riga = statoDellaRiga(brano.path, stato, brano.inGrazia === true);
     if (riga?.spenta === true) return riga;
   }
   return null;

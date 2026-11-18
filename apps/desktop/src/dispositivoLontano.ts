@@ -25,18 +25,21 @@ import { statoDellaRiga, type StatoDellaRiga } from "./origine";
  * risponde `null` senza leggere il pannello, e una libreria senza dispositivi
  * non paga un confronto per riga.
  */
-export function useStatoDellaRiga(percorso: string | null | undefined): StatoDellaRiga | null {
+export function useStatoDellaRiga(
+  percorso: string | null | undefined,
+  inGrazia = false,
+): StatoDellaRiga | null {
   const chiave = dispositivoDellaRiga(percorso);
   const scegli = useMemo(
     () =>
       sceltaRicordata(
         (stato: Parameters<typeof statoDellaRiga>[1]) =>
-          chiave === null ? null : statoDellaRiga(percorso, stato),
+          chiave === null ? null : statoDellaRiga(percorso, stato, inGrazia),
         (a, b) => a === b || (a !== null && b !== null && ugualiInSuperficie(a, b)),
       ),
     // La scelta guarda solo la sorgente: si rifà quando cambia la riga.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chiave, percorso],
+    [chiave, percorso, inGrazia],
   );
   const leggi = useCallback(() => scegli(archivioLontano.leggi()), [scegli]);
   return useSyncExternalStore(archivioLontano.iscrivi, leggi, leggi);
@@ -68,6 +71,7 @@ export function sottotitoloDispositivo(
  */
 export function etichettaDellaRiga(riga: StatoDellaRiga): string {
   if (riga.nome === "") return t("library.origin.gone");
+  if (riga.inGrazia === true) return t("library.origin.faded", { nome: riga.nome });
   return riga.spenta
     ? t("library.origin.offline", { nome: riga.nome })
     : t("library.origin.from", { nome: riga.nome });

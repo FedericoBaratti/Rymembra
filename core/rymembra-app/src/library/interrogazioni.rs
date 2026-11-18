@@ -67,6 +67,14 @@ pub struct TrackSummary {
     /// apre la pagina di quello. Senza, una raccolta porterebbe alla pagina
     /// dell'interprete del brano, che nella griglia degli artisti non c'è.
     pub album_artist: Option<String>,
+    /// La riga è di un altro dispositivo che non la manda più, e resta in
+    /// libreria per la grazia (`copia_di` uguale al proprio `id`): nascosta da
+    /// ogni elenco, ma la sua voce di playlist c'è ancora. La riempie solo chi
+    /// mostra una playlist a mano (`playlists::tracks`), che non può nasconderla
+    /// senza spostare gli indici dei gesti; per le altre righe è sempre `false`
+    /// e non viaggia.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_grazia: bool,
 }
 
 /// Le colonne di [`TrackSummary`], nell'ordine in cui le legge `track_from_row`.
@@ -105,6 +113,7 @@ pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
         fonte_pagina: row.get(15)?,
         licenza: row.get(16)?,
         album_artist: row.get(17)?,
+        in_grazia: false,
     })
 }
 

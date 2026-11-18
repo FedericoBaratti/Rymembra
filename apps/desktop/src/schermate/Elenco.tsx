@@ -200,7 +200,7 @@ const RigaBrano = memo(function RigaBrano({
 
   // Di un altro dispositivo, e se risponde: l'icona accanto al titolo e, se non
   // risponde, la riga in grigio. Una riga di qui non iscrive niente a niente.
-  const lontana = useStatoDellaRiga(brano.path);
+  const lontana = useStatoDellaRiga(brano.path, brano.inGrazia === true);
 
   /**
    * `Alt+↑↓` sposta la riga.

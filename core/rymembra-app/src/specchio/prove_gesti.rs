@@ -1028,3 +1028,25 @@ fn le_righe_in_grazia_restano_fuori_dalle_domande_di_artista_autoplay_smart_e_sc
         .collect();
     assert_eq!(scaricabili, vec![4], "solo il brano 4, che il PC ha ancora");
 }
+
+#[test]
+fn una_playlist_a_mano_dice_quali_voci_stanno_su_una_riga_in_grazia() {
+    // La voce resta in playlist — nasconderla sposterebbe gli indici di «Togli» e
+    // «Sposta» —, ma la playlist la dice, e la finestra la mostra grigia.
+    let (c, m3, _) = telefono_con_una_riga_in_grazia();
+    let m2 = id_specchio(&c, PC, 2);
+    let sera = playlist_con(&c, "sera", &[1, m2, m3]);
+    let brani = playlists::tracks(&c, sera).expect("brani");
+    assert_eq!(
+        brani
+            .iter()
+            .map(|b| (b.id, b.in_grazia))
+            .collect::<Vec<_>>(),
+        vec![(1, false), (m2, false), (m3, true)]
+    );
+    // E per tutte le altre righe il campo non viaggia: il formato dell'IPC non cambia.
+    let json = serde_json::to_string(&brani[0]).expect("in JSON");
+    assert!(!json.contains("inGrazia"), "{json}");
+    let json = serde_json::to_string(&brani[2]).expect("in JSON");
+    assert!(json.contains("\"inGrazia\":true"), "{json}");
+}

@@ -336,8 +336,21 @@ fn brani_a_mano(connection: &Connection, id: i64) -> Result<Vec<TrackSummary>, A
     let rows = statement
         .query_map([id], track_from_row)
         .map_err(|err| db_error("brani di una playlist", &err))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| db_error("brani di una playlist", &err))
+    let mut brani = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error("brani di una playlist", &err))?;
+    // Una voce può stare su una riga che il proprietario non manda più e che
+    // resta, nascosta, per la grazia: la playlist la mostra — nasconderla
+    // sposterebbe gli indici che «Togli» e «Sposta» rimandano indietro — ma la
+    // dice, perché la finestra la mostri grigia e non la suoni.
+    let ids: Vec<i64> = brani.iter().map(|brano| brano.id).collect();
+    let in_grazia = crate::specchio::archivio::in_grazia(connection, &ids)?;
+    if !in_grazia.is_empty() {
+        for brano in &mut brani {
+            brano.in_grazia = in_grazia.contains(&brano.id);
+        }
+    }
+    Ok(brani)
 }
 
 /// Controlla che una playlist esista e si possa modificare a mano.

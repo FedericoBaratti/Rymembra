@@ -52,6 +52,13 @@ export interface Brano {
    * ce l'ha.
    */
   albumArtist: string | null;
+  /**
+   * La riga è di un altro dispositivo che non la manda più, e resta in libreria
+   * per la grazia (sette giorni): la sua voce sta ancora nella playlist, ma non
+   * si suona. Lo dice solo l'elenco di una playlist a mano (`playlist_brani`);
+   * altrove è assente.
+   */
+  inGrazia?: boolean;
 }
 
 /** Un risultato della ricerca nei cataloghi liberi. */
