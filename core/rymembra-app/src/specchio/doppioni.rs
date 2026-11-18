@@ -141,7 +141,7 @@ impl Qualita {
         }
         if dichiarata.bitrate
             > reale
-                .saturating_add(reale / 4)
+                .saturating_add(reale.div_euclid(4))
                 .saturating_add(TOLLERANZA_BITRATE_KBPS)
         {
             return Self {
@@ -553,7 +553,7 @@ mod prove {
     /// durata come le scriverebbe un proprietario onesto.
     fn peso(kbps: i64, minuti: i64) -> (Option<i64>, Option<i64>) {
         let ms = minuti * 60_000;
-        (Some(kbps * ms / 8), Some(ms))
+        (Some((kbps * ms).div_euclid(8)), Some(ms))
     }
 
     #[test]

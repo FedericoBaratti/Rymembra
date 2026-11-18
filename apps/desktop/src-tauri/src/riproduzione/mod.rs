@@ -86,6 +86,7 @@ pub(crate) use flusso::sorgente_dal_cloud;
 pub mod insieme;
 mod ospiti;
 mod riapertura;
+mod ripiego;
 mod seguito;
 mod suono;
 mod uscite;
@@ -1859,7 +1860,37 @@ fn brano_di_libreria(
     // sola, e si suona la copia migliore fra quelle che adesso si possono
     // usare: se il PC non risponde, o i dati mobili non lo consentono, quella
     // di qui. Chi non ha dispositivi collegati non paga niente.
-    let track_id = crate::lontano::scegli_la_copia(app, &stato, track_id)?;
+    let scelta = crate::lontano::scegli_la_copia(app, &stato, track_id)?;
+    // Se la copia scelta è in rete e non si apre — la presenza era vecchia, il
+    // PC si è appena spento — si prova la copia di qui del gruppo, se c'è: vedi
+    // `ripiego`.
+    let in_rete = con_libreria(&stato, |libreria| {
+        rymembra_app::specchio::scelta::riga_remota(&libreria.connection, scelta)
+    })?
+    .is_some();
+    let aperto = brano_della_riga(app, scelta, maniglia, formato);
+    ripiego::con_ripiego(aperto, in_rete, || {
+        let locale = con_libreria(&stato, |libreria| {
+            rymembra_app::specchio::scelta::copia_di_qui(&libreria.connection, track_id)
+        })
+        .ok()
+        .flatten()
+        .filter(|locale| *locale != scelta)?;
+        crate::nota!(
+            "[riproduzione] la copia in rete di {track_id} non si apre: si suona quella di qui"
+        );
+        Some(brano_della_riga(app, locale, maniglia, formato))
+    })
+}
+
+/// Apre la riga `track_id` — già scelta fra le copie del brano — come `maniglia`.
+fn brano_della_riga(
+    app: &tauri::AppHandle,
+    track_id: i64,
+    maniglia: i64,
+    formato: rymembra_play::FormatoUscita,
+) -> Result<rymembra_play::BranoAperto, AppError> {
+    let stato = libreria_di(app, "apertura del brano")?;
     let intorno = intorno_di(app, maniglia);
     let mut scheda = con_libreria(&stato, |libreria| {
         playback::scheda_da_suonare(&libreria.connection, track_id, intorno)

@@ -209,7 +209,8 @@ pub(super) fn dove(
 /// chiedono se l'album ha anche un brano visibile.
 const ALBUM_TUTTI_NASCOSTI: &str = "SELECT h.album_key
        FROM (SELECT DISTINCT album_key FROM tracks
-              WHERE copia_di IS NOT NULL AND album_key IS NOT NULL) h
+              WHERE id IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)
+                AND album_key IS NOT NULL) h
       WHERE NOT EXISTS (SELECT 1 FROM tracks v
                          WHERE v.album_key = h.album_key AND v.copia_di IS NULL)";
 
@@ -238,9 +239,15 @@ pub fn counts(connection: &Connection, origine: &Origine) -> Result<Counts, AppE
                       - (SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL),
                     (SELECT COUNT(*) FROM albums)
                       - (SELECT COUNT(*) FROM ({ALBUM_TUTTI_NASCOSTI})),
-                    (SELECT COUNT(DISTINCT {ARTISTA_EFFETTIVO}) FROM tracks
-                      WHERE {ARTISTA_EFFETTIVO} <> ''
-                        AND id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)),
+                    (SELECT COUNT(*) FROM artists)
+                      - (SELECT COUNT(*)
+                           FROM (SELECT DISTINCT {ARTISTA_EFFETTIVO} AS nome FROM tracks
+                                  WHERE id IN (SELECT id FROM tracks
+                                                WHERE copia_di IS NOT NULL)) h
+                          WHERE h.nome <> ''
+                            AND NOT EXISTS (SELECT 1 FROM tracks v
+                                             WHERE {ARTISTA_EFFETTIVO} = h.nome
+                                               AND v.copia_di IS NULL)),
                     (SELECT COUNT(*) FROM tracks WHERE liked = 1)
                       - (SELECT COUNT(*) FROM tracks WHERE liked = 1 AND copia_di IS NOT NULL),
                     (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)

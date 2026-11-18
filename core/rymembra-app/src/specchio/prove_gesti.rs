@@ -515,7 +515,7 @@ fn le_righe_scadute_si_tolgono_anche_se_il_catalogo_non_e_cambiato() {
 
 #[test]
 fn le_rimozioni_si_fanno_a_blocchi_e_una_strage_aspetta_la_conferma() {
-    use crate::specchio::archivio::{BLOCCO_RIMOZIONI, togli_un_blocco_di};
+    use crate::specchio::archivio::togli_un_blocco_di;
     // Cinquecento righe, quarantacinque non più mandate: sotto la soglia di
     // cinquanta, quindi non è una strage. Scadute, si tolgono a blocchi, non in
     // una transazione sola.
@@ -531,10 +531,6 @@ fn le_rimozioni_si_fanno_a_blocchi_e_una_strage_aspetta_la_conferma() {
     assert_eq!((secondo.tolte, secondo.restano), (20, 5), "{secondo:?}");
     let terzo = togli_un_blocco_di(&c, &chiave(PC), dopo, 20).expect("blocco");
     assert_eq!((terzo.tolte, terzo.restano), (5, 0), "{terzo:?}");
-    assert!(
-        BLOCCO_RIMOZIONI >= 1_000,
-        "il blocco vero è di migliaia di righe"
-    );
 
     // Una strage — più di cinquanta righe e più di un quinto — non si toglie,
     // nemmeno scaduta: aspetta la conferma, e la conferma è a blocchi.
@@ -663,7 +659,7 @@ fn i_numeri_di_tutti_con_righe_nascoste_sono_quelli_del_filtro_riga_per_riga() {
                 } else {
                     "chiave-altro"
                 },
-                i64::from(numero % 2),
+                numero % 2,
             ],
         )
         .expect("brano di qui");
@@ -725,6 +721,24 @@ fn i_numeri_di_tutti_con_righe_nascoste_sono_quelli_del_filtro_riga_per_riga() {
                FROM tracks WHERE copia_di IS NULL"
         )
     );
+    // Gli identificativi dell'intera vista sono quelli delle pagine, nello stesso
+    // ordine, senza i nascosti.
+    for ordine in [
+        crate::library::TrackOrder::Title,
+        crate::library::TrackOrder::Shelf,
+    ] {
+        let dalle_pagine: Vec<i64> =
+            crate::library::list_tracks(&c, &Origine::Tutti, ordine, 0, 1_000)
+                .expect("pagine")
+                .into_iter()
+                .map(|t| t.id)
+                .collect();
+        assert_eq!(
+            crate::library::id_dei_brani(&c, &Origine::Tutti, ordine).expect("identificativi"),
+            dalle_pagine,
+            "{ordine:?}"
+        );
+    }
     let chiavi_visibili: Vec<String> = list_albums(&c, &Origine::Tutti, 0, 100)
         .expect("album")
         .into_iter()
@@ -746,4 +760,47 @@ fn i_numeri_di_tutti_con_righe_nascoste_sono_quelli_del_filtro_riga_per_riga() {
     trovati.sort();
     direttamente.sort();
     assert_eq!(trovati, direttamente);
+}
+
+#[test]
+fn una_riga_che_torna_con_un_id_nuovo_ritrova_voce_e_visibilita() {
+    // Il caso di rev2_03, con la visibilità: la riga entra in grazia in un giro,
+    // ritorna con un id nuovo in un altro; `riabbina` la riconosce per contenuto,
+    // la voce di playlist è ancora lì, e la riga è di nuovo in «Tutti».
+    use crate::specchio::Origine;
+    let c = libreria();
+    let tutte: Vec<_> = (1..=5).map(riga).collect();
+    giro(&c, &chiave(PC), &tutte, ADESSO);
+    let m2 = id_specchio(&c, PC, 2);
+    playlist_con(&c, "sera", &[m2]);
+    let senza: Vec<_> = tutte.iter().filter(|r| r.id != 2).cloned().collect();
+    giro(&c, &chiave(PC), &senza, ADESSO + 10_000);
+    assert_eq!(
+        crate::library::counts(&c, &Origine::Tutti)
+            .expect("conteggi")
+            .tracks,
+        4
+    );
+
+    let mut di_nuovo = riga(2);
+    di_nuovo.id = 902;
+    let mut tutte_di_nuovo = senza.clone();
+    tutte_di_nuovo.push(di_nuovo);
+    let chiusura = giro(&c, &chiave(PC), &tutte_di_nuovo, ADESSO + 20_000);
+    assert_eq!(chiusura.riabbinate, 1, "{chiusura:?}");
+    assert_eq!(
+        crate::library::counts(&c, &Origine::Tutti)
+            .expect("conteggi")
+            .tracks,
+        5,
+        "la riga riabbinata è di nuovo in «Tutti»"
+    );
+    assert_eq!(in_playlist(&c, "sera"), vec![k(2)]);
+    let su: i64 = c
+        .query_row("SELECT track_id FROM playlist_tracks", [], |r| r.get(0))
+        .expect("la voce");
+    assert_eq!(
+        su, m2,
+        "la voce sta ancora sulla stessa riga, col suo id remoto nuovo"
+    );
 }

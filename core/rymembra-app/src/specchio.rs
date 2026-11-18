@@ -134,8 +134,11 @@ pub enum Origine {
     ///
     /// Una copia di qui che «Tutti» nasconde perché un altro dispositivo ne ha
     /// una migliore resta visibile quando quel dispositivo non risponde: il
-    /// brano non sparisce dall'auto perché il PC è spento. Non viaggia sull'IPC:
-    /// la finestra non sa chi è raggiungibile, lo sa chi risponde all'auto.
+    /// brano non sparisce dall'auto perché il PC è spento. Lo stesso per la
+    /// copia di un **altro** dispositivo che risponde — se il rappresentante
+    /// tace e non c'è una copia di qui — e una sola per brano. Non viaggia
+    /// sull'IPC: la finestra non sa chi è raggiungibile, lo sa chi risponde
+    /// all'auto.
     #[serde(skip)]
     Raggiungibili(Vec<String>),
 }

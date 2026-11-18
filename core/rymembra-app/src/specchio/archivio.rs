@@ -26,9 +26,36 @@
 //!   ricostruita — è un brano spostato, e si aggiorna **sul posto**, con le sue
 //!   playlist;
 //! - le altre, **sotto la soglia** di `SOGLIA_RIMOZIONI` righe e di un quinto di
-//!   quelle del dispositivo, si tolgono;
+//!   quelle del dispositivo, si tolgono — ma solo dopo la grazia;
 //! - **oltre**, restano segnate e aspettano una conferma
-//!   ([`conferma_rimozioni`]).
+//!   ([`conferma_rimozioni`]), che non aspetta la grazia.
+//!
+//! # La grazia, e la riga nascosta
+//!
+//! Una riga che il proprietario non manda più resta per sette giorni
+//! ([`GRAZIA_MS`]) prima di essere tolta: un disco esterno staccato un weekend,
+//! una libreria rifatta con id nuovi. Per una riga specchio nessun trigger
+//! ricorda il suo posto nelle playlist (`content_key` resta NULL), quindi è la
+//! grazia che permette a `Giro::riabbina`, anche fra giri diversi, di
+//! agganciarla a una riga nuova. In quei giorni la riga è **nascosta**
+//! (`nascondi_le_sparite`: `copia_di` uguale al proprio `id`) e **non si
+//! suona e non si conta da nessuna parte** — «Tutti», autoplay, playlist
+//! intelligenti, Android Auto, Cerca, conteggi —: la grazia protegge la voce di
+//! playlist, non un brano fantasma. E la voce passa subito a un'altra copia del
+//! brano, se c'è (`sposta_le_voci`), prima di ogni rimozione e quando la riga
+//! entra in grazia.
+//!
+//! # A blocchi, con un tetto
+//!
+//! Le righe che scadono si tolgono a blocchi di [`BLOCCO_RIMOZIONI`], ognuno in
+//! una transazione sua e — per chi tiene il lucchetto — in una presa sua
+//! ([`togli_un_blocco`], [`conferma_un_blocco`]), e non oltre
+//! [`TETTO_RIMOZIONI_PER_GIRO`] per giro: un pari che ritira un quinto di un
+//! catalogo da centomila righe non tiene fermo il lettore per venti secondi.
+//! Le righe nuove che un giro tiene per riabbinarle sono al più
+//! [`TETTO_RIABBINAMENTO`]. E ogni scrittura controlla, nella sua transazione,
+//! che il dispositivo sia ancora collegato: un secchio che arriva dopo
+//! «Dimentica» non riporta le sue righe.
 //!
 //! # Le statistiche
 //!

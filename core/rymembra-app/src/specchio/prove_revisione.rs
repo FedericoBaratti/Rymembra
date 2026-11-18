@@ -451,12 +451,16 @@ fn tanti_locali(c: &Connection, da: i64, quanti: i64) {
         for id in da..da + quanti {
             st.execute(params![
                 id,
-                format!("/musica/{}/{}.mp3", id / 12, id),
-                format!("artista {}|titolo {id}|album {}", id % 900, id / 12),
+                format!("/musica/{}/{}.mp3", id.div_euclid(12), id),
+                format!(
+                    "artista {}|titolo {id}|album {}",
+                    id % 900,
+                    id.div_euclid(12)
+                ),
                 format!("Titolo {id}"),
                 format!("Artista {}", id % 900),
-                format!("Album {}", id / 12),
-                format!("{:032x}", id / 12),
+                format!("Album {}", id.div_euclid(12)),
+                format!("{:032x}", id.div_euclid(12)),
                 id % 7,
                 (id % 3 == 0).then_some(1_700_000_000_000 + id),
             ])
@@ -533,7 +537,7 @@ fn misura_la_043_su_un_database_alla_42_di_sessantamila_brani() {
     eprintln!(
         "MISURA 043: {} ms (db {} MiB, applicate {}, istantanea {:?})",
         t.elapsed().as_millis(),
-        dimensione / (1 << 20),
+        dimensione.div_euclid(1 << 20),
         aperto.applied,
         aperto.istantanea.is_some()
     );
@@ -589,7 +593,7 @@ fn misura_i_piani_e_i_tempi_con_e_senza_dispositivi() {
         .map(|i| {
             let mut r = riga(100_000 + i);
             if i <= 2_000 {
-                r.track_key = format!("artista {}|titolo {i}|album {}", i % 900, i / 12);
+                r.track_key = format!("artista {}|titolo {i}|album {}", i % 900, i.div_euclid(12));
                 r.content_key = Some(r.track_key.clone());
                 r.codec = Some("flac".to_owned());
                 r.estensione = "flac".to_owned();
@@ -620,6 +624,74 @@ fn misura_i_piani_e_i_tempi_con_e_senza_dispositivi() {
             .map(|r| r.expect("riga"))
             .collect();
         eprintln!("PIANO {sql}\n   {piano:?}");
+    }
+    // Le due forme del filtro a confronto, cinque volte ciascuna (il tempo della
+    // prima include il riscaldamento): la mediana.
+    for (nome, condizione) in [
+        ("copia_di IS NULL", "t.copia_di IS NULL"),
+        (
+            "id NOT IN (nascoste)",
+            "t.id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)",
+        ),
+    ] {
+        let sql = format!(
+            "SELECT t.id FROM tracks t WHERE {condizione} ORDER BY t.ordine_titolo, t.ordine_artista, t.id"
+        );
+        let mut tempi: Vec<u128> = (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                let mut st = c.prepare(&sql).expect("query");
+                let quante = st
+                    .query_map([], |r| r.get::<_, i64>(0))
+                    .expect("righe")
+                    .count();
+                assert!(quante > 1000);
+                t.elapsed().as_millis()
+            })
+            .collect();
+        tempi.sort_unstable();
+        eprintln!("MISURA filtro {nome}: mediana {} ms su {tempi:?}", tempi[2]);
+    }
+    // I cinque numeri di `counts`, uno per uno (mediana di tre): dove sta il costo.
+    for (nome, sql) in [
+        (
+            "tracks",
+            "SELECT (SELECT COUNT(*) FROM tracks) - (SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL)",
+        ),
+        (
+            "albums",
+            "SELECT (SELECT COUNT(*) FROM albums) - (SELECT COUNT(*) FROM (SELECT h.album_key FROM (SELECT DISTINCT album_key FROM tracks WHERE id IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL) AND album_key IS NOT NULL) h WHERE NOT EXISTS (SELECT 1 FROM tracks v WHERE v.album_key = h.album_key AND v.copia_di IS NULL)))",
+        ),
+        (
+            "artists",
+            "SELECT (SELECT COUNT(*) FROM artists) - (SELECT COUNT(*) FROM (SELECT DISTINCT TRIM(COALESCE(NULLIF(TRIM(album_artist), ''), artist)) AS nome FROM tracks WHERE id IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)) h WHERE h.nome <> '' AND NOT EXISTS (SELECT 1 FROM tracks v WHERE TRIM(COALESCE(NULLIF(TRIM(album_artist), ''), artist)) = h.nome AND v.copia_di IS NULL))",
+        ),
+        (
+            "liked",
+            "SELECT (SELECT COUNT(*) FROM tracks WHERE liked = 1) - (SELECT COUNT(*) FROM tracks WHERE liked = 1 AND copia_di IS NOT NULL)",
+        ),
+        (
+            "durata",
+            "SELECT (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks) - (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks WHERE copia_di IS NOT NULL)",
+        ),
+    ] {
+        let mut tempi: Vec<u128> = (0..3)
+            .map(|_| {
+                let t = Instant::now();
+                let _: i64 = c.query_row(sql, [], |r| r.get(0)).expect("numero");
+                t.elapsed().as_millis()
+            })
+            .collect();
+        tempi.sort_unstable();
+        let mut st = c
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .expect("piano");
+        let piano: Vec<String> = st
+            .query_map([], |r| r.get::<_, String>(3))
+            .expect("piano")
+            .map(|r| r.expect("riga"))
+            .collect();
+        eprintln!("MISURA counts/{nome}: {} ms  piano {piano:?}", tempi[1]);
     }
     // Il riferimento: lo stesso database, con gli aggregati costruiti, senza
     // nessuna riga nascosta. Quel che costa «Tutti» con righe nascoste è la
@@ -914,7 +986,7 @@ fn misura_quanto_pesa_in_memoria_un_giro_di_un_pari_ostile_al_tetto() {
     eprintln!(
         "MISURA riga al tetto: {per_riga} byte; {} righe in `Giro::nuove` (il tetto) + le chiavi clonate: {} MiB",
         crate::specchio::archivio::TETTO_RIABBINAMENTO,
-        totale / (1 << 20)
+        totale.div_euclid(1 << 20)
     );
 }
 
