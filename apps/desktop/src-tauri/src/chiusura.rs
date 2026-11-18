@@ -153,11 +153,15 @@ impl Chiusura {
             return Decisione::Aspetta;
         }
         if concessa || !stato.da_scrivere {
-            return if nasconde {
-                Decisione::Nascondi
-            } else {
-                Decisione::Passa
-            };
+            if nasconde {
+                // La pagina sta per essere distrutta: quel che «aveva da
+                // scrivere» è già scritto, e non c'è più nessuno a dire
+                // altrimenti — un «Esci» dal vassoio, dopo, aspetterebbe
+                // per niente il tetto di una pagina che non c'è.
+                stato.da_scrivere = false;
+                return Decisione::Nascondi;
+            }
+            return Decisione::Passa;
         }
         stato.giro += 1;
         stato.in_attesa = Some((stato.giro, Gesto::Chiudi));
@@ -413,7 +417,10 @@ mod prove {
         assert_eq!(c.scritto(), Some(Gesto::Chiudi));
         // Scritto: ora la finestra si chiude, e il programma resta.
         assert_eq!(c.chiede_chiudi(true), Decisione::Nascondi);
-        // Una pagina che non risponde non tiene aperta la finestra nemmeno qui.
+        // Una finestra nuova, con lo Studio aperto di nuovo: la sua pagina lo
+        // dice come la prima. E se non risponde, non tiene aperta la finestra
+        // nemmeno qui.
+        c.da_scrivere(true);
         let Decisione::Rinvia(numero) = c.chiede_chiudi(true) else {
             panic!("rinvio atteso");
         };
@@ -421,14 +428,31 @@ mod prove {
         assert_eq!(c.chiede_chiudi(true), Decisione::Nascondi);
     }
 
+    /// Distrutta la pagina, non c'è più niente da scrivere: l'«Esci» dal vassoio
+    /// che viene dopo — con la finestra chiusa e il motore acceso — deve uscire
+    /// subito, non aspettare i quattro secondi di una pagina che non c'è.
+    #[test]
+    fn dopo_la_chiusura_nel_vassoio_non_c_e_una_pagina_da_aspettare() {
+        let c = con_lo_studio();
+        c.concedi();
+        assert_eq!(c.chiede_chiudi(true), Decisione::Nascondi);
+        assert_eq!(c.chiede_esci(), Decisione::Passa);
+        assert!(!c.rinviata());
+    }
+
     #[test]
     fn la_x_della_pagina_ha_gia_aspettato_e_non_aspetta_di_nuovo() {
         let c = con_lo_studio();
         c.concedi();
         assert_eq!(c.chiede_chiudi(false), Decisione::Passa);
-        // Col secondo piano la X nasconde, e consuma la concessione lo stesso.
+        // Col secondo piano la X chiude la finestra, e consuma la concessione
+        // lo stesso.
         c.concedi();
         assert_eq!(c.chiede_chiudi(true), Decisione::Nascondi);
+        // Quella pagina è distrutta, e con lei lo Studio: la pagina della
+        // finestra che nasce dopo lo dice di nuovo, e la concessione di prima
+        // non vale per la chiusura che viene.
+        c.da_scrivere(true);
         assert!(matches!(c.chiede_chiudi(false), Decisione::Rinvia(_)));
     }
 
