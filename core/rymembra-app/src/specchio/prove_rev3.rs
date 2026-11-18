@@ -58,10 +58,10 @@ fn rev3_01_un_tag_corretto_sul_pc_non_toglie_il_brano_dalla_playlist_di_un_terzo
     corretta.track_key = "corretta|uno|album".to_owned();
     giro(&tel, &chiave(PC), &[corretta], ADESSO + 10_000);
 
-    // Le passate del giorno dopo: il telefono col PC e col tablet, il tablet col telefono.
-    passata(&mut tel, "telefono", ("pc", documento(&pc, "pc")), 4_000);
+    // Il telefono allinea (pubblica il suo documento: la vecchia chiave tolta, la nuova viva)
+    // e il tablet lo legge prima che il telefono abbia fuso quello del PC.
+    crate::sincronia::allinea(&mut tel, "telefono", 4_000).expect("allineamento");
     passata(&mut tablet, "tablet", ("telefono", documento(&tel, "telefono")), 5_000);
-    passata(&mut tablet, "tablet", ("pc", documento(&pc, "pc")), 6_000);
     assert_eq!(
         in_playlist(&tablet, "sera"),
         vec![k],
@@ -249,4 +249,30 @@ fn rev3_05_la_cronologia_non_mostra_una_riga_in_grazia() {
         storia.iter().all(|voce| voce.brano.id != remota),
         "la cronologia mostra una riga in grazia"
     );
+}
+
+#[test]
+fn rev3_01b_un_tag_corretto_sul_pc_non_fa_partire_una_lapide_dal_telefono() {
+    // Lo stesso scenario di rev3_01, ma guardando quel che il telefono pubblica
+    // (e non quel che il tablet finisce per avere): una lapide che parte e poi
+    // viene neutralizzata dalla fusione è una regola che regge per caso.
+    let mut tel = libreria();
+    locale(&tel, 1, 1);
+    giro(&tel, &chiave(PC), &[riga(1)], ADESSO);
+    let specchio = id_specchio(&tel, PC, 1);
+    playlist_con(&tel, "sera", &[specchio]);
+    crate::sincronia::allinea(&mut tel, "telefono", 1_000).expect("allineamento");
+    let mut corretta = riga(1);
+    corretta.track_key = "corretta|uno|album".to_owned();
+    giro(&tel, &chiave(PC), &[corretta], ADESSO + 10_000);
+    crate::sincronia::allinea(&mut tel, "telefono", 2_000).expect("allineamento");
+    let tolte = documento(&tel, "telefono")
+        .playlist
+        .get("sera")
+        .expect("la playlist viaggia")
+        .sequenza
+        .elementi()
+        .filter(|(_, e)| e.tolto.is_some())
+        .count();
+    assert_eq!(tolte, 0, "il telefono pubblica una lapide per la vecchia chiave");
 }
