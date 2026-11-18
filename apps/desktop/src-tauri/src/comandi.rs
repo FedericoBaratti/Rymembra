@@ -15,6 +15,7 @@ use rymembra_app::library::{
     riassumi_rimozioni, search, summaries_by_id,
 };
 use rymembra_app::settings::CHIAVE_CARTELLE;
+use rymembra_app::specchio::Origine;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::paths::PathRules;
 use serde::Serialize;
@@ -76,7 +77,13 @@ pub struct Avvio {
 /// di impostazione corrotto non gli lascia modo di correggerlo. È la regola di
 /// `settings::read_json`, dove sta ora insieme alla sua ragione.
 fn leggi_cartelle(connection: &rusqlite::Connection) -> Result<Vec<String>, AppError> {
-    Ok(rymembra_app::settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default())
+    // Mai una riga `lontano://…`: non è una cartella di questo disco, e un
+    // elenco scritto a mano (un profilo, un backup) può contenerla. Da qui
+    // passano la scansione e la sorveglianza.
+    let mut cartelle: Vec<String> =
+        rymembra_app::settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default();
+    cartelle.retain(|c| !rymembra_app::specchio::e_specchio(c));
+    Ok(cartelle)
 }
 
 /// Lo stato all'avvio.
@@ -98,7 +105,7 @@ pub async fn avvio(app: tauri::AppHandle) -> Esito<Avvio> {
                 rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
             )?
             .filter(|scelta| !scelta.trim().is_empty()),
-            numeri: counts(&libreria.connection)?,
+            numeri: counts(&libreria.connection, &Origine::Tutti)?,
             tema: rymembra_app::preferenze::tema(&libreria.connection)?
                 .map(|t| t.nome().to_owned()),
             lingua: rymembra_app::preferenze::lingua(&libreria.connection)?,
@@ -1078,8 +1085,10 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
         // I numeri di adesso, che la scansione automatica aspettata può aver
         // cambiato. Senza, la finestra resta con quelli di prima: non è un
         // guasto da dire a chi ha appena premuto Annulla.
-        let numeri =
-            con_libreria(&stato, |libreria| counts(&libreria.connection)).unwrap_or_default();
+        let numeri = con_libreria(&stato, |libreria| {
+            counts(&libreria.connection, &Origine::Tutti)
+        })
+        .unwrap_or_default();
         return Ok(EsitoScansione::lasciata(numeri));
     };
     // Le rimozioni trattenute dalla passata prima non valgono più: questa
@@ -1188,7 +1197,10 @@ fn scansiona_ora(app: &tauri::AppHandle) -> Esito<EsitoScansione> {
     // I numeri in una presa a parte, dopo: il deposito è appena stato
     // restituito, e chiederli da dentro la scansione vorrebbe dire tenerlo per
     // una `COUNT(*)` che con la scrittura non c'entra niente.
-    let numeri = con_libreria(&stato, |libreria| counts(&libreria.connection)).map_err(errore)?;
+    let numeri = con_libreria(&stato, |libreria| {
+        counts(&libreria.connection, &Origine::Tutti)
+    })
+    .map_err(errore)?;
     let da_confermare = if report.rimozioni_in_attesa.is_empty() {
         None
     } else {
@@ -1357,7 +1369,9 @@ pub async fn rimozioni_conferma(app: tauri::AppHandle, gettone: u64) -> Esito<Es
         if !via.is_empty() {
             crate::cancellazione::sgombera(&mano, &via, false);
         }
-        let numeri = con_libreria(&stato, |libreria| counts(&libreria.connection))?;
+        let numeri = con_libreria(&stato, |libreria| {
+            counts(&libreria.connection, &Origine::Tutti)
+        })?;
         Ok(EsitoRimozioni { tolti, numeri })
     })
     .await
@@ -1556,10 +1570,12 @@ pub async fn cerca(
     query: String,
     offset: i64,
     limite: i64,
+    origine: Option<Origine>,
 ) -> Esito<Vec<TrackSummary>> {
     let (offset, limite) = pagina(offset, limite);
+    let origine = origine.unwrap_or_default();
     leggi_la_libreria(app, "ricerca", move |libreria| {
-        search(&libreria.connection, &query, offset, limite)
+        search(&libreria.connection, &origine, &query, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1571,9 +1587,14 @@ pub async fn cerca(
 /// ogni scorrimento, il conteggio una volta per query. Metterli insieme
 /// vorrebbe dire rifare la `COUNT(*)` a ogni fetta.
 #[tauri::command]
-pub async fn cerca_conteggio(app: tauri::AppHandle, query: String) -> Esito<i64> {
+pub async fn cerca_conteggio(
+    app: tauri::AppHandle,
+    query: String,
+    origine: Option<Origine>,
+) -> Esito<i64> {
+    let origine = origine.unwrap_or_default();
     leggi_la_libreria(app, "conteggio della ricerca", move |libreria| {
-        rymembra_app::library::search_count(&libreria.connection, &query)
+        rymembra_app::library::search_count(&libreria.connection, &origine, &query)
     })
     .await
     .map_err(errore)
@@ -1585,10 +1606,12 @@ pub async fn preferiti(
     app: tauri::AppHandle,
     offset: i64,
     limite: i64,
+    origine: Option<Origine>,
 ) -> Esito<Vec<TrackSummary>> {
     let (offset, limite) = pagina(offset, limite);
+    let origine = origine.unwrap_or_default();
     leggi_la_libreria(app, "preferiti", move |libreria| {
-        rymembra_app::library::list_liked(&libreria.connection, offset, limite)
+        rymembra_app::library::list_liked(&libreria.connection, &origine, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1601,10 +1624,18 @@ pub async fn album_artista(
     nome: String,
     offset: i64,
     limite: i64,
+    origine: Option<Origine>,
 ) -> Esito<Vec<AlbumSummary>> {
     let (offset, limite) = pagina(offset, limite);
+    let origine = origine.unwrap_or_default();
     leggi_la_libreria(app, "album di un artista", move |libreria| {
-        rymembra_app::library::albums_by_artist(&libreria.connection, &nome, offset, limite)
+        rymembra_app::library::albums_by_artist(
+            &libreria.connection,
+            &origine,
+            &nome,
+            offset,
+            limite,
+        )
     })
     .await
     .map_err(errore)
@@ -1617,6 +1648,7 @@ pub async fn brani(
     ordine: String,
     offset: i64,
     limite: i64,
+    origine: Option<Origine>,
 ) -> Esito<Vec<TrackSummary>> {
     // Il nome dell'ordinamento si traduce qui in un valore chiuso: quel che
     // arriva dalla finestra non deve poter raggiungere una clausola SQL.
@@ -1639,8 +1671,9 @@ pub async fn brani(
         }
     };
     let (offset, limite) = pagina(offset, limite);
+    let origine = origine.unwrap_or_default();
     leggi_la_libreria(app, "elenco dei brani", move |libreria| {
-        list_tracks(&libreria.connection, ordine, offset, limite)
+        list_tracks(&libreria.connection, &origine, ordine, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1648,10 +1681,16 @@ pub async fn brani(
 
 /// Una pagina di album.
 #[tauri::command]
-pub async fn album(app: tauri::AppHandle, offset: i64, limite: i64) -> Esito<Vec<AlbumSummary>> {
+pub async fn album(
+    app: tauri::AppHandle,
+    offset: i64,
+    limite: i64,
+    origine: Option<Origine>,
+) -> Esito<Vec<AlbumSummary>> {
     let (offset, limite) = pagina(offset, limite);
+    let origine = origine.unwrap_or_default();
     leggi_la_libreria(app, "elenco degli album", move |libreria| {
-        list_albums(&libreria.connection, offset, limite)
+        list_albums(&libreria.connection, &origine, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1667,19 +1706,33 @@ pub async fn album(app: tauri::AppHandle, offset: i64, limite: i64) -> Esito<Vec
 /// In disparte: è il comando più lungo fra le letture, un raggruppamento su
 /// tutta la tabella — sopra i cinquanta millisecondi su cinquantamila brani.
 #[tauri::command]
-pub async fn artisti(app: tauri::AppHandle) -> Esito<Vec<ArtistSummary>> {
-    leggi_la_libreria(app, "elenco degli artisti", |libreria| {
-        list_artists(&libreria.connection)
+pub async fn artisti(app: tauri::AppHandle, origine: Option<Origine>) -> Esito<Vec<ArtistSummary>> {
+    let origine = origine.unwrap_or_default();
+    leggi_la_libreria(app, "elenco degli artisti", move |libreria| {
+        list_artists(&libreria.connection, &origine)
     })
     .await
     .map_err(errore)
 }
 
 /// I brani di un album.
+///
+/// `origine` assente vuol dire «da dove viene l'album»: vedi
+/// `rymembra_app::library::origine_dell_album`.
 #[tauri::command]
-pub async fn brani_album(app: tauri::AppHandle, chiave: String) -> Esito<Vec<TrackSummary>> {
+pub async fn brani_album(
+    app: tauri::AppHandle,
+    chiave: String,
+    origine: Option<Origine>,
+) -> Esito<Vec<TrackSummary>> {
     leggi_la_libreria(app, "brani di un album", move |libreria| {
-        album_tracks(&libreria.connection, &chiave)
+        // Senza un'origine detta dalla finestra, l'album si apre da dove viene:
+        // un disco che «Tutti» nasconde dietro una copia migliore resta apribile.
+        let origine = match origine {
+            Some(origine) => origine,
+            None => rymembra_app::library::origine_dell_album(&libreria.connection, &chiave)?,
+        };
+        album_tracks(&libreria.connection, &origine, &chiave)
     })
     .await
     .map_err(errore)
@@ -2209,9 +2262,10 @@ pub async fn casa(app: tauri::AppHandle) -> Esito<Casa> {
         // passa dall'indice delle date invece di ordinare tutta la libreria a
         // ogni cambio di brano con la Home aperta. Vedi
         // `rymembra_app::library::ascoltati_di_recente`.
-        let recenti = rymembra_app::library::ascoltati_di_recente(connection, RIPIANO)?;
+        let recenti =
+            rymembra_app::library::ascoltati_di_recente(connection, &Origine::Tutti, RIPIANO)?;
 
-        let aggiunti = recently_added_albums(connection, RIPIANO)?;
+        let aggiunti = recently_added_albums(connection, &Origine::Tutti, RIPIANO)?;
 
         // La regola dei trascurati è della libreria, non di questo comando:
         // vedi `rymembra_app::library::trascurati`.

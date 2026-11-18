@@ -793,6 +793,23 @@ pub(crate) fn scegli_la_copia(
     })
 }
 
+/// Le chiavi dei dispositivi che rispondono adesso, per chi non può mostrare
+/// una riga grigia: Android Auto.
+///
+/// Quelli che il filo di rete vede in questo momento (`presenze`). Se il filo
+/// non è partito — nessun dispositivo collegato — l'elenco è vuoto, e l'auto
+/// mostra solo quel che c'è su questo telefono.
+#[cfg(mobile)]
+pub(crate) fn dispositivi_raggiungibili(app: &AppHandle) -> Vec<String> {
+    let Ok(comune) = comune(app) else {
+        return Vec::new();
+    };
+    super::filo::prendi(&comune.presenze)
+        .keys()
+        .cloned()
+        .collect()
+}
+
 /// I byte di una riga specchio: la sorgente a blocchi sul nodo del suo
 /// dispositivo, come per Sfoglia, con il cancello di «Dati mobili» dentro.
 pub(crate) fn apri_riga(

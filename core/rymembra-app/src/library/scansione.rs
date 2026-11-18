@@ -2174,6 +2174,14 @@ impl Scan<'_> {
         })?;
         tempi.aggregati_ms = millisecondi(inizio);
 
+        // Le righe di questa macchina entrate o uscite in questa passata — un
+        // brano scaricato da un altro dispositivo, un file tolto — cambiano la
+        // scelta dei doppioni con le righe degli altri dispositivi. Chi non ne
+        // ha collegati paga una sola `EXISTS`.
+        deposito.con_connessione(|connection| {
+            crate::specchio::archivio::ricalcola_doppioni(connection).map(|_| ())
+        })?;
+
         report.tempi = tempi;
         report.elapsed_ms = started.elapsed().as_millis();
         Ok(report)

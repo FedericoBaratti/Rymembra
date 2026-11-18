@@ -469,7 +469,7 @@ const BACINO_PER_AFFINITA: i64 = 500;
 fn bacino_della_radio(connection: &Connection, seme: i64) -> Result<Vec<TrackSummary>, AppError> {
     let sql = format!(
         "SELECT {} FROM tracks t
-          WHERE t.id <> ?1 AND t.id IN (
+          WHERE t.id <> ?1 AND t.copia_di IS NULL AND t.id IN (
             SELECT vicino_id FROM brano_vicino WHERE track_id = ?1
             UNION
             SELECT id FROM (
@@ -515,7 +515,10 @@ fn resto_dell_album(
     let Some(chiave) = brano.album_key.as_deref() else {
         return Ok(None);
     };
-    let tracce = library::album_tracks(connection, chiave)?;
+    // L'album si legge con l'origine del brano che suona: una copia che «Tutti»
+    // nasconde dietro una migliore resta nel suo disco, e il disco finisce.
+    let origine = crate::specchio::origine_della_riga(brano.path.as_deref());
+    let tracce = library::album_tracks(connection, &origine, chiave)?;
     // Solo quel che viene **dopo** il brano corrente: ripescare l'inizio del
     // disco che si è appena finito è la cosa che fa sembrare rotto un lettore.
     let dopo_il_corrente = tracce

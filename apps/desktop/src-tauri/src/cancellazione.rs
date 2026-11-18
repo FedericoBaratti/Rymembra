@@ -284,6 +284,13 @@ fn da_togliere(
         if rymembra_domain::nuvola::e_nuvola(&percorso) {
             return Err(AppError::new(ErrorCode::CloudReadOnly));
         }
+        // Una riga specchio è un brano di un altro dispositivo: il file non
+        // sta qui, e non si elimina da qui. Come per il cloud, il gesto si
+        // rifiuta intero.
+        if rymembra_app::specchio::e_specchio(&percorso) {
+            return Err(AppError::new(ErrorCode::LontanoNonQui)
+                .with_cause("il brano sta su un altro dispositivo"));
+        }
         let immagine: Option<String> = immagine_di
             .query_row([brano.id], |riga| riga.get(0))
             .optional()

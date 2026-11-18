@@ -874,6 +874,43 @@ fn sparite_con_percorso(
         .map_err(|err| db_error(cosa, &err))
 }
 
+/// Fra questi id c'è una riga specchio? Per chi non deve toccarle: la
+/// cancellazione a mano, la sessione di «Ascolta insieme».
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn tra_le_righe_specchio(connection: &Connection, ids: &[i64]) -> Result<bool, AppError> {
+    Ok(!righe_specchio_fra(connection, ids)?.is_empty())
+}
+
+/// Quali di questi id sono righe specchio, nell'ordine in cui arrivano.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn righe_specchio_fra(connection: &Connection, ids: &[i64]) -> Result<Vec<i64>, AppError> {
+    let cosa = "righe specchio fra quelle date";
+    let mut trovate = Vec::new();
+    for pezzo in ids.chunks(500) {
+        let segnaposti = vec!["?"; pezzo.len()].join(",");
+        let mut st = connection
+            .prepare(&format!(
+                "SELECT t.id FROM tracks t WHERE t.id IN ({segnaposti}) AND {}",
+                super::SQL_SPECCHIO
+            ))
+            .map_err(|err| db_error(cosa, &err))?;
+        let lette = st
+            .query_map(rusqlite::params_from_iter(pezzo), |r| r.get::<_, i64>(0))
+            .map_err(|err| db_error(cosa, &err))?;
+        for id in lette {
+            trovate.push(id.map_err(|err| db_error(cosa, &err))?);
+        }
+    }
+    trovate.sort_by_key(|id| ids.iter().position(|x| x == id));
+    Ok(trovate)
+}
+
 /// Quante righe di un dispositivo aspettano la conferma di sparire.
 ///
 /// # Errori
@@ -907,6 +944,13 @@ fn togli(
         tolte += st
             .execute(params![id, path])
             .map_err(|err| db_error("rimozione di una riga specchio", &err))?;
+    }
+    if tolte > 0 {
+        // La sincronia ricorda adesso quali brani le playlist nominano e qui non
+        // ci sono: se il proprietario li rimette prima del prossimo allineamento,
+        // le loro voci tornano al loro posto invece di sembrare tolte dall'utente
+        // (FSYNC).
+        crate::sincronia::ricorda_i_brani_assenti(tx)?;
     }
     Ok(tolte)
 }
@@ -1242,8 +1286,7 @@ mod prove {
     use super::*;
     use crate::library::condivisa::Segmento;
     use crate::library::generazione;
-    use crate::specchio::comuni::{ADESSO, chiave, libreria, riga};
-    use crate::specchio::convalida::convalida_secchio;
+    use crate::specchio::comuni::{ADESSO, chiave, giro, giro_con, libreria, riga};
 
     const PC: char = 'a';
 
@@ -1266,64 +1309,6 @@ mod prove {
 
     fn n(c: &Connection, sql: &str) -> i64 {
         c.query_row(sql, [], |r| r.get(0)).expect(sql)
-    }
-
-    /// Un giro intero con `righe` come catalogo del dispositivo: i secchi
-    /// dell'id, ognuno scritto, poi la chiusura. Come lo farebbe chi ha la
-    /// rete, senza la rete.
-    fn giro(c: &Connection, dispositivo: &str, righe: &[BranoCatalogo], adesso: i64) -> Chiusura {
-        giro_con(c, dispositivo, righe, adesso).0
-    }
-
-    fn giro_con(
-        c: &Connection,
-        dispositivo: &str,
-        righe: &[BranoCatalogo],
-        adesso: i64,
-    ) -> (Chiusura, Conti) {
-        let mut per_secchio: BTreeMap<i64, Vec<BranoCatalogo>> = BTreeMap::new();
-        for r in righe {
-            per_secchio
-                .entry(r.id.div_euclid(ID_PER_SECCHIO))
-                .or_default()
-                .push(r.clone());
-        }
-        let secchi: Vec<SecchioCatalogo> = per_secchio
-            .iter()
-            .map(|(k, v)| SecchioCatalogo {
-                da_id: k * ID_PER_SECCHIO,
-                a_id: k * ID_PER_SECCHIO + ID_PER_SECCHIO - 1,
-                impronta: {
-                    let mut h = blake3::Hasher::new();
-                    for r in v {
-                        h.update(&serde_json::to_vec(r).unwrap());
-                    }
-                    h.finalize().to_hex().chars().take(32).collect()
-                },
-                righe: i64::try_from(v.len()).unwrap(),
-            })
-            .collect();
-        let riassunto = RiassuntoCatalogo {
-            generazione: 1,
-            secchi,
-        };
-        let stato = stato(c, dispositivo).expect("stato");
-        let lavoro = lavoro(&riassunto, &stato);
-        let mut giro = Giro::nuovo(dispositivo, stato.righe);
-        for secchio in &lavoro.da_leggere {
-            let letto = per_secchio
-                .get(&secchio.da_id.div_euclid(ID_PER_SECCHIO))
-                .cloned()
-                .unwrap_or_default();
-            let buone = convalida_secchio(secchio.da_id, secchio.a_id, letto, adesso);
-            giro.applica_secchio(c, secchio, buone.righe, adesso)
-                .expect("secchio");
-        }
-        let conti = giro.conti;
-        let chiusura = giro
-            .chiudi(c, &lavoro.da_svuotare, true, 1, adesso)
-            .expect("chiusura");
-        (chiusura, conti)
     }
 
     fn catalogo(da: i64, a: i64) -> Vec<BranoCatalogo> {

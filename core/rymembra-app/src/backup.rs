@@ -553,7 +553,11 @@ fn testi(valore: Option<&serde_json::Value>) -> Vec<String> {
 ///
 /// `db.queryFailed` se una lettura fallisce.
 pub fn stato_locale(connection: &Connection) -> Result<StatoLocale, AppError> {
-    let roots: Vec<String> = settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default();
+    let mut roots: Vec<String> =
+        settings::read_json(connection, CHIAVE_CARTELLE)?.unwrap_or_default();
+    // Una riga `lontano://…` non è una cartella (e non esce da qui, qualunque
+    // cosa ci sia scritta): vedi `profilo::radici::ordina_cartelle`.
+    roots.retain(|radice| !crate::specchio::e_specchio(radice));
     // La mappa datata delle cartelle del backup: dice quando ognuna è stata
     // accesa e quando una è stata tolta. Una tolta che è di nuovo nell'elenco
     // (la mappa non ancora allineata) non è una lapide.
@@ -680,7 +684,7 @@ fn leggi_brani(connection: &Connection) -> Result<Vec<(TrackKey, TrackStats)>, A
         .prepare(
             "SELECT track_key, play_count, last_played_at, rating, liked, liked_at,
                     stats_updated_at
-             FROM tracks",
+             FROM tracks WHERE NOT (path >= 'lontano://' AND path < 'lontano:/0')",
         )
         .map_err(|err| db_error("brani da salvare", &err))?;
     let righe = statement
@@ -1370,7 +1374,7 @@ fn applica_playlist(tx: &Transaction<'_>, cambi: &[PlaylistChange]) -> Result<us
         .prepare("SELECT id FROM playlists WHERE playlist_key = ?1")
         .map_err(|err| db_error("playlist ripristinata", &err))?;
     let mut cerca_brano = tx
-        .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY id LIMIT 1")
+        .prepare("SELECT id FROM tracks WHERE track_key = ?1 ORDER BY (path >= 'lontano://' AND path < 'lontano:/0'), id LIMIT 1")
         .map_err(|err| db_error("playlist ripristinata", &err))?;
     let mut accoda = tx
         .prepare(

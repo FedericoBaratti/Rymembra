@@ -482,7 +482,8 @@ pub(crate) fn query(insieme: &Insieme, adesso_ms: i64) -> (String, Vec<SqlValue>
     let (dove, parametri) = dove_di(insieme, adesso_ms);
     let limite = insieme.limite.unwrap_or(TETTO).min(TETTO);
     let sql = format!(
-        "SELECT {COLONNE_BRANO} FROM tracks t WHERE {dove} ORDER BY {} LIMIT {limite}",
+        "SELECT {COLONNE_BRANO} FROM tracks t
+          WHERE ({dove}) AND t.copia_di IS NULL ORDER BY {} LIMIT {limite}",
         ordine(insieme.ordinamento)
     );
     (sql, parametri)
@@ -652,7 +653,7 @@ pub fn quanti(connection: &Connection, insieme: &Insieme, adesso_ms: i64) -> Res
     // dire due traduzioni da tenere d'accordo, e la seconda sbaglierebbe per
     // prima.
     let (dove, parametri) = dove_di(insieme, adesso_ms);
-    let conteggio = format!("SELECT COUNT(*) FROM tracks t WHERE {dove}");
+    let conteggio = format!("SELECT COUNT(*) FROM tracks t WHERE ({dove}) AND t.copia_di IS NULL");
     connection
         .prepare(&conteggio)
         .and_then(|mut s| {

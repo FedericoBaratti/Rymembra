@@ -751,6 +751,7 @@ pub struct CartelleOrdinate {
 ///
 /// 1. **Doppioni**: `D:\Musica`, `d:\musica` e `D:\Musica\` sono una cartella
 ///    sola, e resta la grafia che compare per prima — quella già in elenco.
+///    Una riga `lontano://…` non è una cartella e non entra mai.
 /// 2. **Gemelle**: una cartella nuova il cui nome vero coincide con quello di
 ///    una già sorvegliata (o la contiene) non si aggiunge, e si propone il
 ///    trasloco. Solo fra una nuova e una di `prima`: due nuove gemelle fra loro
@@ -792,6 +793,10 @@ pub fn ordina_cartelle(
         .iter()
         .map(|c| c.trim())
         .filter(|c| !c.is_empty())
+        // `lontano://…` è il catalogo di un altro dispositivo, non una cartella
+        // di questo: guardarla come una radice farebbe cercare i suoi brani su
+        // un disco che non c'è. Un elenco scritto a mano può contenerla.
+        .filter(|c| !crate::specchio::e_specchio(c))
         .filter(|c| viste.insert(chiave(c)))
         .map(ToOwned::to_owned)
         .collect();
@@ -1350,6 +1355,20 @@ mod prove {
 
     fn elenco(voci: &[&str]) -> Vec<String> {
         voci.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    #[test]
+    fn una_riga_lontana_non_diventa_mai_una_cartella() {
+        // §4.7: `lontano://` non deve mai diventare una radice, nemmeno in un
+        // elenco scritto a mano.
+        let lontana = format!("lontano://{}/12", "ab".repeat(32));
+        let date = elenco(&[r"D:\Musica", lontana.as_str(), "lontano://"]);
+        let fatto = ordina_cartelle(&[], &date, &senza_nomi);
+        assert_eq!(fatto.cartelle, elenco(&[r"D:\Musica"]));
+        // E se c'era già in elenco, la prima riscrittura la toglie.
+        let prima = elenco(&[lontana.as_str(), r"D:\Musica"]);
+        let fatto = ordina_cartelle(&prima, &prima, &senza_nomi);
+        assert_eq!(fatto.cartelle, elenco(&[r"D:\Musica"]));
     }
 
     #[test]

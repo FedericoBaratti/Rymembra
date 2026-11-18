@@ -521,6 +521,7 @@
   "errors.lontano.linkNonValido": "Questo non è un link di collegamento di Rymembra. Copia il link dalla schermata che mostra il QR, o scansiona il QR.",
   "errors.lontano.rifiutato": "Sull'altro dispositivo hanno rifiutato il collegamento.",
   "errors.lontano.fileCambiato": "Il brano è cambiato sull'altro dispositivo mentre lo ascoltavi. Riprova.",
+  "errors.lontano.nonQui": "Questo brano sta su un altro dispositivo: da qui non si può modificare né eliminare il suo file.",
   "errors.lontano.reteAConsumo": "Sei sui dati mobili e «Solo Wi-Fi» è attivo: i brani degli altri dispositivi, e «Ascolta insieme» via internet, aspettano il Wi-Fi.",
   "errors.lontano.spento": "Il collegamento via internet è spento: accendi «Raggiungibile da internet» in Impostazioni › Dispositivi.",
   "errors.lontano.protocollo": "L'altro dispositivo ha risposto in un modo che questa versione di Rymembra non capisce. Aggiorna Rymembra su tutti e due.",

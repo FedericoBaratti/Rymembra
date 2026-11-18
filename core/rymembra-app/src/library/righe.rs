@@ -422,7 +422,7 @@ pub fn known_tracks(connection: &Connection) -> Result<Vec<KnownTrack>, AppError
         .prepare(
             "SELECT id, path, CASE WHEN content_key IS NULL THEN -1 ELSE date_modified END,
                     file_size
-               FROM tracks WHERE path IS NOT NULL ORDER BY id",
+               FROM tracks WHERE path IS NOT NULL AND NOT (path >= 'lontano://' AND path < 'lontano:/0') ORDER BY id",
         )
         .map_err(|err| db_error("elenco dei brani noti", &err))?;
     let rows = statement
@@ -801,7 +801,7 @@ pub fn rileggi_tutti_i_tag(connection: &Connection) -> Result<usize, AppError> {
     connection
         .execute(
             "UPDATE tracks SET date_modified = -1
-              WHERE path IS NOT NULL AND date_modified <> -1",
+              WHERE path IS NOT NULL AND date_modified <> -1 AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
             [],
         )
         .map_err(|err| db_error("richiesta di rilettura dei tag", &err))?;
@@ -811,7 +811,7 @@ pub fn rileggi_tutti_i_tag(connection: &Connection) -> Result<usize, AppError> {
     chiedi_ricostruzione_intera(connection)?;
     connection
         .query_row(
-            "SELECT COUNT(*) FROM tracks WHERE path IS NOT NULL AND date_modified = -1",
+            "SELECT COUNT(*) FROM tracks WHERE path IS NOT NULL AND date_modified = -1 AND NOT (path >= 'lontano://' AND path < 'lontano:/0')",
             [],
             |row| row.get::<_, i64>(0),
         )
@@ -857,11 +857,66 @@ pub(super) fn remove_tracks(
     // quella riga non condivide con nessun'altra. Un confronto sul solo `path`
     // qui non toglierebbe **mai** un brano di catalogo, perché in SQL `NULL = ?`
     // non è vero nemmeno quando il parametro è nullo.
+    //
+    // Una copia di qui che se ne va mentre lo stesso brano c'è ancora come riga
+    // specchio di un altro dispositivo: le sue voci di playlist passano alla
+    // riga specchio, invece di sparire con la cascata. Per la sincronia un
+    // brano che c'è ancora in libreria e non sta più in una playlist è un brano
+    // che l'utente ha tolto da quella playlist, e la rimozione partirebbe verso
+    // il dispositivo che il file ce l'ha (FSYNC). Si guarda una volta sola se di
+    // righe specchio ce ne sono: chi non collega nessuno non paga niente.
+    let ce_uno_specchio: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM tracks
+                             WHERE path >= 'lontano://' AND path < 'lontano:/0')",
+            [],
+            |riga| riga.get(0),
+        )
+        .map_err(|err| db_error("righe specchio da tenere", &err))?;
+    let mut passa_allo_specchio = if ce_uno_specchio {
+        Some(
+            tx.prepare_cached(
+                "UPDATE playlist_tracks
+                    SET track_id = (SELECT m.id FROM tracks m
+                                     WHERE m.track_key = (SELECT t.track_key FROM tracks t
+                                                           WHERE t.id = ?1)
+                                       AND m.id <> ?1
+                                       AND m.path >= 'lontano://' AND m.path < 'lontano:/0'
+                                     ORDER BY m.id LIMIT 1)
+                  WHERE track_id = ?1
+                    AND EXISTS (SELECT 1 FROM tracks m
+                                 WHERE m.track_key = (SELECT t.track_key FROM tracks t
+                                                       WHERE t.id = ?1)
+                                   AND m.id <> ?1
+                                   AND m.path >= 'lontano://' AND m.path < 'lontano:/0')",
+            )
+            .map_err(|err| db_error("voci di playlist verso la riga specchio", &err))?,
+        )
+    } else {
+        None
+    };
     let mut statement = tx
         .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND COALESCE(path, fonte_url) = ?2")
         .map_err(|err| db_error("rimozione di un brano", &err))?;
     let mut removed = 0;
     for (id, path) in righe {
+        if let Some(passa) = passa_allo_specchio.as_mut() {
+            // Solo se la riga che si toglie è quella che il piano ha visto:
+            // stessa guardia della `DELETE`, sul percorso.
+            let e_quella: bool = tx
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM tracks
+                                     WHERE id = ?1 AND COALESCE(path, fonte_url) = ?2)",
+                    rusqlite::params![id, path],
+                    |riga| riga.get(0),
+                )
+                .map_err(|err| db_error("riga da togliere", &err))?;
+            if e_quella {
+                passa
+                    .execute([id])
+                    .map_err(|err| db_error("voci di playlist verso la riga specchio", &err))?;
+            }
+        }
         removed += statement
             .execute(rusqlite::params![id, path])
             .map_err(|err| db_error("rimozione di un brano", &err))?;
@@ -940,6 +995,14 @@ pub fn cancella_brani(
 ) -> Result<Cancellazione, AppError> {
     if ids.is_empty() {
         return Ok(Cancellazione::default());
+    }
+    // Una riga specchio non si toglie a mano: è il catalogo di un altro
+    // dispositivo, tornerebbe al giro dopo, e le sue playlist le perderebbero
+    // per niente. Se ne vanno quando il proprietario non le manda più, o
+    // dimenticando il dispositivo.
+    if crate::specchio::archivio::tra_le_righe_specchio(connection, ids)? {
+        return Err(AppError::new(ErrorCode::LontanoNonQui)
+            .with_cause("una riga della libreria unica non si toglie a mano"));
     }
     // `Immediate` perché qui si legge e poi si scrive: vedi
     // [`transazione_di_scrittura`].

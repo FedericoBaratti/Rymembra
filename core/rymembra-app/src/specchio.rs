@@ -120,6 +120,58 @@ pub enum Origine {
     Locale,
     /// Solo questo dispositivo, dalla sua chiave.
     Dispositivo(String),
+    /// «Tutti», senza le righe dei dispositivi che adesso non rispondono: per
+    /// chi non può mostrare una riga grigia — Android Auto, dove un brano che
+    /// non parte al volante è un guasto. Le chiavi sono quelle dei dispositivi
+    /// **raggiungibili**.
+    ///
+    /// Una copia di qui che «Tutti» nasconde perché un altro dispositivo ne ha
+    /// una migliore resta visibile quando quel dispositivo non risponde: il
+    /// brano non sparisce dall'auto perché il PC è spento. Non viaggia sull'IPC:
+    /// la finestra non sa chi è raggiungibile, lo sa chi risponde all'auto.
+    #[serde(skip)]
+    Raggiungibili(Vec<String>),
+}
+
+/// Da dove viene una riga: per leggere **il suo album** senza che «Tutti» ne
+/// nasconda dei pezzi. Una riga di questa macchina vale [`Origine::Locale`], una
+/// riga specchio il suo dispositivo.
+///
+/// Un album ha un'origine sola: le righe locali hanno la chiave di una cartella
+/// di qui, quelle specchio la chiave dell'album di un dispositivo.
+#[must_use]
+pub fn origine_della_riga(percorso: Option<&str>) -> Origine {
+    percorso
+        .and_then(parti)
+        .map_or(Origine::Locale, |(dispositivo, _)| {
+            Origine::Dispositivo(dispositivo.to_owned())
+        })
+}
+
+/// Le righe di questa macchina, per `tracks` con l'alias dato (`"t."`, `"r."`
+/// o vuoto).
+fn di_questa_macchina(alias: &str) -> String {
+    format!("({alias}path IS NULL OR {alias}path < 'lontano://' OR {alias}path >= 'lontano:/0')")
+}
+
+/// Le righe di un dispositivo: un intervallo di prefisso, che l'indice di `path`
+/// sa servire.
+///
+/// # Errori
+///
+/// `ipc.payloadInvalid` per una chiave che non è di 64 cifre esadecimali:
+/// finisce dentro l'SQL, e per un intervallo di prefisso non c'è un'altra
+/// strada.
+fn del_dispositivo(chiave: &str, alias: &str) -> Result<String, AppError> {
+    if !e_una_chiave(chiave) {
+        return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
+            channel: "libreria".to_owned(),
+            detail: Some("l'origine non è la chiave di un dispositivo".to_owned()),
+        }));
+    }
+    Ok(format!(
+        "({alias}path >= 'lontano://{chiave}/' AND {alias}path < 'lontano://{chiave}0')"
+    ))
 }
 
 impl Origine {
@@ -129,26 +181,46 @@ impl Origine {
     /// # Errori
     ///
     /// `ipc.payloadInvalid` per una chiave di dispositivo che non è di 64 cifre
-    /// esadecimali: finisce dentro l'SQL, e non c'è un'altra strada
-    /// per un intervallo di prefisso.
+    /// esadecimali.
     pub fn sql(&self, prefisso: &str) -> Result<String, AppError> {
         Ok(match self {
             Self::Tutti => format!("{prefisso}copia_di IS NULL"),
-            Self::Locale => format!(
-                "({prefisso}path IS NULL OR {prefisso}path < 'lontano://' \
-                 OR {prefisso}path >= 'lontano:/0')"
-            ),
-            Self::Dispositivo(chiave) => {
-                if !e_una_chiave(chiave) {
-                    return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
-                        channel: "libreria".to_owned(),
-                        detail: Some("l'origine non è la chiave di un dispositivo".to_owned()),
-                    }));
+            Self::Locale => di_questa_macchina(prefisso),
+            Self::Dispositivo(chiave) => del_dispositivo(chiave, prefisso)?,
+            Self::Raggiungibili(chiavi) => {
+                let sue = chiavi
+                    .iter()
+                    .map(|chiave| del_dispositivo(chiave, prefisso))
+                    .collect::<Result<Vec<_>, _>>()?;
+                // Una riga di questa macchina: visibile se «Tutti» la mostra, o
+                // se la copia che la nasconde sta su un dispositivo che non
+                // risponde.
+                let non_risponde = chiavi
+                    .iter()
+                    .map(|chiave| del_dispositivo(chiave, "r."))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(" OR ");
+                let nascosta_da_chi_tace = if non_risponde.is_empty() {
+                    format!("EXISTS (SELECT 1 FROM tracks r WHERE r.id = {prefisso}copia_di)")
+                } else {
+                    format!(
+                        "EXISTS (SELECT 1 FROM tracks r
+                                  WHERE r.id = {prefisso}copia_di
+                                    AND NOT ({non_risponde}))"
+                    )
+                };
+                let qui = format!(
+                    "({} AND ({prefisso}copia_di IS NULL OR {nascosta_da_chi_tace}))",
+                    di_questa_macchina(prefisso)
+                );
+                if sue.is_empty() {
+                    qui
+                } else {
+                    format!(
+                        "({qui} OR (({}) AND {prefisso}copia_di IS NULL))",
+                        sue.join(" OR ")
+                    )
                 }
-                format!(
-                    "({prefisso}path >= 'lontano://{chiave}/' \
-                     AND {prefisso}path < 'lontano://{chiave}0')"
-                )
             }
         })
     }
@@ -247,6 +319,68 @@ mod prove {
             ids(&Origine::Dispositivo(chiave('d')).sql("t.").unwrap()),
             Vec::<i64>::new()
         );
+    }
+
+    #[test]
+    fn raggiungibili_nasconde_le_righe_di_chi_tace_e_non_nasconde_la_copia_di_qui() {
+        // Tre dispositivi: il PC (rappresentante migliore del brano 11), il
+        // portatile (brano 21, solo suo) e il tablet. Il PC non risponde.
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY, path TEXT, copia_di INTEGER)",
+        )
+        .unwrap();
+        let (pc, portatile, tablet) = (chiave('a'), chiave('b'), chiave('c'));
+        for (id, p, copia) in [
+            (1, "C:/M/a.flac".to_owned(), None),
+            // Il brano 11 sta in due posti: la copia di qui è dietro quella del PC.
+            (2, "C:/M/b.mp3".to_owned(), Some(10)),
+            (10, percorso(&pc, 11), None),
+            (20, percorso(&portatile, 21), None),
+            // Il tablet ha una copia nascosta dietro quella del portatile, che
+            // risponde: resta nascosta.
+            (30, percorso(&tablet, 21), Some(20)),
+        ] {
+            c.execute(
+                "INSERT INTO tracks VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, p, copia],
+            )
+            .unwrap();
+        }
+        let ids = |origine: &Origine| -> Vec<i64> {
+            let mut q = c
+                .prepare(&format!(
+                    "SELECT t.id FROM tracks t WHERE {} ORDER BY t.id",
+                    origine.sql("t.").unwrap()
+                ))
+                .unwrap();
+            q.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(ids(&Origine::Tutti), vec![1, 10, 20]);
+        // Risponde il portatile, il PC no: i brani del PC spariscono, e la copia
+        // di qui del brano 11 — nascosta dietro il PC — torna.
+        assert_eq!(
+            ids(&Origine::Raggiungibili(vec![portatile.clone()])),
+            vec![1, 2, 20]
+        );
+        // Risponde anche il PC: è «Tutti».
+        assert_eq!(
+            ids(&Origine::Raggiungibili(vec![pc.clone(), portatile.clone()])),
+            vec![1, 10, 20]
+        );
+        // Non risponde nessuno: resta quel che c'è di qui, anche se nascosto.
+        assert_eq!(ids(&Origine::Raggiungibili(Vec::new())), vec![1, 2]);
+        // Una chiave storta non entra nell'SQL.
+        assert!(
+            Origine::Raggiungibili(vec!["x'; --".to_owned()])
+                .sql("t.")
+                .is_err()
+        );
+        // E non viaggia sull'IPC.
+        assert!(serde_json::to_string(&Origine::Raggiungibili(Vec::new())).is_err());
     }
 
     #[test]

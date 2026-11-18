@@ -1505,13 +1505,15 @@ fn leggi_radici(conn: &Connection, conto: Option<&str>) -> Result<Vec<RadiceSalv
         .map_err(|err| db_error("lettura delle radici del cloud", &err))
 }
 
-/// Il frammento SQL che tiene fuori le righe del cloud: per le passate che
-/// leggono i file per intero (impronta, volume, rilettura dei tag).
+/// Il frammento SQL che tiene fuori le righe senza un file su questo disco — il
+/// cloud e le righe specchio dei dispositivi collegati (`lontano://`): per le
+/// passate che leggono i file per intero (impronta, volume, rilettura dei tag).
 ///
 /// Un intervallo sull'indice binario di `path` e non un `LIKE`: `LIKE` non usa
 /// quell'indice e piega le maiuscole. `'/' + 1` è `'0'`, quindi ogni percorso
 /// che comincia con `nuvola://` sta fra i due estremi.
-pub const FUORI_DALLA_NUVOLA: &str = "NOT (t.path >= 'nuvola://' AND t.path < 'nuvola:/0')";
+pub const FUORI_DALLA_NUVOLA: &str = "(NOT (t.path >= 'nuvola://' AND t.path < 'nuvola:/0') \
+     AND NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0'))";
 
 /// Uno specchio con dentro nomi riconoscibili, per le prove che lo vogliono
 /// fuori dal profilo, dal backup e dalla sincronia: restituisce le stringhe da

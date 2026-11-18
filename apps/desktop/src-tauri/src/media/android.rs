@@ -299,14 +299,15 @@ fn risposta(
             ..
         } => {
             let nodo = Nodo::da_testo(&genitore).ok_or_else(|| sconosciuta(&genitore))?;
-            auto::leggi(app, |connessione, store| {
-                auto::figli(connessione, store, &nodo, pagina, quante)
+            auto::leggi(app, |connessione, origine, store| {
+                auto::figli(connessione, origine, store, &nodo, pagina, quante)
             })
         }
         Richiesta::Voce { voce, .. } => {
             let nodo = Nodo::da_testo(&voce).ok_or_else(|| sconosciuta(&voce))?;
-            auto::leggi(app, |connessione, store| {
-                auto::voce(connessione, store, &nodo).map(|trovata| trovata.into_iter().collect())
+            auto::leggi(app, |connessione, origine, store| {
+                auto::voce(connessione, origine, store, &nodo)
+                    .map(|trovata| trovata.into_iter().collect())
             })
         }
         Richiesta::Cerca {
@@ -314,8 +315,15 @@ fn risposta(
             pagina,
             quante,
             ..
-        } => auto::leggi(app, |connessione, store| {
-            auto::figli(connessione, store, &Nodo::Cerca(testo), pagina, quante)
+        } => auto::leggi(app, |connessione, origine, store| {
+            auto::figli(
+                connessione,
+                origine,
+                store,
+                &Nodo::Cerca(testo),
+                pagina,
+                quante,
+            )
         }),
     }
 }

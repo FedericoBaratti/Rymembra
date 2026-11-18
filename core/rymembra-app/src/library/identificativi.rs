@@ -11,7 +11,7 @@
 //!
 //! Qui le stesse domande chiedono soltanto l'id, con **la stessa** clausola
 //! d'ordine e la stessa origine delle pagine: [`TrackOrder::sql`],
-//! [`DA_PREFERITI`], [`DA_RICERCA`] e la stessa [`fts_query`]. Un secondo
+//! [`da_preferiti`], [`da_ricerca`] e la stessa [`fts_query`]. Un secondo
 //! ordine scritto qui sarebbe una selezione che non corrisponde alle righe che
 //! si vedono, il giorno in cui uno dei due cambia. E senza le altre colonne la
 //! lettura dei Brani sta tutta nell'indice dell'ordinamento.
@@ -20,15 +20,24 @@ use rusqlite::Connection;
 use rymembra_domain::errors::AppError;
 
 use super::db_error;
-use super::interrogazioni::{DA_PREFERITI, DA_RICERCA, TrackOrder, fts_query};
+use super::interrogazioni::{TrackOrder, da_preferiti, da_ricerca, fts_query};
+use crate::specchio::Origine;
 
 /// Gli identificativi di tutta la libreria, nell'ordine di [`super::list_tracks`].
 ///
 /// # Errori
 ///
 /// `db.*` se la lettura fallisce.
-pub fn id_dei_brani(connection: &Connection, order: TrackOrder) -> Result<Vec<i64>, AppError> {
-    let sql = format!("SELECT t.id FROM tracks t ORDER BY {}", order.sql());
+pub fn id_dei_brani(
+    connection: &Connection,
+    origine: &Origine,
+    order: TrackOrder,
+) -> Result<Vec<i64>, AppError> {
+    let sql = format!(
+        "SELECT t.id FROM tracks t WHERE {} ORDER BY {}",
+        origine.sql("t.")?,
+        order.sql()
+    );
     leggi(connection, &sql, &[], "identificativi dei brani")
 }
 
@@ -37,8 +46,8 @@ pub fn id_dei_brani(connection: &Connection, order: TrackOrder) -> Result<Vec<i6
 /// # Errori
 ///
 /// `db.*` se la lettura fallisce.
-pub fn id_dei_preferiti(connection: &Connection) -> Result<Vec<i64>, AppError> {
-    let sql = format!("SELECT t.id {DA_PREFERITI}");
+pub fn id_dei_preferiti(connection: &Connection, origine: &Origine) -> Result<Vec<i64>, AppError> {
+    let sql = format!("SELECT t.id {}", da_preferiti(origine)?);
     leggi(connection, &sql, &[], "identificativi dei preferiti")
 }
 
@@ -47,12 +56,16 @@ pub fn id_dei_preferiti(connection: &Connection) -> Result<Vec<i64>, AppError> {
 /// # Errori
 ///
 /// `db.*` se la lettura fallisce.
-pub fn id_della_ricerca(connection: &Connection, query: &str) -> Result<Vec<i64>, AppError> {
+pub fn id_della_ricerca(
+    connection: &Connection,
+    origine: &Origine,
+    query: &str,
+) -> Result<Vec<i64>, AppError> {
     let espressione = fts_query(query);
     if espressione.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = format!("SELECT t.id {DA_RICERCA}");
+    let sql = format!("SELECT t.id {}", da_ricerca(origine)?);
     leggi(
         connection,
         &sql,
@@ -145,29 +158,37 @@ mod prove {
             TrackOrder::RecentlyPlayed,
             TrackOrder::Title,
         ] {
-            let pagine: Vec<i64> = list_tracks(&c, ordine, 0, -1)
+            let pagine: Vec<i64> = list_tracks(&c, &Origine::Tutti, ordine, 0, -1)
                 .expect("pagine")
                 .into_iter()
                 .map(|b| b.id)
                 .collect();
-            assert_eq!(id_dei_brani(&c, ordine), Ok(pagine), "{ordine:?}");
+            assert_eq!(
+                id_dei_brani(&c, &Origine::Tutti, ordine),
+                Ok(pagine),
+                "{ordine:?}"
+            );
         }
-        let preferiti: Vec<i64> = list_liked(&c, 0, -1)
+        let preferiti: Vec<i64> = list_liked(&c, &Origine::Tutti, 0, -1)
             .expect("preferiti")
             .into_iter()
             .map(|b| b.id)
             .collect();
         assert_eq!(preferiti.len(), 4);
-        assert_eq!(id_dei_preferiti(&c), Ok(preferiti));
+        assert_eq!(id_dei_preferiti(&c, &Origine::Tutti), Ok(preferiti));
         for cercato in ["mare", "bravo", "a", "nessuno"] {
-            let trovati: Vec<i64> = search(&c, cercato, 0, -1)
+            let trovati: Vec<i64> = search(&c, &Origine::Tutti, cercato, 0, -1)
                 .expect("ricerca")
                 .into_iter()
                 .map(|b| b.id)
                 .collect();
-            assert_eq!(id_della_ricerca(&c, cercato), Ok(trovati), "{cercato}");
+            assert_eq!(
+                id_della_ricerca(&c, &Origine::Tutti, cercato),
+                Ok(trovati),
+                "{cercato}"
+            );
         }
-        assert_eq!(id_della_ricerca(&c, "   "), Ok(Vec::new()));
+        assert_eq!(id_della_ricerca(&c, &Origine::Tutti, "   "), Ok(Vec::new()));
     }
 
     #[test]

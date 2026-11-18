@@ -131,6 +131,7 @@ use crate::covers::{CoverSource, CoverStore, StoredCover};
 use crate::files::{Limiti, MusicFiles, Voce};
 use crate::metadata::read_tags;
 use crate::scadenza::Mancato;
+use crate::specchio::Origine;
 
 mod aggregati;
 mod camminata;
@@ -155,8 +156,8 @@ pub use interrogazioni::{
     AlbumSummary, ArtistSummary, Counts, FormatoFile, TrackOrder, TrackSummary, VoceCronologia,
     album_tracks, albums_by_artist, ascoltati_di_recente, count_history, counts, etichetta_codec,
     fts_query, ids_by_path, list_albums, list_artists, list_history, list_liked, list_tracks,
-    read_formato, read_summary, recently_added_albums, search, search_count, summaries_by_id,
-    trascurati,
+    origine_dell_album, read_formato, read_summary, recently_added_albums, search, search_count,
+    summaries_by_id, trascurati,
 };
 pub use righe::{
     Cancellazione, TrackRow, applica_rimozioni, cancella_brani, known_tracks, read_track,
