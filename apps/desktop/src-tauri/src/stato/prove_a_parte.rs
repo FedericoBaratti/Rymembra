@@ -35,6 +35,18 @@ type Riga<'a> = (
     bool,
 );
 
+/// Una riga del PC: l'id, l'id nel PC, il titolo, il disco, la chiave del disco,
+/// `copia_di` e `sparito_ms`.
+type RigaDelPc<'a> = (
+    i64,
+    i64,
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<i64>,
+    Option<i64>,
+);
+
 /// La chiave del dispositivo di prova: sessantaquattro cifre esadecimali.
 fn il_pc() -> String {
     "ab".repeat(32)
@@ -76,7 +88,7 @@ fn metti_della_musica(stato: &Stato) {
         // Le righe del PC: (id, id nel PC, titolo, disco, chiave del disco,
         // `copia_di`, `sparito_ms`).
         let pc = il_pc();
-        let del_pc: [(i64, i64, &str, &str, &str, Option<i64>, Option<i64>); 3] = [
+        let del_pc: [RigaDelPc; 3] = [
             (101, 1, "Tre", "Secondo disco", "ak2", None, None),
             (102, 2, "Quattordici", "Terzo disco", "ak5", Some(102), Some(1_000)),
             (103, 3, "Quindici", "Primo disco", "ak1", None, None),

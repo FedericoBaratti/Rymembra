@@ -43,6 +43,17 @@
 //! assolute scendono, il rapporto no. La prima versione della misura rilegge in
 //! continuazione, senza pausa, e non dice niente di vero: un `Mutex` non è equo, e
 //! il lettore che lo riprende appena lo lascia tiene fuori l'altro per secondi.
+//!
+//! Rifatte dopo l'unione di F2b (`afb6de7`), stesso PC e stesso profilo, le due vie
+//! una dopo l'altra: sotto il lucchetto il conto è 208 ms (massimo 419) e chi
+//! vuole il lucchetto aspetta, su 300 richieste, 22 volte oltre i 5 ms (massima
+//! 262 ms); su una connessione a parte il conto è 160 ms, il lucchetto non è
+//! tenuto, nessuna richiesta aspetta (massima 0,1 ms). Una pagina da 50 righe:
+//! 0,2–0,6 ms sotto il lucchetto, 2,8–3,5 ms su una connessione nuova.
+//! `list_albums` (50): 153 contro 121 ms; `counts` 19,5 contro 18,8 ms. La
+//! libreria di questa misura non ha dispositivi collegati: le righe nascoste che
+//! F2b ha reso più economiche (`id_dei_nascosti`, i conteggi per sottrazione) non
+//! ci sono, e le prove che le coprono sono in `prove_a_parte.rs`.
 
 use std::time::{Duration, Instant};
 
