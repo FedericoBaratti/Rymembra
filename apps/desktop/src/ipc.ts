@@ -1419,6 +1419,12 @@ export const ipc = {
   telefonoSalvaDocumento: (nome: string, tipo: string, sorgente: string) =>
     invoke<boolean>("telefono_salva_documento", { nome, tipo, sorgente }),
   telefonoSecondoPiano: () => invoke<void>("telefono_secondo_piano"),
+  // Rymembra è fuori dal risparmio batteria di Android? Senza, con lo schermo
+  // spento e il telefono fermo il Doze sospende la rete, anche col servizio
+  // del sottofondo acceso. Si rilegge quando la finestra torna in vista.
+  telefonoSenzaRisparmioBatteria: () => invoke<boolean>("telefono_senza_risparmio_batteria"),
+  // Apre la pagina di sistema in cui lo si toglie (mai la richiesta diretta).
+  telefonoApriRisparmioBatteria: () => invoke<void>("telefono_apri_risparmio_batteria"),
   // Le barre di sistema e la tastiera, in pixel CSS: vedi `riquadri.ts`.
   telefonoRiquadri: () =>
     invoke<{
@@ -1447,6 +1453,10 @@ export const ipc = {
   lontanoRelay: (relay: string | null) => invoke<StatoLontano>("lontano_relay", { relay }),
   lontanoDatiMobili: (scelta: DatiMobili) =>
     invoke<StatoLontano>("lontano_dati_mobili", { scelta }),
+  // «Resta attiva in sottofondo» (solo il telefono): non accende «Raggiungibile
+  // da internet», che è un sì a parte.
+  lontanoSottofondo: (attivo: boolean) =>
+    invoke<StatoLontano>("lontano_sottofondo", { attivo }),
   // Un QR nuovo: quello di prima non vale più. Con «Raggiungibile da
   // internet» spento è `lontano.spento`: lo si accende prima, con un sì a
   // parte (`lontanoAttiva`).

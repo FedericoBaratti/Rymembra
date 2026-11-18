@@ -384,6 +384,11 @@ function voci(): readonly {
     // Nessuno cerca «collegamento via internet»: si cerca «qr», «fuori casa»,
     // «telefono», «remoto», o il nome del PC che si vuole raggiungere.
     v("dispositivi", "internet", "settings.devices.title"),
+    // Nessuno cerca «servizio in primo piano»: si cerca «sottofondo», «sempre
+    // attiva», «batteria» — o «recenti», il giorno in cui togliere l'app dalle
+    // recenti la spegne. Solo sul telefono: sul PC la stessa domanda è la X
+    // che non chiude Rymembra, qui sotto.
+    ...(MOBILE ? [v("dispositivi", "daemon", "settings.devices.title")] : []),
     v("legacy", "legacy", "settings.legacy.title"),
     v("esterno", "link", "settings.import.title"),
     v("esterno", "account", "settings.import.title"),
