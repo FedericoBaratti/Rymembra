@@ -32,6 +32,8 @@ pub mod convalida;
 pub mod doppioni;
 #[cfg(test)]
 mod invarianti;
+#[cfg(test)]
+mod revisione;
 pub mod scelta;
 pub mod valutazioni;
 
