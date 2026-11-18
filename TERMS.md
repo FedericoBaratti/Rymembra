@@ -1,6 +1,6 @@
 # Rymembra terms of use
 
-Last updated: 12 November 2026.
+Last updated: 18 November 2026.
 
 Rymembra is a free program, distributed under the MIT license. This document is
 not the contract between you and me — that's `LICENSE`, and it says the program
@@ -179,15 +179,16 @@ allowed to do with the music, and Rymembra cannot give you that license.
 ## 3-quater. Your devices over the internet
 
 From this version a PC and a phone, or two PCs, that you link with a QR code
-can browse and play each other’s music away from home (`PRIVACY.md`
-§ 4-quinquies). Two things follow from that, and both are about the music:
+can show each other’s music in their own library and play it away from home
+(`PRIVACY.md` § 4-quinquies). Two things follow from that, and both are about
+the music:
 
 - **“Download here” makes a lasting copy.** A linked device can copy a track,
   or a whole album, from the other into its own download folder, where it
   stays. Between your own devices that is a copy for yourself. A device of
-  someone else’s that you link can do the same: it can browse your library,
-  play it and keep copies of your files, which is handing your music to that
-  person — something the music’s own terms may not allow. Link only devices
+  someone else’s that you link can do the same: it keeps a list of your
+  library in its own, plays your tracks and keeps copies of your files, which is
+  handing your music to that person — something the music’s own terms may not allow. Link only devices
   that are yours, or that belong to people you may share that music with.
 - **What is shared is your files.** A linked device sees only the tracks that
   are files in your local and network folders. That includes the files you
