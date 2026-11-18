@@ -147,6 +147,8 @@ export const BRANI: readonly Brano[] = Array.from({ length: 36 }, (_, i) => {
     fonte: i % 10 === 3 ? "archive" : null,
     fontePagina: null,
     licenza: i % 10 === 3 ? "CC BY 4.0" : null,
+    // L'artista del disco è quello del brano: nel mondo finto non ci sono raccolte.
+    albumArtist: artist,
   };
 });
 

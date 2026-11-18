@@ -1,21 +1,31 @@
 /**
- * La fascia in cima alla pagina: una notizia riuscita, o un guasto.
+ * La fascia in cima alla pagina: una notizia riuscita, un avviso, o un guasto.
  *
- * Due canali e non uno: «5 brani scritti» in rosso, col triangolo d'avviso,
+ * Tre canali e non uno: «5 brani scritti» in rosso, col triangolo d'avviso,
  * sembrava un'esportazione fallita. Il colore di una fascia è metà del suo
- * messaggio.
+ * messaggio. L'avviso è il terzo: niente è andato storto e niente è riuscito —
+ * «il PC non risponde» —, quindi non porta la spunta del successo né il rosso del
+ * guasto; la sua icona la sceglie chi lo manda.
  *
  * Sta in un componente suo perché la mostrano due posti — sopra la pagina, e
  * sopra lo schermo intero, che copre la pagina e la rende `inert` — e perché
  * lo Studio la disegna con una notizia finta, per chi ridipinge `toast-card`.
  */
-import { Icona } from "./Icone";
+import { Icona, type NomeIcona } from "./Icone";
 import { t } from "../lingue";
 import { Presenza } from "../presenza";
+
+/** Un avviso neutro: il testo e l'icona con cui si dice. */
+export interface AvvisoNeutro {
+  testo: string;
+  icona: NomeIcona;
+}
 
 export function Fascia({
   notizia,
   onChiudiNotizia,
+  avviso,
+  onChiudiAvviso,
   messaggio,
   dettaglio,
   onRiprova,
@@ -24,6 +34,9 @@ export function Fascia({
 }: {
   notizia: string | null;
   onChiudiNotizia: () => void;
+  /** Un avviso neutro: una cosa da sapere, che non è né un successo né un guasto. */
+  avviso?: AvvisoNeutro | null | undefined;
+  onChiudiAvviso?: (() => void) | undefined;
   /** Il guasto, già in parole. */
   messaggio: string | null;
   /** Quel che il servizio ha scritto con parole sue, se l'ha scritto. */
@@ -51,6 +64,25 @@ export function Fascia({
               className="tasto icon-btn"
               aria-label={t("common.close")}
               onClick={onChiudiNotizia}
+            >
+              <Icona nome="i-x" dim={14} />
+            </button>
+          </div>
+        </Presenza>
+      )}
+      {avviso != null && (
+        <Presenza parte="toast-card">
+          {/* La stessa forma della notizia — sta nello stesso posto e si chiude
+              allo stesso modo — senza la spunta: `data-tono` ne spegne l'accento
+              verde, e l'icona la porta chi avvisa. */}
+          <div className="notizia toast-card" data-tono="neutro">
+            <Icona nome={avviso.icona} dim={16} />
+            <span>{avviso.testo}</span>
+            <button
+              type="button"
+              className="tasto icon-btn"
+              aria-label={t("common.close")}
+              onClick={onChiudiAvviso}
             >
               <Icona nome="i-x" dim={14} />
             </button>

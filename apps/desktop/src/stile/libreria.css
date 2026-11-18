@@ -738,6 +738,15 @@
   min-width: 0;
   word-break: break-word;
 }
+/* Un avviso neutro (`parti/Fascia.tsx`, «il PC non risponde»): la forma della
+   notizia senza l'accento del successo — il bordo e l'icona nel colore del
+   testo secondario, che non dice né «fatto» né «guasto». */
+.notizia[data-tono='neutro'] {
+  border-color: var(--color-text-3);
+}
+.notizia[data-tono='neutro'] > svg {
+  color: var(--color-text-2);
+}
 
 /* L'«Annulla» della coda sostituita resta in vista a elenco scorso. Le altre
    notizie stanno in cima alla pagina e scorrono via con lei, e per loro va
@@ -1107,4 +1116,44 @@
 }
 .riga[data-spenta] .indice {
   cursor: default;
+}
+
+/* Le sezioni della pagina di un artista, sotto la griglia dei dischi
+   (`parti/SezioneArtista.tsx`): «Brani», «Compare anche in», «Forse compare
+   anche in». Ognuna è una regione col suo titolo e, a destra, quel che la
+   riguarda — l'ordinamento. Lo spazio sopra le separa dai dischi e fra loro. */
+.sezione-artista {
+  margin-top: var(--spazio-5);
+}
+.testa-sezione-artista {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--spazio-2) var(--spazio-3);
+  margin-bottom: var(--spazio-2);
+}
+.titolo-sezione-artista {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text-1);
+}
+.conto-sezione-artista {
+  font-size: 12.5px;
+  color: var(--color-text-2);
+}
+.azioni-sezione-artista {
+  display: flex;
+  align-items: center;
+  gap: var(--spazio-2);
+  margin-inline-start: auto;
+}
+.nota-sezione-artista {
+  margin: 0 0 var(--spazio-2);
+  max-width: 62ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-text-2);
+  text-wrap: pretty;
 }

@@ -727,7 +727,7 @@ mod prove {
                 year INTEGER, cover_art_hash TEXT, play_count INTEGER NOT NULL DEFAULT 0,
                 liked INTEGER NOT NULL DEFAULT 0, rating INTEGER NOT NULL DEFAULT 0,
                 genre TEXT, date_added INTEGER NOT NULL DEFAULT 0, last_played_at INTEGER,
-                source_service TEXT, fonte_pagina TEXT, licenza TEXT,
+                source_service TEXT, fonte_pagina TEXT, licenza TEXT, album_artist TEXT,
                 ordine_titolo TEXT, ordine_artista TEXT, ordine_album TEXT,
                 copia_di INTEGER)",
         )

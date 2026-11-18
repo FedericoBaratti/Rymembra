@@ -107,9 +107,10 @@ import { Icona } from "../parti/Icone";
 import { Scrubber } from "../parti/Scrubber";
 import { Spettro3D } from "../parti/Spettro3D";
 import { Testo } from "../parti/Testo";
+import { NomeArtista } from "../parti/NomeArtista";
 import { Trasporto } from "../parti/Trasporto";
 import { t } from "../lingue";
-import { nomeArtista, titoloAlbum } from "../formato";
+import { titoloAlbum } from "../formato";
 import { useDati } from "../dati";
 import { fuocoDiRitorno } from "../fuocoPagina";
 import { branoDaMostrare, gestoPermesso, idDiLibreria } from "../insieme";
@@ -139,6 +140,7 @@ export function InRiproduzione({
   onPreferito,
   onVoto,
   onErrore,
+  onArtista,
   avvisi,
   testoAperto = false,
 }: {
@@ -147,6 +149,11 @@ export function InRiproduzione({
   onPreferito: (brano: Brano) => void;
   onVoto: (brano: Brano, stelle: number) => void;
   onErrore: (e: unknown) => void;
+  /**
+   * Il nome dell'artista apre la sua pagina; Indietro torna qui. Assente — lo
+   * Studio, che disegna la schermata su una tela — il nome è testo.
+   */
+  onArtista?: ((brano: Brano) => void) | undefined;
   /**
    * Le notizie da mostrare sopra la schermata: «coda sostituita — Annulla»,
    * l'esito di un gesto, l'errore.
@@ -525,7 +532,7 @@ export function InRiproduzione({
                 {brano.title}
               </h1>
               <div className="np-meta">
-                <bdi>{nomeArtista(brano.artist)}</bdi> · <bdi>{titoloAlbum(brano.album)}</bdi>
+                <NomeArtista brano={brano} onApri={onArtista} /> · <bdi>{titoloAlbum(brano.album)}</bdi>
                 {brano.year ? ` · ${brano.year}` : ""}
               </div>
               {/* Sotto il sommario e non in un angolo: è la schermata che si

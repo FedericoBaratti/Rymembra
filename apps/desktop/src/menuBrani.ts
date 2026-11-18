@@ -156,6 +156,20 @@ export function vociBrani(
    * servizio, che è la risposta alla stessa domanda («dov'è questo?»).
    */
   const delPrimo = primo === undefined ? undefined : inMano(primo);
+  /*
+   * Fra i brani scelti ce n'è uno di un altro dispositivo (una riga della libreria
+   * unica, `lontano://`): il suo file non sta qui. Le voci che lo toccano — la
+   * cartella, «Togli dalla libreria», «Elimina dal disco» — il nucleo le rifiuta
+   * con `lontano.nonQui`, e rifiuta il gesto **intero** se una riga sola è
+   * dell'altro dispositivo: accesa, la voce sarebbe un errore sicuro. Un brano che
+   * l'elenco non ha non si sa di che dispositivo sia, e conta come di qui, come
+   * per il cloud e lo streaming qui sotto. «Modifica i tag» e «Rileggi i tag» non
+   * sono voci di questo menù (i tag si rileggono tutti da Impostazioni, e quella
+   * scansione non prende le righe specchio: `rileggi_tutti_i_tag`).
+   */
+  const conUnoDiUnAltroDispositivo = brani.some(
+    (id) => dispositivoDellaRiga(inMano(id)?.path) !== null,
+  );
   const servizioDelPrimo = eNuvola(delPrimo?.path) ? nomeServizioDi(delPrimo?.path) : null;
   /*
    * Le tre voci che su un brano solo mancavano: portarsi al suo disco, al
@@ -189,7 +203,7 @@ export function vociBrani(
               ]
             : // Sul telefono una cartella da mostrare non c'è: il gestore file di
               // Android non si apre su un file scelto da un'altra app.
-              delPrimo?.fonte == null && !MOBILE
+              delPrimo?.fonte == null && !MOBILE && !conUnoDiUnAltroDispositivo
               ? [
                   {
                     etichetta: t("menu.showInFolder"), icona: "i-folder" as const,
@@ -312,8 +326,10 @@ export function vociBrani(
      * c'è annulla da offrire. Dove un annulla c'è, come per la coda
      * sostituita, si offre quello e non si chiede niente.
      */
-    { etichetta: t("menu.removeFromLibrary"), icona: "i-x" as const, azione: () => fai.togli(brani) },
-    ...(soloStreaming
+    ...(conUnoDiUnAltroDispositivo
+      ? []
+      : [{ etichetta: t("menu.removeFromLibrary"), icona: "i-x" as const, azione: () => fai.togli(brani) }]),
+    ...(soloStreaming || conUnoDiUnAltroDispositivo
       ? []
       : soloNuvola
         ? [

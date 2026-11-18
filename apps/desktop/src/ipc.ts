@@ -24,7 +24,7 @@ import type {
   StatoLontano,
   ScaricoLontano,
 } from "./ipc/lontano";
-import type { Numeri, OrigineLibreria, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
+import type { ContoPartecipazioni, Numeri, OrdineArtista, OrigineLibreria, SpecieDiPartecipazione, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
@@ -386,6 +386,26 @@ export const ipc = {
   // dava una pagina vuota agli artisti che stavano oltre.
   albumArtista: (nome: string, offset: number, limite: number, origine?: OrigineLibreria) =>
     invoke<Album[]>("album_artista", { nome, offset, limite, origine }),
+  // I brani di un artista — anche quelli senza disco — per la sezione «Brani»
+  // della sua pagina, e quanti sono e dove: l'ordine è un nome chiuso.
+  braniArtista: (
+    nome: string,
+    ordine: OrdineArtista,
+    offset: number,
+    limite: number,
+    origine?: OrigineLibreria,
+  ) => invoke<Brano[]>("brani_artista", { nome, ordine, offset, limite, origine }),
+  // «Compare anche in»: i brani in cui compare senza esserne l'artista. Le due
+  // specie sono due elenchi, e il loro conto si chiede prima delle righe.
+  partecipazioni: (
+    nome: string,
+    specie: SpecieDiPartecipazione,
+    offset: number,
+    limite: number,
+    origine?: OrigineLibreria,
+  ) => invoke<Brano[]>("partecipazioni", { nome, tipo: specie, offset, limite, origine }),
+  partecipazioniConta: (nome: string, origine?: OrigineLibreria) =>
+    invoke<ContoPartecipazioni>("partecipazioni_conta", { nome, origine }),
   // Senza offset né limite: gli artisti sono pochi e la vista li mostra tutti
   // con un indice alfabetico invece che a pagine.
   artisti: (origine?: OrigineLibreria) =>

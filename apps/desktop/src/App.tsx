@@ -76,6 +76,13 @@ import {
   rileggereDopo,
 } from "./lontano";
 import { useArtisti } from "./artisti";
+import {
+  ORDINI_ARTISTA,
+  artistaEffettivo,
+  tornaAInRiproduzione,
+  trovaArtista,
+  tutteLePagine,
+} from "./artista";
 import { useAspetto } from "./aspettoFinestra";
 import { useCartelleSorvegliate } from "./cartelleSorvegliate";
 import { useCasa } from "./casa";
@@ -130,6 +137,8 @@ import {
   type Album,
   type Artista,
   type Brano,
+  type ContoPartecipazioni,
+  type OrdineArtista,
   type AvanzamentoSpecchio,
   type OrigineLibreria,
   type Cancellazione,
@@ -166,13 +175,14 @@ import { LibreriaDiPrima } from "./parti/LibreriaDiPrima";
 import { NovitaAllAvvio } from "./parti/Novita";
 import { PropostaSottofondo } from "./parti/PropostaSottofondo";
 import { AvvisoConti } from "./parti/AvvisoConti";
-import { Fascia } from "./parti/Fascia";
+import { Fascia, type AvvisoNeutro } from "./parti/Fascia";
 import { Icona } from "./parti/Icone";
 import { ConImportazioni } from "./parti/Importazioni";
 import { AvvisiInsieme, InsiemeInApp, InvitiInsieme, apriFinestra } from "./parti/Insieme";
 import { LontanoInApp } from "./parti/Dispositivi";
 import { Intestazione } from "./parti/Intestazione";
 import { BarraAlta, TastoBarra } from "./parti/BarraAlta";
+import { SezioneArtista } from "./parti/SezioneArtista";
 import { TestataDettaglio } from "./parti/TestataDettaglio";
 import { mescolato } from "./mescolato";
 import { dispositivoDellaRiga } from "./ipc/libreria";
@@ -187,13 +197,16 @@ import {
   TUTTI,
   chiaviDiLibreria,
   eFiltrabile,
+  origineCheContiene,
   origineConChiavi,
   origineDi,
+  ugualiOrigini,
   perIlNucleo,
   primoSpento,
   statoDellaRiga,
   suonabili,
   vistaPerIlFiltro,
+  type StatoDellaRiga,
 } from "./origine";
 import type { Vista } from "./parti/Navigazione";
 import { PilaToast } from "./parti/PilaToast";
@@ -209,7 +222,7 @@ import {
   useStatoPresente,
 } from "./presenza";
 import { Primo } from "./Primo";
-import { elencoPieno, type ArchivioRado, type Elenco } from "./rada";
+import { MISURA_PAGINA, elencoPieno, type ArchivioRado, type Elenco } from "./rada";
 import { fasciaDaRitirare, quandoRispondonoLeRadici } from "./radiciVive";
 import { RecintoErrori } from "./Recinto";
 import { indietro, indietroSulComputer } from "./indietro";
@@ -335,6 +348,13 @@ const NESSUN_BRANO: Brano[] = [];
 const NESSUNA_SCELTA: ReadonlySet<number> = new Set();
 
 /**
+ * Il gesto di selezione che non fa niente, per gli elenchi in cui non si sceglie:
+ * le partecipazioni di un artista, sotto i suoi brani. Un'identità sola, perché
+ * le righe di un elenco la ricevono come prop.
+ */
+const senzaSelezione = (): void => undefined;
+
+/**
  * Quanto si aspetta il secondo evento di una raffica prima di rileggere la
  * libreria: vedi `ricaricaAccorpata`.
  *
@@ -433,6 +453,18 @@ export function App() {
    * più economico di dire la cosa opposta.
    */
   const [notizia, setNotizia] = useStatoPresente<string | null>(null);
+  /**
+   * Un avviso neutro: una cosa da sapere che non è né un successo né un guasto —
+   * un dispositivo che non risponde. Un canale suo, con la sua icona: nella
+   * notizia sarebbe comparso con la spunta del successo, e nella fascia rossa
+   * sarebbe sembrato un errore. Si legge e se ne va, come la notizia.
+   */
+  const [avviso, setAvviso] = useStatoPresente<AvvisoNeutro | null>(null);
+  useEffect(() => {
+    if (avviso === null) return;
+    const conto = window.setTimeout(() => setAvviso(null), 8_000);
+    return () => window.clearTimeout(conto);
+  }, [avviso]);
   /*
    * E se ne va da sola. Restava a schermo finché qualcuno non premeva la X —
    * cioè, per chi non la premeva, per sempre, in cima a ogni pagina, a dire
@@ -498,6 +530,13 @@ export function App() {
   /** L'album la cui copertina vola verso la sua pagina: vedi `presenza.tsx`. */
   const [inVolo, setInVolo] = useState<string | null>(null);
   const [artistaAperto, setArtistaAperto] = useState<Artista | null>(null);
+  /**
+   * L'artista aperto dal nome in «In riproduzione», se è lui quello aperto:
+   * chiudere la sua pagina riapre «In riproduzione» (`tornaAInRiproduzione`).
+   * Un nome e non un segno: aperta un'altra pagina, o un altro artista, non
+   * corrisponde più e Indietro è quello di sempre.
+   */
+  const [artistaDaInRiproduzione, setArtistaDaInRiproduzione] = useState<string | null>(null);
   /**
    * Da dove si guarda la libreria: il filtro per dispositivo («Tutti», «Questo
    * dispositivo», un dispositivo collegato). Vedi `origine.ts`.
@@ -1002,6 +1041,99 @@ export function App() {
     onErrore: segnalaErrore,
   });
 
+  /*
+   * ── la pagina di un artista, sotto gli album ───────────────────────────────
+   *
+   * Tre elenchi, ciascuno una lista rada: i suoi **brani** — tutti, anche quelli
+   * senza disco —, e le sue partecipazioni in due specie che non si confondono
+   * mai: `esatte` (il suo nome in un disco di altri: le raccolte) ed
+   * `euristiche` (il suo nome fra i crediti di un brano di un altro: i «feat.»,
+   * una ricerca che può sbagliare e la pagina lo dice). Le chiavi portano il
+   * nome e il filtro: un altro artista, o un altro dispositivo, è un altro elenco.
+   */
+  const [ordineArtista, setOrdineArtista] = useState<OrdineArtista>("album");
+  const nomeAperto = artistaAperto?.name ?? "";
+  const chiaveArtista = `${nomeAperto}:${chiaveOrigine}`;
+  /** Quante partecipazioni, e di quale artista e filtro: un conto vecchio non vale. */
+  const [conteggioPartecipazioni, setConteggioPartecipazioni] = useState<{
+    chiave: string;
+    conto: ContoPartecipazioni;
+  } | null>(null);
+  const partecipazioni: ContoPartecipazioni =
+    conteggioPartecipazioni?.chiave === chiaveArtista
+      ? conteggioPartecipazioni.conto
+      : { esatte: 0, euristiche: 0 };
+  const radaBraniArtista = useRada<Brano>({
+    chiave: `brani-artista:${chiaveArtista}:${ordineArtista}`,
+    totale: artistaAperto?.tracks ?? 0,
+    chiedi: (offset, limite) =>
+      nomeAperto === ""
+        ? Promise.resolve([])
+        : ipc.braniArtista(nomeAperto, ordineArtista, offset, limite, origineIpc),
+    onErrore: segnalaErrore,
+  });
+  const radaEsatte = useRada<Brano>({
+    chiave: `compare-anche-in:${chiaveArtista}`,
+    totale: partecipazioni.esatte,
+    chiedi: (offset, limite) =>
+      nomeAperto === ""
+        ? Promise.resolve([])
+        : ipc.partecipazioni(nomeAperto, "esatte", offset, limite, origineIpc),
+    onErrore: segnalaErrore,
+  });
+  const radaEuristiche = useRada<Brano>({
+    chiave: `forse-anche-in:${chiaveArtista}`,
+    totale: partecipazioni.euristiche,
+    chiedi: (offset, limite) =>
+      nomeAperto === ""
+        ? Promise.resolve([])
+        : ipc.partecipazioni(nomeAperto, "euristiche", offset, limite, origineIpc),
+    onErrore: segnalaErrore,
+  });
+  /** Rilegge l'artista aperto e le sue partecipazioni: cresce a ogni rilettura della libreria. */
+  const [giroArtista, setGiroArtista] = useState(0);
+  /**
+   * L'artista aperto, riletto col filtro di adesso.
+   *
+   * I suoi numeri — `albums` e `tracks` — sono la lunghezza delle due liste rade
+   * qui sopra, e vengono dalla griglia degli artisti **come era col filtro di
+   * allora**. Passando da «Questo dispositivo» a «Tutti» una lista rimaneva corta,
+   * e una pagina «che si corregge da sé alla prima pagina più corta» si corregge
+   * solo in un verso. Un artista che col filtro nuovo non ha niente resta aperto
+   * con zero: la pagina lo dice, invece di sparire sotto le dita.
+   *
+   * Letto anche da una libreria che cambia (`giroArtista`): un brano tolto, una
+   * scansione finita.
+   */
+  useEffect(() => {
+    if (nomeAperto === "") return;
+    let superata = false;
+    Promise.all([ipc.artisti(origineIpc), ipc.partecipazioniConta(nomeAperto, origineIpc)])
+      .then(([elenco, conto]) => {
+        if (superata) return;
+        setConteggioPartecipazioni({ chiave: chiaveArtista, conto });
+        const suo = elenco.find((a) => a.name === nomeAperto);
+        setArtistaAperto((prima) => {
+          if (prima === null || prima.name !== nomeAperto) return prima;
+          const adesso = suo ?? { ...prima, albums: 0, tracks: 0, covers: [] };
+          return adesso.albums === prima.albums &&
+            adesso.tracks === prima.tracks &&
+            adesso.covers.join() === prima.covers.join()
+            ? prima
+            : adesso;
+        });
+      })
+      .catch((e: unknown) => {
+        if (!superata) segnalaErrore(e);
+      });
+    return () => {
+      superata = true;
+    };
+    // `origineIpc` e `segnalaErrore` non servono come dipendenze: il filtro è nella
+    // chiave, e l'errore si dice con quel che c'è.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nomeAperto, chiaveArtista, giroArtista]);
+
   /**
    * Gli artisti della vista Artisti, tenuti finché la libreria non cambia:
    * vedi `artisti.ts`.
@@ -1057,7 +1189,12 @@ export function App() {
     radaBrani.invalida();
     radaPreferiti.invalida();
     radaRicerca.invalida();
-  }, [radaBrani, radaPreferiti, radaRicerca]);
+    // E i tre elenchi della pagina di un artista, che restano montati sotto di
+    // lei. I loro totali si rileggono con `ricaricaContorno` (`giroArtista`).
+    radaBraniArtista.invalida();
+    radaEsatte.invalida();
+    radaEuristiche.invalida();
+  }, [radaBrani, radaPreferiti, radaRicerca, radaBraniArtista, radaEsatte, radaEuristiche]);
   const ricaricaAlbum = useCallback(() => {
     radaAlbum.invalida();
     radaAlbumArtista.invalida();
@@ -1073,8 +1210,11 @@ export function App() {
       radaBrani.aggiorna(f);
       radaPreferiti.aggiorna(f);
       radaRicerca.aggiorna(f);
+      radaBraniArtista.aggiorna(f);
+      radaEsatte.aggiorna(f);
+      radaEuristiche.aggiorna(f);
     },
-    [radaBrani, radaPreferiti, radaRicerca],
+    [radaBrani, radaPreferiti, radaRicerca, radaBraniArtista, radaEsatte, radaEuristiche],
   );
 
   /**
@@ -1091,6 +1231,9 @@ export function App() {
    */
   const ricaricaContorno = useCallback(() => {
     ricaricaAlbum();
+    // L'artista aperto: i suoi numeri sono la lunghezza dei suoi elenchi, e un
+    // brano che se ne va li cambia (`giroArtista`).
+    setGiroArtista((giro) => giro + 1);
     // Gli artisti si rileggono subito se la vista è aperta, entrandoci se no.
     invalidaArtisti();
     // La Home dopo una scansione o dei brani scaricati: i suoi ripiani sono
@@ -1267,6 +1410,9 @@ export function App() {
     cambiandoVista(() => {
       setAperto(null);
       setArtistaAperto(null);
+      // Andare altrove è un'altra strada: la pagina dell'artista non c'è più, e
+      // con lei il ritorno a «In riproduzione».
+      setArtistaDaInRiproduzione(null);
       setPlaylistAperta(null);
       setVista(dove);
     });
@@ -1583,13 +1729,26 @@ export function App() {
     cambiandoVista(() => setAperto(quale));
   }, []);
 
-  const apriArtista = useCallback((quale: Artista | null) => {
-    fuocoDopo.current =
-      quale !== null
-        ? { verso: "testata", daChi: daChi(), livello: daChiArtista }
-        : { verso: "ritorno", livello: daChiArtista };
+  /**
+   * Apre un artista, o chiude la sua pagina se è `null`.
+   *
+   * Chiudere la pagina aperta dal nome in «In riproduzione» riapre «In
+   * riproduzione» (`tornaAInRiproduzione`): Indietro torna da dove si è partiti.
+   * Il fuoco allora lo prende lei, come ogni volta che si apre, e non la scheda
+   * dell'artista di una griglia che non si è toccata.
+   */
+  const apriArtista = useStabile((quale: Artista | null) => {
+    const torna = quale === null && tornaAInRiproduzione(artistaDaInRiproduzione, artistaAperto);
+    if (!torna) {
+      fuocoDopo.current =
+        quale !== null
+          ? { verso: "testata", daChi: daChi(), livello: daChiArtista }
+          : { verso: "ritorno", livello: daChiArtista };
+    }
+    setArtistaDaInRiproduzione(null);
+    if (torna) setGrande(true);
     cambiandoVista(() => setArtistaAperto(quale));
-  }, []);
+  });
 
   /**
    * Il primo avvio: scrive le cartelle scelte e comincia subito a leggere.
@@ -1829,15 +1988,23 @@ export function App() {
    */
   /**
    * «<PC> non raggiungibile»: un tocco su una riga grigia, o una lista fatta solo
-   * di righe grige. Una notizia e non un errore: niente è andato storto, il
+   * di righe grige. Un avviso neutro e non un errore: niente è andato storto, il
    * dispositivo è spento — e la fascia rossa si è già vista abbastanza per dire
-   * di un guasto.
+   * di un guasto. Né una notizia: quella porta la spunta del successo, e un tocco
+   * che non ha suonato niente non è riuscito. L'icona è quella del dispositivo.
+   * `null`: la riga è di un dispositivo che non c'è più.
    */
   const avvisaNonRaggiungibile = useCallback(
-    (nome: string) => {
-      setNotizia(nome === "" ? t("library.origin.gone") : t("library.origin.offline", { nome }));
+    (riga: Pick<StatoDellaRiga, "nome" | "telefono"> | null) => {
+      setAvviso({
+        testo:
+          riga === null || riga.nome === ""
+            ? t("library.origin.gone")
+            : t("library.origin.offline", { nome: riga.nome }),
+        icona: riga?.telefono === true ? "i-telefono" : "i-computer",
+      });
     },
-    [setNotizia],
+    [setAvviso],
   );
 
   /**
@@ -1857,14 +2024,14 @@ export function App() {
       if (daUnaRiga && toccata !== undefined) {
         const riga = statoDellaRiga(toccata.path, pannello);
         if (riga?.spenta === true) {
-          avvisaNonRaggiungibile(riga.nome);
+          avvisaNonRaggiungibile(riga);
           return;
         }
       }
       const { brani, indice: da } = suonabili(elenco, indice, pannello);
       if (brani.length === 0) {
         const spento = primoSpento(elenco, pannello);
-        if (spento !== null) avvisaNonRaggiungibile(spento.nome);
+        if (spento !== null) avvisaNonRaggiungibile(spento);
         return;
       }
       const ids = brani.map((b) => b.id);
@@ -1890,7 +2057,7 @@ export function App() {
       }
       const accesi = lontani.filter((b) => statoDellaRiga(b.path, pannello)?.spenta !== true);
       if (accesi.length === 0) {
-        avvisaNonRaggiungibile(primoSpento(lontani, pannello)?.nome ?? "");
+        avvisaNonRaggiungibile(primoSpento(lontani, pannello));
         return;
       }
       await conIlSiDeiDatiMobili(async () => {
@@ -1932,25 +2099,56 @@ export function App() {
   );
 
   /**
-   * Tutti i brani di un artista, per la sua testata sul telefono.
+   * I brani di un artista — **suoi**, tutti, anche quelli senza disco — nell'ordine
+   * in cui la pagina li mostra.
    *
-   * Un comando che li dia in una volta non c'è: ci sono i suoi dischi
-   * (`albumArtista`, lo stesso elenco della griglia sotto) e i brani di
-   * ciascuno. I dischi in ordine, i brani nell'ordine del disco: «Riproduci» su
-   * un artista è la sua discografia dall'inizio.
+   * Prima si prendevano i suoi dischi e i brani di ciascuno: una raccolta in cui
+   * compare entrava intera, con i brani di chiunque, e i brani senza disco non
+   * entravano mai. Adesso è la stessa query della sezione «Brani»
+   * (`braniArtista`), pagina dopo pagina: stessi brani, stesso ordine, stesso
+   * filtro per dispositivo. Serve a `suonaArtista` e a «Scarica qui».
+   */
+  const braniDellArtista = useCallback(
+    (nome: string) =>
+      tutteLePagine(
+        (offset, limite) => ipc.braniArtista(nome, ordineArtista, offset, limite, origineIpc),
+        MISURA_PAGINA,
+      ),
+    [ordineArtista, origineIpc],
+  );
+
+  /**
+   * «Riproduci» e «Casuale» dell'artista: i suoi brani, dal primo o in ordine
+   * sparso. Una riga di un dispositivo che non risponde si salta come negli altri
+   * elenchi (`suonaDa`).
    */
   const suonaArtista = useCallback(
     async (nome: string, casuale: boolean) => {
       try {
-        const dischi = await ipc.albumArtista(nome, 0, 1000, origineIpc);
-        const tracce = (await Promise.all(dischi.map((d) => ipc.braniAlbum(d.albumKey)))).flat();
+        const tracce = await braniDellArtista(nome);
         if (tracce.length === 0) return;
         await suonaDa(casuale ? mescolato(tracce) : tracce, 0, false);
       } catch (e) {
         segnalaErrore(e);
       }
     },
-    [suonaDa, segnalaErrore, origineIpc],
+    [suonaDa, segnalaErrore, braniDellArtista],
+  );
+
+  /**
+   * «Scarica qui» sull'artista: i suoi brani che stanno su altri dispositivi.
+   * `scaricaQui` lascia fuori quelli di qui, e un dispositivo spento lo dice
+   * senza provarci.
+   */
+  const scaricaArtista = useCallback(
+    async (nome: string) => {
+      try {
+        await scaricaQui(await braniDellArtista(nome));
+      } catch (e) {
+        segnalaErrore(e);
+      }
+    },
+    [scaricaQui, segnalaErrore, braniDellArtista],
   );
 
   /** Le playlist all'apertura. Vince l'ultima, come `ricarica`: vedi `libreria.ts`. */
@@ -1992,6 +2190,66 @@ export function App() {
    * cartella» offerta su un brano che una cartella non ce l'ha.
    */
   const elencoCorrenteRef = useRef<Elenco<Brano>>(elencoPieno(NESSUN_BRANO));
+
+  /**
+   * Apre la pagina dell'artista di un brano: il nome in «In riproduzione» e
+   * «Vai all'artista» del menù.
+   *
+   * # Quale artista
+   *
+   * Il **effettivo** (`artistaEffettivo`): quello del disco se c'è. Su un brano
+   * di una raccolta l'interprete è «Tale» e la pagina che la griglia ha è «Vari
+   * artisti». Un brano senza artista non ha una pagina, e lo dice.
+   *
+   * # Con quale filtro
+   *
+   * Quello di adesso se contiene la riga, «Tutti» se no (`origineCheContiene`):
+   * l'artista di un brano del PC, con «Questo dispositivo» acceso, sarebbe una
+   * pagina vuota. E la griglia degli artisti si legge sotto il filtro **nuovo**.
+   *
+   * # E Indietro
+   *
+   * Se «In riproduzione» è aperta — il gesto parte da lei, dal nome o dal suo
+   * menù — si chiude per far vedere la pagina, e chiudere la pagina la riapre:
+   * Indietro torna da dove si è partiti. Sul computer la schermata a tutto schermo
+   * copre la pagina, e prima il gesto aperto da lì non si vedeva.
+   *
+   * Un artista che la griglia non ha — un nome scritto in un modo solo in quel
+   * brano — si cerca per nome, invece di non fare niente.
+   */
+  const apriArtistaDelBrano = useStabile(async (brano: Brano) => {
+    const nome = artistaEffettivo(brano);
+    if (nome === "") {
+      setAvviso({ testo: t("artist.none"), icona: "i-artist" });
+      return;
+    }
+    const nuova = origineCheContiene(origine, brano.path);
+    const stessa = ugualiOrigini(nuova, origine);
+    const tutti = stessa && artisti.length > 0 ? artisti : await ipc.artisti(perIlNucleo(nuova));
+    const suo = trovaArtista(tutti, nome);
+    const daInRiproduzione = grande;
+    if (daInRiproduzione) setGrande(false);
+    if (!stessa) setOrigine(nuova);
+    if (suo === undefined) {
+      setQuery(nome);
+      return;
+    }
+    setQuery("");
+    setArtistaDaInRiproduzione(daInRiproduzione ? suo.name : null);
+    fuocoDopo.current = { verso: "testata", daChi: null, livello: daChiArtista };
+    cambiandoVista(() => {
+      setPlaylistAperta(null);
+      setAperto(null);
+      setArtistaAperto(suo);
+    });
+  });
+  /** Il nome dell'artista in «In riproduzione»: apre la sua pagina, e un guasto si dice. */
+  const apriArtistaDalNome = useCallback(
+    (brano: Brano) => {
+      apriArtistaDelBrano(brano).catch(segnalaErrore);
+    },
+    [apriArtistaDelBrano, segnalaErrore],
+  );
 
   /**
    * Apre il menù contestuale su una selezione di brani.
@@ -2097,28 +2355,9 @@ export function App() {
             });
           });
         }),
-        vaiAllArtista: conBrano(async (brano) => {
-          if (MOBILE) setGrande(false);
-          const tutti = artisti.length > 0 ? artisti : await ipc.artisti();
-          const piegato = brano.artist.toLocaleLowerCase();
-          const suo =
-            tutti.find((a) => a.name === brano.artist) ??
-            tutti.find((a) => a.name.toLocaleLowerCase() === piegato);
-          // Un artista che la griglia non ha — una collaborazione
-          // scritta in un modo solo in quel brano — si cerca per nome
-          // invece di non fare niente.
-          if (suo === undefined) {
-            setQuery(brano.artist);
-            return;
-          }
-          setQuery("");
-          fuocoDopo.current = { verso: "testata", daChi: null, livello: daChiArtista };
-          cambiandoVista(() => {
-            setPlaylistAperta(null);
-            setAperto(null);
-            setArtistaAperto(suo);
-          });
-        }),
+        // Il brano si rilegge, come per il disco: la scheda porta anche l'artista
+        // del disco, e la pagina è quella dell'artista effettivo.
+        vaiAllArtista: conBrano((brano) => apriArtistaDelBrano(brano)),
         mostraNellaCartella: (id) => {
           ipc.branoMostraNellaCartella(id).catch(segnalaErrore);
         },
@@ -2169,7 +2408,7 @@ export function App() {
         ),
       });
     },
-    [segnalaErrore, artisti, riproduzione.archivio, scaricaQui],
+    [segnalaErrore, apriArtistaDelBrano, riproduzione.archivio, scaricaQui],
   );
 
   /** Il menù di una playlist nella barra di navigazione: vedi `vociPlaylist`. */
@@ -2377,22 +2616,29 @@ export function App() {
   const radaCorrente: ArchivioRado<Brano> | null =
     pagina.tipo === "ricerca"
       ? radaRicerca
-      : pagina.tipo === "libreria" && pagina.vista === "brani"
-        ? radaBrani
-        : pagina.tipo === "libreria" && pagina.vista === "preferiti"
-          ? radaPreferiti
-          : null;
+      : // La pagina di un artista: la sezione «Brani» è l'elenco su cui agiscono
+        // selezione e riproduzione. Le partecipazioni, sotto, hanno il loro.
+        pagina.tipo === "artista"
+        ? radaBraniArtista
+        : pagina.tipo === "libreria" && pagina.vista === "brani"
+          ? radaBrani
+          : pagina.tipo === "libreria" && pagina.vista === "preferiti"
+            ? radaPreferiti
+            : null;
   const tipoVista = radaCorrente === null ? null : pagina.tipo === "ricerca" ? "ricerca" : vista;
+  const nomeArtistaCorrente = pagina.tipo === "artista" ? pagina.artista.name : null;
   const vistaBraniCorrente: VistaBrani | null = useMemo(
     () =>
-      tipoVista === "ricerca"
-        ? { tipo: "ricerca", query: queryPigra }
-        : tipoVista === "brani"
-          ? { tipo: "brani", ordine }
-          : tipoVista === "preferiti"
-            ? { tipo: "preferiti" }
-            : null,
-    [tipoVista, queryPigra, ordine],
+      nomeArtistaCorrente !== null
+        ? { tipo: "artista", nome: nomeArtistaCorrente, ordine: ordineArtista }
+        : tipoVista === "ricerca"
+          ? { tipo: "ricerca", query: queryPigra }
+          : tipoVista === "brani"
+            ? { tipo: "brani", ordine }
+            : tipoVista === "preferiti"
+              ? { tipo: "preferiti" }
+              : null,
+    [nomeArtistaCorrente, ordineArtista, tipoVista, queryPigra, ordine],
   );
   /** Le righe della pagina, quando arrivano intere. */
   const braniPieni: Brano[] =
@@ -2431,7 +2677,13 @@ export function App() {
     rada: radaCorrente,
     pieni: braniPieni,
     vistaBrani: vistaBraniCorrente,
-    chiave: chiaveDellaSelezione(pagina, vistaTenuta, ordine, query),
+    chiave: chiaveDellaSelezione(
+      pagina,
+      vistaTenuta,
+      // Di un artista, l'ordinamento dei suoi brani e il filtro: vedi `selezione.ts`.
+      pagina.tipo === "artista" ? `${ordineArtista}:${chiaveOrigine}` : ordine,
+      query,
+    ),
     // Sul telefono la selezione finisce cambiando vista, come in ogni app di
     // Android: tenerla da parte e ritrovarla tornando lì vorrebbe dire una
     // barra di selezione che ricompare da sola, su righe scelte un'ora prima.
@@ -2601,21 +2853,17 @@ export function App() {
    * essere cambiata, e fra due risultati pari della ricerca l'ordine non è
    * promesso.
    */
-  const suonaQui = useCallback(
-    (indice: number) => {
-      if (radaCorrente === null || vistaBraniCorrente === null) {
-        void suonaDa(braniPieni, indice).catch(segnalaErrore);
-        return;
-      }
-      const premuto = radaCorrente.riga(indice);
+  const suonaDaUnaLista = useCallback(
+    (rada: ArchivioRado<Brano>, vista: VistaBrani, indice: number) => {
+      const premuto = rada.riga(indice);
       // Una riga grigia non suona: lo dice, come negli elenchi interi.
       const grigia = statoDellaRiga(premuto?.path, archivioLontano.leggi());
       if (grigia?.spenta === true) {
-        avvisaNonRaggiungibile(grigia.nome);
+        avvisaNonRaggiungibile(grigia);
         return;
       }
       ipc
-        .vistaBraniId(vistaBraniCorrente, origineIpc)
+        .vistaBraniId(vista, origineIpc)
         .then((ids) => {
           const dove =
             premuto !== undefined && ids[indice] !== premuto.id
@@ -2627,15 +2875,78 @@ export function App() {
         })
         .catch(segnalaErrore);
     },
-    [
-      suonaDa,
-      braniPieni,
-      radaCorrente,
-      vistaBraniCorrente,
-      segnalaErrore,
-      avvisaNonRaggiungibile,
-      origineIpc,
-    ],
+    [segnalaErrore, avvisaNonRaggiungibile, origineIpc],
+  );
+  const suonaQui = useCallback(
+    (indice: number) => {
+      if (radaCorrente === null || vistaBraniCorrente === null) {
+        void suonaDa(braniPieni, indice).catch(segnalaErrore);
+        return;
+      }
+      suonaDaUnaLista(radaCorrente, vistaBraniCorrente, indice);
+    },
+    [suonaDa, braniPieni, radaCorrente, vistaBraniCorrente, segnalaErrore, suonaDaUnaLista],
+  );
+
+  /*
+   * Le righe di «Compare anche in»: elenchi **loro**, non quello su cui agiscono
+   * selezione e riproduzione (`radaCorrente`, che nella pagina di un artista è
+   * «Brani»). Un tocco suona la loro lista dalla riga premuta, e il menù trova i
+   * brani nella loro lista rada: con quelli di «Brani» le posizioni andrebbero a
+   * un'altra riga, e il menù — che non ne vedrebbe il percorso — non toglierebbe le
+   * voci che toccano il file. Senza selezione: scegliere righe di più elenchi
+   * insieme non vuol dire niente.
+   */
+  const suonaEsatte = useCallback(
+    (indice: number) =>
+      suonaDaUnaLista(radaEsatte, { tipo: "partecipazioni", nome: nomeAperto, specie: "esatte" }, indice),
+    [suonaDaUnaLista, radaEsatte, nomeAperto],
+  );
+  const suonaEuristiche = useCallback(
+    (indice: number) =>
+      suonaDaUnaLista(
+        radaEuristiche,
+        { tipo: "partecipazioni", nome: nomeAperto, specie: "euristiche" },
+        indice,
+      ),
+    [suonaDaUnaLista, radaEuristiche, nomeAperto],
+  );
+  const menuEsatte = useCallback(
+    (e: React.MouseEvent, ids: number[]) =>
+      apriMenu(e, ids, (id) => radaEsatte.cerca((b) => b.id === id)),
+    [apriMenu, radaEsatte],
+  );
+  const menuEuristiche = useCallback(
+    (e: React.MouseEvent, ids: number[]) =>
+      apriMenu(e, ids, (id) => radaEuristiche.cerca((b) => b.id === id)),
+    [apriMenu, radaEuristiche],
+  );
+
+  /** I quattro ordinamenti dei brani di un artista, col loro nome. */
+  const etichettaOrdineArtista = (o: OrdineArtista) =>
+    o === "album"
+      ? t("artist.sort.album")
+      : o === "anno"
+        ? t("artist.sort.year")
+        : o === "titolo"
+          ? t("artist.sort.title")
+          : t("artist.sort.played");
+  /** Il menù dell'ordinamento della sezione «Brani»: le quattro voci, dove sta il bottone. */
+  const menuOrdineArtista = useCallback(
+    (e: React.MouseEvent) => {
+      const riquadro = e.currentTarget.getBoundingClientRect();
+      setMenu({
+        x: riquadro.left,
+        y: riquadro.bottom + 4,
+        testata: { titolo: t("sort.heading") },
+        voci: ORDINI_ARTISTA.map((chiave) => ({
+          etichetta: etichettaOrdineArtista(chiave),
+          azione: () => setOrdineArtista(chiave),
+          scelta: chiave === ordineArtista,
+        })),
+      });
+    },
+    [ordineArtista],
   );
 
   /**
@@ -2834,8 +3145,9 @@ export function App() {
           return true;
         }
         if (artistaAperto) {
-          fuocoDopo.current = { verso: "ritorno", livello: daChiArtista };
-          setArtistaAperto(null);
+          // Dalla stessa strada del tasto della pagina: se l'ha aperta il nome di
+          // «In riproduzione», Escape e Indietro tornano lì.
+          apriArtista(null);
           tornaAllaRicerca();
           return true;
         }
@@ -3486,6 +3798,8 @@ export function App() {
               brani: brani_(pagina.artista.tracks),
               album: t("artists.albums", { n: pagina.artista.albums }),
             })}
+            // Il filtro per dispositivo, come in Libreria: vale anche qui.
+            sotto={<PilloleOrigine origine={origine} onOrigine={setOrigine} />}
           />
         );
     }
@@ -3676,10 +3990,12 @@ export function App() {
       );
     }
     if (pagina.tipo === "artista") {
+      const nome = pagina.artista.name;
+      const nonSuonabile = pagina.artista.tracks === 0 || !riproduzione.disponibile;
       return (
         <Intestazione
           occhiello={t("page.artist")}
-          titolo={nomeArtista(pagina.artista.name)}
+          titolo={nomeArtista(nome)}
           sottotitolo={t("page.artist.sub", {
             brani: brani_(pagina.artista.tracks),
             album: t("artists.albums", { n: pagina.artista.albums }),
@@ -3687,14 +4003,57 @@ export function App() {
           query={query}
           onQuery={setQuery}
           azioni={
-            <button
-              type="button"
-              className="pillola btn-ghost back-button"
-              onClick={() => apriArtista(null)}
-            >
-              <Icona nome="i-chev-l" dim={14} />
-              {t("nav.artists")}
-            </button>
+            <>
+              {/* Torna da dove si è entrati, e lo dice: dal nome in «In
+                  riproduzione» si torna lì, da una griglia agli artisti. */}
+              <button
+                type="button"
+                className="pillola btn-ghost back-button"
+                onClick={() => apriArtista(null)}
+              >
+                <Icona nome="i-chev-l" dim={14} />
+                {tornaAInRiproduzione(artistaDaInRiproduzione, artistaAperto)
+                  ? t("np.nowPlaying")
+                  : t("nav.artists")}
+              </button>
+              {/* I suoi brani, come sulla pagina di un disco: tre bottoni veri,
+                  con un nome che dice di chi. Prima c'erano solo sul telefono, e
+                  sul computer la pagina dell'artista non si poteva suonare. */}
+              <button
+                type="button"
+                className="pillola btn-accent"
+                disabled={nonSuonabile}
+                aria-label={t("artist.play.aria", { nome: nomeArtista(nome) })}
+                onClick={() => void suonaArtista(nome, false)}
+              >
+                <Icona nome="i-play" dim={14} />
+                {t("action.play")}
+              </button>
+              <button
+                type="button"
+                className="pillola btn-ghost"
+                disabled={nonSuonabile}
+                aria-label={t("artist.shuffle.aria", { nome: nomeArtista(nome) })}
+                onClick={() => void suonaArtista(nome, true)}
+              >
+                <Icona nome="i-shuffle" dim={14} />
+                {t("action.shuffle")}
+              </button>
+              {chiaviCollegate && origine.tipo !== "locale" && (
+                <button
+                  type="button"
+                  className="pillola btn-ghost"
+                  aria-label={t("artist.download.aria", { nome: nomeArtista(nome) })}
+                  onClick={() => void scaricaArtista(nome)}
+                >
+                  <Icona nome="i-import" dim={14} />
+                  {t("devices.download")}
+                </button>
+              )}
+              {/* Il filtro per dispositivo vale anche qui: i suoi brani, i dischi
+                  e le partecipazioni sono quelli del filtro. */}
+              <PilloleOrigine origine={origine} onOrigine={setOrigine} />
+            </>
           }
         />
       );
@@ -4039,6 +4398,25 @@ export function App() {
     }
 
     if (pagina.tipo === "artista") {
+      const nome = pagina.artista.name;
+      // Col filtro di adesso questo artista non ha niente: lo dice, invece di una
+      // pagina con tre sezioni vuote. Con «Tutti» no — lì un artista c'è perché ha
+      // dei brani — e il vuoto non si dice mai prima di aver letto i numeri.
+      if (
+        origine.tipo !== "tutti" &&
+        pagina.artista.tracks === 0 &&
+        pagina.artista.albums === 0 &&
+        partecipazioni.esatte === 0 &&
+        partecipazioni.euristiche === 0
+      ) {
+        return (
+          <StatoVuoto
+            icona="i-artist"
+            titolo={t("library.origin.empty.title")}
+            testo={t("artist.empty.filter")}
+          />
+        );
+      }
       // `radaAlbumArtista` **è** già l'elenco dell'artista: il nucleo lo filtra
       // con la stessa chiave con cui raggruppa gli artisti. Prima si filtrava
       // qui la pagina già scaricata, ed era il motivo per cui un artista oltre il
@@ -4048,7 +4426,7 @@ export function App() {
           {MOBILE && (
             <TestataDettaglio
               occhiello={t("page.artist")}
-              titolo={nomeArtista(pagina.artista.name)}
+              titolo={nomeArtista(nome)}
               sottotitolo={t("page.artist.sub", {
                 brani: brani_(pagina.artista.tracks),
                 album: t("artists.albums", { n: pagina.artista.albums }),
@@ -4056,18 +4434,116 @@ export function App() {
               copertine={pagina.artista.covers}
               rotonda
               spento={pagina.artista.tracks === 0 || !riproduzione.disponibile}
-              onRiproduci={() => void suonaArtista(pagina.artista.name, false)}
-              onCasuale={() => void suonaArtista(pagina.artista.name, true)}
+              onRiproduci={() => void suonaArtista(nome, false)}
+              onCasuale={() => void suonaArtista(nome, true)}
+              sotto={
+                // Solo se c'è un dispositivo da cui scaricare, e un filtro che
+                // può mostrarne le righe: come sulla pagina di un disco.
+                chiaviCollegate && origine.tipo !== "locale" ? (
+                  <div className="azioni">
+                    <button
+                      type="button"
+                      className="bottone minuto btn-ghost"
+                      aria-label={t("artist.download.aria", { nome: nomeArtista(nome) })}
+                      onClick={() => void scaricaArtista(nome)}
+                    >
+                      <Icona nome="i-import" dim={14} />
+                      {t("devices.download")}
+                    </button>
+                  </div>
+                ) : undefined
+              }
             />
           )}
           <GrigliaAlbum
-            key={`artista:${pagina.artista.name}`}
+            key={`artista:${nome}`}
             rada={radaAlbumArtista}
             sotto="anno"
             onApri={apriAlbum}
             onMenu={menuAlbum}
             scorrevole={contenuto}
           />
+          {pagina.artista.tracks > 0 && (
+            <SezioneArtista
+              id="artista-brani"
+              titolo={t("artist.tracks.title")}
+              conto={brani_(pagina.artista.tracks)}
+              azioni={
+                <button
+                  type="button"
+                  className="pillola btn-ghost"
+                  aria-label={t("artist.tracks.sort.aria", { nome: nomeArtista(nome) })}
+                  onClick={menuOrdineArtista}
+                >
+                  <Icona nome="i-sort" dim={14} />
+                  {t("header.sort", { nome: etichettaOrdineArtista(ordineArtista) })}
+                </button>
+              }
+            >
+              {/* Senza `chiave`: cambiare l'ordinamento riporterebbe in cima a
+                  tutta la pagina — i dischi — mentre chi ha cambiato l'ordine sta
+                  guardando i brani. La lista rada si rifà da sé (`radaBraniArtista`). */}
+              <ElencoBraniCollegato
+                key={`brani-artista:${nome}`}
+                rada={radaBraniArtista}
+                scorrevole={contenuto}
+                suonabile={riproduzione.disponibile}
+                selezione={selezione}
+                onSuona={suonaQui}
+                onPreferito={cambiaPreferito}
+                onVoto={cambiaVoto}
+                onMenu={menuSuSelezione}
+                onSeleziona={seleziona}
+                onAlternaSelezione={alternaSelezione}
+                inSelezione={MOBILE && selezionati.length > 0}
+                onSelezionaTutto={selezionaTutto}
+              />
+            </SezioneArtista>
+          )}
+          {partecipazioni.esatte > 0 && (
+            <SezioneArtista
+              id="artista-compare"
+              titolo={t("artist.appears.title")}
+              conto={brani_(partecipazioni.esatte)}
+              nota={t("artist.appears.sub")}
+            >
+              <ElencoBraniCollegato
+                key={`compare:${nome}`}
+                rada={radaEsatte}
+                scorrevole={contenuto}
+                suonabile={riproduzione.disponibile}
+                selezione={NESSUNA_SCELTA}
+                onSuona={suonaEsatte}
+                onPreferito={cambiaPreferito}
+                onVoto={cambiaVoto}
+                onMenu={menuEsatte}
+                onSeleziona={senzaSelezione}
+                onAlternaSelezione={senzaSelezione}
+              />
+            </SezioneArtista>
+          )}
+          {partecipazioni.euristiche > 0 && (
+            <SezioneArtista
+              id="artista-forse"
+              titolo={t("artist.maybe.title")}
+              conto={brani_(partecipazioni.euristiche)}
+              nota={t("artist.maybe.sub")}
+            >
+              <ElencoBraniCollegato
+                key={`forse:${nome}`}
+                rada={radaEuristiche}
+                scorrevole={contenuto}
+                suonabile={riproduzione.disponibile}
+                selezione={NESSUNA_SCELTA}
+                onSuona={suonaEuristiche}
+                onPreferito={cambiaPreferito}
+                onVoto={cambiaVoto}
+                onMenu={menuEuristiche}
+                onSeleziona={senzaSelezione}
+                onAlternaSelezione={senzaSelezione}
+              />
+            </SezioneArtista>
+          )}
         </>
       );
     }
@@ -4425,6 +4901,8 @@ export function App() {
     <Fascia
       notizia={notizia}
       onChiudiNotizia={() => setNotizia(null)}
+      avviso={avviso}
+      onChiudiAvviso={() => setAvviso(null)}
       messaggio={messaggio}
       dettaglio={guasto?.dettaglio ?? null}
       onRiprova={
@@ -4673,6 +5151,7 @@ export function App() {
                       onChiudi={() => setGrande(false)}
                       onPreferito={cambiaPreferito}
                       onVoto={cambiaVoto}
+                      onArtista={apriArtistaDalNome}
                       onErrore={segnalaErrore}
                       avvisi={avvisiGrande}
                     />
@@ -4764,6 +5243,7 @@ export function App() {
               onVoto={cambiaVoto}
               onMenu={menuDelBranoGrande}
               onMenuCoda={menuDellaCoda}
+              onArtista={apriArtistaDalNome}
               onErrore={segnalaErrore}
               avvisi={avvisiGrande}
             />
@@ -5213,6 +5693,7 @@ export function App() {
           fuori dalla fascia, perché nel primo avvio la fascia sta in un
           contenitore che si nasconde quando è vuoto (`.primo-avvisi:empty`). */}
       <Annuncio testo={notizia} />
+      <Annuncio testo={avviso?.testo ?? null} />
       <Annuncio
         testo={
           cancellata === null

@@ -239,3 +239,29 @@ export function chiaviDiLibreria(stato: StatoLontano | null): string | null {
     .sort()
     .join(",");
 }
+
+/**
+ * Il filtro con cui aprire la pagina dell'artista di una riga: quello di adesso
+ * se contiene la riga, «Tutti» se no.
+ *
+ * Con «Questo dispositivo» acceso, aprire l'artista di un brano del PC darebbe
+ * una pagina vuota — l'artista, sotto quel filtro, non ha niente — e lo stesso
+ * un brano di qui sotto il filtro di un dispositivo. «Tutti» contiene ogni riga:
+ * la libreria unica mostra una voce per brano, e l'artista di una copia nascosta
+ * dietro una migliore c'è lo stesso. Una riga senza percorso — un brano di
+ * catalogo — è di qui.
+ */
+export function origineCheContiene(
+  origine: OrigineLibreria,
+  percorso: string | null | undefined,
+): OrigineLibreria {
+  const chiave = dispositivoDellaRiga(percorso);
+  switch (origine.tipo) {
+    case "tutti":
+      return origine;
+    case "locale":
+      return chiave === null ? origine : TUTTI;
+    case "dispositivo":
+      return chiave === origine.chiave ? origine : TUTTI;
+  }
+}

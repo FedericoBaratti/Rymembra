@@ -556,6 +556,9 @@ pub fn scheda(maniglia: i64, voce: &Voce) -> TrackSummary {
         fonte: None,
         fonte_pagina: None,
         licenza: None,
+        // Una voce di sessione non ha un artista del disco: quello che dice la
+        // sessione è già il nome sotto cui la mostra.
+        album_artist: None,
     }
 }
 
