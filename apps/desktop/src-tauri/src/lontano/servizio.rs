@@ -98,6 +98,11 @@ pub fn rispondi(app: &AppHandle, da: &str, domanda: Domanda) -> Result<Risposta,
             quando_ms,
             chiave: _,
         } => valuta(app, brano, liked, rating, quando_ms),
+        // I testi: nel passo dopo.
+        Domanda::Testo { .. } | Domanda::TestoScrivi { .. } => Err(AppError::new(
+            ErrorCode::LontanoProtocollo,
+        )
+        .with_cause("i testi non sono ancora serviti")),
         Domanda::Presenza | Domanda::Annuncio(_) | Domanda::Dimenticami | Domanda::Sconosciuta => {
             Err(AppError::new(ErrorCode::LontanoProtocollo)
                 .with_cause("una domanda a cui risponde il nodo"))
