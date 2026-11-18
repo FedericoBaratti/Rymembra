@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, Once, PoisonError};
 use std::time::{Duration, Instant};
 
-use rymembra_app::dispositivi::{self, POSTA_VALUTA, SCADENZA_POSTA_MS};
+use rymembra_app::dispositivi::{self, POSTA_TESTO, POSTA_VALUTA, SCADENZA_POSTA_MS};
 use rymembra_app::library::condivisa::{PaginaCatalogo, RiassuntoCatalogo};
 use rymembra_app::specchio::archivio::{self, Anteprima, Giro};
 use rymembra_app::specchio::convalida::convalida_secchio;
@@ -50,6 +50,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager as _};
 
 use super::filo::{Comune, leggi_a_parte, scrivi_in_libreria};
+use super::testo::{self, Consegna};
 use super::{comune, in_disparte};
 use crate::errore::Esito;
 use crate::nota;
@@ -132,8 +133,14 @@ fn avanzamenti() -> std::sync::MutexGuard<'static, BTreeMap<String, AvanzamentoS
 pub(super) trait Dati {
     /// Il dispositivo è ancora un dispositivo collegato.
     fn associato(&self, chiave: &str) -> bool;
+    /// Il dispositivo ha dichiarato la capacità `sigla`.
+    fn dichiara(&self, chiave: &str, sigla: &str) -> bool;
     /// Il dispositivo ha detto di saper servire il catalogo.
-    fn dichiara_catalogo(&self, chiave: &str) -> bool;
+    fn dichiara_catalogo(&self, chiave: &str) -> bool {
+        self.dichiara(chiave, CAPACITA_CATALOGO)
+    }
+    /// Il dispositivo risponde adesso: lo si vede nel registro delle presenze.
+    fn risponde(&self, chiave: &str) -> bool;
     /// Una domanda al dispositivo.
     fn chiedi(
         &self,
@@ -156,13 +163,13 @@ pub(super) trait Dati {
 }
 
 /// L'app vera.
-struct DallApp {
+pub(super) struct DallApp {
     app: AppHandle,
     comune: Arc<Comune>,
 }
 
 impl DallApp {
-    fn nuovo(app: &AppHandle) -> Result<Self, AppError> {
+    pub(super) fn nuovo(app: &AppHandle) -> Result<Self, AppError> {
         Ok(Self {
             app: app.clone(),
             comune: comune(app)?,
@@ -175,10 +182,14 @@ impl Dati for DallApp {
         self.comune.associato(chiave)
     }
 
-    fn dichiara_catalogo(&self, chiave: &str) -> bool {
+    fn dichiara(&self, chiave: &str, sigla: &str) -> bool {
         self.comune
             .nodo()
-            .is_some_and(|nodo| nodo.dichiara(chiave, CAPACITA_CATALOGO))
+            .is_some_and(|nodo| nodo.dichiara(chiave, sigla))
+    }
+
+    fn risponde(&self, chiave: &str) -> bool {
+        super::filo::prendi(&self.comune.presenze).contains_key(chiave)
     }
 
     fn chiedi(
@@ -438,11 +449,12 @@ fn chiedi_il_secchio<D: Dati>(
 // ── la posta ────────────────────────────────────────────────────────────────
 
 /// Manda a `chiave` la posta che aspetta, dalla più vecchia: un voto o un mi
-/// piace (`valuta`) per volta. Si ferma alla prima che non parte — il
-/// dispositivo non risponde — e la lascia lì per il giro dopo. Una voce che il
-/// dispositivo rifiuta per sempre (il brano non c'è più, o una versione che
-/// non la capisce da oltre [`SCADENZA_POSTA_MS`]) si butta. Quante ne ha
-/// consegnate.
+/// piace (`valuta`) o la correzione di un testo (`testo`, vedi [`super::testo`])
+/// per volta. Si ferma alla prima che non parte — il dispositivo non risponde —
+/// e la lascia lì per il giro dopo. Una voce che il dispositivo rifiuta per
+/// sempre (il brano non c'è più, o una versione che non la capisce da oltre
+/// [`SCADENZA_POSTA_MS`]) si butta. Quante ne ha consegnate **fra i voti**: sono
+/// loro che cambiano le righe del proprietario, e fanno rileggere il catalogo.
 ///
 /// # Errori
 ///
@@ -456,8 +468,20 @@ pub(super) fn manda_la_posta<D: Dati>(dati: &D, chiave: &str) -> Result<usize, A
         }
         let toglila =
             |dati: &D| dati.scrivi(|c| dispositivi::posta_consegnata(c, voce.id, voce.quando_ms));
+        if voce.tipo == POSTA_TESTO {
+            // Un testo che l'altro non prende non ferma i voti che stanno dopo:
+            // la sua capacità è una sigla a sé.
+            match testo::consegna(dati, chiave, &voce) {
+                Consegna::Fatta | Consegna::Persa => {
+                    toglila(dati)?;
+                }
+                Consegna::Tieni => {}
+                Consegna::Ferma => break,
+            }
+            continue;
+        }
         if voce.tipo != POSTA_VALUTA {
-            // Il testo e il resto che arriveranno: li manda chi li conosce.
+            // Il resto che arriverà: lo manda chi lo conosce.
             continue;
         }
         let Some(valutazione) = Valutazione::da_corpo(&voce.corpo) else {
@@ -892,6 +916,11 @@ mod prove {
     use rymembra_app::dispositivi::POSTA_VALUTA;
     use rymembra_app::library::condivisa;
     use rymembra_app::specchio::scelta::{Rete as ReteProva, scegli_con_la_rete};
+    use rymembra_app::testi::condiviso as dei_testi;
+    use rymembra_app::testi::{self, Fonte, Remoto};
+    use rymembra_lontano::protocollo::CAPACITA_TESTI;
+
+    use super::super::testo::testo_del_proprietario;
     use rymembra_lontano::{
         Evento, Identita, Impostazioni, Nodo, Ospite, Presentazione, Presenza, Rete as ReteNodo,
     };
@@ -946,6 +975,25 @@ mod prove {
                     condivisa::valuta(&db, brano, liked, rating, quando_ms, adesso_ms())?;
                     Ok(Risposta::Fatto)
                 }
+                // Il testo, con le stesse funzioni di `servizio`: solo un brano
+                // condiviso, composto senza scrivere.
+                Domanda::Testo { brano } => {
+                    let Some(dato) = dei_testi::brano_condiviso(&db, brano)? else {
+                        return Err(AppError::new(ErrorCode::LontanoFileCambiato));
+                    };
+                    let riga = testi::leggi_riga(&db, &dato.track_key);
+                    let disco = testi::leggi_dal_disco(&dato, riga.as_ref());
+                    match dei_testi::testo_da_dare(&dato, riga, disco) {
+                        Some(testo) => dati(serde_json::to_value(&testo)),
+                        None => Ok(Risposta::Fatto),
+                    }
+                }
+                Domanda::TestoScrivi { brano, cosa } => {
+                    let scrittura = testo::dal_protocollo(cosa)
+                        .ok_or_else(|| AppError::new(ErrorCode::LontanoProtocollo))?;
+                    dei_testi::scrivi_dal_dispositivo(&db, brano, &scrittura)?;
+                    Ok(Risposta::Fatto)
+                }
                 _ => Err(AppError::new(ErrorCode::LontanoProtocollo)),
             }
         }
@@ -968,8 +1016,12 @@ mod prove {
             chiave == self.pc
         }
 
-        fn dichiara_catalogo(&self, chiave: &str) -> bool {
-            self.nodo.dichiara(chiave, CAPACITA_CATALOGO)
+        fn dichiara(&self, chiave: &str, sigla: &str) -> bool {
+            self.nodo.dichiara(chiave, sigla)
+        }
+
+        fn risponde(&self, chiave: &str) -> bool {
+            self.nodo.raggiungibile(chiave)
         }
 
         fn chiedi(
@@ -1058,19 +1110,21 @@ mod prove {
 
     /// PC e telefono collegati, con la presenza scambiata.
     fn collegati(brani: i64) -> (Arc<Nodo>, Arc<Pc>, Telefono) {
+        collegati_con(brani, &[CAPACITA_CATALOGO, CAPACITA_TESTI])
+    }
+
+    /// Come [`collegati`], con le capacità che dichiara il PC: una build di
+    /// prima non ne dichiara nessuna.
+    fn collegati_con(brani: i64, capacita_del_pc: &[&str]) -> (Arc<Nodo>, Arc<Pc>, Telefono) {
         let pc = Arc::new(Pc {
             db: Mutex::new(libreria()),
             associati: Mutex::new(HashSet::new()),
         });
         brani_del_pc(&pc.db.lock().unwrap(), brani);
-        let nodo_pc = nodo(
-            "PC",
-            &[CAPACITA_CATALOGO],
-            Arc::clone(&pc) as Arc<dyn Ospite>,
-        );
+        let nodo_pc = nodo("PC", capacita_del_pc, Arc::clone(&pc) as Arc<dyn Ospite>);
         let nodo_telefono = nodo(
             "Telefono",
-            &[CAPACITA_CATALOGO],
+            &[CAPACITA_CATALOGO, CAPACITA_TESTI],
             Arc::new(Pc {
                 db: Mutex::new(libreria()),
                 associati: Mutex::new(HashSet::new()),
@@ -1362,5 +1416,259 @@ mod prove {
                 .len(),
             1
         );
+    }
+
+    // ── il testo della canzone ──────────────────────────────────────────────
+
+    const LRC_DEL_PC: &str = "[00:01.00]dal pc\n[00:02.00]seconda riga\n";
+    const LRC_MIO: &str = "[00:03.00]fatta sul telefono\n";
+
+    /// Il PC ha un testo per il brano `numero`.
+    fn testo_sul_pc(pc: &Pc, numero: i64) {
+        pc.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO lyrics (track_key, synced, source, offset_ms, updated_at, checked_at)
+                 VALUES (?1, ?2, 'mano', 80, 1, 1)",
+                rusqlite::params![format!("artista|titolo {numero}|album"), LRC_DEL_PC],
+            )
+            .unwrap();
+    }
+
+    /// Il brano del PC come lo vede il pannello del testo sul telefono: la sua
+    /// riga specchio, letta dal nucleo.
+    fn il_brano_del_pc(telefono: &Telefono, numero: i64) -> testi::BranoDaTestare {
+        let db = telefono.db.lock().unwrap();
+        let id = quante(
+            &db,
+            &format!("SELECT track_id FROM lontano_brani WHERE id_remoto = {numero}"),
+        );
+        testi::brano(&db, id).unwrap()
+    }
+
+    fn il_pc_di(telefono: &Telefono, numero: i64) -> Remoto {
+        il_brano_del_pc(telefono, numero)
+            .remoto
+            .expect("una riga specchio ha un proprietario")
+    }
+
+    #[test]
+    fn il_testo_di_un_brano_del_pc_arriva_al_telefono_e_si_ricorda() {
+        let (_nodo_pc, pc, telefono) = collegati(30);
+        let chiave = telefono.pc.clone();
+        giro(&telefono, &chiave).expect("il primo giro");
+        testo_sul_pc(&pc, 7);
+        let brano = il_brano_del_pc(&telefono, 7);
+        let remoto = brano.remoto.clone().expect("una riga specchio");
+        assert_eq!(
+            (remoto.dispositivo.as_str(), remoto.id_remoto),
+            (chiave.as_str(), 7)
+        );
+        assert_eq!(brano.path, None, "niente percorso: nessun file qui accanto");
+
+        let dal = testo_del_proprietario(&telefono, &remoto).expect("il PC ha un testo");
+        assert_eq!(dal.fonte, Fonte::Mano);
+        assert_eq!(dal.scarto_ms, 80);
+        assert!(dal.testo.sincronizzato());
+        assert_eq!(dal.testo.righe.len(), 2);
+
+        // E il pannello, composto da chi chiede: il testo del PC, che resta qui
+        // anche per quando il PC sarà spento.
+        let db = telefono.db.lock().unwrap();
+        let riga = testi::leggi_riga(&db, &brano.track_key);
+        let disco = testi::DalDisco {
+            proprietario: Some(dal),
+            ..testi::DalDisco::default()
+        };
+        let esito = testi::componi(&db, &brano, riga, disco);
+        assert_eq!(esito.fonte, Fonte::Mano);
+        assert_eq!(esito.scarto_ms, 80);
+        let copia = testi::leggi_riga(&db, &brano.track_key).expect("una copia");
+        assert_eq!(copia.synced.as_deref(), Some(LRC_DEL_PC));
+        // Col PC spento la catena di qui lo trova da sola.
+        let dopo = testi::per_brano(&db, brano.id).expect("testo");
+        assert_eq!(dopo.fonte, Fonte::Mano);
+        assert!(dopo.testo.sincronizzato());
+    }
+
+    #[test]
+    fn un_pc_che_non_ce_l_ha_non_risponde_o_e_di_prima_vale_nessun_testo() {
+        // Senza testo.
+        let (nodo_pc, pc, telefono) = collegati(30);
+        let chiave = telefono.pc.clone();
+        giro(&telefono, &chiave).expect("il primo giro");
+        let remoto = il_pc_di(&telefono, 7);
+        assert!(testo_del_proprietario(&telefono, &remoto).is_none());
+
+        // Un brano che il PC non condivide più: la riga specchio resta, il PC
+        // risponde come per un brano che non c'è, anche se un testo ce l'ha.
+        pc.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tracks SET path = 'nuvola://x/7.flac' WHERE id = 7",
+                [],
+            )
+            .unwrap();
+        testo_sul_pc(&pc, 7);
+        assert!(testo_del_proprietario(&telefono, &remoto).is_none());
+
+        // Spento.
+        testo_sul_pc(&pc, 8);
+        let remoto_8 = il_pc_di(&telefono, 8);
+        assert!(testo_del_proprietario(&telefono, &remoto_8).is_some());
+        nodo_pc.chiudi();
+        drop(nodo_pc);
+        assert!(testo_del_proprietario(&telefono, &remoto_8).is_none());
+    }
+
+    #[test]
+    fn un_pc_che_ha_il_catalogo_e_non_i_testi_non_riceve_la_domanda() {
+        // Una build di mezzo: ha dato le sue righe al telefono, ma non dichiara
+        // `testi`, e la domanda non parte nemmeno. (Una build di prima non ha
+        // nemmeno il catalogo: il telefono non ha righe sue, e non c'è un testo
+        // da chiedere.)
+        let (_nodo_pc, pc, telefono) = collegati_con(30, &[CAPACITA_CATALOGO]);
+        let chiave = telefono.pc.clone();
+        giro(&telefono, &chiave).expect("il primo giro");
+        testo_sul_pc(&pc, 7);
+        let remoto = il_pc_di(&telefono, 7);
+        assert!(telefono.dichiara_catalogo(&chiave));
+        assert!(!telefono.dichiara(&chiave, CAPACITA_TESTI));
+        assert!(testo_del_proprietario(&telefono, &remoto).is_none());
+    }
+
+    #[test]
+    fn una_correzione_in_posta_vale_finche_non_arriva_e_poi_arriva_al_pc() {
+        let (_nodo_pc, pc, telefono) = collegati(30);
+        let chiave = telefono.pc.clone();
+        giro(&telefono, &chiave).expect("il primo giro");
+        testo_sul_pc(&pc, 7);
+        let remoto = il_pc_di(&telefono, 7);
+        assert!(testo_del_proprietario(&telefono, &remoto).is_some());
+
+        // Una correzione data qui: un testo a mano e uno scarto.
+        {
+            let db = telefono.db.lock().unwrap();
+            let adesso = adesso_ms();
+            assert!(
+                dei_testi::metti_in_posta(
+                    &db,
+                    &remoto,
+                    &dei_testi::Scrittura::Testo(dei_testi::NuovoTesto::Mano {
+                        lrc: LRC_MIO.to_owned()
+                    }),
+                    adesso
+                )
+                .unwrap()
+            );
+            assert!(
+                dei_testi::metti_in_posta(
+                    &db,
+                    &remoto,
+                    &dei_testi::Scrittura::Scarto(-40),
+                    adesso + 1
+                )
+                .unwrap()
+            );
+            assert_eq!(
+                dispositivi::posta_da_mandare(&db, &chiave).unwrap().len(),
+                1,
+                "una voce sola per brano"
+            );
+        }
+        // Finché aspetta, il testo del PC — che non l'ha ancora — non si chiede.
+        assert!(testo_del_proprietario(&telefono, &remoto).is_none());
+
+        // Consegnata: il PC l'ha scritta con la sua logica, il testo prima e lo
+        // scarto dopo, e la voce se ne va. Non è un voto: non fa rileggere il
+        // catalogo.
+        assert_eq!(manda_la_posta(&telefono, &chiave).unwrap(), 0);
+        assert!(
+            dispositivi::posta_da_mandare(&telefono.db.lock().unwrap(), &chiave)
+                .unwrap()
+                .is_empty()
+        );
+        let (sincronizzato, scarto, fonte): (String, i64, String) = pc
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT synced, offset_ms, source FROM lyrics WHERE track_key = 'artista|titolo 7|album'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(sincronizzato, LRC_MIO);
+        assert_eq!(scarto, -40, "lo scarto dato dopo il testo vince");
+        assert_eq!(fonte, "mano");
+        // E adesso il PC dà il testo nuovo.
+        let dal = testo_del_proprietario(&telefono, &remoto).expect("il testo del PC");
+        assert_eq!(dal.scarto_ms, -40);
+        assert_eq!(dal.testo.righe.first().map(|r| r.ms), Some(3_000));
+    }
+
+    #[test]
+    fn col_pc_spento_la_correzione_aspetta_e_un_pc_che_non_la_prende_non_ferma_i_voti() {
+        // Il PC non dichiara i testi, ma i voti li prende: la correzione resta in
+        // posta, e il mi piace che sta dopo parte lo stesso.
+        let (_nodo_pc, pc, telefono) = collegati_con(30, &[CAPACITA_CATALOGO]);
+        let chiave = telefono.pc.clone();
+        giro(&telefono, &chiave).expect("il primo giro");
+        let remoto = il_pc_di(&telefono, 7);
+        {
+            let db = telefono.db.lock().unwrap();
+            let adesso = adesso_ms();
+            dei_testi::metti_in_posta(&db, &remoto, &dei_testi::Scrittura::Scarto(120), adesso)
+                .unwrap();
+            dispositivi::metti_in_posta(
+                &db,
+                &chiave,
+                POSTA_VALUTA,
+                "7",
+                r#"{"brano":7,"liked":true}"#,
+                adesso + 10,
+            )
+            .unwrap();
+        }
+        assert_eq!(manda_la_posta(&telefono, &chiave).unwrap(), 1);
+        let rimaste = dispositivi::posta_da_mandare(&telefono.db.lock().unwrap(), &chiave).unwrap();
+        assert_eq!(rimaste.len(), 1, "{rimaste:?}");
+        assert_eq!(rimaste[0].tipo, rymembra_app::dispositivi::POSTA_TESTO);
+        let piace: i64 = pc
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT liked FROM tracks WHERE id = 7", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(piace, 1);
+    }
+
+    #[test]
+    fn col_pc_spento_la_correzione_resta_in_posta() {
+        let (nodo_pc, _pc, telefono) = collegati(30);
+        let chiave = telefono.pc.clone();
+        giro(&telefono, &chiave).expect("il primo giro");
+        let remoto = il_pc_di(&telefono, 7);
+        dei_testi::metti_in_posta(
+            &telefono.db.lock().unwrap(),
+            &remoto,
+            &dei_testi::Scrittura::Scarto(55),
+            adesso_ms(),
+        )
+        .unwrap();
+        nodo_pc.chiudi();
+        drop(nodo_pc);
+        assert_eq!(manda_la_posta(&telefono, &chiave).unwrap(), 0);
+        assert_eq!(
+            dispositivi::posta_da_mandare(&telefono.db.lock().unwrap(), &chiave)
+                .unwrap()
+                .len(),
+            1,
+            "aspetta"
+        );
+        // E il testo di qui è quello giusto, senza chiedere a nessuno.
+        assert!(dei_testi::in_attesa(&telefono.db.lock().unwrap(), &remoto).unwrap());
     }
 }

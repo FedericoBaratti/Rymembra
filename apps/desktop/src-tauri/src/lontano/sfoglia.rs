@@ -286,7 +286,7 @@ impl<P: Pezzi> Sorgente for DaLontano<P> {
 /// un ponte rotto non deve togliere la musica, e il sistema stesso avvisa dei
 /// dati che corrono.
 #[cfg(target_os = "android")]
-fn rete_a_consumo() -> bool {
+pub(crate) fn rete_a_consumo() -> bool {
     rymembra_android::sistema::rete_a_consumo().unwrap_or_else(|err| {
         nota!("[lontano] la rete a consumo non si sa: {err}");
         false
@@ -294,7 +294,7 @@ fn rete_a_consumo() -> bool {
 }
 
 #[cfg(not(target_os = "android"))]
-const fn rete_a_consumo() -> bool {
+pub(crate) const fn rete_a_consumo() -> bool {
     false
 }
 

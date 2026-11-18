@@ -50,7 +50,7 @@ use std::time::{Duration, Instant};
 
 use rymembra_app::dispositivi::{self, Dispositivo, Nuovo};
 use rymembra_domain::errors::{AppError, ErrorCode};
-use rymembra_lontano::protocollo::CAPACITA_CATALOGO;
+use rymembra_lontano::protocollo::{CAPACITA_CATALOGO, CAPACITA_TESTI};
 use rymembra_lontano::{
     Evento, Impostazioni, Nodo, PariNoto, Presentazione, Presenza, Relay, Rete, Via,
 };
@@ -1233,9 +1233,10 @@ impl Filo {
                 crate::insieme::ruolo(&self.app),
                 crate::insieme::Ruolo::Host
             ),
-            // Sa servire e usare il catalogo (libreria unica): le domande
-            // nuove non si fanno a chi non lo dichiara.
-            capacita: vec![CAPACITA_CATALOGO.to_owned()],
+            // Sa servire e usare il catalogo (libreria unica) e il testo della
+            // canzone di un brano dell'altro: le domande nuove non si fanno a
+            // chi non lo dichiara.
+            capacita: vec![CAPACITA_CATALOGO.to_owned(), CAPACITA_TESTI.to_owned()],
         }
     }
 
