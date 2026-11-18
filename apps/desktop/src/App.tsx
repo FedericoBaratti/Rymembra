@@ -4500,13 +4500,6 @@ export function App() {
                       dove="fascia"
                       onErrore={segnalaErrore}
                     />
-                    {/* Sopra la notizia e sotto il dispositivo audio perso, che è
-                        l'ordine della fretta: l'audio che non si sente è adesso,
-                        una versione nuova può aspettare che si finisca di
-                        ascoltare. Il componente decide da sé se disegnarsi — non
-                        c'è niente da mostrare quasi sempre — e non torna dopo un
-                        «non ora», perché il rifiuto è scritto nel database. */}
-                    <AvvisoAggiornamento onErrore={segnalaErrore} />
                     {/* Gli avvisi che restano in vista a elenco scorso, in un
                         contenitore aderente solo: ognuno aderente per conto suo,
                         si fermavano tutti nello stesso punto uno sopra l'altro,
@@ -4908,6 +4901,15 @@ export function App() {
                     />
                   )}
                 </ConImportazioni>
+                {/* L'aggiornamento: una scheda nella pila, e non una fascia nel flusso
+                    della pagina, che spingeva giù il titolo, l'indice e il filtro
+                    mentre si stava per cliccarci. Il componente decide da sé se
+                    disegnarsi — non c'è niente da mostrare quasi sempre — e il
+                    «Non ora» dura la sessione, mentre «Salta questa versione» è
+                    scritto nel database. Dopo l'audio perso, che è l'ordine della
+                    fretta: l'audio che non si sente è adesso, una versione nuova
+                    può aspettare che si finisca di ascoltare. */}
+                <AvvisoAggiornamento onErrore={segnalaErrore} />
                 {/* Una volta sola, sul computer: la risposta la ricorda il nucleo.
                     Il telefono ha un'altra proposta, con altre parole, e non
                     monta questa. */}

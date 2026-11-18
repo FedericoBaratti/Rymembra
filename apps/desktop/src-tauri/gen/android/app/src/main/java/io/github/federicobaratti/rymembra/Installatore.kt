@@ -42,6 +42,18 @@ object Installatore {
   private const val CARTELLA = "aggiornamenti"
 
   /**
+   * Il controllo del certificato, **senza** consegnare niente: `buono` o
+   * `altraChiave`; un APK che non è questa app — un altro pacchetto, un
+   * archivio illeggibile — si cancella e arriva a Rust come errore. È il passo
+   * «Verifico» dell'aggiornamento: l'APK si scarica, si verifica, e solo al
+   * tocco su «Installa» si apre l'installatore di Android ([installa], che
+   * ripete questo controllo: costa poco, e il file ha aspettato nella cache).
+   * Vedi `sistema::controlla_apk` in Rust.
+   */
+  fun controlla(attivita: MainActivity, percorso: String): String =
+    if (verifica(attivita, apk(attivita, percorso))) "buono" else "altraChiave"
+
+  /**
    * `installatore`, `permesso` o `altraChiave`: vedi `sistema::Installazione`
    * in Rust.
    */

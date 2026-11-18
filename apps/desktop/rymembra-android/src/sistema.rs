@@ -237,6 +237,34 @@ pub enum Installazione {
     AltraChiave,
 }
 
+/// Com'è andato il controllo del certificato di un APK.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlloApk {
+    /// È questa app, firmata come questa app: si può consegnare.
+    Buono,
+    /// È questa app ma firmata con un'altra chiave, e Kotlin l'ha già
+    /// cancellato: vedi [`Installazione::AltraChiave`].
+    AltraChiave,
+}
+
+/// Controlla il certificato di un APK della cartella `aggiornamenti` **senza**
+/// consegnarlo all'installatore: il passo «Verifico» dell'aggiornamento, che
+/// sul telefono si ferma a «Installa». Con l'APK sbagliato — un altro pacchetto,
+/// un archivio che non si legge — Kotlin lo cancella e risponde con un errore.
+///
+/// # Errori
+///
+/// Se il ponte non risponde, se non c'è un'attività, se il percorso non è
+/// testo o non sta in quella cartella, e se l'APK non si legge o è un altro
+/// pacchetto.
+pub fn controlla_apk(percorso: &Path) -> Result<ControlloApk, Errore> {
+    let percorso = percorso
+        .to_str()
+        .ok_or_else(|| Errore::nuovo("il percorso dell'APK non è testo"))?;
+    chiama("sistema.controllaApk", &Apk { percorso })
+}
+
 /// Le impronte SHA-256 dei certificati con cui è firmata la Rymembra
 /// installata, in esadecimale minuscolo: quelle che un aggiornamento deve
 /// avere perché Android lo installi sopra. Vuoto se Android non le dice.

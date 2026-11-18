@@ -177,6 +177,7 @@ object Ponte {
       "sistema.cartellaCache" -> contesto().cacheDir.absolutePath
       "sistema.condividi" ->
         Condividi.file(attivita(), a.getString("percorso"), a.getString("tipo"), a.getString("titolo")).let { null }
+      "sistema.controllaApk" -> Installatore.controlla(attivita(), a.getString("percorso"))
       "sistema.installaApk" -> Installatore.installa(attivita(), a.getString("percorso"))
       "sistema.firmatari" -> Installatore.firmatari(contesto())
       "sistema.apriIndirizzo" -> Browser.apri(attivita(), a.getString("indirizzo")).let { null }

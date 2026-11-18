@@ -92,7 +92,7 @@ use std::time::{Duration, Instant};
 use crate::spegnimento::Emette as _;
 use rymembra_app::settings;
 use rymembra_domain::errors::{AppError, ErrorCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager as _, State};
 use tauri_plugin_updater::{Update, Updater, UpdaterExt as _};
 
@@ -273,6 +273,28 @@ pub struct StatoAggiornamenti {
     /// l'utente ha visto annunciato.
     trovato: Mutex<Option<Update>>,
 
+    /// A che passo è l'aggiornamento che si sta portando in casa: scarico,
+    /// verifica, installazione, riavvio. `None` quando non se ne sta facendo
+    /// nessuno. Il pacchetto che aspetta la chiusura **non** è qui: lo dice
+    /// [`Self::pronto`], e [`fase_dello_stato`] mette insieme le due cose.
+    fase: Mutex<Option<FaseAggiornamento>>,
+
+    /// Il pacchetto già scaricato e verificato che aspetta la chiusura.
+    ///
+    /// # Perché in memoria e non su disco
+    ///
+    /// Perché `Update::install` prende i byte, e la firma la controlla
+    /// `Update::download` (`updater.rs:837-843` del plugin) e **non** `install`
+    /// (`:854-856`): un file scritto qui e riletto giorni dopo non avrebbe nessuna
+    /// strada pubblica per essere riverificato, e un installatore che sta in una
+    /// cartella scrivibile da chiunque abbia lo stesso account è proprio quel
+    /// che la verifica esiste per escludere. Il prezzo è la memoria — la
+    /// dimensione dell'installer, per tutto il tempo dell'attesa — e si paga
+    /// finché il pacchetto aspetta: il ripiego dei tre giorni (la scheda chiede
+    /// di nuovo) serve anche a questo. Un riavvio dopo un arresto brusco lo
+    /// perde, e il controllo d'avvio lo ritrova.
+    pronto: Mutex<Option<Pronto>>,
+
     /// L'esito dell'ultimo controllo automatico. `None` vuol dire riuscito.
     ultimo_errore: Mutex<Option<ErroreIpc>>,
 
@@ -312,6 +334,8 @@ impl StatoAggiornamenti {
                 in_corso: AtomicBool::new(false),
                 installazione: AtomicBool::new(false),
                 trovato: Mutex::new(None),
+                fase: Mutex::new(None),
+                pronto: Mutex::new(None),
                 ultimo_errore: Mutex::new(None),
                 annulla: AtomicBool::new(false),
                 pronto_detto: AtomicBool::new(false),
@@ -320,6 +344,105 @@ impl StatoAggiornamenti {
             orecchio,
         )
     }
+}
+
+/// A che passo è un aggiornamento che si sta portando in casa.
+///
+/// Sono i passi che la scheda racconta: **Scarico** (i byte che scendono),
+/// **Verifico** (la firma minisign, controllata dal plugin dentro `download()` e
+/// non in `install()`: `updater.rs:837-843`), **Installo** (l'installer che si
+/// prepara) e **Riavvio** (l'aggancio ha spento tutto e l'installer parte: la
+/// pagina lo vede un istante, poi il processo termina). `Pronto` è il pacchetto
+/// già verificato che aspetta la chiusura: non è un passo, è una sosta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FaseAggiornamento {
+    Scarico,
+    Verifico,
+    Installo,
+    Riavvio,
+    Pronto,
+}
+
+/// Quando installare. Lo dice il tasto premuto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Quando {
+    /// Scarica, verifica e installa: l'installer chiude Rymembra e la riapre.
+    Subito,
+    /// Scarica e verifica adesso, installa quando si esce davvero: vedi
+    /// [`alla_chiusura`].
+    AllaChiusura,
+}
+
+/// Il pacchetto scaricato e verificato che aspetta la chiusura.
+struct Pronto {
+    /// L'oggetto del plugin, con l'installer annunciato e il suo contesto.
+    aggiornamento: Update,
+    /// I byte dell'installer, già verificati da `Update::download`.
+    byte: Vec<u8>,
+    /// Da quando aspetta, in millisecondi: la scheda ripropone «Installa ora»
+    /// dopo tre giorni.
+    dal_ms: i64,
+}
+
+/// A chiudere Rymembra è stata una persona.
+///
+/// Si alza in due posti soli: `chiusura::esci_adesso` («Esci» dal vassoio) e il
+/// ciclo degli eventi di `lib.rs`, sulla `CloseRequested` che arriva a spegnere
+/// (la X senza vassoio, Alt+F4). **Non** per un'uscita del programma stesso —
+/// la libreria di prima rimessa a posto, un installer che prende il posto — e
+/// non quando Windows spegne il computer o chiude la sessione: lì tao manda
+/// `RunEvent::Exit` da solo (`event_loop.rs:2330-2344`), senza nessuna delle due
+/// strade, e un installer lanciato mentre Windows sta uccidendo i processi
+/// resterebbe a metà. Mai abbassata: dopo un'uscita voluta non si torna indietro.
+static USCITA_VOLUTA: AtomicBool = AtomicBool::new(false);
+
+/// L'installazione in corso è quella «alla chiusura»: l'aggancio non dice
+/// «Riavvio», perché Rymembra non si riapre.
+static ALLA_CHIUSURA: AtomicBool = AtomicBool::new(false);
+
+/// Una persona ha chiuso Rymembra: vedi [`USCITA_VOLUTA`].
+pub fn uscita_voluta() {
+    USCITA_VOLUTA.store(true, Ordering::Release);
+}
+
+/// All'uscita si installa il pacchetto in attesa?
+///
+/// Pura, perché è la riga che decide se un computer che si spegne installa
+/// qualcosa: sì solo se a chiudere è stata una persona **e** c'è un pacchetto.
+/// Vedi [`USCITA_VOLUTA`] per il caso di Windows che si spegne.
+fn installa_uscendo(uscita_voluta: bool, pacchetto_pronto: bool) -> bool {
+    uscita_voluta && pacchetto_pronto
+}
+
+/// Il pacchetto in attesa è ancora quello che il controllo annuncia?
+///
+/// Una passata che trova un'altra versione — è uscita la successiva — o non
+/// trova più niente — la release è stata ritirata — non lascia in attesa un
+/// installer che nessuno annuncia più.
+fn pacchetto_ancora_buono(versione_pronta: &str, trovata: Option<&str>) -> bool {
+    trovata == Some(versione_pronta)
+}
+
+/// La fase che la pagina legge: il passo in corso vince; senza, un pacchetto che
+/// aspetta vale `Pronto`; senza niente, nessuna fase.
+fn fase_dello_stato(
+    in_corso: Option<FaseAggiornamento>,
+    pacchetto_pronto: bool,
+) -> Option<FaseAggiornamento> {
+    in_corso.or_else(|| pacchetto_pronto.then_some(FaseAggiornamento::Pronto))
+}
+
+/// Cambia il passo e lo racconta alla pagina.
+fn imposta_fase(app: &AppHandle, fase: Option<FaseAggiornamento>) {
+    if let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() {
+        *aggiornamenti
+            .fase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fase;
+    }
+    riferisci(app);
 }
 
 /// La finestra si è mostrata: comincia il conto del controllo d'avvio.
@@ -362,6 +485,13 @@ pub struct StatoAggiornamentiIpc {
     pub in_corso: bool,
     /// Uno scaricamento è in corso adesso.
     pub installazione: bool,
+    /// A che passo è l'aggiornamento che si sta portando in casa, o il
+    /// pacchetto che aspetta (`pronto`): vedi [`fase_dello_stato`]. La pagina
+    /// si ricostruisce da qui a ogni apertura — con il motore nel vassoio la
+    /// finestra muore e rinasce, e gli eventi mandati senza finestra si perdono.
+    pub fase: Option<FaseAggiornamento>,
+    /// Da quando il pacchetto verificato aspetta la chiusura, in millisecondi.
+    pub pronto_dal_ms: Option<i64>,
     /// L'ultimo guasto, se c'è stato.
     pub errore: Option<ErroreIpc>,
 }
@@ -439,6 +569,9 @@ pub fn aggiornamenti_attivo(
         let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
     } else {
         butta(&aggiornamenti.trovato, &aggiornamenti.generazione);
+        // Anche il pacchetto già scaricato: chi ha detto di non voler essere
+        // avvisato non vuole nemmeno un installer che aspetta di partire.
+        scarta_pronto(&aggiornamenti);
         azzera_errore(&aggiornamenti);
     }
     // Anche a chi non ha chiesto: vedi `riferisci`.
@@ -488,38 +621,77 @@ pub fn aggiornamenti_salta(
         settings::write(&libreria.connection, CHIAVE_SALTATA, &versione)
     })
     .map_err(errore)?;
+    // Saltare una versione è non volerla: se il suo pacchetto aspettava la
+    // chiusura, se ne va.
+    let aspetta_questa = aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|pronto| pronto.aggiornamento.version == versione);
+    if aspetta_questa {
+        scarta_pronto(&aggiornamenti);
+    }
     // Anche a chi non ha chiesto: vedi `riferisci`.
     riferisci(&app);
     stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
 }
 
-/// Scarica l'aggiornamento trovato, ne verifica la firma e lo installa.
+/// Scarica l'aggiornamento trovato, ne verifica la firma e lo installa — adesso,
+/// o alla chiusura.
 ///
 /// Torna subito: il lavoro vero sta su un filo suo, e quel che succede si
-/// racconta con `aggiornamenti:avanzamento`. Su Windows, con
-/// `installMode: "passive"`, è l'installer NSIS a chiudere Rymembra e a
-/// riaprirlo — quindi da qui in poi questo processo non ha più niente da fare
-/// se non lasciare il dispositivo audio e uscire di scena.
+/// racconta con `aggiornamenti:stato` (la `fase`) e `aggiornamenti:avanzamento`
+/// (i byte).
+///
+/// - **`Subito`.** Su Windows, con `installMode: "passive"`, è l'installer NSIS a
+///   chiudere Rymembra e a riaprirla (`/P /UPDATE /R`) — quindi da qui in poi
+///   questo processo non ha più niente da fare se non lasciare il dispositivo
+///   audio e uscire di scena. Con un pacchetto già in attesa lo installa senza
+///   riscaricare.
+/// - **`AllaChiusura`.** Scarica e verifica adesso — è un gesto di chi guarda, e
+///   la regola «niente senza un tasto» resta vera — e tiene il pacchetto in
+///   memoria. Lo installa [`alla_chiusura`], quando si esce davvero. Non c'è
+///   sulla copia del Store, che non controlla gli aggiornamenti.
 ///
 /// # Errori
 ///
-/// `internal.aborted` se non c'è nessun aggiornamento da installare, o se ce
-/// n'è già uno in corso.
+/// `internal.aborted` se non c'è nessun aggiornamento da installare, se ce n'è
+/// già uno in corso, o se si chiede l'installazione alla chiusura su una copia
+/// del Store.
 #[tauri::command]
 pub fn aggiornamenti_installa(
     app: AppHandle,
     aggiornamenti: State<'_, StatoAggiornamenti>,
+    quando: Quando,
 ) -> Esito<()> {
-    let Some(aggiornamento) = aggiornamenti
+    if quando == Quando::AllaChiusura && gestita_dallo_store() {
+        return Err(errore(AppError::new(ErrorCode::InternalAborted {
+            what: Some("sulla copia del Microsoft Store non si installa alla chiusura".to_owned()),
+        })));
+    }
+    // Il pacchetto già pronto, se c'è: «Installa ora» dopo «Alla chiusura» non
+    // riscarica settanta megabyte. Si prende dal posto **dopo** aver alzato il
+    // bit, così un secondo click non trova un posto vuoto e un installer solo.
+    let aggiornamento = aggiornamenti
         .trovato
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-    else {
+        .clone();
+    let ha_il_pronto = aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_some();
+    if ha_il_pronto && quando == Quando::AllaChiusura {
+        // Già in attesa: non c'è niente da fare, e non è un guasto.
+        return Ok(());
+    }
+    if aggiornamento.is_none() && !ha_il_pronto {
         return Err(errore(AppError::new(ErrorCode::InternalAborted {
             what: Some("nessun aggiornamento da installare".to_owned()),
         })));
-    };
+    }
     // Il bit si alza **qui**, nel comando, e non nel filo: fra il click e
     // l'avvio del thread c'è abbastanza tempo perché un secondo click passi, e
     // due scaricamenti dello stesso installer che finiscono con due installer
@@ -533,13 +705,28 @@ pub fn aggiornamenti_installa(
             what: Some("uno scaricamento è già in corso".to_owned()),
         })));
     }
+    let pronto = aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    let Some((aggiornamento, byte)) = pronto
+        .map(|pronto| (pronto.aggiornamento, Some(pronto.byte)))
+        .or_else(|| aggiornamento.map(|aggiornamento| (aggiornamento, None)))
+    else {
+        // Un'altra chiamata l'ha preso fra le due letture: si torna come prima.
+        aggiornamenti.installazione.store(false, Ordering::Release);
+        return Err(errore(AppError::new(ErrorCode::InternalAborted {
+            what: Some("nessun aggiornamento da installare".to_owned()),
+        })));
+    };
     riferisci(&app);
 
     let suo = app.clone();
     let avviato = std::thread::Builder::new()
         .name("rymembra-aggiornamento".to_owned())
         .spawn(move || {
-            scarica_e_installa(&suo, &aggiornamento);
+            scarica_e_installa(&suo, &aggiornamento, byte, quando);
         });
     if let Err(err) = avviato {
         // Il bit va rimesso giù, o il tasto resta spento per sempre senza che
@@ -565,18 +752,38 @@ pub fn aggiornamenti_installa(
     Ok(())
 }
 
-/// Ferma lo scaricamento in corso.
+/// Ferma lo scaricamento in corso, o butta il pacchetto che aspetta la chiusura.
 ///
 /// Torna subito: alza un bit che il filo dell'installazione guarda dieci volte
 /// al secondo. Fermato lì, lo scaricamento non lascia niente — i byte stanno in
 /// memoria, non su disco — e il tasto «Aggiorna» torna premibile.
 ///
+/// Con un pacchetto in attesa e nessuno scaricamento, «Annulla» è il ripensamento
+/// di «Alla chiusura»: il pacchetto se ne va, e l'avviso torna com'era.
+///
 /// Dopo che lo scaricamento è finito non ferma più niente: l'installer è già
 /// partito, e da lì non si torna indietro.
 #[tauri::command]
-pub fn aggiornamenti_annulla(aggiornamenti: State<'_, StatoAggiornamenti>) -> Esito<()> {
-    aggiornamenti.annulla.store(true, Ordering::Release);
+pub fn aggiornamenti_annulla(
+    app: AppHandle,
+    aggiornamenti: State<'_, StatoAggiornamenti>,
+) -> Esito<()> {
+    if aggiornamenti.installazione.load(Ordering::Acquire) {
+        aggiornamenti.annulla.store(true, Ordering::Release);
+    } else if scarta_pronto(&aggiornamenti) {
+        riferisci(&app);
+    }
     Ok(())
+}
+
+/// Butta il pacchetto in attesa, se c'è. `true` se c'era.
+fn scarta_pronto(aggiornamenti: &StatoAggiornamenti) -> bool {
+    aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .is_some()
 }
 
 // ── il filo di sottofondo ───────────────────────────────────────────────────
@@ -837,6 +1044,21 @@ fn passata(app: &AppHandle, a_mano: bool) -> Giro {
                 partenza,
                 trovato,
             );
+            // Un pacchetto in attesa di una versione che il controllo non
+            // annuncia più — è uscita la successiva, o la release è stata
+            // ritirata — non si installa alla chiusura: vedi
+            // [`pacchetto_ancora_buono`].
+            if vale {
+                let mut pronto = aggiornamenti
+                    .pronto
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if pronto.as_ref().is_some_and(|pronto| {
+                    !pacchetto_ancora_buono(&pronto.aggiornamento.version, versione.as_deref())
+                }) {
+                    *pronto = None;
+                }
+            }
             azzera_errore(&aggiornamenti);
             if let Some(stato) = app.try_state::<Stato>() {
                 let _ = con_libreria(&stato, |libreria| {
@@ -930,6 +1152,12 @@ fn costruisci(app: &AppHandle) -> Result<Updater, AppError> {
         .updater_builder()
         .timeout(SCADENZA_RICHIESTA)
         .on_before_exit(move || {
+            // Prima di spegnere, finché la finestra ascolta: «Riavvio» è l'ultima
+            // cosa che la pagina vede. Alla chiusura non si dice: Rymembra non si
+            // riapre, e la pagina non c'è più.
+            if !ALLA_CHIUSURA.load(Ordering::Acquire) {
+                imposta_fase(&mano, Some(FaseAggiornamento::Riavvio));
+            }
             // Per prima cosa, prima di spegnere: se l'installer poi non parte,
             // `scarica_e_installa` deve sapere che il processo è già spento.
             // Vedi [`AGGANCIO_ESEGUITO`].
@@ -954,7 +1182,11 @@ fn costruisci(app: &AppHandle) -> Result<Updater, AppError> {
     costruttore.build().map_err(guasto)
 }
 
-/// Scarica, verifica e installa. Gira su un filo suo e non torna, se riesce.
+/// Scarica, verifica e installa — o tiene il pacchetto per la chiusura. Gira su
+/// un filo suo e non torna, se riesce a installare.
+///
+/// `byte` è il pacchetto già scaricato e verificato, se «Installa ora» arriva
+/// dopo «Alla chiusura»: allora non si riscarica niente.
 ///
 /// # Chi abbassa il bit dell'installazione
 ///
@@ -968,7 +1200,12 @@ fn costruisci(app: &AppHandle) -> Result<Updater, AppError> {
 /// gira dentro codice del plugin, su byte arrivati dalla rete. Il sintomo era il
 /// tasto «Aggiorna» spento fino al riavvio, senza nessun errore da nessuna parte
 /// — cioè la stessa famiglia di guasti per cui `Turno` è stato scritto.
-fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
+fn scarica_e_installa(
+    app: &AppHandle,
+    aggiornamento: &Update,
+    byte: Option<Vec<u8>>,
+    quando: Quando,
+) {
     // Prima di tutto il resto, e prima di qualunque cosa che possa cadere.
     // L'ordine di dichiarazione è l'ordine di rilascio al contrario: il turno si
     // scioglie prima del prestito dello stato da cui pende.
@@ -991,12 +1228,27 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
     // per tutto quel tempo — o per sempre, se lo scaricamento o la firma non
     // vanno — era una pausa che nessuno aveva chiesto.
     let mut musica_fermata = false;
-    let esito = scarica(app, aggiornamento).and_then(|byte| {
-        fermare_la_musica(app);
-        musica_fermata = true;
-        aggiornamento
-            .install(byte)
-            .map_err(|err| guasto_dell_installazione(err, aggancio_eseguito()))
+    let scaricato = match byte {
+        Some(gia_pronti) => Ok(gia_pronti),
+        None => {
+            imposta_fase(app, Some(FaseAggiornamento::Scarico));
+            scarica(app, aggiornamento)
+        }
+    };
+    let esito = scaricato.and_then(|byte| match quando {
+        // Verificato dentro `download()`: i byte sono buoni, e aspettano.
+        Quando::AllaChiusura => {
+            tieni_per_la_chiusura(app, aggiornamento, byte);
+            Ok(())
+        }
+        Quando::Subito => {
+            fermare_la_musica(app);
+            musica_fermata = true;
+            imposta_fase(app, Some(FaseAggiornamento::Installo));
+            aggiornamento
+                .install(byte)
+                .map_err(|err| guasto_dell_installazione(err, aggancio_eseguito()))
+        }
     });
     // Prima di tutto il resto: se l'aggancio ha già spento il processo e
     // l'installer non è partito, non c'è più un'applicazione da far tornare —
@@ -1040,9 +1292,85 @@ fn scarica_e_installa(app: &AppHandle, aggiornamento: &Update) {
     }
     // Il turno **prima** del racconto, come nella passata: la finestra deve
     // ricevere uno stato in cui l'installazione è già finita, non uno che dice
-    // ancora di sì.
+    // ancora di sì. E senza passo: il pacchetto in attesa, se c'è, lo dice
+    // `fase_dello_stato`.
     drop(turno);
-    riferisci(app);
+    imposta_fase(app, None);
+}
+
+/// Mette il pacchetto verificato in attesa della chiusura: vedi
+/// [`StatoAggiornamenti::pronto`].
+fn tieni_per_la_chiusura(app: &AppHandle, aggiornamento: &Update, byte: Vec<u8>) {
+    let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
+        return;
+    };
+    nota!(
+        "[aggiornamenti] la {} è scaricata e verificata: si installa alla chiusura",
+        aggiornamento.version
+    );
+    *aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Pronto {
+        aggiornamento: aggiornamento.clone(),
+        byte,
+        dal_ms: adesso_ms(),
+    });
+}
+
+/// L'uscita vera: si installa il pacchetto in attesa, senza riaprire Rymembra.
+///
+/// La chiama il ciclo degli eventi (`lib.rs`) sull'`Exit`, **dopo**
+/// [`crate::spegnimento::spegni`]. Non fa niente se non ha chiuso una persona
+/// ([`uscita_voluta`]) o se non c'è un pacchetto: in particolare non fa niente
+/// quando Windows spegne il computer o chiude la sessione, perché l'installer
+/// verrebbe ucciso a metà.
+///
+/// # Senza `/R`
+///
+/// `restart_after_install(false)` toglie `/R` (e `/ARGS`) dagli argomenti
+/// dell'installer: restano `/P /UPDATE` (`updater.rs:987-1011` del plugin), e il
+/// template NSIS riapre l'app solo con `/R` (`installer.nsi:744-755`). Chi ha
+/// scelto «alla chiusura» ha chiuso: non si deve vedere riaprire.
+///
+/// L'installer è passivo: una piccola finestra con la barra, nient'altro. Se
+/// qualcosa va storto qui — l'estrazione, il sistema che rifiuta di lanciare
+/// l'installer — non c'è più una pagina a cui dirlo: lo si dice con il dialogo
+/// del sistema, e Rymembra esce com'era già per uscire. Al prossimo avvio il
+/// controllo ritrova la versione, e la propone di nuovo.
+pub fn alla_chiusura(app: &AppHandle) {
+    let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
+        return;
+    };
+    let mut posto = aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !installa_uscendo(USCITA_VOLUTA.load(Ordering::Acquire), posto.is_some()) {
+        return;
+    }
+    let Some(pronto) = posto.take() else {
+        return;
+    };
+    drop(posto);
+    ALLA_CHIUSURA.store(true, Ordering::Release);
+    nota!(
+        "[aggiornamenti] chiusura: parte l'installer della {}",
+        pronto.aggiornamento.version
+    );
+    if let Err(err) = pronto
+        .aggiornamento
+        .restart_after_install(false)
+        .install(pronto.byte)
+    {
+        let err = guasto_dell_installazione(err, aggancio_eseguito());
+        nota!(
+            "[aggiornamenti] l'installer alla chiusura non è partito codice={} causa={}",
+            err.code().kind().code(),
+            err.cause().unwrap_or("—")
+        );
+        mostra_l_installer_fermo(&testo_dell_installer_fermo(err.cause().unwrap_or("—")));
+    }
 }
 
 /// Alzata dal nostro `on_before_exit` ([`costruisci`]), come prima cosa: da lì
@@ -1235,7 +1563,16 @@ fn scarica(app: &AppHandle, aggiornamento: &Update) -> Result<Vec<u8>, AppError>
         }
     };
     let suo = aggiornamento.clone();
-    let lavoro = tauri::async_runtime::spawn(async move { suo.download(per_pezzo, || {}).await });
+    // «Verifico»: `on_download_finish` il plugin lo chiama quando l'ultimo byte è
+    // sceso e **subito prima** di controllare la firma minisign
+    // (`updater.rs:835-837`). La firma sta in `download()` e non in `install()`:
+    // chi ha i byte in mano, da qui in poi, li ha già verificati.
+    let alla_fine = {
+        let mano = app.clone();
+        move || imposta_fase(&mano, Some(FaseAggiornamento::Verifico))
+    };
+    let lavoro =
+        tauri::async_runtime::spawn(async move { suo.download(per_pezzo, alla_fine).await });
 
     let mut fermato: Option<AppError> = None;
     while !lavoro.inner().is_finished() {
@@ -1563,6 +1900,16 @@ fn stato_ipc(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
+    let in_corso_fase = *aggiornamenti
+        .fase
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pronto_dal_ms = aggiornamenti
+        .pronto
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|pronto| pronto.dal_ms);
 
     Ok(StatoAggiornamentiIpc {
         attivo: acceso,
@@ -1573,6 +1920,8 @@ fn stato_ipc(
         disponibile,
         in_corso: aggiornamenti.in_corso.load(Ordering::Relaxed),
         installazione: aggiornamenti.installazione.load(Ordering::Relaxed),
+        fase: fase_dello_stato(in_corso_fase, pronto_dal_ms.is_some()),
+        pronto_dal_ms,
         errore,
     })
 }
@@ -1827,7 +2176,9 @@ mod prove {
         let corpo = corpo_di("fn scarica_e_installa(");
         let decisione = corpo.find("dopo_l_installazione(");
         let riaccendi = corpo.find("insieme::riaccendi(");
-        let riferisci = corpo.find("riferisci(app)");
+        // Il racconto alla finestra è l'ultimo passo: `imposta_fase` senza passo, che
+        // chiama `riferisci`.
+        let riferisci = corpo.find("imposta_fase(app, None)");
         assert!(
             decisione.is_some() && decisione < riaccendi && decisione < riferisci,
             "il guasto dell'installer dopo l'aggancio non si guarda prima di riaccendere e raccontare"
@@ -1961,6 +2312,127 @@ mod prove {
             "error sending request".to_owned(),
         ));
         assert_eq!(rete.code().kind().code(), "net.offline");
+    }
+
+    /// Le fasi hanno i nomi che la pagina legge (`FaseAggiornamento` in
+    /// `ipc/servizi.ts`), e «quando» si legge dai due nomi che la pagina manda.
+    #[test]
+    fn le_fasi_e_il_quando_hanno_i_nomi_della_pagina() {
+        for (fase, nome) in [
+            (FaseAggiornamento::Scarico, "scarico"),
+            (FaseAggiornamento::Verifico, "verifico"),
+            (FaseAggiornamento::Installo, "installo"),
+            (FaseAggiornamento::Riavvio, "riavvio"),
+            (FaseAggiornamento::Pronto, "pronto"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&fase).expect("si scrive"),
+                format!("\"{nome}\"")
+            );
+        }
+        let quando = |testo: &str| serde_json::from_str::<Quando>(testo);
+        assert_eq!(quando("\"subito\"").expect("si legge"), Quando::Subito);
+        assert_eq!(
+            quando("\"allaChiusura\"").expect("si legge"),
+            Quando::AllaChiusura
+        );
+        assert!(quando("\"domani\"").is_err());
+    }
+
+    /// §11.2.4: all'uscita si installa solo se a chiudere è stata una persona
+    /// (`aggiornamenti::uscita_voluta`) **e** c'è un pacchetto verificato in
+    /// attesa. Quando Windows spegne il computer o chiude la sessione, tao manda
+    /// `RunEvent::Exit` da solo, senza `ExitRequested` né `CloseRequested`: lì
+    /// l'installer verrebbe ucciso a metà.
+    #[test]
+    fn si_installa_uscendo_solo_se_ha_chiuso_una_persona_e_c_e_un_pacchetto() {
+        assert!(installa_uscendo(true, true));
+        assert!(
+            !installa_uscendo(false, true),
+            "Windows che si spegne: Exit senza che nessuno abbia chiuso"
+        );
+        assert!(!installa_uscendo(true, false), "niente da installare");
+        assert!(!installa_uscendo(false, false));
+    }
+
+    /// Un pacchetto di un'altra versione di quella che il controllo trova
+    /// adesso non resta: se è uscita la successiva, o la release è sparita,
+    /// installarlo alla chiusura sarebbe installare quel che nessuno annuncia
+    /// più.
+    #[test]
+    fn un_pacchetto_che_il_controllo_non_trova_piu_non_resta() {
+        assert!(pacchetto_ancora_buono("3.3.0", Some("3.3.0")));
+        assert!(!pacchetto_ancora_buono("3.3.0", Some("3.4.0")));
+        assert!(!pacchetto_ancora_buono("3.3.0", None));
+    }
+
+    /// Quel che la pagina legge come «fase»: il passo in corso vince; senza,
+    /// un pacchetto in attesa vale «pronto»; senza niente, nessuna fase.
+    #[test]
+    fn la_fase_dello_stato_e_il_passo_in_corso_o_il_pacchetto_pronto() {
+        use FaseAggiornamento::{Pronto, Scarico};
+        assert_eq!(fase_dello_stato(Some(Scarico), false), Some(Scarico));
+        assert_eq!(fase_dello_stato(Some(Scarico), true), Some(Scarico));
+        assert_eq!(fase_dello_stato(None, true), Some(Pronto));
+        assert_eq!(fase_dello_stato(None, false), None);
+    }
+
+    /// Lo scaricamento dice «Verifico» quando l'ultimo byte è sceso e il
+    /// plugin sta per controllare la firma: `on_download_finish`, che il plugin
+    /// chiama subito prima di `verify_signature` (`updater.rs:835-837`), era un
+    /// `|| {}`. E la verifica sta in `download()`, non in `install()`.
+    #[test]
+    fn lo_scaricamento_dice_verifico_prima_di_controllare_la_firma() {
+        let corpo = corpo_di("fn scarica(");
+        assert!(!corpo.is_empty(), "scarica non si trova");
+        assert!(
+            corpo.contains("FaseAggiornamento::Verifico"),
+            "lo scaricamento non dice mai «Verifico»"
+        );
+        assert!(
+            !corpo.contains("|| {}"),
+            "on_download_finish è ancora vuoto"
+        );
+    }
+
+    /// «Installa alla chiusura» non riapre l'app (`/R` tolto: `restart_after_install(false)`),
+    /// «Installa ora» sì: solo la prima strada porta il `false`.
+    #[test]
+    fn solo_l_installazione_alla_chiusura_toglie_il_riavvio() {
+        let alla_chiusura = corpo_di("pub fn alla_chiusura(");
+        assert!(!alla_chiusura.is_empty(), "alla_chiusura non si trova");
+        assert!(alla_chiusura.contains("restart_after_install(false)"));
+        let ora = corpo_di("fn scarica_e_installa(");
+        assert!(!ora.contains("restart_after_install"), "{ora}");
+        // E l'aggancio, che l'installer parta o no, dice «Riavvio» solo se si
+        // riapre.
+        let aggancio = corpo_di("fn costruisci(");
+        assert!(aggancio.contains("FaseAggiornamento::Riavvio"));
+        assert!(aggancio.contains("ALLA_CHIUSURA"));
+    }
+
+    /// Chi spegne il controllo, o salta una versione, o preme «Annulla» sul
+    /// pacchetto in attesa, non lo vuole più: il pacchetto — settanta megabyte
+    /// in memoria — se ne va. E una passata che trova un'altra versione lo butta.
+    #[test]
+    fn il_pacchetto_in_attesa_se_ne_va_con_chi_lo_rifiuta() {
+        for firma in [
+            "pub fn aggiornamenti_attivo(",
+            "pub fn aggiornamenti_salta(",
+            "pub fn aggiornamenti_annulla(",
+        ] {
+            assert!(
+                corpo_di(firma).contains("pronto"),
+                "{firma} lascia il pacchetto in memoria"
+            );
+        }
+        assert!(corpo_di("fn passata(").contains("pacchetto_ancora_buono("));
+    }
+
+    /// Il Store non ha niente da installare alla chiusura: il comando lo dice.
+    #[test]
+    fn alla_chiusura_non_c_e_sulla_copia_del_store() {
+        assert!(corpo_di("pub fn aggiornamenti_installa(").contains("gestita_dallo_store()"));
     }
 
     /// Il dialogo dice, in due lingue, che Rymembra si chiude, e porta la
