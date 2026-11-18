@@ -44,10 +44,13 @@ import java.util.concurrent.TimeUnit
  * che «Ascolta insieme» già chiede), non ha un tempo massimo come `dataSync`, e
  * non è fra i tipi che da Android 15 un `BOOT_COMPLETED` non può avviare —
  * `dataSync`, `mediaPlayback`, `camera`, `phoneCall`, `mediaProjection`,
- * `microphone` —: serve alla fase dell'avvio all'accensione. Google Play lo
- * accetta con un video del collegamento fatto dentro l'app, che è il QR di
- * «Collega un dispositivo». `specialUse` si è scartato: è «per i casi non
- * coperti dagli altri tipi», e questo è coperto.
+ * `microphone` —: serve alla fase dell'avvio all'accensione. Google Play
+ * rivede ogni tipo, e per questo chiede un video del collegamento fatto dentro
+ * l'app — «mostra l'utente che si collega a un dispositivo esterno», che qui è
+ * il QR di «Collega un dispositivo»: che accetti un servizio che parla con PC
+ * raggiunti su internet è un rischio di revisione, non una certezza.
+ * `specialUse` si è tenuto come ripiego, non come scelta: è «per i casi non
+ * coperti dagli altri tipi», e questo sembra coperto.
  *
  * # Cosa non garantisce
  *
@@ -80,7 +83,14 @@ class Presenza : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == AZIONE_SPEGNI) {
-      preferenze(this).edit().putBoolean(VOLUTO, false).putBoolean(SPENTO_DALLA_NOTIFICA, true).apply()
+      // `commit` e non `apply`: fermato il servizio il processo può essere
+      // chiuso subito, e il segno per il nucleo — che lo scrive nelle
+      // impostazioni — non deve restare a metà strada verso il disco.
+      preferenze(this)
+        .edit()
+        .putBoolean(VOLUTO, false)
+        .putBoolean(SPENTO_DALLA_NOTIFICA, true)
+        .commit()
       ferma()
       return START_NOT_STICKY
     }
