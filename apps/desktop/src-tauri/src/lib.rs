@@ -541,6 +541,10 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // agli altri dispositivi se la sessione è accesa. Spento di serie:
     // da spento il filo legge le impostazioni e basta.
     lontano::avvia_filo(app);
+    // Una volta per avvio, **dopo** «Ascolta insieme» — che dice se c'è una
+    // sessione, e allora non si tocca niente —: via quel che le versioni di prima
+    // hanno lasciato in `copertine-lontane`. Su un filo suo.
+    lontano::ripulisci_le_copertine_di_prima(app);
 
     // I modelli di linguaggio: un lucchetto vuoto e un contatore, e
     // nessun filo. Qui non parte niente da solo — non c'e` niente da
@@ -1085,10 +1089,13 @@ pub fn run() {
             lontano::lontano_rispondi,
             lontano::lontano_rinomina,
             lontano::lontano_dimentica,
+            lontano::lontano_specchio_lasciati,
+            lontano::lontano_specchio_lascia,
             lontano::specchio::lontano_dimentica_anteprima,
             lontano::specchio::lontano_specchio_conferma,
             lontano::specchio::lontano_specchio_ora,
             lontano::specchio::lontano_specchio_stato,
+            lontano::scarico::lontano_scarica_anteprima,
             lontano::scarico::lontano_scarica_righe,
             lontano::scarico::lontano_scarico_annulla,
             lontano::scarico::lontano_scarico_stato,

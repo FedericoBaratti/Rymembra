@@ -25,6 +25,7 @@ import { eventiEFotografia } from "./ultima";
 import { dispositivoDellaRiga } from "./ipc/libreria";
 import type { Chiave, Valori } from "./lingue";
 import type {
+  AnteprimaScarico,
   AvanzamentoSpecchio,
   DispositivoLontano,
   DispositivoSincronia,
@@ -265,6 +266,78 @@ export function fraseScaricoFinito(
   return {
     chiave: "devices.download.doneWithErrors",
     valori: { n: adesso.fatti, falliti: adesso.falliti },
+  };
+}
+
+/**
+ * Da quanti brani «Scarica qui» chiede prima.
+ *
+ * Un album, una selezione, una manciata di brani si scaricano e basta: è un
+ * gesto che chi lo fa vuole subito, e costa poco. Sopra questa soglia — un
+ * artista con la discografia intera, una playlist da migliaia di righe — sono
+ * decine di gigabyte sul disco e ore di rete di un altro dispositivo, e un clic
+ * di troppo non si disfa a costo zero (F3c lo scrisse fra i rischi). Cinquanta è
+ * anche la soglia con cui il nucleo chiede prima di togliere le righe di un
+ * dispositivo (`SOGLIA_RIMOZIONI` in `specchio/archivio.rs`): un insieme «grande»
+ * ha lo stesso senso nei due posti.
+ */
+export const SOGLIA_CONFERMA_SCARICO = 50;
+
+/**
+ * Quanti brani al più in una chiamata a `lontano_scarica_righe`: lo stesso
+ * numero di `MASSIMI_PER_VOLTA` in `lontano/scarico.rs`, che rifiuta il resto.
+ * Una prova (`confermaScarico.test.ts`) li tiene uguali.
+ */
+export const PER_VOLTA_SCARICO = 5000;
+
+/** Un insieme di questa grandezza chiede conferma prima di scendere. */
+export function chiedeConfermaPerLoScarico(brani: number): boolean {
+  return brani >= SOGLIA_CONFERMA_SCARICO;
+}
+
+/** `elementi` a pezzi di `per` al più, nello stesso ordine. Un elenco vuoto non ne dà nessuno. */
+export function inBlocchi<T>(elementi: readonly T[], per: number): T[][] {
+  const blocchi: T[][] = [];
+  for (let da = 0; da < elementi.length; da += per) blocchi.push(elementi.slice(da, da + per));
+  return blocchi;
+}
+
+/**
+ * La domanda prima di un «Scarica qui» grande: il titolo e la frase sotto, come
+ * chiave e valori da dare a `t`.
+ *
+ * `formati` sono quelli della finestra (`brani_` e la misura in MB/GB): questo
+ * modulo non carica le lingue. Lo spazio si dice solo se si sa:
+ * - tutte le dimensioni note: «Occupano 8,2 GB»;
+ * - qualcuna ignota: «Occupano almeno 3 GB» — la somma è un minimo, e dirla
+ *   per intera sarebbe una cifra falsa;
+ * - nessuna: la frase non dà una cifra. Una somma di zero byte non è «niente»,
+ *   è che non lo si sa.
+ */
+export function domandaDelloScarico(
+  anteprima: AnteprimaScarico,
+  formati: { brani: (n: number) => string; peso: (byte: number) => string },
+): {
+  titolo: { chiave: Chiave; valori: Valori };
+  descrizione: { chiave: Chiave; valori: Valori };
+} {
+  const titolo = {
+    chiave: "devices.download.confirm.title" as const,
+    valori: { brani: formati.brani(anteprima.brani) },
+  };
+  if (anteprima.byte <= 0) {
+    return { titolo, descrizione: { chiave: "devices.download.confirm.bodyUnknown", valori: {} } };
+  }
+  const spazio = { spazio: formati.peso(anteprima.byte) };
+  return {
+    titolo,
+    descrizione: {
+      chiave:
+        anteprima.senzaDimensione > 0
+          ? "devices.download.confirm.bodyAtLeast"
+          : "devices.download.confirm.body",
+      valori: spazio,
+    },
   };
 }
 
@@ -530,6 +603,37 @@ export function nonSupportati(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpec
 /** Quelli con righe che non mandano più, e che aspettano un sì per andarsene. */
 export function daConfermare(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio[] {
   return Object.values(avanzamenti).filter((a) => a.fase === "fine" && a.inAttesa > 0);
+}
+
+/**
+ * Il dispositivo di cui chiedere adesso «toglierli?», se ce n'è uno.
+ *
+ * `lasciate` è quel che il nucleo ricorda: per dispositivo, di quante righe la
+ * persona ha detto «Lasciali». Il nucleo rifà il conto a ogni giro — ogni cinque
+ * minuti — e la stessa domanda alla stessa cifra tornerebbe ogni cinque minuti,
+ * e a ogni riavvio: si ricorda finché il numero non cambia, e un numero diverso
+ * è una situazione diversa che si chiede di nuovo.
+ *
+ * `null` è «il nucleo non ha ancora risposto»: non si chiede niente. Partire da
+ * una mappa vuota farebbe lampeggiare, a ogni avvio, una domanda già risolta.
+ *
+ * Il ricordo **non** si dimentica da solo quando le righe tornano (un giro finito
+ * con `inAttesa` a zero): quello zero non è un segnale di cui fidarsi. Un giro
+ * che non riesce a leggere, o a togliere le righe scadute, finisce lo stesso
+ * `fine` con zero in attesa (`togli_le_scadute` in `lontano/specchio.rs` parte da
+ * zero e un guasto non rompe il giro), e il ricordo si perderebbe per un guasto:
+ * la domanda tornerebbe alla stessa cifra, che è proprio quel che il ricordo
+ * evita. Si dimentica con «Togli» e con «Dimentica», che sono gesti.
+ */
+export function domandaSullePerdite(
+  avanzamenti: AvanzamentiSpecchio,
+  nomi: ReadonlyMap<string, string>,
+  lasciate: ReadonlyMap<string, number> | null,
+): AvanzamentoSpecchio | undefined {
+  if (lasciate === null) return undefined;
+  return daConfermare(avanzamenti).find(
+    (a) => nomi.has(a.dispositivo) && lasciate.get(a.dispositivo) !== a.inAttesa,
+  );
 }
 
 /** Ogni quanto, al più, la libreria si rilegge mentre un catalogo sta arrivando. */

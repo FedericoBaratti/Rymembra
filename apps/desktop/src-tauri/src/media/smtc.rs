@@ -231,7 +231,7 @@ fn scheda_di(app: &tauri::AppHandle, stato: &StatoRiproduzione, copertine: &Cove
     let copertina = brano
         .cover_art_hash
         .as_ref()
-        .and_then(|hash| file_della_copertina(app, copertine, hash))
+        .and_then(|hash| file_della_copertina(app, copertine, hash, brano.path.as_deref()))
         .and_then(|percorso| url_di_file(&percorso))
         // Un brano senza copertina mostra quella di ripiego, e non è un
         // ornamento: senza, la scheda terrebbe la copertina del brano di prima
@@ -249,33 +249,31 @@ fn scheda_di(app: &tauri::AppHandle, stato: &StatoRiproduzione, copertine: &Cove
 
 /// Il file della copertina di un brano, se c'è.
 ///
-/// Un brano di questo PC la ha nello store, sotto la sua impronta. Un brano
-/// che suona da un altro dispositivo ha invece una chiave
-/// (`lontano-<dispositivo>-<impronta>`) e la sua copertina sta nella cache
-/// delle copertine lontane: dove non c'è ancora la si chiede in disparte, e
-/// quando arriva la scheda si ripubblica, con lei. Vedi `lontane`.
+/// Un brano della libreria la ha nello store, sotto la sua impronta. Una riga di
+/// un altro dispositivo — `percorso` è `lontano://…` — ce l'ha solo se qualcuno
+/// l'ha già chiesta all'altro (`lontano::copertina_di_una_riga`): la finestra
+/// quando la mostra. Dove non c'è ancora la si chiede in disparte, una volta
+/// sola (vedi [`super::lontane`]), e quando arriva la scheda si ripubblica, con
+/// lei: fra le due cose esce con la copertina di ripiego, e non aspetta la rete.
 ///
 /// Una voce di «Ascolta insieme» (`insieme-<uid>`) ha i byte in memoria: la
-/// prima volta si scrivono in una cartella riservata della stessa cache
-/// (`crate::insieme::su_file`). Niente da chiedere alla rete: la copertina
-/// arriva con la voce, e la finestra si ridisegna da sé.
+/// prima volta si scrivono in una cartella riservata della cache delle
+/// copertine lontane (`crate::insieme::su_file`). Niente da chiedere alla rete:
+/// la copertina arriva con la voce, e la finestra si ridisegna da sé.
 fn file_della_copertina(
     app: &tauri::AppHandle,
     copertine: &CoverStore,
     hash: &str,
+    percorso: Option<&str>,
 ) -> Option<PathBuf> {
     if crate::insieme::e_una_chiave_di_sessione(hash) {
         return crate::insieme::copertina_su_file(app, hash);
     }
-    if crate::lontano::e_una_copertina(hash) {
-        return super::lontane::file_di(
-            app,
-            hash,
-            true,
-            crate::riproduzione::insieme::aggiorna_finestra,
-        );
+    let file = Some(copertine.path_for(hash)).filter(|file| file.exists());
+    if file.is_none() && super::lontane::e_di_un_altro_dispositivo(percorso) {
+        super::lontane::richiedi(app, hash, crate::riproduzione::insieme::aggiorna_finestra);
     }
-    Some(copertine.path_for(hash)).filter(|percorso| percorso.exists())
+    file
 }
 
 /// Consegna la scheda a Windows, e ricorda com'è andata.

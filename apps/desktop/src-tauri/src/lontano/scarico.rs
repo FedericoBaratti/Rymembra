@@ -644,6 +644,83 @@ fn accoda(
     Ok(stato)
 }
 
+/// Quanto è grande un «Scarica qui», per chiedere prima di farlo (FR2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnteprimaScarico {
+    /// Quanti brani scenderebbero davvero.
+    pub brani: usize,
+    /// La somma delle dimensioni che si sanno, in byte.
+    pub byte: u64,
+    /// Quanti di quei brani non hanno una dimensione nota (zero o meno: il
+    /// catalogo dell'altro non l'aveva).
+    pub senza_dimensione: usize,
+}
+
+impl AnteprimaScarico {
+    /// Questa anteprima e `altra`, sommate: i pezzi di un insieme lungo.
+    const fn con(self, altra: Self) -> Self {
+        Self {
+            brani: self.brani.saturating_add(altra.brani),
+            byte: self.byte.saturating_add(altra.byte),
+            senza_dimensione: self.senza_dimensione.saturating_add(altra.senza_dimensione),
+        }
+    }
+}
+
+/// Quel che la coda chiederebbe, dai gruppi di [`righe_da_scaricare`].
+///
+/// Conta come conta `Coda::aggiungi`: i brani di un'immagine CD si saltano, e
+/// non sono né «brani» né byte. La somma si ferma al massimo invece di
+/// traboccare: è un numero da dire a chi guarda, non un conto da quadrare.
+fn anteprima_di(gruppi: &[(String, Vec<BranoRemoto>)]) -> AnteprimaScarico {
+    let mut anteprima = AnteprimaScarico::default();
+    for brano in gruppi
+        .iter()
+        .flat_map(|(_, brani)| brani)
+        .filter(|brano| brano.segmento.is_none())
+    {
+        anteprima.brani = anteprima.brani.saturating_add(1);
+        match u64::try_from(brano.dimensione) {
+            Ok(dimensione) if dimensione > 0 => {
+                anteprima.byte = anteprima.byte.saturating_add(dimensione);
+            }
+            _ => anteprima.senza_dimensione = anteprima.senza_dimensione.saturating_add(1),
+        }
+    }
+    anteprima
+}
+
+/// Prima di «Scarica qui» su un insieme grande: quanti brani scenderebbero e
+/// quanto spazio prendono, perché la finestra lo chieda. **Non accoda niente.**
+///
+/// Legge dalla stessa fonte di [`lontano_scarica_righe`] (`righe_da_scaricare`,
+/// su una connessione a parte): vale la stessa regola sulle righe — quelle di
+/// questa macchina e quelle che il proprietario non manda più non contano — e il
+/// numero detto a chi conferma è quello che la coda poi prende.
+///
+/// A differenza di quello, non rifiuta una lista lunga: l'artista con la
+/// discografia intera è proprio il caso per cui si chiede, e sono sola lettura.
+/// Si legge a pezzi di [`MASSIMI_PER_VOLTA`] righe, perché ogni riga letta porta
+/// con sé titolo, artista e album, e sessantamila insieme sono decine di
+/// mebibyte per sapere un numero.
+///
+/// # Errori
+///
+/// Quelli del database.
+#[tauri::command]
+pub async fn lontano_scarica_anteprima(app: AppHandle, righe: Vec<i64>) -> Esito<AnteprimaScarico> {
+    in_disparte(move || {
+        let mut tutto = AnteprimaScarico::default();
+        for pezzo in righe.chunks(MASSIMI_PER_VOLTA) {
+            let gruppi = leggi_a_parte(&app, |c| righe_da_scaricare(c, pezzo))?;
+            tutto = tutto.con(anteprima_di(&gruppi));
+        }
+        Ok(tutto)
+    })
+    .await
+}
+
 /// «Scarica qui»: le righe della libreria che stanno su un altro dispositivo,
 /// copiate nella cartella dei download di questo.
 ///
@@ -730,6 +807,87 @@ mod prove {
             versione: "v1".to_owned(),
             segmento: None,
         }
+    }
+
+    /// FR2: la domanda prima di «Scarica qui» conta quel che la coda chiederebbe
+    /// davvero — non i brani di un'immagine CD, che `Coda::aggiungi` salta — e
+    /// somma solo le dimensioni che si sanno.
+    #[test]
+    fn l_anteprima_conta_quel_che_si_chiederebbe_e_somma_le_dimensioni_note() {
+        let con = |titolo: &str, dimensione: i64| BranoRemoto {
+            dimensione,
+            ..brano(titolo)
+        };
+        let mut immagine = con("Traccia di un CD", 9_000_000);
+        immagine.segmento = Some(rymembra_app::library::condivisa::Segmento {
+            inizio_cd: 750,
+            fine_cd: None,
+        });
+        let gruppi = vec![
+            (
+                "pc".to_owned(),
+                vec![con("Uno", 5_000_000), con("Due", 0), immagine],
+            ),
+            (
+                "telefono".to_owned(),
+                vec![con("Tre", 1_000_000), con("Quattro", -1)],
+            ),
+        ];
+        assert_eq!(
+            anteprima_di(&gruppi),
+            AnteprimaScarico {
+                brani: 4,
+                byte: 6_000_000,
+                senza_dimensione: 2,
+            },
+            "i quattro che scendono; la traccia del CD no; due non hanno una dimensione"
+        );
+        assert_eq!(
+            anteprima_di(&[]),
+            AnteprimaScarico {
+                brani: 0,
+                byte: 0,
+                senza_dimensione: 0,
+            }
+        );
+    }
+
+    /// FR2: la somma non gira intorno — quel che non ci sta si ferma al
+    /// massimo — e i pezzi di un insieme lungo si sommano come un insieme solo.
+    #[test]
+    fn la_somma_dell_anteprima_non_trabocca_e_i_pezzi_si_sommano() {
+        let enorme = |t: &str| BranoRemoto {
+            dimensione: i64::MAX,
+            ..brano(t)
+        };
+        let gruppi = vec![("pc".to_owned(), vec![enorme("A"), enorme("B"), enorme("C")])];
+        let anteprima = anteprima_di(&gruppi);
+        assert_eq!(anteprima.brani, 3);
+        assert_eq!(
+            anteprima.byte,
+            u64::MAX,
+            "tre volte i64::MAX non ci sta in u64"
+        );
+
+        let uno = AnteprimaScarico {
+            brani: 5000,
+            byte: 7,
+            senza_dimensione: 1,
+        };
+        let due = AnteprimaScarico {
+            brani: 12,
+            byte: 3,
+            senza_dimensione: 0,
+        };
+        assert_eq!(
+            uno.con(due),
+            AnteprimaScarico {
+                brani: 5012,
+                byte: 10,
+                senza_dimensione: 1,
+            }
+        );
+        assert_eq!(uno.con(AnteprimaScarico::default()), uno);
     }
 
     #[test]

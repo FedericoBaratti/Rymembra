@@ -63,7 +63,7 @@ use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
 pub(crate) use sfoglia::rete_a_consumo;
-pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina};
+pub(crate) use sfoglia::{ascoltato_qui, ripulisci_le_copertine_di_prima};
 pub(crate) use specchio::{
     apri_riga, copertina_di_una_riga, origine_che_suona, posta_nuova, scegli_la_copia,
 };
@@ -606,14 +606,50 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
         // (`specchio::archivio::dimentica_dispositivo`), e `apri_riga` rifiuta
         // un dispositivo che non è più collegato.
         specchio::dimenticato(&chiave);
-        // E le sue copertine in cache: non devono restare su disco, né uscire
-        // da una scheda di sistema, finché la potatura non le trova.
+        // E le copertine che una versione di prima gli teneva in cache: non
+        // devono restare su disco, né uscire da una scheda di sistema.
         sfoglia::togli_le_copertine_di(&app, &chiave);
         // Nella libreria appena si può, con la sua chiave di «Ascolta
         // insieme» che il QR aveva reso fidata: lo scrittore fa rileggere la
         // rete di «Ascolta insieme», che chiude le sue connessioni.
         filo::scrivi_il_registro(&app, &comune);
         rileggi_e_aspetta(&app)
+    })
+    .await
+}
+
+/// Le risposte «Lasciali» ricordate: per dispositivo, di quante righe (FR2).
+///
+/// La finestra le legge una volta all'apertura, per non rifare la domanda sulle
+/// righe che un dispositivo non manda più alla stessa cifra dopo un riavvio.
+/// Sola lettura, su una connessione a parte: all'avvio la libreria può essere
+/// occupata da una scansione, e una domanda già risolta non deve aspettarla.
+#[tauri::command]
+pub async fn lontano_specchio_lasciati(
+    app: AppHandle,
+) -> Esito<std::collections::BTreeMap<String, usize>> {
+    in_disparte(move || leggi_a_parte(&app, dispositivi::righe_lasciate)).await
+}
+
+/// Ricorda che la persona ha detto «Lasciali» a `quante` righe di `chiave`; senza
+/// un numero (`None`: «Togli») dimentica la sua risposta (FR2).
+///
+/// Sta qui e non in `specchio.rs` perché il ricordo è una chiave delle
+/// impostazioni del collegamento (`dispositivi::CHIAVE_LASCIATI`), non una
+/// regola dello specchio: le regole e la loro conferma (`lontano_specchio_conferma`)
+/// restano dove sono.
+///
+/// # Errori
+///
+/// `lontano.protocollo` per una chiave che non è di 64 cifre esadecimali.
+#[tauri::command]
+pub async fn lontano_specchio_lascia(
+    app: AppHandle,
+    chiave: String,
+    quante: Option<usize>,
+) -> Esito<()> {
+    in_disparte(move || {
+        scrivi_in_libreria(&app, |c| dispositivi::ricorda_lasciati(c, &chiave, quante))
     })
     .await
 }

@@ -57,6 +57,14 @@
 //! scorre a scatti mentre la pagina successiva arriva. La regola che ne esce è
 //! semplice: un comando che legge più di una riga per chiave non è sincrono.
 //!
+//! Le liste e i conteggi che la finestra rilegge a ogni cambiamento della libreria
+//! (gli artisti, i brani, gli album, la pagina di un artista, la ricerca) passano
+//! da [`leggi_a_parte`], che non chiede nemmeno il lucchetto: una connessione di
+//! sola lettura, come quella con cui il servizio «lontano» risponde agli altri
+//! dispositivi. Sotto il lucchetto, rifatte ogni 3 s durante la lettura di un
+//! catalogo, queste letture impedivano a una scansione, all'analisi e allo specchio
+//! di scrivere per tutta la loro durata (misure in `stato/misure.rs`).
+//!
 //! # E i comandi che aspettano un brano, un'uscita o la sessione
 //!
 //! Dalla 3.2 passano di qui anche i comandi del lettore che fanno partire un
@@ -135,6 +143,45 @@ pub async fn leggi_la_libreria<T: Send + 'static>(
             .with_cause("la libreria non è più fra gli stati gestiti")
         })?;
         crate::stato::con_libreria(&stato, lettura)
+    })
+    .await?
+}
+
+/// Una lettura della libreria **senza il suo lucchetto**, in disparte: su una
+/// connessione di sola lettura aperta apposta ([`crate::stato::leggi_o_aspetta`]).
+///
+/// È la forma delle liste e dei conteggi che la finestra rilegge a ogni
+/// cambiamento della libreria. Con la pagina di un artista aperta ogni
+/// rilettura rifà gli artisti — un raggruppamento su tutta la tabella dei brani —
+/// e il conto delle partecipazioni, e durante la lettura del catalogo di un altro
+/// dispositivo succede ogni 3 s: sotto il lucchetto, per tutto il tempo, la
+/// scansione, l'analisi e lo specchio non scrivevano (misure in
+/// `stato/misure.rs`). In WAL chi legge da una connessione sua vede l'ultima
+/// transazione chiusa, e non ferma né è fermato da chi scrive.
+///
+/// Per le letture che **solo leggono** — la funzione prende una `&Connection` —
+/// e che non dipendono da quel che una connessione ha in sé e l'altra no (una
+/// tabella temporanea, un'impostazione dell'apertura): `stato/prove_a_parte.rs`
+/// le prova su una connessione nuova. Quel che legge e poi scrive resta su
+/// [`leggi_la_libreria`].
+///
+/// # Errori
+///
+/// Come [`leggi_la_libreria`].
+pub async fn leggi_a_parte<T: Send + 'static>(
+    app: tauri::AppHandle,
+    nome: &'static str,
+    lettura: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError> {
+    in_disparte(nome, move || {
+        use tauri::Manager as _;
+        let stato = app.try_state::<crate::stato::Stato>().ok_or_else(|| {
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some(nome.to_owned()),
+            })
+            .with_cause("la libreria non è più fra gli stati gestiti")
+        })?;
+        crate::stato::leggi_o_aspetta(&stato, lettura)
     })
     .await?
 }
@@ -265,5 +312,53 @@ mod prove {
             sbagliati.is_empty(),
             "comandi che rileggono o contano la libreria fuori dal pool bloccante: {sbagliati:#?}"
         );
+    }
+
+    /// Le liste e i conteggi che la finestra rilegge a ogni cambiamento della
+    /// libreria non chiedono il suo lucchetto (FR2).
+    ///
+    /// Sono quelle che con la pagina di un artista aperta si rifanno ogni 3 s
+    /// durante la lettura di un catalogo (`caricaVista`): gli artisti, il conto
+    /// delle partecipazioni, le pagine dei brani, degli album e dei risultati.
+    /// Una che tornasse a `leggi_la_libreria` riporterebbe la lettura sotto il
+    /// lucchetto, e la prova è scritta sul sorgente perché nessun'altra se ne
+    /// accorgerebbe: il risultato è lo stesso, cambia chi aspetta.
+    #[test]
+    fn le_liste_della_finestra_passano_dalla_connessione_a_parte() {
+        const DA_PARTE: [&str; 12] = [
+            "cerca",
+            "cerca_conteggio",
+            "preferiti",
+            "album_artista",
+            "brani_artista",
+            "partecipazioni",
+            "partecipazioni_conta",
+            "brani",
+            "album",
+            "artisti",
+            "conteggi",
+            "brani_album",
+        ];
+        let tutti = sorgenti();
+        let (_, testo) = tutti
+            .iter()
+            .find(|(percorso, _)| percorso.file_name().is_some_and(|n| n == "comandi.rs"))
+            .expect("comandi.rs");
+        for nome in DA_PARTE {
+            let firma = format!("\npub async fn {nome}(");
+            let dove = testo
+                .find(&firma)
+                .unwrap_or_else(|| panic!("il comando {nome} non c'è più"));
+            let resto = &testo[dove + 1..];
+            let corpo = &resto[..resto.find("\n}\n").unwrap_or(resto.len())];
+            assert!(
+                corpo.contains(concat!("leggi_a", "_parte(")),
+                "{nome} non legge dalla connessione a parte"
+            );
+            assert!(
+                !corpo.contains(concat!("leggi_la", "_libreria(")),
+                "{nome} chiede ancora il lucchetto"
+            );
+        }
     }
 }

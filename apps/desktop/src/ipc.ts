@@ -16,6 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ErroreIpc } from "./ipc/errori";
 import type {
   AnteprimaDimentica,
+  AnteprimaScarico,
   AvanzamentoSpecchio,
   DatiMobili,
   InvitoLontano,
@@ -1554,6 +1555,10 @@ export const ipc = {
   // qui si saltano. L'avanzamento arriva con `lontano:scarico`.
   lontanoScaricaRighe: (righe: number[]) =>
     invoke<ScaricoLontano>("lontano_scarica_righe", { righe }),
+  // Prima di «Scarica qui» su un insieme grande: quanti brani scenderebbero e quanto
+  // spazio prendono, per chiedere. Non accoda niente.
+  lontanoScaricaAnteprima: (righe: number[]) =>
+    invoke<AnteprimaScarico>("lontano_scarica_anteprima", { righe }),
   lontanoScaricoAnnulla: () => invoke<ScaricoLontano>("lontano_scarico_annulla"),
   lontanoScaricoStato: () => invoke<ScaricoLontano>("lontano_scarico_stato"),
   // La libreria unica: il catalogo dei dispositivi collegati come righe di
@@ -1564,6 +1569,12 @@ export const ipc = {
   // Il sì alle righe che il dispositivo non manda più: se ne vanno. Quante.
   lontanoSpecchioConferma: (chiave: string) =>
     invoke<number>("lontano_specchio_conferma", { chiave }),
+  // «Lasciali», ricordato dal nucleo: per dispositivo, di quante righe. La domanda
+  // sulle righe che sparirebbero non torna alla stessa cifra, nemmeno dopo un riavvio.
+  lontanoSpecchioLasciati: () => invoke<Record<string, number>>("lontano_specchio_lasciati"),
+  // Ricorda «Lasciali» col numero di righe; `null` lo dimentica («Togli»).
+  lontanoSpecchioLascia: (chiave: string, quante: number | null) =>
+    invoke<void>("lontano_specchio_lascia", { chiave, quante }),
   // Prima di dimenticare un dispositivo: quante playlist perdono brani.
   lontanoDimenticaAnteprima: (chiave: string) =>
     invoke<AnteprimaDimentica>("lontano_dimentica_anteprima", { chiave }),

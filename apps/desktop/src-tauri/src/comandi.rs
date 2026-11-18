@@ -21,7 +21,7 @@ use rymembra_domain::paths::PathRules;
 use serde::Serialize;
 use tauri::{Manager as _, State};
 
-use crate::disparte::{in_disparte, leggi_la_libreria};
+use crate::disparte::{in_disparte, leggi_a_parte, leggi_la_libreria};
 use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{DepositoStato, Stato, adesso_ms, con_libreria};
@@ -1574,8 +1574,8 @@ pub async fn cerca(
 ) -> Esito<Vec<TrackSummary>> {
     let (offset, limite) = pagina(offset, limite);
     let origine = origine.unwrap_or_default();
-    leggi_la_libreria(app, "ricerca", move |libreria| {
-        search(&libreria.connection, &origine, &query, offset, limite)
+    leggi_a_parte(app, "ricerca", move |c| {
+        search(c, &origine, &query, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1593,8 +1593,8 @@ pub async fn cerca_conteggio(
     origine: Option<Origine>,
 ) -> Esito<i64> {
     let origine = origine.unwrap_or_default();
-    leggi_la_libreria(app, "conteggio della ricerca", move |libreria| {
-        rymembra_app::library::search_count(&libreria.connection, &origine, &query)
+    leggi_a_parte(app, "conteggio della ricerca", move |c| {
+        rymembra_app::library::search_count(c, &origine, &query)
     })
     .await
     .map_err(errore)
@@ -1610,8 +1610,8 @@ pub async fn preferiti(
 ) -> Esito<Vec<TrackSummary>> {
     let (offset, limite) = pagina(offset, limite);
     let origine = origine.unwrap_or_default();
-    leggi_la_libreria(app, "preferiti", move |libreria| {
-        rymembra_app::library::list_liked(&libreria.connection, &origine, offset, limite)
+    leggi_a_parte(app, "preferiti", move |c| {
+        rymembra_app::library::list_liked(c, &origine, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1628,14 +1628,8 @@ pub async fn album_artista(
 ) -> Esito<Vec<AlbumSummary>> {
     let (offset, limite) = pagina(offset, limite);
     let origine = origine.unwrap_or_default();
-    leggi_la_libreria(app, "album di un artista", move |libreria| {
-        rymembra_app::library::albums_by_artist(
-            &libreria.connection,
-            &origine,
-            &nome,
-            offset,
-            limite,
-        )
+    leggi_a_parte(app, "album di un artista", move |c| {
+        rymembra_app::library::albums_by_artist(c, &origine, &nome, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1657,15 +1651,8 @@ pub async fn brani_artista(
     let (offset, limite) = pagina(offset, limite);
     let origine = origine.unwrap_or_default();
     let ordine = crate::viste::ordine_artista_da(&ordine);
-    leggi_la_libreria(app, "brani di un artista", move |libreria| {
-        rymembra_app::library::brani_artista(
-            &libreria.connection,
-            &origine,
-            &nome,
-            ordine,
-            offset,
-            limite,
-        )
+    leggi_a_parte(app, "brani di un artista", move |c| {
+        rymembra_app::library::brani_artista(c, &origine, &nome, ordine, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1689,15 +1676,8 @@ pub async fn partecipazioni(
     let (offset, limite) = pagina(offset, limite);
     let origine = origine.unwrap_or_default();
     let tipo = crate::viste::specie_di_partecipazione(&tipo).map_err(errore)?;
-    leggi_la_libreria(app, "partecipazioni di un artista", move |libreria| {
-        rymembra_app::library::partecipazioni(
-            &libreria.connection,
-            &origine,
-            &nome,
-            tipo,
-            offset,
-            limite,
-        )
+    leggi_a_parte(app, "partecipazioni di un artista", move |c| {
+        rymembra_app::library::partecipazioni(c, &origine, &nome, tipo, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1712,8 +1692,8 @@ pub async fn partecipazioni_conta(
     origine: Option<Origine>,
 ) -> Esito<rymembra_app::library::ContoPartecipazioni> {
     let origine = origine.unwrap_or_default();
-    leggi_la_libreria(app, "conteggio delle partecipazioni", move |libreria| {
-        rymembra_app::library::partecipazioni_conta(&libreria.connection, &origine, &nome)
+    leggi_a_parte(app, "conteggio delle partecipazioni", move |c| {
+        rymembra_app::library::partecipazioni_conta(c, &origine, &nome)
     })
     .await
     .map_err(errore)
@@ -1750,8 +1730,8 @@ pub async fn brani(
     };
     let (offset, limite) = pagina(offset, limite);
     let origine = origine.unwrap_or_default();
-    leggi_la_libreria(app, "elenco dei brani", move |libreria| {
-        list_tracks(&libreria.connection, &origine, ordine, offset, limite)
+    leggi_a_parte(app, "elenco dei brani", move |c| {
+        list_tracks(c, &origine, ordine, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1767,8 +1747,8 @@ pub async fn album(
 ) -> Esito<Vec<AlbumSummary>> {
     let (offset, limite) = pagina(offset, limite);
     let origine = origine.unwrap_or_default();
-    leggi_la_libreria(app, "elenco degli album", move |libreria| {
-        list_albums(&libreria.connection, &origine, offset, limite)
+    leggi_a_parte(app, "elenco degli album", move |c| {
+        list_albums(c, &origine, offset, limite)
     })
     .await
     .map_err(errore)
@@ -1782,12 +1762,16 @@ pub async fn album(
 /// `list_artists`, non qui.
 ///
 /// In disparte: è il comando più lungo fra le letture, un raggruppamento su
-/// tutta la tabella — sopra i cinquanta millisecondi su cinquantamila brani.
+/// tutta la tabella — sopra i cinquanta millisecondi su cinquantamila brani — e
+/// **senza il lucchetto della libreria** (`leggi_a_parte`): con la pagina di un
+/// artista aperta si rifà a ogni cambiamento della libreria, e durante la lettura
+/// del catalogo di un altro dispositivo ogni 3 s. Sotto il lucchetto la scansione,
+/// l'analisi e lo specchio non scrivevano per tutto il tempo.
 #[tauri::command]
 pub async fn artisti(app: tauri::AppHandle, origine: Option<Origine>) -> Esito<Vec<ArtistSummary>> {
     let origine = origine.unwrap_or_default();
-    leggi_la_libreria(app, "elenco degli artisti", move |libreria| {
-        list_artists(&libreria.connection, &origine)
+    leggi_a_parte(app, "elenco degli artisti", move |c| {
+        list_artists(c, &origine)
     })
     .await
     .map_err(errore)
@@ -1802,11 +1786,9 @@ pub async fn artisti(app: tauri::AppHandle, origine: Option<Origine>) -> Esito<V
 #[tauri::command]
 pub async fn conteggi(app: tauri::AppHandle, origine: Option<Origine>) -> Esito<Counts> {
     let origine = origine.unwrap_or_default();
-    leggi_la_libreria(app, "conteggi della libreria", move |libreria| {
-        counts(&libreria.connection, &origine)
-    })
-    .await
-    .map_err(errore)
+    leggi_a_parte(app, "conteggi della libreria", move |c| counts(c, &origine))
+        .await
+        .map_err(errore)
 }
 
 /// I brani di un album.
@@ -1819,14 +1801,14 @@ pub async fn brani_album(
     chiave: String,
     origine: Option<Origine>,
 ) -> Esito<Vec<TrackSummary>> {
-    leggi_la_libreria(app, "brani di un album", move |libreria| {
+    leggi_a_parte(app, "brani di un album", move |c| {
         // Senza un'origine detta dalla finestra, l'album si apre da dove viene:
         // un disco che «Tutti» nasconde dietro una copia migliore resta apribile.
         let origine = match origine {
             Some(origine) => origine,
-            None => rymembra_app::library::origine_dell_album(&libreria.connection, &chiave)?,
+            None => rymembra_app::library::origine_dell_album(c, &chiave)?,
         };
-        album_tracks(&libreria.connection, &origine, &chiave)
+        album_tracks(c, &origine, &chiave)
     })
     .await
     .map_err(errore)

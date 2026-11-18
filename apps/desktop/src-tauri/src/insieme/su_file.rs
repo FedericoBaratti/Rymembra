@@ -33,18 +33,19 @@
 //!
 //! Alla fine della sessione ([`svuota`]), con la memoria: una copertina di un
 //! altro PC non deve restare sul telefono dopo che l'ascolto è finito. Se il
-//! processo muore a metà restano i file, e vanno via alla fine della sessione
-//! dopo, o con la potatura della cache (`lontano::sfoglia::pota`, che conta
-//! anche questa cartella).
+//! processo muore a metà restano i file, e vanno via all'avvio dopo
+//! (`lontano::sfoglia::ripulisci_le_copertine_di_prima`, che toglie la cartella
+//! di zeri se nessuna sessione è in corso) o alla fine della sessione dopo.
 
 use std::path::{Path, PathBuf};
 
 use rymembra_insieme::Gettone;
 
 /// Il nome della cartella riservata: sessantaquattro zeri. Passa la stessa
-/// regola delle chiavi dei dispositivi (64 cifre esadecimali) senza essere la
-/// chiave di nessuno: una chiave `lontano-<64 zeri>-…` non supera mai il
-/// cancello di `lontano::sfoglia`, che vuole un dispositivo collegato.
+/// regola delle chiavi dei dispositivi (64 cifre esadecimali) — quella che il
+/// fornitore di Android controlla (`Copertine.kt`) e con cui «Dimentica» toglie
+/// una cartella (`lontano::sfoglia::togli_le_copertine_di`) — senza essere la
+/// chiave di nessuno.
 pub(super) const CARTELLA: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -109,9 +110,8 @@ pub(super) fn scrivi_se_manca(
 /// riservata, e niente altro. Le cartelle dei dispositivi collegati restano.
 ///
 /// Una cartella che non c'è non è un guasto. Un file che non si toglie — un
-/// lettore che lo tiene aperto, su Windows — resta, e se ne va con la potatura
-/// della cache o alla fine della sessione dopo: lo si scrive nel diario, una
-/// volta per chiamata.
+/// lettore che lo tiene aperto, su Windows — resta, e se ne va all'avvio dopo o
+/// alla fine della sessione dopo: lo si scrive nel diario, una volta per chiamata.
 pub(super) fn svuota(cache: &Path) {
     match std::fs::remove_dir_all(cache.join(CARTELLA)) {
         Ok(()) => {}
