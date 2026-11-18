@@ -36,7 +36,7 @@ La libreria si costruisce sulle tue cartelle e le tiene d'occhio: un album copia
 
 Quel che manca, lo cerca solo dove è consentito. Partendo da una playlist (l'archivio dati che Spotify ti consegna su richiesta, un file M3U o PLS, oppure un link) Rymembra riconosce quali brani hai già e cerca gli altri nei cataloghi liberi, Internet Archive e Audius, e li scarica soltanto quando la licenza di quel brano lo permette. Ogni brano porta con sé la licenza con cui è stato preso. Quello che nessun catalogo libero ha finisce in «Da comprare», con i link ai negozi dove l'artista viene pagato. Rymembra non scarica da YouTube e non accede a Spotify in modo non ufficiale.
 
-Inoltre: Esplora, per ascoltare dai cataloghi liberi senza salvare niente sul disco; testi sincronizzati da LRCLIB; copertine e informazioni da MusicBrainz; cartelle di musica su OneDrive, Google Drive, Dropbox o un server WebDAV, lette senza mai modificarle; «Ascolta insieme», la stessa musica nello stesso istante su più dispositivi della stessa rete; il collegamento via internet con un codice QR, per ascoltare la musica del PC dal telefono anche fuori casa, con Rymembra per Android; scrobbling su Last.fm e ListenBrainz; backup e sincronizzazione su Google Drive (con un'app Google che registri tu) o su una cartella condivisa; skin che ridisegnano l'interfaccia, con un editor visivo.
+Inoltre: Esplora, per ascoltare dai cataloghi liberi senza salvare niente sul disco; testi sincronizzati da LRCLIB; copertine e informazioni da MusicBrainz; cartelle di musica su OneDrive, Google Drive, Dropbox o un server WebDAV, lette senza mai modificarle; «Ascolta insieme», la stessa musica nello stesso istante su più dispositivi della stessa rete; il collegamento via internet con un codice QR, con Rymembra per Android: la musica del telefono e degli altri tuoi PC entra nella stessa libreria, anche fuori casa; l'avvio con Windows, se lo accendi tu; scrobbling su Last.fm e ListenBrainz; backup e sincronizzazione su Google Drive (con un'app Google che registri tu) o su una cartella condivisa; skin che ridisegnano l'interfaccia, con un editor visivo.
 
 Nessuna telemetria, nessun account da creare, nessun server di Rymembra. Di serie il programma cerca da solo copertine e informazioni sui brani in cataloghi pubblici come MusicBrainz (si spegne nelle Impostazioni); tutto il resto parte solo quando lo usi o lo accendi tu, e l'informativa sulla privacy elenca ogni richiesta che il programma può fare. È gratuito e a codice aperto (licenza MIT), e va avanti grazie alle donazioni.
 ```
@@ -44,20 +44,15 @@ Nessuna telemetria, nessun account da creare, nessun server di Rymembra. Di seri
 ### Descrizione breve (max 1.000)
 
 ```
-Un lettore musicale per Windows per la musica che possiedi: riproduzione senza pause, volume uniforme, una libreria che si aggiorna da sola, la ricerca di ciò che manca nei cataloghi liberi (Internet Archive, Audius) e la tua musica sul telefono anche fuori casa. Nessuna telemetria, nessun account.
+Un lettore musicale per Windows per la musica che possiedi: riproduzione senza pause, volume uniforme, una libreria che si aggiorna da sola, la ricerca di ciò che manca nei cataloghi liberi (Internet Archive, Audius) e la musica dei tuoi dispositivi in una libreria sola, anche fuori casa. Nessuna telemetria, nessun account.
 ```
 
 ### Novità di questa versione (max 1.500)
 
 ```
-Collega i tuoi dispositivi via internet: il PC mostra un codice QR, il telefono lo legge con Rymembra per Android, e da lì i due si ritrovano da soli, a casa e fuori, senza nessun server di Rymembra. Dal telefono sfogli la libreria del PC, la ascolti o ne scarichi i brani, e viceversa. È spento finché non accendi «Raggiungibile da internet» in Impostazioni › Dispositivi.
-«Ascolta insieme» funziona anche fuori casa, fra i dispositivi collegati.
-La finestra compare subito, anche quando la libreria va aggiornata, e dice cosa sta facendo.
-I Brani si ordinano senza accenti né articoli, come Artisti e Album.
-Dopo una scansione, l'analisi cede il passo agli altri programmi e, a batteria, usa un solo filo.
-iTunes e Deezer sono spenti di serie, ognuno col suo interruttore.
-Licenza, avvisi delle dipendenze, privacy e condizioni si leggono anche senza rete, dalle Impostazioni.
-Le correzioni di una revisione completa del codice e della sua sicurezza.
+Una libreria sola per i tuoi dispositivi collegati: i brani del telefono e degli altri PC compaiono in Album, Artisti, Brani, Preferiti, Cerca e nelle playlist, ognuno con l'icona del suo dispositivo. Un brano che sta su più dispositivi è una voce sola e suona la copia migliore. Se un dispositivo è spento i suoi brani restano nell'elenco, in grigio. Il filtro «Tutti · Questo dispositivo · nome» prende il posto di «Sfoglia». Mi piace, stelle, playlist e «Scarica qui» funzionano anche su quei brani, il testo si chiede al dispositivo che ha il brano e la pagina dell'artista mostra album, tutti i brani e le partecipazioni.
+Impostazioni › Avvio e chiusura: «Avvia con Windows», spento finché non lo accendi, apre Rymembra ridotta a icona quando accedi. Con «La X chiude la finestra e Rymembra resta nel vassoio» la musica e i tasti multimediali continuano e la finestra si chiude davvero.
+I link rymembra://collega/… aprono Rymembra e chiedono conferma prima di collegare un dispositivo. Per collegare due PC: «Copia il link» su uno, «Incolla il link» sull'altro.
 ```
 
 ### Funzioni (max 20 voci, 200 caratteri ciascuna)
@@ -74,7 +69,8 @@ Testi sincronizzati da LRCLIB, copertine e informazioni da MusicBrainz
 Scrobbling su Last.fm e ListenBrainz
 Cartelle di musica su OneDrive, Google Drive, Dropbox o WebDAV, lette senza mai modificarle
 «Ascolta insieme»: la stessa musica nello stesso istante su più dispositivi, in casa o via internet
-La musica del PC sul telefono anche fuori casa, collegando i dispositivi con un codice QR
+Una libreria sola con la musica dei tuoi dispositivi collegati (telefono, altri PC), anche fuori casa, con un codice QR
+Avvio con Windows e vassoio: parti all'accesso, ridotta a icona; chiudi la finestra e la musica continua (spento finché non lo accendi)
 Backup e sincronizzazione su Google Drive o su una cartella condivisa
 Skin personalizzabili, con un editor visivo
 Nessuna telemetria e nessun account: niente passa da un server di Rymembra
@@ -132,7 +128,7 @@ The library is built from your folders and keeps an eye on them: an album copied
 
 What's missing, it looks for only where that's allowed. Starting from a playlist (the data archive Spotify hands you on request, an M3U or PLS file, or a link) Rymembra recognizes which tracks you already have and looks for the rest in the free catalogs, Internet Archive and Audius, downloading a track only when its own license allows it. Every track keeps the license it was taken under. What no free catalog has goes into “To buy”, with links to the shops where the artist gets paid. Rymembra does not download from YouTube and does not access Spotify in any unofficial way.
 
-Also: Explore, to listen to the free catalogs without saving anything to disk; synced lyrics from LRCLIB; covers and metadata from MusicBrainz; music folders on OneDrive, Google Drive, Dropbox or a WebDAV server, read without ever changing them; “Listen together”, the same music at the same moment on several devices of the same network; the internet link with a QR code, to play your PC’s music on your phone away from home, with Rymembra for Android; scrobbling to Last.fm and ListenBrainz; backup and sync to Google Drive (through a Google app you register yourself) or to a shared folder; and skins that repaint the interface, with a visual editor.
+Also: Explore, to listen to the free catalogs without saving anything to disk; synced lyrics from LRCLIB; covers and metadata from MusicBrainz; music folders on OneDrive, Google Drive, Dropbox or a WebDAV server, read without ever changing them; “Listen together”, the same music at the same moment on several devices of the same network; the internet link with a QR code, with Rymembra for Android: the music of your phone and your other PCs joins one library, even away from home; start with Windows, if you turn it on; scrobbling to Last.fm and ListenBrainz; backup and sync to Google Drive (through a Google app you register yourself) or to a shared folder; and skins that repaint the interface, with a visual editor.
 
 No telemetry, no account to create, no Rymembra server. Out of the box the program looks up covers and track information in public catalogs such as MusicBrainz (it can be switched off in Settings); everything else starts only when you use it or turn it on, and the privacy policy lists every request the program can make. It is free and open source (MIT license), and keeps going thanks to donations.
 ```
@@ -140,20 +136,15 @@ No telemetry, no account to create, no Rymembra server. Out of the box the progr
 ### Short description (max 1,000)
 
 ```
-A music player for Windows for the music you own: gapless playback, even loudness, a library that updates itself, a search for what’s missing in the free catalogs (Internet Archive, Audius), and your music on your phone away from home. No telemetry, no account.
+A music player for Windows for the music you own: gapless playback, even loudness, a library that updates itself, a search for what’s missing in the free catalogs (Internet Archive, Audius), and the music of your devices in one library, even away from home. No telemetry, no account.
 ```
 
 ### What's new in this version (max 1,500)
 
 ```
-Link your devices over the internet: the PC shows a QR code, your phone reads it with Rymembra for Android, and from then on the two find each other on their own, at home or away, with no Rymembra server. From the phone you browse the PC’s library, play it or download its tracks, and the other way round. It stays off until you turn on “Reachable from the internet” in Settings › Devices.
-“Listen together” works away from home too, between linked devices.
-The window appears right away, even when the library has to be updated, and says what it is doing.
-Tracks sort without accents or leading articles, like Artists and Albums.
-After a scan, the analysis yields to other programs and, on battery, uses a single thread.
-iTunes and Deezer are off by default, each with its own switch.
-The license, the dependency notices, the privacy policy and the terms can be read without a network, from Settings.
-The fixes of a full review of the code and of its security.
+One library for your linked devices: the tracks of your phone and your other PCs show up in Albums, Artists, Tracks, Favorites, Search and playlists, each with the icon of its device. A track that is on several devices is one entry and plays the best copy. If a device is off, its tracks stay in the list, greyed out. The “All · This device · name” filter takes the place of “Browse”. Hearts, stars, playlists and “Download here” work on those tracks too, the lyrics are asked of the device that has the track, and the artist page shows albums, all tracks and appearances.
+Settings › Startup and closing: “Start with Windows”, off until you turn it on, opens Rymembra minimized when you sign in. With “The X closes the window and Rymembra stays in the tray” on, the music and the media keys go on and the window really closes.
+rymembra://collega/… links open Rymembra and ask for confirmation before linking a device. To link two PCs: “Copy link” on one, “Paste link” on the other.
 ```
 
 ### Features (max 20 items, 200 characters each)
@@ -170,7 +161,8 @@ Synced lyrics from LRCLIB, covers and metadata from MusicBrainz
 Scrobbling to Last.fm and ListenBrainz
 Music folders on OneDrive, Google Drive, Dropbox or WebDAV, read without ever changing them
 “Listen together”: the same music at the same moment on several devices, at home or over the internet
-Your PC’s music on your phone away from home, linking the devices with a QR code
+One library with the music of your linked devices (phone, other PCs), even away from home, with a QR code
+Start with Windows and the tray: starts when you sign in, minimized; close the window and the music goes on (off until you turn it on)
 Backup and sync to Google Drive or to a shared folder
 Customizable skins, with a visual editor
 No telemetry and no account: nothing goes through a Rymembra server
@@ -218,19 +210,21 @@ Third-party components have their own licenses, listed in THIRD-PARTY-NOTICES.md
 ## Note per la certificazione (max 2.000, una volta sola, in inglese)
 
 ```
-No sign-in or test account needed: the app opens on the library and plays audio files from disk. To test: Settings > Folders and scanning, add any folder with music files, then play a track.
+No sign-in needed: add any folder with music files in Settings > Folders and scanning, then play a track.
 
 Network use, all listed in the privacy policy; no Rymembra server, no telemetry. On by default, each switchable in Settings: musicbrainz.org, coverartarchive.org (→ archive.org), labs.api.listenbrainz.org (metadata, covers, similarity); itunes.apple.com and api.deezer.com only if the user turns them on. On user action only: archive.org and audius.co (Explore, links), lrclib.net (lyrics), the cloud folders the user adds (Microsoft Graph, Google Drive, Dropbox, WebDAV), Drive backup and sync, scrobbling, a language model the user configures.
 
 Two peer-to-peer features, off by default: "Listen together" (while a PC hosts, it listens on TCP/UDP 47811 on the local network, found by LAN broadcast; Windows asks about the firewall) and "Reachable from the internet" (an iroh QUIC endpoint, encrypted end to end, using n0's DNS at dns.iroh.link, relays *.relay.n0.iroh.link, the BitTorrent mainline DHT, UPnP/NAT-PMP and mDNS; it serves only devices the user linked with a QR code).
 
-Features that need the user's own accounts show as "not configured": Drive backup and cloud folders (an app the user registers with Google, Microsoft or Dropbox; none is built in), scrobbling, AI-assisted skin editing.
+Features that need the user's own accounts show as "not configured": Drive backup and cloud folders (an app the user registers; none is built in), scrobbling, AI-assisted skin editing.
 
-No YouTube downloads, no Spotify scraping; Internet Archive and Audius tracks are fetched only when their license allows it.
+No YouTube downloads or Spotify scraping; catalog tracks are fetched only when their license allows it.
 
 "Support" only opens GitHub Sponsors; nothing is unlocked.
 
-runFullTrust: a Win32 desktop program (Rust, Tauri 2, WebView2) that reads and writes music folders chosen at run time, uses the audio device and Credential Manager (optional account tokens) and a notification-area icon; it cannot run in an AppContainer.
+runFullTrust: a Win32 desktop program (Rust, Tauri 2, WebView2) that reads and writes music folders chosen at run time, uses the audio device, Credential Manager and a notification-area icon; it cannot run in an AppContainer.
 
-The in-app update check is off in this package (a marker file next to the executable). Requires the WebView2 Runtime (in Windows 11 and current Windows 10).
+Start with Windows is a desktop:StartupTask (Enabled=false) that the user turns on in Settings, and Windows lets them turn it off. A rymembra: link handler opens the app, which asks before linking.
+
+The in-app update check is off in this package. Needs the WebView2 Runtime (in Windows 11 and current Windows 10).
 ```

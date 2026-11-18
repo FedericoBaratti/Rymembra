@@ -28,7 +28,8 @@ want it there.
 The latest published one, and nothing else. There are no maintenance branches:
 anyone on an older version updates. Rymembra says so on its own: the
 installer’s copy within half an hour while it runs, the phone within six hours
-while the app runs; the Microsoft Store copy is updated by the Store.
+while the app runs; the Microsoft Store copy is updated by the Store, and the
+Google Play build of the Android app by Google Play.
 
 ## What counts as a vulnerability here
 
@@ -36,7 +37,8 @@ Rymembra is a local application with no account and no Rymembra server.
 There’s no network surface listening — with three exceptions, all closed
 until used and worth naming: the OAuth return port, “Listen together” while
 a PC hosts, and the device link while “Reachable from the internet” is on;
-on the phone, add the components other apps can reach — and there is no
+on the phone, add the components other apps can reach, and on Windows the
+`rymembra:` links the system hands to the program (below) — and there is no
 other user’s data to expose. The things that really matter are below, and they’re the ones that
 can get code executed or carry off something that isn’t ours.
 
@@ -50,6 +52,20 @@ The installer itself runs with the rights of the user, asks for no administrator
 and, before copying the new files, silently uninstalls the previous version of the
 program (never its data); a way to make that step remove or run something it
 shouldn't is a report too.
+
+On the computer the update can wait for “At close”: the package is downloaded
+and its minisign signature, bound to the version, is checked at that moment —
+`Update::download`, not `install` — and it is then held **in memory**, never
+written to disk, until a person closes Rymembra (“Exit” from the tray, or the ×
+or Alt+F4 when there is no tray icon). Only then is the installer extracted to a
+temporary folder (`%TEMP%\Rymembra-<version>-updater-*`) and started, without
+the restart switch, so Rymembra does not reopen. When Windows shuts down or
+signs the user out the program exits on its own, and nothing is installed: an
+installer launched while Windows is killing processes would stop halfway.
+Installing a package that did not pass the check, or making an installer start
+when nobody closed the program, is a report. The package waits as long as it
+takes (the card asks again after three days), and is thrown away if the release
+it belongs to is no longer the one announced.
 
 On the phone the APK goes through the same minisign key and more. Rymembra
 announces an APK only if it is an asset of the project’s GitHub release with
@@ -65,6 +81,17 @@ package or another signer past the certificate check, is as important a
 report as the one about the installer. If
 Windows refuses to start the installer (AppLocker, WDAC, an antivirus), Rymembra
 says so and closes; it must never stay alive without a window.
+
+The phone now does both checks — the signature and the certificate — as soon as
+the download ends, without handing the file over; Android’s installer opens only
+when the person taps “Install”, and the checks run again right before the
+handoff. The **Google Play build** is a second variant of the same app
+(`-Pdistribuzione=play`) with no updater at all: its manifest removes
+`REQUEST_INSTALL_PACKAGES`, the core is told the distribution
+(`BuildConfig.DISTRIBUZIONE`) and refuses to check for updates, never contacting
+GitHub, and the installer class refuses to run. A build that asks for that
+permission, or that checks GitHub on the Play variant, is a report. The release
+workflow builds only the `github` variant: the Play one is made by hand.
 
 **The OAuth return port.** The consent screens of Google, Microsoft (from 3.2,
 for OneDrive) and Dropbox (from 3.2) open in the system browser and come back
@@ -192,6 +219,66 @@ feature off nothing listens. What is supposed to hold:
   only the file of such a track, by its id, while it is still under a watched
   folder; the size and date are checked around every read. No path ever
   crosses the connection, in either direction;
+- **the library is shared as a catalog** — from this version a device asks the
+  other for a summary (`CatalogoRiassunto`: the generation and, for each bucket
+  of 500 ids, a fingerprint) and then for the buckets that changed
+  (`CatalogoSecchio`), keeping the rows it receives in its own `tracks` table.
+  Every question, old or new, goes through one condition, `CONDIVISO` in
+  `rymembra_app::library::condivisa`: a file in a watched local or network
+  folder, never a cloud folder, a catalog track or a row that came from another
+  device, so a third device cannot see the first through the second. A row has
+  no path: the other device asks for the file by id and Rymembra reads it only
+  if it is still shared;
+- **questions that did not exist are behind a capability.** A device declares
+  `catalogo` (`CatalogoRiassunto`, `CatalogoSecchio`, `Valuta`) and `testi`
+  (`Testo`, `TestoScrivi`) in its presence; `Nodo::chiedi` refuses to send one to
+  a device that has not declared it — or whose presence it has not seen yet —
+  with `lontano.protocollo`, the code an older build would answer with, and the
+  connection stays up. The answering side does not trust that: the gate (linked,
+  not revoked) is checked on every question, a question it does not know is
+  `Sconosciuta` and is refused, and every request is capped at 64 KiB open;
+- **the two writes a linked device can make** are `Valuta` (a heart or a star
+  rating) and `TestoScrivi` (a correction to the lyrics: an offset, a text timed
+  by hand, a candidate chosen, “not this one”). Both act only on a track the
+  answering device shares, so a cloud track, a catalog track, a track of a third
+  device or an id that does not exist is `lontano.fileCambiato`; both count
+  against 60 writes a minute for each device (`SCRITTURE_AL_MINUTO`), after
+  which the answer is `lontano.irraggiungibile` and the sender keeps the write in
+  its outbox and tries again. A heart or rating is validated (stars from 0 to 5,
+  a clock that is a real instant), a clock later than now is brought back to now,
+  and the newest clock wins for each field. A lyrics correction is applied with the commands’ own logic and
+  **only to the database, never to a file**: a linked device does not write a
+  `.lrc` in the owner’s music folders. Its limits are 48,000 bytes, 4,000 lines,
+  40,000 words, times up to 12 hours, an offset of at most an hour and no
+  control characters, and what is read from the other side is capped at 256 KiB.
+  Reading lyrics never takes the library lock;
+- **what arrives is validated field by field before it touches the library**
+  (`rymembra_app::specchio::convalida`): at most 200,000 rows for a device,
+  names of 200 characters, genre 64, codec 24, keys 300; a bucket with a bad row
+  is discarded alone. The quality a device declares is compared with the file
+  size and duration it also declares (`Qualita::da_riga`), because a declared
+  “FLAC at 384 kHz” would otherwise beat every local copy; what the check cannot
+  catch — an MP3 at 192 kbps passed off as a 44.1 kHz FLAC — is a known limit.
+  A mass removal is bounded: rows leave in blocks of 2,000, 10,000 at most per
+  round, so a hostile device cannot make this one hold the library lock for tens
+  of seconds; at most 20,000 new rows are kept in memory to match changed ids; a
+  round stops after 2,000 buckets or 10 minutes; at least 50 rows and a fifth of
+  a device’s catalog need the user’s answer; a row that disappears stays hidden
+  for seven days before it goes; and whether the device is still linked is
+  checked **inside** the write transaction, so a bucket that arrives after
+  “Forget” does not bring the tracks back;
+- **a track of another device never leaves this one**: not shared onward, not in
+  the profile, the Drive backup, sync, an exported playlist file or a scrobble,
+  and never counted in the statistics (a restore or an account import does not
+  write onto them). The text of its lyrics, when it was fetched, is the one
+  exception: it sits in `lyrics` like every text, so it goes into a profile you
+  export yourself. A playlist that contains such a track travels with its key
+  only;
+- **“Download here” from the library** takes ids of library rows
+  (`lontano_scarica_righe`) and builds the requests from the mirror, skipping
+  rows the owner no longer sends; a set from 50 tracks asks the user first
+  (`lontano_scarica_anteprima`: the number of tracks and the bytes it knows),
+  and more than 5,000 goes in blocks;
 - every frame is size-checked before anything is allocated (1 MiB), and so is
   what it inflates to: 16 KiB for a link request — read before its token is
   checked — 64 KiB for a request from a linked device, 8 MiB for an answer. A
@@ -223,16 +310,58 @@ feature off nothing listens. What is supposed to hold:
   a command in progress still holds it; that command ends with
   `lontano.spento`. Without a QR code on screen an attempt on
   `rymembra/associa/1` is not even counted, and leaving the page that shows the
-  code cancels it, and so does sending the window to the tray. Covers of linked
-  devices are cached per device, read only behind the gate, kept and shown only
-  when their bytes are a JPEG, PNG or WebP image, and every `rymembra-cover`
-  response says `X-Content-Type-Options: nosniff`; the window is told never to
-  keep them.
+  code cancels it, and so does closing the window to the tray. The cover of a
+  track of another device is asked for by its fingerprint (16 to 128 hex digits,
+  checked on both sides), only from a device that answers and has a row with
+  that fingerprint, three at a time for each device, and answered as a
+  320-pixel JPEG. The asking side takes at most 1 MiB, recognizes a JPEG, PNG or
+  WebP image from its first bytes, decodes it within the cover store’s limits,
+  encodes it again as a JPEG of its own and saves it under the fingerprint the
+  device declared — unless a cover with that fingerprint is already in the
+  store: a linked device does not decide what is in the store of the one that
+  linked it. The `rymembra-cover` protocol serves only fingerprints, and every
+  response says `X-Content-Type-Options: nosniff`.
 
 Reaching a library — or a «Listen together» session — with a key that is not
 linked, linking without the user's «yes» or with a used or expired token,
 reading a file outside the shared folders, a frame that crashes a device or
 makes it allocate without bound: all problems.
+
+**Links that open Rymembra.** `rymembra://collega/…` is the link a QR code
+carries. On Android the system camera or a message opens it in the main
+activity; on Windows, from this version, the installer registers the handler in
+`HKCU\Software\Classes\rymembra` — for the current user only, and removed on
+uninstall only if its command points at the folder being removed — and the Store
+package declares the protocol, so any web page can hand a link to the program.
+That makes the link **untrusted input**: the command line is read at startup and
+again when a second copy is started (the first one is told, and a second
+`--avvio-automatico` does nothing), only the exact prefix is accepted, at most
+1,024 characters of `A-Za-z0-9-_/=`, and whatever is smuggled after the closing
+quote of `"%1"` — the usual way to inject an argument — is ignored. A link that
+passes goes to the same question as on the phone, naming the device and its key
+fingerprint, and nothing is linked without a “yes”; opening a link does not turn
+on “Reachable from the internet” by itself. A link that links without that
+question, an argument that gets through, or a handler that points anywhere but at
+Rymembra, is a problem.
+
+**`unsafe` and the system.** The workspace forbids `unsafe`, with two declared
+exceptions that have a lint table of their own and a `// SAFETY:` comment on
+each block (`undocumented_unsafe_blocks` is on): seven places in
+`rymembra-barra` — the taskbar buttons (`finestra.rs`), the type of a drive
+(`unita.rs`), background mode and the battery (`sottofondo.rs`), USB eject
+notifications (`espulsione.rs`), the Shift key held at startup (`maiusc.rs`),
+the three calls that read, write and delete a value in `HKCU` for Start with
+Windows (`registro.rs`) and the never-shown native window that the media keys
+hang on (`messaggi.rs`: its class, `CreateWindowExW`, `DestroyWindow` and a
+procedure that hands everything to `DefWindowProcW`) — and `src/jvm.rs` in
+`rymembra-android`, where the two pointers `tao` hands over become `jni`
+objects. The list is in the comments of both `Cargo.toml` files and of the
+workspace root; WinRT calls of the `windows` crate are safe and need none.
+Start with Windows writes one value, `HKCU\…\Run\Rymembra`, and only reads and
+deletes `HKCU\…\Explorer\StartupApproved\Run\Rymembra`, which is Windows’ to
+write when you turn the entry off in Task Manager: it never overrides a “turned
+off” that Windows recorded, and a test copy with a data folder of its own never
+writes either.
 
 **Untrusted input.** A `.ryskin` skin is a zip archive somebody sends you, and
 so is the Spotify GDPR export. `rymembra-skin::package` has explicit ceilings —
@@ -347,9 +476,34 @@ only trusted controllers — the app itself, the system (notification, lock
 screen, Bluetooth), an app the user allowed to read notifications (a watch’s,
 a music remote), Android Auto, the car’s media center and Google Assistant,
 checked by uid and, for Android Auto, the car and the Assistant, by package
-and certificate; the cover provider serves only files of the cover folder,
-read-only; the file provider shares only two cache folders; the main activity
-has an empty task affinity. The page in the window gets no Android permission
+and certificate; the cover provider serves only files of two folders,
+read-only, exported with no permission because the system is the one that asks:
+the cover store (`xx/<fingerprint>[.m|.t].jpg`) and a second root for the cache
+`copertine-lontane` (`lontane/<64 hex>/<2–128 hex>.jpg`), each opened only if its
+canonical path is still inside its root. The second root holds, today, only the
+covers of a “Listen together” session, in a reserved folder of sixty-four
+zeros, under a name derived from a hash of the cover’s access token — never the
+token, which is a read permission and would end up in a `content://` address —
+and Rust removes them when the session ends; the provider itself would open any
+file of that shape, so what keeps the root narrow is what Rust writes there, and
+the first start after an update deletes what older versions left. The file
+provider shares only two cache folders; the main activity has an empty task
+affinity. The background service (`Presenza`, `connectedDevice`, with the
+permission `FOREGROUND_SERVICE_CONNECTED_DEVICE`) and the service that keeps a
+“Download here” going are not exported. The media-button receiver
+(`RicevitoreTasti`) **is** exported, because the system sends the media key, and
+for that reason it is switched off by default: `Presenza` enables it only while
+“Stay active in the background” is on and disables it again when that is turned
+off; it is a subclass of Media3’s receiver whose guard starts the music service
+only when the core is running **and** the background service is wanted, so a
+play key after a restart without the core starts nothing and cannot make Android
+close the app. The Car App Library (`androidx.car.app:app` 1.7.0, Apache-2.0,
+listed in `THIRD-PARTY-NOTICES.md`) adds two components that are not exported —
+a permission activity and a notification receiver — no permission, and a query
+for the Android Auto connection provider; Rymembra uses it only to know whether
+the phone is in a car (`CarConnection`, “Start with the car”), a question
+answered by that local provider, and the answer never leaves the phone. The page
+in the window gets no Android permission
 of its own: a request for the camera, the microphone, the location or
 anything else is always denied (`telefono::crea_la_finestra`), and the
 WebView has content access, geolocation and windows opened by scripts off.
