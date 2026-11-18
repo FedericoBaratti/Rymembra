@@ -309,6 +309,17 @@ pub(super) fn dati_permessi(comune: &Comune) -> Result<(), AppError> {
     }
 }
 
+/// La rete di adesso, per scegliere quale copia di un brano si suona: vedi
+/// `rymembra_app::specchio::scelta::scegli_con_la_rete`.
+pub(super) fn rete_di_adesso(comune: &Comune) -> rymembra_app::specchio::scelta::Rete {
+    use rymembra_app::specchio::scelta::Rete;
+    if rete_a_consumo() {
+        Rete::AConsumo(prendi(&comune.vetrina).dati_mobili)
+    } else {
+        Rete::Libera
+    }
+}
+
 // ── le voci ─────────────────────────────────────────────────────────────────
 
 /// I millisecondi di un fotogramma del CD (1/75 s), arrotondati: lo stesso
@@ -376,20 +387,16 @@ pub(crate) fn e_una_copertina(chiave: &str) -> bool {
     parti_della_copertina(chiave).is_some()
 }
 
-/// La voce di un brano dell'altro, con l'`uid` che le dà il registro.
-fn voce_da(
-    comune: &Arc<Comune>,
-    dispositivo: &str,
-    nome: &str,
-    brano: &BranoRemoto,
-    uid: u64,
-) -> Voce {
+/// Come si aprono i byte di un brano di un altro dispositivo: la sorgente a
+/// blocchi sul nodo, dopo aver guardato «Solo Wi-Fi». Per le voci di Sfoglia e
+/// per le righe della libreria unica (`lontano://`), che si aprono allo
+/// stesso modo.
+pub(super) fn apri_in_rete(comune: &Arc<Comune>, dispositivo: &str, brano: i64) -> ApriInRete {
     let per_aprire = Arc::clone(comune);
     let chiave = dispositivo.to_owned();
-    let id = brano.id;
     // Fissata alla prima apertura: vedi `DaLontano::versione`.
     let versione = Arc::new(Mutex::new(None::<String>));
-    let apri: ApriInRete = Arc::new(move || {
+    Arc::new(move || {
         // Si guarda adesso e non solo al gesto: la coda può arrivare a questo
         // brano dopo che il Wi-Fi se n'è andato.
         dati_permessi(&per_aprire)?;
@@ -398,11 +405,22 @@ fn voce_da(
                 comune: Arc::clone(&per_aprire),
                 chiave: chiave.clone(),
             },
-            brano: id,
+            brano,
             versione: Arc::clone(&versione),
             _in_volo: Some(InVolo::nuovo(Arc::clone(&per_aprire))),
         }) as Box<dyn Sorgente>)
-    });
+    })
+}
+
+/// La voce di un brano dell'altro, con l'`uid` che le dà il registro.
+fn voce_da(
+    comune: &Arc<Comune>,
+    dispositivo: &str,
+    nome: &str,
+    brano: &BranoRemoto,
+    uid: u64,
+) -> Voce {
+    let apri: ApriInRete = apri_in_rete(comune, dispositivo, brano.id);
     Voce {
         uid,
         proprietario: Some(nome.to_owned()),

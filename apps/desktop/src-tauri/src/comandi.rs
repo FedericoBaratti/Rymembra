@@ -1700,6 +1700,7 @@ pub fn preferito(
 ) -> Esito<()> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    let mut da_svegliare: Vec<String> = Vec::new();
     let esito = con_libreria(&stato, |libreria| {
         let now = adesso_ms();
         libreria
@@ -1712,9 +1713,20 @@ pub fn preferito(
             // Dal classificatore e non costruito a mano: un database occupato o
             // una share staccata devono dirlo, non «il database ha rifiutato
             // una richiesta».
-            .map_err(|err| rymembra_app::db::codice_da_sqlite("preferito", &err))
+            .map_err(|err| rymembra_app::db::codice_da_sqlite("preferito", &err))?;
+        // Un mi piace vale per tutte le copie del brano: le altre di qui subito,
+        // quelle di un altro dispositivo con una valutazione in posta.
+        da_svegliare = rymembra_app::specchio::valutazioni::dai_al_gruppo(
+            &libreria.connection,
+            id,
+            Some(valore),
+            None,
+            now,
+        )?;
+        Ok(())
     })
     .map_err(errore);
+    crate::lontano::posta_nuova(&app, &da_svegliare);
     crate::nuvola::se_riuscito(&app, esito)
 }
 
@@ -1890,6 +1902,7 @@ pub fn valutazione(
     // un errore di vincolo SQL, cioè come un guasto del programma, quando è
     // solo un valore da riportare in scala.
     let stelle = stelle.clamp(0, 5);
+    let mut da_svegliare: Vec<String> = Vec::new();
     let esito = con_libreria(&stato, |libreria| {
         let now = adesso_ms();
         libreria
@@ -1905,9 +1918,19 @@ pub fn valutazione(
                 rusqlite::params![id, stelle, now],
             )
             .map(|_| ())
-            .map_err(|err| rymembra_app::db::codice_da_sqlite("valutazione", &err))
+            .map_err(|err| rymembra_app::db::codice_da_sqlite("valutazione", &err))?;
+        // Come il mi piace: vale per tutte le copie del brano.
+        da_svegliare = rymembra_app::specchio::valutazioni::dai_al_gruppo(
+            &libreria.connection,
+            id,
+            None,
+            Some(stelle),
+            now,
+        )?;
+        Ok(())
     })
     .map_err(errore);
+    crate::lontano::posta_nuova(&app, &da_svegliare);
     crate::nuvola::se_riuscito(&app, esito)
 }
 

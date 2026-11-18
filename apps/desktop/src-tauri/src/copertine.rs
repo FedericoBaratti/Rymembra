@@ -252,14 +252,40 @@ pub fn servi(
     // Per la media vale il doppio: la prima volta è una decodifica e una
     // ricodifica, qualche millisecondo per copertina e trenta copertine per
     // schermata.
+    let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        match leggi(&copertine, &impronta, misura) {
+        match leggi(&copertine, &impronta, misura)
+            .or_else(|| dal_dispositivo(&app, &copertine, &impronta, misura))
+        {
             Some(bytes) => responder.respond(risposta(200, "image/jpeg", bytes)),
             // Una copertina che manca non è un guasto: è un album senza
             // immagine, e l'interfaccia ha già un ripiego da mostrare.
             None => responder.respond(risposta(404, "text/plain", Vec::new())),
         }
     });
+}
+
+/// La copertina di una riga della libreria unica che qui non c'è ancora: la si
+/// chiede a un dispositivo che risponde e la si tiene nello store sotto la sua
+/// impronta (`lontano::specchio::copertina_di_una_riga`); poi si rilegge nella
+/// misura chiesta. `None` se nessun dispositivo che risponde ce l'ha.
+fn dal_dispositivo(
+    app: &tauri::AppHandle,
+    copertine: &CoverStore,
+    impronta: &str,
+    misura: Misura,
+) -> Option<Vec<u8>> {
+    match crate::lontano::copertina_di_una_riga(app, impronta) {
+        Ok(Some(_)) => leggi(copertine, impronta, misura),
+        Ok(None) => None,
+        Err(guasto) => {
+            crate::nota!(
+                "[copertine] una copertina di un altro dispositivo non arriva codice={}",
+                guasto.code().kind().code()
+            );
+            None
+        }
+    }
 }
 
 /// I byte di una misura, o `None` se non ci sono.

@@ -83,13 +83,22 @@ pub fn rispondi(app: &AppHandle, da: &str, domanda: Domanda) -> Result<Risposta,
             ascoltato_ms,
             chiave,
         } => ascoltato(app, da, brano, quando_ms, ascoltato_ms, &chiave),
-        Domanda::Presenza
-        | Domanda::Annuncio(_)
-        | Domanda::Dimenticami
-        | Domanda::Sconosciuta
-        | Domanda::CatalogoRiassunto
-        | Domanda::CatalogoSecchio { .. }
-        | Domanda::Valuta { .. } => {
+        // Il catalogo per la libreria unica: sempre dal confine di fiducia di
+        // `condivisa`, che non porta mai le righe specchio né il cloud.
+        Domanda::CatalogoRiassunto => dati(&*leggi_la_libreria(app, |c| {
+            condivisa::riassunto_catalogo(c)
+        })?),
+        Domanda::CatalogoSecchio { da_id, a_id } => dati(&leggi_la_libreria(app, |c| {
+            condivisa::pagina_catalogo(c, da_id, a_id)
+        })?),
+        Domanda::Valuta {
+            brano,
+            liked,
+            rating,
+            quando_ms,
+            chiave: _,
+        } => valuta(app, brano, liked, rating, quando_ms),
+        Domanda::Presenza | Domanda::Annuncio(_) | Domanda::Dimenticami | Domanda::Sconosciuta => {
             Err(AppError::new(ErrorCode::LontanoProtocollo)
                 .with_cause("una domanda a cui risponde il nodo"))
         }
@@ -260,6 +269,42 @@ fn leggi(app: &AppHandle, brano: i64, da: u64, quanti: u64) -> Result<Risposta, 
         totale,
         versione,
     })
+}
+
+/// Un mi piace o un voto dato altrove a un brano di qui: lo scrive il
+/// proprietario, con la regola dell'orologio per campo
+/// ([`condivisa::valuta`]). Se qualcosa è cambiato, la sincronia lo sa.
+fn valuta(
+    app: &AppHandle,
+    brano: i64,
+    liked: Option<bool>,
+    rating: Option<i64>,
+    quando_ms: i64,
+) -> Result<Risposta, AppError> {
+    let stato = app.try_state::<Stato>().ok_or_else(|| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some("lontano".to_owned()),
+        })
+    })?;
+    let cambiato = crate::stato::con_libreria_entro(&stato, ATTESA_LETTURA, |libreria| {
+        condivisa::valuta(
+            &libreria.connection,
+            brano,
+            liked,
+            rating,
+            quando_ms,
+            adesso_ms(),
+        )
+    })
+    .unwrap_or_else(|| {
+        Err(occupata(&AppError::new(ErrorCode::DbLocked).with_cause(
+            "la libreria è occupata: la valutazione ricevuta non l'aspetta",
+        )))
+    })?;
+    if cambiato {
+        crate::nuvola::sporca(app);
+    }
+    Ok(Risposta::Fatto)
 }
 
 /// Al più tanti ascolti ricevuti all'ora da ogni dispositivo: contro un
@@ -476,6 +521,108 @@ mod prove {
                 .expect("contato")
                 .is_some()
         );
+    }
+
+    /// Una riga del catalogo con ogni testo al massimo di quel che chi riceve
+    /// accetta, e quasi incomprimibile.
+    fn riga_lunga(n: i64, seme: &mut u64) -> condivisa::BranoCatalogo {
+        use rymembra_app::specchio::convalida::{
+            MAX_CHIAVE, MAX_CODEC, MAX_GENERE, MAX_ID_MB, MAX_NOME,
+        };
+        let mut a_caso = |lunghezza: usize| -> String {
+            (0..lunghezza)
+                .map(|_| {
+                    *seme ^= *seme << 13;
+                    *seme ^= *seme >> 7;
+                    *seme ^= *seme << 17;
+                    let cifra = u8::try_from(*seme % 36).unwrap();
+                    char::from(if cifra < 10 {
+                        b'0' + cifra
+                    } else {
+                        b'a' + cifra - 10
+                    })
+                })
+                .collect()
+        };
+        let uuid = |c: &mut dyn FnMut(usize) -> String| {
+            let v = c(MAX_ID_MB);
+            format!(
+                "{}-{}-{}-{}-{}",
+                &v[..8],
+                &v[9..13],
+                &v[14..18],
+                &v[19..23],
+                &v[24..]
+            )
+        };
+        condivisa::BranoCatalogo {
+            id: n,
+            title: a_caso(MAX_NOME),
+            artist: a_caso(MAX_NOME),
+            album: a_caso(MAX_NOME),
+            album_artist: Some(a_caso(MAX_NOME)),
+            genre: Some(a_caso(MAX_GENERE)),
+            album_key: Some(a_caso(32)),
+            track_number: Some(n),
+            disc_number: Some(1),
+            year: Some(2001),
+            duration_ms: 1_234_567,
+            cover_art_hash: Some(a_caso(64)),
+            play_count: 123_456,
+            liked: true,
+            rating: 5,
+            liked_at: Some(1_794_312_000_123),
+            rating_at: Some(1_794_312_000_456),
+            date_added: 1_794_312_000_789,
+            last_played_at: Some(1_794_312_000_999),
+            stats_updated_at: 1_794_312_000_111,
+            bitrate: Some(1_411),
+            sample_rate: Some(192_000),
+            channels: Some(2),
+            codec: Some(a_caso(MAX_CODEC)),
+            track_key: a_caso(MAX_CHIAVE),
+            content_key: Some(a_caso(MAX_CHIAVE)),
+            mb_recording_id: Some(uuid(&mut a_caso)),
+            mb_release_group_id: Some(uuid(&mut a_caso)),
+            mb_release_id: Some(uuid(&mut a_caso)),
+            estensione: "flac".to_owned(),
+            dimensione: 123_456_789,
+            versione: "123456789-1794312000123".to_owned(),
+            segmento: Some(condivisa::Segmento {
+                inizio_cd: 1_234_567,
+                fine_cd: Some(2_345_678),
+            }),
+        }
+    }
+
+    #[test]
+    fn cinquecento_righe_lunghe_del_catalogo_stanno_nella_cornice() {
+        // Con ogni testo al tetto, e quasi incomprimibili: se qui sta, sta il
+        // catalogo di chiunque. (§4.3: «con 500 righe lunghe va verificato il
+        // tetto della cornice».)
+        let mut seme = 0x9E37_79B9_7F4A_7C15_u64;
+        let brani: Vec<condivisa::BranoCatalogo> = (0..i64::from(MASSIMA_PAGINA))
+            .map(|n| riga_lunga(n + 1, &mut seme))
+            .collect();
+        let pagina = condivisa::PaginaCatalogo {
+            generazione: i64::MAX,
+            da_id: 0,
+            a_id: 499,
+            brani,
+        };
+        let dati = serde_json::to_value(&pagina).expect("la pagina si scrive");
+        let aperti = serde_json::to_vec(&dati).unwrap().len();
+        let peso = rymembra_lontano::protocollo::peso_della_risposta(&dati)
+            .expect("la pagina lunga parte");
+        // Il tetto della cornice sul filo, compressa.
+        assert!(
+            peso <= rymembra_lontano::protocollo::MASSIMA_CORNICE + 4,
+            "{peso} byte sul filo per {aperti} aperti"
+        );
+        eprintln!("cinquecento righe al tetto: {aperti} byte aperti, {peso} sul filo");
+        // E si legge uguale.
+        let riletta: condivisa::PaginaCatalogo = serde_json::from_value(dati).unwrap();
+        assert_eq!(riletta, pagina);
     }
 
     /// Un brano condiviso, scritto nella libreria dello stato.

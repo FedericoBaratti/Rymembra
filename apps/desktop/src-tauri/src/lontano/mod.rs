@@ -9,6 +9,8 @@
 //!   le associazioni fatte.
 //! - [`servizio`]: le domande degli altri dispositivi sulla libreria di qui.
 //! - [`sfoglia`]: la libreria degli altri, vista e ascoltata da qui.
+//! - [`specchio`]: la libreria unica — il catalogo degli altri dispositivi come
+//!   righe di `tracks`, la posta in uscita, le copertine prese pigramente.
 //! - [`identita`]: la chiave di questo dispositivo, nel portachiavi.
 //!
 //! # Collegarsi
@@ -41,6 +43,7 @@ mod ospite;
 pub(crate) mod scarico;
 mod servizio;
 pub(crate) mod sfoglia;
+pub(crate) mod specchio;
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, channel};
@@ -59,6 +62,7 @@ use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
 pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina, voce_salvata};
+pub(crate) use specchio::{apri_riga, copertina_di_una_riga, posta_nuova, scegli_la_copia};
 
 /// Quanto un comando aspetta che il filo abbia riletto: accendere il nodo
 /// vuol dire aprire i socket, e il portachiavi può chiedere un attimo.
@@ -527,6 +531,7 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
         }
         // I suoi brani in coda non si aprono più.
         crate::riproduzione::togli_lontane(&app, &chiave);
+        specchio::dimenticato(&chiave);
         // Nella libreria appena si può, con la sua chiave di «Ascolta
         // insieme» che il QR aveva reso fidata: lo scrittore fa rileggere la
         // rete di «Ascolta insieme», che chiude le sue connessioni.
