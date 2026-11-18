@@ -51,6 +51,28 @@ ignore = [
   # per i tre sopra — nessuna chiamata a `extract` nel nostro codice, e
   # l'updater estrae solo pacchetti firmati.
   { id = "RUSTSEC-2026-0429", reason = "zip: abort in extract() su un link simbolico enorme; mai chiamato da noi, l'updater estrae solo pacchetti firmati" },
+  # Altri quattro avvisi di `zip`, usciti dopo il rilascio 3.2.1 (novembre 2026),
+  # tutti corretti in `zip` 9 e nessuno raggiungibile qui. Il `Cargo.lock` lo
+  # mostra: nessuna delle due copie porta `aes` né `bitstream-io`. La nostra, la
+  # 8.6, ha `default-features = false` e solo `deflate`; quella dell'updater, la
+  # 4.6, non ha nemmeno quello.
+  # - 0545: le voci cifrate AES accettate senza controllarne il codice di
+  #   autenticazione. Esiste solo con la feature `aes-crypto`.
+  # - 0546: `extract` che scrive fuori dalla cartella attraverso link simbolici
+  #   assoluti o a catena. È lo stesso posto e la stessa ragione di 0368.
+  # - 0547: i decodificatori Shrink, Reduce e Implode che riservano in anticipo
+  #   tutta la dimensione dichiarata. Esistono solo con `legacy-zip`.
+  # - 0548: `ZipStreamReader`, che estrae con i nomi delle intestazioni locali.
+  #   Non lo usiamo noi, e l'updater apre con `ZipArchive`.
+  { id = "RUSTSEC-2026-0545", reason = "zip: AES senza codice di autenticazione; feature aes-crypto spenta in tutte e due le copie" },
+  { id = "RUSTSEC-2026-0546", reason = "zip: link simbolici in extract(); mai chiamato da noi, l'updater estrae solo pacchetti firmati" },
+  { id = "RUSTSEC-2026-0547", reason = "zip: decodificatori legacy che preallocano; feature legacy-zip spenta in tutte e due le copie" },
+  { id = "RUSTSEC-2026-0548", reason = "zip: ZipStreamReader con i nomi locali; mai usato, né da noi né dall'updater" },
+  # `chrono` non ha più un manutentore. L'avviso non segnala un difetto e non
+  # propone una versione sicura. Arriva solo per via indiretta: iroh → netwatch
+  # → wmi, cioè la lettura delle interfacce di rete di Windows. Si toglie da qui
+  # quando `wmi` lo sostituisce.
+  { id = "RUSTSEC-2026-0543", reason = "chrono senza manutentore: nessun difetto, solo per via indiretta (iroh → netwatch → wmi)" },
   # SQLite prima della 3.54 restituisce memoria non inizializzata se si apre un
   # database insieme a un `-wal` costruito ad arte da qualcun altro. Rymembra
   # apre il proprio database (`db::open`, il deposito dell'arricchimento sullo
