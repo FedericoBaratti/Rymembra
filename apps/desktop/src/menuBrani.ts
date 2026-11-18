@@ -16,6 +16,7 @@
 import { eNuvola, nomeServizioDi } from "./cartelleNuvola";
 import { idDiLibreria } from "./insieme";
 import type { Brano, Playlist } from "./ipc";
+import { dispositivoDellaRiga } from "./ipc/libreria";
 import type { Chiave, Valori } from "./lingue";
 import type { Voce } from "./Menu";
 import { MOBILE } from "./piattaforma";
@@ -37,6 +38,12 @@ export interface AzioniBrani {
   vaiAlDisco: (brano: number) => void;
   vaiAllArtista: (brano: number) => void;
   mostraNellaCartella: (brano: number) => void;
+  /**
+   * «Scarica qui»: copia nella cartella dei download di questo dispositivo i
+   * brani che stanno su un altro (§4.8, quel che «Sfoglia» faceva dal suo menù).
+   * La voce c'è solo se fra i brani scelti ce n'è uno di un altro dispositivo.
+   */
+  scaricaQui?: ((brani: number[]) => void) | undefined;
   apriPagina: (brano: number) => void;
   /** La pagina del file sul suo servizio: «Mostra nella cartella» di un brano del cloud. */
   apriSulWeb: (brano: number) => void;
@@ -149,6 +156,20 @@ export function vociBrani(
    * servizio, che è la risposta alla stessa domanda («dov'è questo?»).
    */
   const delPrimo = primo === undefined ? undefined : inMano(primo);
+  /*
+   * Fra i brani scelti ce n'è uno di un altro dispositivo (una riga della libreria
+   * unica, `lontano://`): il suo file non sta qui. Le voci che lo toccano — la
+   * cartella, «Togli dalla libreria», «Elimina dal disco» — il nucleo le rifiuta
+   * con `lontano.nonQui`, e rifiuta il gesto **intero** se una riga sola è
+   * dell'altro dispositivo: accesa, la voce sarebbe un errore sicuro. Un brano che
+   * l'elenco non ha non si sa di che dispositivo sia, e conta come di qui, come
+   * per il cloud e lo streaming qui sotto. «Modifica i tag» e «Rileggi i tag» non
+   * sono voci di questo menù (i tag si rileggono tutti da Impostazioni, e quella
+   * scansione non prende le righe specchio: `rileggi_tutti_i_tag`).
+   */
+  const conUnoDiUnAltroDispositivo = brani.some(
+    (id) => dispositivoDellaRiga(inMano(id)?.path) !== null,
+  );
   const servizioDelPrimo = eNuvola(delPrimo?.path) ? nomeServizioDi(delPrimo?.path) : null;
   /*
    * Le tre voci che su un brano solo mancavano: portarsi al suo disco, al
@@ -182,7 +203,7 @@ export function vociBrani(
               ]
             : // Sul telefono una cartella da mostrare non c'è: il gestore file di
               // Android non si apre su un file scelto da un'altra app.
-              delPrimo?.fonte == null && !MOBILE
+              delPrimo?.fonte == null && !MOBILE && !conUnoDiUnAltroDispositivo
               ? [
                   {
                     etichetta: t("menu.showInFolder"), icona: "i-folder" as const,
@@ -241,6 +262,11 @@ export function vociBrani(
           { etichetta: t("action.playNext"), icona: "i-dopo" as const, azione: () => fai.dopo(brani) },
           { etichetta: t("action.enqueue"), icona: "i-queue" as const, azione: () => fai.accoda(brani) },
         ]),
+    // Solo se c'è un brano di un altro dispositivo da portare qui.
+    ...(fai.scaricaQui !== undefined &&
+    brani.some((id) => dispositivoDellaRiga(inMano(id)?.path) !== null)
+      ? [{ etichetta: t("devices.download"), icona: "i-import" as const, azione: () => fai.scaricaQui?.(brani) }]
+      : []),
     { etichetta: t("action.addToPlaylist"), icona: "i-plus" as const, azione: () => fai.aggiungiAPlaylist(brani) },
     ...(primo !== undefined && fai.preferito !== undefined && delPrimo !== undefined
       ? [
@@ -300,8 +326,10 @@ export function vociBrani(
      * c'è annulla da offrire. Dove un annulla c'è, come per la coda
      * sostituita, si offre quello e non si chiede niente.
      */
-    { etichetta: t("menu.removeFromLibrary"), icona: "i-x" as const, azione: () => fai.togli(brani) },
-    ...(soloStreaming
+    ...(conUnoDiUnAltroDispositivo
+      ? []
+      : [{ etichetta: t("menu.removeFromLibrary"), icona: "i-x" as const, azione: () => fai.togli(brani) }]),
+    ...(soloStreaming || conUnoDiUnAltroDispositivo
       ? []
       : soloNuvola
         ? [
@@ -337,6 +365,10 @@ export interface AzioniAlbum {
   radio: () => void;
   dopo: () => void;
   accoda: () => void;
+  /** «Casuale»: il disco in ordine sparso (quel che «Sfoglia» offriva sul suo disco). */
+  casuale?: (() => void) | undefined;
+  /** «Scarica qui», solo dove il disco sta su un altro dispositivo. */
+  scarica?: (() => void) | undefined;
 }
 
 /**
@@ -360,9 +392,15 @@ export function vociAlbum(
     ...(senzaCoda
       ? []
       : [
+          ...(fai.casuale === undefined
+            ? []
+            : [{ etichetta: t("action.shuffle"), icona: "i-shuffle" as const, azione: fai.casuale }]),
           { etichetta: t("action.playNext"), icona: "i-dopo" as const, azione: fai.dopo },
           { etichetta: t("action.enqueue"), icona: "i-queue" as const, azione: fai.accoda },
         ]),
+    ...(fai.scarica === undefined
+      ? []
+      : [{ etichetta: t("devices.download"), icona: "i-import" as const, azione: fai.scarica }]),
   ];
 }
 

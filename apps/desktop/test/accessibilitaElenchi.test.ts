@@ -87,8 +87,8 @@ test("il nome del tasto della riga contiene il numero che la riga mostra, in tut
       `${nome}: la prova non distingue il numero formattato`,
     );
   }
-  // E la forma senza numero, quella di prima, non lo contiene: il difetto.
-  assert.ok(!contenuto("3", lingua("en")["list.play"]!.replace("{titolo}", "Terzo")));
+  // E la forma senza numero, quella di prima («Play Terzo»), non lo contiene: il difetto.
+  assert.ok(!contenuto("3", "Play Terzo"));
 });
 
 test("la riga dei brani chiama il numero che mostra, e lo stesso valore va nel nome", () => {
@@ -101,11 +101,3 @@ test("la riga dei brani chiama il numero che mostra, e lo stesso valore va nel n
   assert.match(elenco, /<span className="numero">\{numero\}<\/span>/);
 });
 
-test("anche la lista dei brani di un altro dispositivo, dove il numero si vede, lo dice nel nome", () => {
-  const lontana = sorgente("schermate/Dispositivo.tsx");
-  const tasto = elementoDi(lontana, 'className="avvia-lontana"');
-  // Con la copertina al posto del numero il nome resta «Play <titolo>»: non c'è testo visibile da contenere.
-  assert.match(tasto, /nelDisco\s*\?\s*t\("list\.playNumbered", \{ numero: String\(numero\), titolo: brano\.title \}\)\s*:\s*t\("list\.play", \{ titolo: brano\.title \}\)/);
-  assert.match(lontana, /const numero = brano\.trackNumber \?\? indice \+ 1;/);
-  assert.match(lontana, /<span className="numero-lontana">\{numero\}<\/span>/);
-});

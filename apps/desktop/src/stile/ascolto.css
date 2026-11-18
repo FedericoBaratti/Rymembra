@@ -692,6 +692,22 @@
   font-size: 14.5px;
   color: var(--color-text-2);
 }
+/* Il nome dell'artista come pulsante (`parti/NomeArtista.tsx`): apre la sua
+   pagina. Si legge come il testo che sostituisce — stesso corpo, stesso colore —
+   e si dichiara al sorvolo, che sul computer c'è. */
+.in-riproduzione .artista-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-underline-offset: 2px;
+}
+.in-riproduzione .artista-link:hover {
+  color: var(--color-text-1);
+  text-decoration: underline;
+}
 .in-riproduzione .cursore {
   display: flex;
   align-items: center;

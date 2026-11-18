@@ -17,21 +17,19 @@ import type { ErroreIpc } from "./ipc/errori";
 import type {
   AnteprimaDimentica,
   AvanzamentoSpecchio,
-  BranoRemoto,
   DatiMobili,
   InvitoLontano,
   LinkLontano,
-  OrdineRemoto,
   Scansione,
   StatoLontano,
   ScaricoLontano,
 } from "./ipc/lontano";
-import type { OrigineLibreria, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
+import type { ContoPartecipazioni, Numeri, OrdineArtista, OrigineLibreria, SpecieDiPartecipazione, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
-import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
+import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, NovitaDaMostrare, QuandoInstallare, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
 
 export * from "./ipc/errori";
 export * from "./ipc/libreria";
@@ -266,6 +264,14 @@ export const ipc = {
   // La chiama sia chi il giro lo finisce sia chi lo salta: sono due modi di
   // dire «questo l'ho visto».
   giroFatto: () => invoke<void>("giro_fatto"),
+  // Le Novità dopo un aggiornamento. Si manda l'elenco delle versioni che ne
+  // hanno (`novita.ts`): la versione di questa copia la sa il nucleo, e il
+  // confronto sta con lei. In un'installazione nuova registra la versione e
+  // risponde di no. `novitaViste` la chiama la finestra quando si chiude,
+  // comunque si chiuda.
+  novitaDaMostrare: (conNovita: readonly string[]) =>
+    invoke<NovitaDaMostrare>("novita_da_mostrare", { conNovita }),
+  novitaViste: (versione: string) => invoke<void>("novita_viste", { versione }),
   // Un archivio `.ryprofile`, non più un `.json`: dentro ci sono anche la
   // libreria, le copertine e i pacchetti skin. Il vecchio formato si **legge**
   // ancora e non si scrive più.
@@ -380,10 +386,34 @@ export const ipc = {
   // dava una pagina vuota agli artisti che stavano oltre.
   albumArtista: (nome: string, offset: number, limite: number, origine?: OrigineLibreria) =>
     invoke<Album[]>("album_artista", { nome, offset, limite, origine }),
+  // I brani di un artista — anche quelli senza disco — per la sezione «Brani»
+  // della sua pagina, e quanti sono e dove: l'ordine è un nome chiuso.
+  braniArtista: (
+    nome: string,
+    ordine: OrdineArtista,
+    offset: number,
+    limite: number,
+    origine?: OrigineLibreria,
+  ) => invoke<Brano[]>("brani_artista", { nome, ordine, offset, limite, origine }),
+  // «Compare anche in»: i brani in cui compare senza esserne l'artista. Le due
+  // specie sono due elenchi, e il loro conto si chiede prima delle righe.
+  partecipazioni: (
+    nome: string,
+    specie: SpecieDiPartecipazione,
+    offset: number,
+    limite: number,
+    origine?: OrigineLibreria,
+  ) => invoke<Brano[]>("partecipazioni", { nome, tipo: specie, offset, limite, origine }),
+  partecipazioniConta: (nome: string, origine?: OrigineLibreria) =>
+    invoke<ContoPartecipazioni>("partecipazioni_conta", { nome, origine }),
   // Senza offset né limite: gli artisti sono pochi e la vista li mostra tutti
   // con un indice alfabetico invece che a pagine.
   artisti: (origine?: OrigineLibreria) =>
     invoke<Artista[]>("artisti", { origine }),
+  // Quanto c'è in libreria da questa origine: la lunghezza degli elenchi filtrati
+  // per dispositivo. «Tutti» sono i `numeri` di `avvio`.
+  conteggi: (origine?: OrigineLibreria) =>
+    invoke<Numeri>("conteggi", { origine }),
   // Senza `origine` l'album si apre da dove viene: un disco che «Tutti»
   // nasconde dietro una copia migliore resta apribile.
   braniAlbum: (chiave: string, origine?: OrigineLibreria) =>
@@ -1113,13 +1143,18 @@ export const ipc = {
     invoke<StatoAggiornamenti>("aggiornamenti_salta", { versione }),
   // Torna **subito**: scaricare settanta megabyte e lanciare un installer non
   // sta dentro una chiamata IPC. Quel che succede arriva da
-  // `aggiornamenti:avanzamento`, e se va bene l'ultima cosa che questa finestra
-  // fa è chiudersi — su Windows è l'installer NSIS a terminare Rymembra e a
-  // riaprirlo.
-  aggiornamentiInstalla: () => invoke<void>("aggiornamenti_installa"),
-  // Ferma lo scaricamento in corso. Torna subito; lo stato con
-  // `installazione: false` arriva da `aggiornamenti:stato`. Dopo che
-  // l'installer è partito non ferma più niente.
+  // `aggiornamenti:stato` (la `fase`) e da `aggiornamenti:avanzamento` (i byte).
+  // `subito`: sul computer, se va bene, l'ultima cosa che questa finestra fa è
+  // chiudersi — l'installer NSIS termina Rymembra e la riapre. Con un pacchetto
+  // già pronto lo installa senza riscaricare. Sul telefono scarica e verifica, e
+  // con la fase `pronto` un secondo tocco consegna l'APK ad Android.
+  // `allaChiusura` (solo computer): scarica e verifica adesso, e installa quando
+  // si esce davvero da Rymembra, senza riaprirla.
+  aggiornamentiInstalla: (quando: QuandoInstallare) =>
+    invoke<void>("aggiornamenti_installa", { quando }),
+  // Ferma lo scaricamento in corso, o butta il pacchetto che aspetta. Torna
+  // subito; lo stato arriva da `aggiornamenti:stato`. Dopo che l'installer è
+  // partito non ferma più niente.
   aggiornamentiAnnulla: () => invoke<void>("aggiornamenti_annulla"),
 
   // ── il diario ────────────────────────────────────────────────────────────
@@ -1483,6 +1518,11 @@ export const ipc = {
   // da internet», che è un sì a parte.
   lontanoSottofondo: (attivo: boolean) =>
     invoke<StatoLontano>("lontano_sottofondo", { attivo }),
+  // «Parti con l'auto» (solo il telefono, e solo con il sottofondo acceso): al
+  // collegamento dell'auto Rymembra riprende da sola la coda salvata. Con il
+  // sottofondo spento è `lontano.sottofondoSpento`.
+  lontanoPartiConAuto: (attivo: boolean) =>
+    invoke<StatoLontano>("lontano_parti_con_auto", { attivo }),
   // Un QR nuovo: quello di prima non vale più. Con «Raggiungibile da
   // internet» spento è `lontano.spento`: lo si accende prima, con un sì a
   // parte (`lontanoAttiva`).
@@ -1508,37 +1548,12 @@ export const ipc = {
   // ancora preso: una volta sola.
   lontanoLinkInAttesa: () => invoke<string | null>("lontano_link_in_attesa"),
 
-  // ── «Sfoglia <dispositivo>» ───────────────────────────────────────────────
-  // Gli elenchi dell'altro, nella forma di quelli di qui. Le copertine hanno
-  // già la chiave del protocollo (`lontano-…`): `Copertina` le disegna come
-  // le altre.
-  lontanoAlbum: (chiave: string, da: number, quanti: number) =>
-    invoke<Album[]>("lontano_album", { chiave, da, quanti }),
-  lontanoAlbumArtista: (chiave: string, artista: string) =>
-    invoke<Album[]>("lontano_album_artista", { chiave, artista }),
-  lontanoArtisti: (chiave: string, da: number, quanti: number) =>
-    invoke<Artista[]>("lontano_artisti", { chiave, da, quanti }),
-  lontanoBrani: (chiave: string, ordine: OrdineRemoto, da: number, quanti: number) =>
-    invoke<BranoRemoto[]>("lontano_brani", { chiave, ordine, da, quanti }),
-  lontanoBraniAlbum: (chiave: string, album: string) =>
-    invoke<BranoRemoto[]>("lontano_brani_album", { chiave, album }),
-  lontanoCerca: (chiave: string, testo: string, da: number, quanti: number) =>
-    invoke<BranoRemoto[]>("lontano_cerca", { chiave, testo, da, quanti }),
-  lontanoCercaConteggio: (chiave: string, testo: string) =>
-    invoke<number>("lontano_cerca_conteggio", { chiave, testo }),
-  // I gesti: le schede tornano indietro intere, il nucleo non tiene elenchi.
-  // Sui dati mobili con «Chiedi» rispondono `lontano.reteAConsumo`, e la
-  // finestra chiede (`lontano.ts`).
-  lontanoSuona: (chiave: string, brani: BranoRemoto[], indice: number) =>
-    invoke<void>("lontano_suona", { chiave, brani, indice }),
-  lontanoAccoda: (chiave: string, brani: BranoRemoto[]) =>
-    invoke<void>("lontano_accoda", { chiave, brani }),
-  lontanoDopo: (chiave: string, brani: BranoRemoto[]) =>
-    invoke<void>("lontano_dopo", { chiave, brani }),
-  // «Scarica qui»: in coda nella cartella dei download, a un brano per volta.
-  // L'avanzamento arriva con `lontano:scarico`.
-  lontanoScarica: (chiave: string, brani: BranoRemoto[]) =>
-    invoke<ScaricoLontano>("lontano_scarica", { chiave, brani }),
+  // La libreria unica e «Scarica qui».
+  // «Scarica qui» le righe della libreria che stanno su un altro dispositivo: in coda
+  // nella cartella dei download, un dispositivo alla volta ciascuno. Le righe di
+  // qui si saltano. L'avanzamento arriva con `lontano:scarico`.
+  lontanoScaricaRighe: (righe: number[]) =>
+    invoke<ScaricoLontano>("lontano_scarica_righe", { righe }),
   lontanoScaricoAnnulla: () => invoke<ScaricoLontano>("lontano_scarico_annulla"),
   lontanoScaricoStato: () => invoke<ScaricoLontano>("lontano_scarico_stato"),
   // La libreria unica: il catalogo dei dispositivi collegati come righe di

@@ -438,6 +438,35 @@ fn l_uscita_dal_lettore_arriva_a_uscito_anche_dopo_un_panico() {
     assert!(sorvegliata < uscito);
 }
 
+/// Alla fine della sessione le copertine su file (quelle che le schede del
+/// sistema aprono: `su_file`) se ne vanno con quelle in memoria, e nello
+/// stesso giro di lucchetto: chi ne sta scrivendo una proprio allora
+/// (`copertina_su_file`) o trova il suo gettone ancora lì, e il file lo toglie
+/// la fine della sessione, o non lo trova più, e lo toglie da sé.
+#[test]
+fn l_uscita_dal_lettore_toglie_anche_le_copertine_su_file_sotto_lo_stesso_lucchetto() {
+    let esci = corpo_di("fn esci_dal_lettore(");
+    let lucchetto = esci
+        .find("let mut copertine = self")
+        .expect("il lucchetto delle copertine");
+    let memoria = esci.find("copertine.svuota();").expect("la memoria");
+    let su_file = esci
+        .find("su_file::svuota(&cache);")
+        .expect("la cartella riservata");
+    assert!(lucchetto < memoria && memoria < su_file);
+    // Il blocco del lucchetto non si chiude in mezzo.
+    let in_mezzo = &esci[memoria..su_file];
+    assert!(
+        !in_mezzo.contains("drop(copertine)"),
+        "il lucchetto si lascia prima di togliere i file"
+    );
+    // E la cache è quella delle copertine lontane, non un'altra cartella.
+    assert!(
+        esci.contains("crate::lontano::sfoglia::cartella_copertine(&self.app)"),
+        "la cartella è quella della cache delle copertine lontane"
+    );
+}
+
 #[test]
 fn un_aggiunta_del_membro_a_coda_piena_risponde_coda_piena() {
     let a = UID_DEI_MEMBRI + 1;

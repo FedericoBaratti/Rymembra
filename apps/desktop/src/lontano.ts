@@ -6,7 +6,7 @@
  *
  * Il pannello lo decide il nucleo e arriva intero con `lontano:stato` a ogni
  * cambiamento. Lo leggono la scheda delle Impostazioni, la barra laterale (i
- * dispositivi online), la pagina Altro del telefono e la pagina «Sfoglia»:
+ * dispositivi collegati) e la pagina Altro del telefono, i filtri della libreria e le righe:
  * sta in un archivio (`archivio.ts`), e l'ascolto lo apre un componente solo,
  * `LontanoInApp`, montato una volta in `App`.
  *
@@ -19,13 +19,13 @@
  * Senza React a runtime oltre agli hook in fondo: le prove di `test/` lo
  * caricano con `node --test`.
  */
-import { creaArchivio, sceltaRicordata, ugualiInSuperficie } from "./archivio";
+import { creaArchivio } from "./archivio";
 import { ordinaFidati } from "./insieme";
 import { eventiEFotografia } from "./ultima";
+import { dispositivoDellaRiga } from "./ipc/libreria";
 import type { Chiave, Valori } from "./lingue";
 import type {
-  Album,
-  BranoRemoto,
+  AvanzamentoSpecchio,
   DispositivoLontano,
   DispositivoSincronia,
   ErroreIpc,
@@ -38,6 +38,28 @@ import type {
 
 /** Il pannello, `null` finché il nucleo non ha risposto. */
 export const archivioLontano = creaArchivio<StatoLontano | null>(null);
+
+/** Nessun dispositivo: un elenco fisso, che un selettore dell'archivio può dare senza rifarsi a ogni lettura. */
+export const NESSUN_DISPOSITIVO: readonly DispositivoLontano[] = Object.freeze([]);
+
+/**
+ * Di chi è l'audio di un brano della libreria unica, dal suo percorso: `null`
+ * se è di questa macchina, altrimenti il dispositivo che lo possiede — col nome
+ * che ha nel pannello, o `nome: null` se non lo si conosce più (dimenticato).
+ *
+ * Serve a chi vuole fare, sull'audio, qualcosa che qui non si può: l'editor di
+ * sincronizzazione non ne cerca gli attacchi (`Sincronizza.tsx`). Pura: il
+ * percorso è quello di `Brano.path`, e la forma `lontano://<64hex>/<id>` la
+ * riconosce `dispositivoDellaRiga`.
+ */
+export function proprietarioDellAudio(
+  percorso: string | null | undefined,
+  dispositivi: readonly DispositivoLontano[],
+): { chiave: string; nome: string | null } | null {
+  const chiave = dispositivoDellaRiga(percorso);
+  if (chiave === null) return null;
+  return { chiave, nome: dispositivi.find((d) => d.chiave === chiave)?.nome ?? null };
+}
 
 /**
  * Gli eventi `lontano:stato` contro le risposte dei comandi (`ultima.ts`).
@@ -203,38 +225,8 @@ export function unisciDispositivi(
 }
 
 /**
- * La scelta «il dispositivo con questa chiave» sul pannello, ricordata: chi la
- * legge si ridisegna solo quando **quel** dispositivo cambia (R13-11).
- *
- * `null` come chiave non sceglie niente, e il risultato è `null` per qualunque
- * pannello: `App` segue il dispositivo aperto anche quando non ce n'è nessuno, e
- * non deve ridisegnarsi a ogni `lontano:stato` — uno al minuto per dispositivo,
- * più i cambi di via e di presenza. Un oggetto nuovo con gli stessi campi tiene
- * l'identità di prima (`ugualiInSuperficie`: i campi sono tutti valori semplici).
- * Va rifatta quando cambia la chiave: la scelta ricordata guarda solo la
- * sorgente.
- */
-export function sceltaDelDispositivo(
-  chiave: string | null,
-): (stato: StatoLontano | null) => DispositivoLontano | null {
-  return sceltaRicordata(
-    (stato: StatoLontano | null) =>
-      chiave === null || stato === null
-        ? null
-        : (stato.dispositivi.find((d) => d.chiave === chiave) ?? null),
-    (a, b) => a === b || (a !== null && b !== null && ugualiInSuperficie(a, b)),
-  );
-}
-
-/** I dispositivi che si possono sfogliare adesso: online e non revocati. */
-export function sfogliabili(stato: StatoLontano | null): DispositivoLontano[] {
-  if (stato === null) return [];
-  return ordinaDispositivi(stato.dispositivi.filter((d) => d.online && !d.revocato));
-}
-
-/**
  * «Scarica qui», com'è adesso: lo scrive `LontanoInApp` a ogni
- * `lontano:scarico`, lo legge la pagina «Sfoglia». `null` finché il nucleo non
+ * `lontano:scarico`, lo legge la striscia nella pila delle notifiche. `null` finché il nucleo non
  * ha risposto.
  */
 export const archivioScarico = creaArchivio<ScaricoLontano | null>(null);
@@ -428,44 +420,6 @@ export function annullatoDaQui(errore: unknown): boolean {
   );
 }
 
-/** Che cosa chiude Indietro (o Escape) in «Sfoglia»: vedi [`passoIndietroSfoglia`]. */
-export type PassoIndietroSfoglia = "album" | "artista" | "ricerca" | "scheda";
-
-/**
- * Il prossimo livello di «Sfoglia» che Indietro chiude, o `null` se la pagina
- * non ha niente da chiudere e il gesto deve passare alla scala di `App`.
- *
- * Si chiude quel che **si vede**, un livello per volta, nell'ordine in cui ci
- * si è entrati: il disco, l'artista, la ricerca.
- *
- * - **Dispositivo che non risponde** (`online` falso): la pagina è lo stato
- *   vuoto «non risponde», i livelli non si disegnano, e chiuderli uno alla
- *   volta sarebbe un Indietro che a schermo non cambia niente (R13-6). Si esce.
- * - **Telefono**: dopo la ricerca si torna anche su «In evidenza» (`altraScheda`),
- *   e solo dopo si esce dalla pagina.
- * - **Computer** (`sulComputer`): Escape fa come nella libreria, che chiude il
- *   disco, l'artista e la ricerca ma non cambia mai la vista; la scheda non è un
- *   livello che si chiude con un tasto (R13-5).
- *
- * Pura, perché la scelta sta in un posto solo e si prova da sola; la pagina la
- * chiama a ogni disegno e si iscrive a `indietro.ts` solo se c'è un passo.
- */
-export function passoIndietroSfoglia(stato: {
-  online: boolean;
-  album: boolean;
-  artista: boolean;
-  ricerca: boolean;
-  altraScheda: boolean;
-  sulComputer: boolean;
-}): PassoIndietroSfoglia | null {
-  if (!stato.online) return null;
-  if (stato.album) return "album";
-  if (stato.artista) return "artista";
-  if (stato.ricerca) return "ricerca";
-  if (stato.altraScheda && !stato.sulComputer) return "scheda";
-  return null;
-}
-
 /** Il nome di una piattaforma, per l'icona e il testo. */
 export function eTelefono(piattaforma: string): boolean {
   return piattaforma === "android";
@@ -536,87 +490,89 @@ export function linkDa(testo: string): string | null {
   return trovato === null ? null : trovato[0];
 }
 
-/** Quanto dura un brano dell'altro, per chi lo disegna come uno di qui. */
-export function durataDi(brano: BranoRemoto): number {
-  return Math.max(0, brano.durationMs);
+// ── la libreria unica: il catalogo degli altri dispositivi ──────────────────
+
+/** L'ultimo avanzamento del catalogo di ogni dispositivo, per chiave. */
+export type AvanzamentiSpecchio = Readonly<Record<string, AvanzamentoSpecchio>>;
+
+/**
+ * Dove sta la lettura del catalogo di ciascun dispositivo.
+ *
+ * Lo scrive l'ascolto di `lontano:specchio` (`App`), e `lontanoSpecchioStato`
+ * lo riempie per chi arriva dopo. Lo leggono la striscia «Leggo la libreria di
+ * <PC>…» e la domanda sulle righe che un dispositivo non manda più.
+ */
+export const archivioSpecchio = creaArchivio<AvanzamentiSpecchio>({});
+
+/** Gli avanzamenti con questo in più, o al posto di quello di prima. */
+export function conAvanzamento(
+  prima: AvanzamentiSpecchio,
+  nuovo: AvanzamentoSpecchio,
+): AvanzamentiSpecchio {
+  return { ...prima, [nuovo.dispositivo]: nuovo };
+}
+
+/** Gli avanzamenti da una fotografia (`lontanoSpecchioStato`). */
+export function daFotografia(elenco: readonly AvanzamentoSpecchio[]): AvanzamentiSpecchio {
+  return Object.fromEntries(elenco.map((a) => [a.dispositivo, a]));
+}
+
+/** Quelli che stanno leggendo adesso. */
+export function inLettura(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio[] {
+  return Object.values(avanzamenti).filter((a) => a.fase === "leggo");
+}
+
+/** Quelli che non sanno servire il catalogo: una versione di Rymembra di prima. */
+export function nonSupportati(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio[] {
+  return Object.values(avanzamenti).filter((a) => a.fase === "nonSupportato");
+}
+
+/** Quelli con righe che non mandano più, e che aspettano un sì per andarsene. */
+export function daConfermare(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio[] {
+  return Object.values(avanzamenti).filter((a) => a.fase === "fine" && a.inAttesa > 0);
+}
+
+/** Ogni quanto, al più, la libreria si rilegge mentre un catalogo sta arrivando. */
+export const RILEGGI_DURANTE_LA_LETTURA_MS = 3_000;
+
+/**
+ * Dopo questo avanzamento gli elenchi vanno riletti?
+ *
+ * Il giro del catalogo scrive in `tracks` e non manda `cartelle:cambiate`: le
+ * liste non lo saprebbero. A giro finito si rileggono se è cambiato qualcosa —
+ * c'era una lettura in corso, o il numero di righe non è più quello —, e
+ * durante la lettura ogni tanto, perché la libreria si usa mentre arriva: il
+ * primo collegamento di una libreria da cinquantamila brani dura qualche minuto.
+ */
+export function rileggereDopo(
+  prima: AvanzamentoSpecchio | undefined,
+  ora: AvanzamentoSpecchio,
+  adesso: number,
+  ultimaRilettura: number,
+): boolean {
+  if (ora.fase === "leggo") {
+    return ora.fatti > (prima?.fatti ?? 0) && adesso - ultimaRilettura >= RILEGGI_DURANTE_LA_LETTURA_MS;
+  }
+  if (ora.fase === "fine") {
+    return prima?.fase === "leggo" || prima?.righe !== ora.righe;
+  }
+  return false;
 }
 
 /**
- * Il disco di un brano dell'altro, per aprirlo o metterlo in una scheda.
+ * Fa un gesto che apre dei brani di un altro dispositivo, e se sui dati mobili
+ * serve un sì lo mette da parte: la finestrella «Usare i dati mobili?» lo rifà
+ * dopo la risposta (`LontanoInApp`).
  *
- * Basta la chiave: è quella che `lontanoBraniAlbum` chiede. Il resto è quel
- * che il brano sa del suo disco, cioè quasi tutto tranne quanti brani ha:
- * `totalTracks` resta zero, e la scheda non scrive un numero che non sa.
- * L'artista è quello del brano, che per un disco a più voci è uno dei tanti.
- * `null` per un brano senza disco.
+ * Come [`gestoLontano`], ma gli altri errori **salgono**: chi suona una lista
+ * dalla libreria (`suonaDa`) li lascia a chi l'ha chiamata, che li dice con la
+ * sua fascia. Con «No» sui dati mobili l'errore sale e dice perché.
  */
-export function albumDi(brano: BranoRemoto): Album | null {
-  if (brano.albumKey === null) return null;
-  return {
-    albumKey: brano.albumKey,
-    title: brano.album,
-    artist: brano.artist,
-    year: brano.year,
-    genre: null,
-    totalTracks: 0,
-    coverArtHash: brano.coverArtHash,
-  };
-}
-
-/**
- * I dischi dei brani appena entrati, al più `quanti`, nell'ordine in cui
- * compaiono.
- *
- * Il protocollo dà i brani aggiunti di recente, non i dischi: la stessa
- * ragione per cui la Home li raccoglie (`Home.tsx`, «Perché "aggiunti" sono
- * dischi»), perché un disco entra una cartella alla volta, e dodici brani
- * dello stesso disco sono la stessa copertina dodici volte.
- */
-export function albumDaiBrani(brani: readonly BranoRemoto[], quanti: number): Album[] {
-  const visti = new Set<string>();
-  const album: Album[] = [];
-  for (const brano of brani) {
-    if (album.length >= quanti) break;
-    const suo = albumDi(brano);
-    if (suo === null || visti.has(suo.albumKey)) continue;
-    visti.add(suo.albumKey);
-    album.push(suo);
+export async function conIlSiDeiDatiMobili(fai: () => Promise<void>): Promise<void> {
+  try {
+    await fai();
+  } catch (errore) {
+    if (!chiedeIDatiMobili(errore, archivioLontano.leggi())) throw errore;
+    archivioDatiMobili.scrivi(() => fai);
   }
-  return album;
-}
-
-/** Le prime quattro copertine diverse di dei dischi: il mosaico di un artista. */
-export function copertineDegliAlbum(album: readonly Album[]): string[] {
-  const diverse = new Set<string>();
-  for (const a of album) {
-    if (diverse.size >= 4) break;
-    if (a.coverArtHash !== null) diverse.add(a.coverArtHash);
-  }
-  return [...diverse];
-}
-
-/**
- * Una domanda per voce, `quanti` alla volta, con le risposte nell'ordine delle
- * voci.
- *
- * Per i brani di un artista, che arrivano un disco per domanda: tutte insieme
- * sarebbero cento domande in volo per una raccolta, e il nodo dell'altro le
- * servirebbe tutte prima di rispondere alla copertina che si sta guardando.
- */
-export async function aGruppi<T, R>(
-  voci: readonly T[],
-  quanti: number,
-  fai: (voce: T) => Promise<R>,
-): Promise<R[]> {
-  const passo = Math.max(1, quanti);
-  const esiti: R[] = [];
-  for (let da = 0; da < voci.length; da += passo) {
-    esiti.push(...(await Promise.all(voci.slice(da, da + passo).map(fai))));
-  }
-  return esiti;
-}
-
-/** Quanto dura un elenco di brani dell'altro, per la testata di un disco. */
-export function durataTotale(brani: readonly BranoRemoto[]): number {
-  return brani.reduce((somma, brano) => somma + durataDi(brano), 0);
 }

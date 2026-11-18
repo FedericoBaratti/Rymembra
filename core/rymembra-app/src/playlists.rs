@@ -42,6 +42,7 @@ use rymembra_domain::regole::Insieme;
 use crate::library::{
     COLONNE_BRANO, TrackSummary, db_error, now_ms, track_from_row, transazione_di_scrittura,
 };
+use crate::specchio::Origine;
 
 /// Una playlist, come la mostra un elenco.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -257,8 +258,28 @@ fn read_one(connection: &Connection, id: i64) -> Result<PlaylistSummary, AppErro
 ///
 /// `db.queryFailed` se la lettura fallisce.
 pub fn tracks(connection: &Connection, id: i64) -> Result<Vec<TrackSummary>, AppError> {
+    tracks_da(connection, id, &Origine::Tutti)
+}
+
+/// I brani di una playlist, per chi li **suona**: come [`tracks`], ma una
+/// playlist intelligente salta i dispositivi che non rispondono (§4.6).
+///
+/// Una playlist a mano nomina le righe una per una, e le dà tutte: quelle di un
+/// PC spento le disegna la finestra in grigio, e non si possono sostituire in
+/// silenzio con altre. Una playlist intelligente invece è una domanda alla
+/// libreria, e la risposta giusta adesso non contiene un brano che non parte.
+///
+/// # Errori
+///
+/// Quelli di [`tracks`], più `ipc.payloadInvalid` per una chiave di
+/// dispositivo storta.
+pub fn tracks_da(
+    connection: &Connection,
+    id: i64,
+    origine: &Origine,
+) -> Result<Vec<TrackSummary>, AppError> {
     if let Some(insieme) = regole_di(connection, id)? {
-        return crate::smart::brani(connection, &insieme, now_ms());
+        return crate::smart::brani_da(connection, &insieme, now_ms(), origine);
     }
     brani_a_mano(connection, id)
 }

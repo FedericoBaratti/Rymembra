@@ -50,7 +50,7 @@ use std::time::{Duration, Instant};
 
 use rymembra_app::dispositivi::{self, Dispositivo, Nuovo};
 use rymembra_domain::errors::{AppError, ErrorCode};
-use rymembra_lontano::protocollo::CAPACITA_CATALOGO;
+use rymembra_lontano::protocollo::{CAPACITA_CATALOGO, CAPACITA_TESTI};
 use rymembra_lontano::{
     Evento, Impostazioni, Nodo, PariNoto, Presentazione, Presenza, Relay, Rete, Via,
 };
@@ -112,6 +112,32 @@ const SVEGLIO_DOPO: Duration = Duration::from_secs(2 * 60);
 )]
 fn resta_raggiungibile(sottofondo: bool, in_uso_adesso: bool, fermo_da: Duration) -> bool {
     sottofondo || in_uso_adesso || fermo_da < SVEGLIO_DOPO
+}
+
+/// Questa build offre «Parti con l'auto»? Sul telefono lo dice la costante di
+/// build `PARTENZA_CON_AUTO` (`build.gradle.kts`), che la variante per Google
+/// Play mette a falso; altrove, no.
+///
+/// La risposta non cambia mai nella vita del processo, e si ricorda — ma solo
+/// quella vera: un ponte che non risponde ancora vale «no» **per ora**, e al
+/// pannello dopo si riprova. Ricordare un «no» dato da un guasto toglierebbe
+/// l'interruttore fino al prossimo avvio.
+fn partenza_con_auto_offerta() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        static OFFERTA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if let Some(offerta) = OFFERTA.get() {
+            return *offerta;
+        }
+        match rymembra_android::sistema::partenza_con_auto_offerta() {
+            Ok(offerta) => *OFFERTA.get_or_init(|| offerta),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        false
+    }
 }
 
 /// Chi risponde adesso e si fida, per nome, come lo dice la notifica del
@@ -1098,6 +1124,18 @@ impl Filo {
             && !self.comune.spegnere.load(Ordering::Acquire)
     }
 
+    /// «Parti con l'auto», com'è adesso: la scelta, ma solo col sottofondo
+    /// acceso. Non basta la lettura delle impostazioni: un «Spegni» della
+    /// notifica non ancora scritto lascia lì la scelta vecchia, e il servizio
+    /// non c'è più a guardare l'auto.
+    fn parti_con_auto_accesa(&self) -> bool {
+        self.sottofondo_acceso()
+            && self
+                .letto
+                .as_ref()
+                .is_some_and(|l| l.impostazioni.parti_con_auto)
+    }
+
     /// «Spegni» sulla notifica del servizio: Kotlin ha già fermato il servizio e
     /// lo ricorda, e qui lo si scrive nelle impostazioni. La libreria si aspetta
     /// al più [`ATTESA_LIBRERIA`], come «visto»: occupata, `spegnere` tiene il
@@ -1140,7 +1178,12 @@ impl Filo {
         } else {
             Vec::new()
         };
-        match rymembra_android::sistema::sottofondo(acceso, &collegati, false) {
+        match rymembra_android::sistema::sottofondo(
+            acceso,
+            &collegati,
+            false,
+            self.parti_con_auto_accesa(),
+        ) {
             Ok(()) => self.guasto_sottofondo = None,
             Err(err) => {
                 let testo = err.to_string();
@@ -1233,9 +1276,10 @@ impl Filo {
                 crate::insieme::ruolo(&self.app),
                 crate::insieme::Ruolo::Host
             ),
-            // Sa servire e usare il catalogo (libreria unica): le domande
-            // nuove non si fanno a chi non lo dichiara.
-            capacita: vec![CAPACITA_CATALOGO.to_owned()],
+            // Sa servire e usare il catalogo (libreria unica) e il testo della
+            // canzone di un brano dell'altro: le domande nuove non si fanno a
+            // chi non lo dichiara.
+            capacita: vec![CAPACITA_CATALOGO.to_owned(), CAPACITA_TESTI.to_owned()],
         }
     }
 
@@ -1321,6 +1365,8 @@ impl Filo {
                 .map(|l| l.impostazioni.dati_mobili)
                 .unwrap_or_default(),
             sottofondo: self.sottofondo_acceso(),
+            parti_con_auto: self.parti_con_auto_accesa(),
+            partenza_con_auto: partenza_con_auto_offerta(),
             errore: self.errore.clone(),
             dispositivi: self
                 .letto
@@ -1484,6 +1530,58 @@ mod prove {
         ));
         assert!(!resta_raggiungibile(false, false, SVEGLIO_DOPO));
         assert!(!resta_raggiungibile(false, false, da_molto));
+    }
+
+    #[test]
+    fn la_partenza_con_l_auto_nel_pannello_parla_come_la_finestra_la_legge() {
+        // Fuori da Android la build non offre niente: la riga non si disegna.
+        assert!(!partenza_con_auto_offerta());
+        let pannello = serde_json::to_value(StatoLontanoIpc::default()).unwrap();
+        assert_eq!(pannello["partiConAuto"], serde_json::json!(false));
+        assert_eq!(pannello["partenzaConAuto"], serde_json::json!(false));
+    }
+
+    /// Ogni chiamata che dice al servizio com'è il sottofondo porta anche
+    /// «Parti con l'auto»: il servizio la ricorda da quel che gli si dice, e una
+    /// chiamata che la tacesse la spegnerebbe fino al giro dopo.
+    #[test]
+    fn ogni_chiamata_al_servizio_del_sottofondo_porta_anche_la_partenza_con_l_auto() {
+        let mut viste = 0;
+        for sorgente in [include_str!("filo.rs"), include_str!("mod.rs")] {
+            let produzione = sorgente
+                .split("#[cfg(test)]\nmod ")
+                .next()
+                .unwrap_or(sorgente);
+            for (da, _) in produzione.match_indices("sistema::sottofondo(") {
+                viste += 1;
+                let chiamata: String = produzione[da..].chars().take(160).collect();
+                assert!(
+                    chiamata.contains("parti_con_auto"),
+                    "una chiamata al sottofondo non porta «Parti con l'auto»: {chiamata}"
+                );
+            }
+        }
+        assert_eq!(viste, 2, "le chiamate al servizio del sottofondo sono due");
+    }
+
+    /// «Parti con l'auto» si mostra e si manda al servizio **solo col
+    /// sottofondo acceso**: un «Spegni» della notifica non ancora scritto lascia
+    /// la scelta vecchia nelle impostazioni, e il servizio non c'è più.
+    #[test]
+    fn la_partenza_con_l_auto_segue_il_sottofondo_anche_prima_che_si_scriva() {
+        let sorgente = include_str!("filo.rs");
+        let produzione = sorgente
+            .split("#[cfg(test)]\nmod ")
+            .next()
+            .unwrap_or(sorgente);
+        let corpo = produzione
+            .split("fn parti_con_auto_accesa(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n    }\n").next())
+            .unwrap_or_default();
+        assert!(corpo.contains("self.sottofondo_acceso()"));
+        assert!(corpo.contains("impostazioni.parti_con_auto"));
+        assert!(produzione.contains("parti_con_auto: self.parti_con_auto_accesa(),"));
     }
 
     /// Un dispositivo del pannello, con quel che serve a «collegata a …».

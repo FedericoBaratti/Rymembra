@@ -35,6 +35,7 @@ use rymembra_domain::regole::{
 use rymembra_domain::text::fold_text;
 
 use crate::library::{COLONNE_BRANO, TrackSummary, db_error, track_from_row};
+use crate::specchio::Origine;
 
 /// Il tetto oltre cui una playlist intelligente non va, comunque.
 ///
@@ -479,17 +480,26 @@ fn dove_di(insieme: &Insieme, adesso_ms: i64) -> (String, Vec<SqlValue>) {
 /// stringa prodotta è l'unico modo di dimostrare che nessun valore ci è finito
 /// dentro.
 pub(crate) fn query(insieme: &Insieme, adesso_ms: i64) -> (String, Vec<SqlValue>) {
+    // La stessa condizione di `Origine::Tutti`: scritta qui perché non può fallire.
+    query_con(insieme, adesso_ms, "t.copia_di IS NULL")
+}
+
+/// [`query`] con la condizione di origine già scritta (`t.copia_di IS NULL` per
+/// «Tutti»). Viene sempre da [`Origine::sql`], che lascia entrare solo chiavi di
+/// dispositivo di 64 cifre esadecimali: non è un valore di chi scrive le regole.
+fn query_con(insieme: &Insieme, adesso_ms: i64, origine: &str) -> (String, Vec<SqlValue>) {
     let (dove, parametri) = dove_di(insieme, adesso_ms);
     let limite = insieme.limite.unwrap_or(TETTO).min(TETTO);
     let sql = format!(
         "SELECT {COLONNE_BRANO} FROM tracks t
-          WHERE ({dove}) AND t.copia_di IS NULL ORDER BY {} LIMIT {limite}",
+          WHERE ({dove}) AND {origine} ORDER BY {} LIMIT {limite}",
         ordine(insieme.ordinamento)
     );
     (sql, parametri)
 }
 
-/// I brani che soddisfano un insieme di regole.
+/// I brani che soddisfano un insieme di regole, fra tutti quelli che la
+/// libreria unica mostra («Tutti»).
 ///
 /// # Errori
 ///
@@ -499,8 +509,29 @@ pub fn brani(
     insieme: &Insieme,
     adesso_ms: i64,
 ) -> Result<Vec<TrackSummary>, AppError> {
+    brani_da(connection, insieme, adesso_ms, &Origine::Tutti)
+}
+
+/// I brani che soddisfano le regole, fra quelli di `origine`.
+///
+/// Per chi sta per **suonarli**: con [`Origine::Raggiungibili`] i dispositivi
+/// che adesso non rispondono si saltano, e una playlist intelligente non mette
+/// in coda un brano che non parte (§4.6). Il conto accanto al nome
+/// ([`conteggi`]) resta quello di «Tutti»: dice quanti brani ha la regola, non
+/// in che stato è la rete.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde; `ipc.payloadInvalid` per una
+/// chiave di dispositivo che non è di 64 cifre esadecimali.
+pub fn brani_da(
+    connection: &Connection,
+    insieme: &Insieme,
+    adesso_ms: i64,
+    origine: &Origine,
+) -> Result<Vec<TrackSummary>, AppError> {
     assicura_piegatura(connection)?;
-    let (sql, parametri) = query(insieme, adesso_ms);
+    let (sql, parametri) = query_con(insieme, adesso_ms, &origine.sql("t.")?);
     let mut statement = connection
         .prepare(&sql)
         .map_err(|err| db_error("playlist intelligente", &err))?;
@@ -696,7 +727,7 @@ mod prove {
                 year INTEGER, cover_art_hash TEXT, play_count INTEGER NOT NULL DEFAULT 0,
                 liked INTEGER NOT NULL DEFAULT 0, rating INTEGER NOT NULL DEFAULT 0,
                 genre TEXT, date_added INTEGER NOT NULL DEFAULT 0, last_played_at INTEGER,
-                source_service TEXT, fonte_pagina TEXT, licenza TEXT,
+                source_service TEXT, fonte_pagina TEXT, licenza TEXT, album_artist TEXT,
                 ordine_titolo TEXT, ordine_artista TEXT, ordine_album TEXT,
                 copia_di INTEGER)",
         )
@@ -1325,5 +1356,57 @@ mod prove {
                 .0,
             0
         );
+    }
+
+    /// Una riga di un altro dispositivo, nella tabella semplificata di queste
+    /// prove: col percorso che le dà il riconciliatore.
+    fn riga_lontana(c: &Connection, id: i64, dispositivo: &str, remoto: i64) {
+        c.execute(
+            "INSERT INTO tracks (id, path, title, artist, album, duration_ms)
+             VALUES (?1, ?2, 'Lontano', 'Tale', 'Al', 200000)",
+            rusqlite::params![id, crate::specchio::percorso(dispositivo, remoto)],
+        )
+        .expect("riga lontana");
+    }
+
+    #[test]
+    fn una_playlist_intelligente_salta_i_dispositivi_che_non_rispondono() {
+        // §4.6: autoplay e playlist intelligenti includono le righe specchio, ma
+        // saltano i dispositivi che in quel momento non rispondono. Il brano 1 è
+        // di qui; il 2 è del PC (spento) e il 3 del portatile (acceso). Il
+        // brano 4 è la copia di qui di quello del PC, nascosta dietro di lui.
+        let c = db();
+        let (pc, portatile) = ("a".repeat(64), "b".repeat(64));
+        brano(&c, 1, "Locale", "Tale", "genre");
+        riga_lontana(&c, 2, &pc, 20);
+        riga_lontana(&c, 3, &portatile, 30);
+        brano(&c, 4, "Copia di qui", "Tale", "genre");
+        c.execute("UPDATE tracks SET copia_di = 2 WHERE id = 4", [])
+            .expect("copia nascosta");
+        let tutto = insieme(Vec::new());
+        let ids = |origine: &Origine| -> Vec<i64> {
+            let mut ids: Vec<i64> = brani_da(&c, &tutto, 0, origine)
+                .expect("query")
+                .iter()
+                .map(|b| b.id)
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(ids(&Origine::Tutti), vec![1, 2, 3], "«Tutti» è com'era");
+        // Risponde solo il portatile: il PC sparisce, e la sua copia nascosta
+        // di qui riemerge, perché adesso è l'unica che suona.
+        assert_eq!(
+            ids(&Origine::Raggiungibili(vec![portatile.clone()])),
+            vec![1, 3, 4]
+        );
+        assert_eq!(
+            ids(&Origine::Raggiungibili(vec![pc.clone(), portatile.clone()])),
+            vec![1, 2, 3]
+        );
+        assert_eq!(ids(&Origine::Raggiungibili(Vec::new())), vec![1, 4]);
+        // Il numero accanto al nome resta quello della libreria («Tutti»): è la
+        // regola, non lo stato della rete.
+        assert_eq!(conteggi(&c, &tutto, 0).expect("conto").0, 3);
     }
 }

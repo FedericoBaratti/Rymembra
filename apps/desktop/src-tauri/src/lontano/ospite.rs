@@ -152,8 +152,11 @@ impl rymembra_lontano::Ospite for Ospite {
         // insieme» resta: la toglie la persona, con «Dimentica» (vedi
         // `dispositivi::revoca`).
         self.comune.registra(da, Modifica::Revoca);
-        // I suoi brani in coda non si aprono più: l'altro non ci risponde.
-        crate::riproduzione::togli_lontane(&self.app, da);
+        // Le sue righe in coda non si aprono più: `apri_riga` rifiuta un
+        // dispositivo revocato (`lontano.nonAssociato`), e la riga resta in grigio.
+        // Le sue copertine in cache se ne vanno con lui: chi ci ha dimenticati
+        // non è più un posto da cui mostrare niente.
+        super::sfoglia::togli_le_copertine_di(&self.app, da);
         scrivi_il_registro(&self.app, &self.comune);
         self.comune.sveglia(Posta::Rileggi {
             risposta: None,

@@ -17,8 +17,8 @@ import type { ReactNode } from "react";
 
 import { useArchivio } from "../archivio";
 import { t } from "../lingue";
-import { archivioLontano, eTelefono, ordinaDispositivi } from "../lontano";
-import { sottotitoloDispositivo } from "./Dispositivo";
+import { sottotitoloDispositivo } from "../dispositivoLontano";
+import { archivioLontano, archivioSpecchio, eTelefono, ordinaDispositivi } from "../lontano";
 import { Icona, type NomeIcona } from "../parti/Icone";
 import { ConImportazioni } from "../parti/Importazioni";
 
@@ -77,7 +77,7 @@ export function Altro({
   onCartelle: () => void;
   onImpostazioni: () => void;
   onDona: () => void;
-  /** Apre «Sfoglia» di un dispositivo collegato. */
+  /** Apre la libreria filtrata per un dispositivo collegato. */
   onDispositivo: (chiave: string) => void;
   /** Porta alla scheda «Dispositivi» delle Impostazioni, dove si collega. */
   onCollega: () => void;
@@ -86,6 +86,7 @@ export function Altro({
   // rispondono: la pagina dice da quando, e il telefono è proprio il posto
   // da cui si guarda il PC rimasto a casa.
   const stato = useArchivio(archivioLontano);
+  const avanzamenti = useArchivio(archivioSpecchio);
   const dispositivi = ordinaDispositivi(stato?.dispositivi ?? []).filter((d) => !d.revocato);
   return (
     <div className="altro">
@@ -103,7 +104,19 @@ export function Altro({
             key={d.chiave}
             icona={eTelefono(d.piattaforma) ? "i-telefono" : "i-computer"}
             nome={d.nome}
-            sotto={sottotitoloDispositivo(d)}
+            sotto={
+              avanzamenti[d.chiave]?.fase === "nonSupportato" ? (
+                // Una versione di Rymembra che non sa mandare la sua libreria: la
+                // riga lo dice, e dice cosa fare.
+                <>
+                  {sottotitoloDispositivo(d)}
+                  <br />
+                  {t("devices.mirror.unsupported", { nome: d.nome })}
+                </>
+              ) : (
+                sottotitoloDispositivo(d)
+              )
+            }
             onClick={() => onDispositivo(d.chiave)}
           />
         ))}

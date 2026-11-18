@@ -71,10 +71,11 @@ const LARGHEZZA_NAV_LARGA = 1000;
 import { useArchivio } from "../archivio";
 import { useDati } from "../dati";
 import { numero } from "../formato";
-import type { Playlist } from "../ipc";
+import type { OrigineLibreria, Playlist } from "../ipc";
+import { TUTTI, dispositiviDiLibreria } from "../origine";
 import { Icona, type NomeIcona } from "./Icone";
 import { t, useLingua } from "../lingue";
-import { archivioLontano, eTelefono, sfogliabili } from "../lontano";
+import { archivioLontano } from "../lontano";
 
 /** Dove si può andare. */
 export type Vista =
@@ -111,11 +112,7 @@ export type Vista =
   // - `altro`: la pagina Altro, con quel che non sta nelle altre tre.
   | "playlist"
   | "cerca"
-  | "altro"
-  // «Sfoglia <dispositivo>»: la musica di un altro dispositivo collegato via
-  // internet (`schermate/Dispositivo.tsx`). Quale dispositivo lo tiene `App`,
-  // come l'album aperto: la vista dice soltanto che si guarda fuori di qui.
-  | "dispositivo";
+  | "altro";
 
 /**
  * Le destinazioni della libreria, nell'ordine in cui si guardano.
@@ -164,7 +161,7 @@ export const Navigazione = memo(function Navigazione({
   onNuovaSmart,
   onImportaFile,
   onDona,
-  dispositivoAperto = null,
+  origine = TUTTI,
   onDispositivo,
 }: {
   vista: Vista;
@@ -192,9 +189,9 @@ export const Navigazione = memo(function Navigazione({
   onImportaFile: () => void;
   /** Apre la pagina delle donazioni nel browser di sistema. */
   onDona: () => void;
-  /** Il dispositivo che si sta sfogliando, se la vista è `dispositivo`. */
-  dispositivoAperto?: string | null | undefined;
-  /** Apre «Sfoglia» di un dispositivo collegato. */
+  /** Il filtro per dispositivo della libreria: il dispositivo scelto è la voce accesa. */
+  origine?: OrigineLibreria | undefined;
+  /** Apre la libreria filtrata per un dispositivo collegato. */
   onDispositivo?: ((chiave: string) => void) | undefined;
 }) {
   // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
@@ -373,7 +370,7 @@ export const Navigazione = memo(function Navigazione({
 
       {!inFondo && onDispositivo !== undefined && (
         <GruppoDispositivi
-          aperto={vista === "dispositivo" ? dispositivoAperto : null}
+          aperto={inLibreria && origine.tipo === "dispositivo" ? origine.chiave : null}
           stretta={stretta}
           onApri={onDispositivo}
         />
@@ -417,10 +414,11 @@ export const Navigazione = memo(function Navigazione({
 });
 
 /**
- * I dispositivi collegati via internet che rispondono adesso: uno per voce,
- * e la voce apre «Sfoglia». Senza dispositivi online il gruppo non c'è: una
- * voce che non porta da nessuna parte è una voce che si impara a saltare, e il
- * posto dove collegarne uno sta nelle Impostazioni.
+ * I dispositivi collegati: uno per voce, e la voce apre la libreria filtrata per
+ * quel dispositivo (prima apriva «Sfoglia»). Anche quelli che adesso non
+ * rispondono — le loro righe restano in libreria, in grigio — e senza
+ * dispositivi il gruppo non c'è: il posto dove collegarne uno sta nelle
+ * Impostazioni.
  *
  * Legge l'archivio da sé (`lontano.ts`) e non da una prop: la barra è sotto
  * `memo`, e un dispositivo che va e viene non deve ridisegnarla tutta.
@@ -434,7 +432,7 @@ function GruppoDispositivi({
   stretta: boolean;
   onApri: (chiave: string) => void;
 }) {
-  const dispositivi = sfogliabili(useArchivio(archivioLontano));
+  const dispositivi = dispositiviDiLibreria(useArchivio(archivioLontano));
   if (dispositivi.length === 0) return null;
   return (
     <div className="gruppo">
@@ -450,10 +448,10 @@ function GruppoDispositivi({
             className="voce nav-pill"
             aria-current={qui ? "page" : undefined}
             data-active={qui || undefined}
-            title={stretta ? d.nome : t("nav.devices.browse", { nome: d.nome })}
+            title={stretta ? d.nome : t("library.origin.open", { nome: d.nome })}
             onClick={() => onApri(d.chiave)}
           >
-            <Icona nome={eTelefono(d.piattaforma) ? "i-telefono" : "i-computer"} dim={19} />
+            <Icona nome={d.telefono ? "i-telefono" : "i-computer"} dim={19} />
             <span className="etichetta" dir="auto">
               {d.nome}
             </span>

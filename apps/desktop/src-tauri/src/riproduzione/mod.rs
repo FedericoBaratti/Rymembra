@@ -136,7 +136,6 @@ use self::seguito::{
 };
 use self::suono::nome_normalizzazione;
 
-pub(crate) use self::ospiti::{registra_lontana, togli_lontane};
 pub(crate) use self::ospiti::{riga_di_libreria, righe_di_libreria};
 pub(crate) use self::seguito::in_ordine;
 
@@ -1599,16 +1598,11 @@ fn chiudi_ascolto(app: &tauri::AppHandle, lettore: &mut Lettore) {
     if !ascolto.counts {
         return;
     }
-    // L'ascolto di una voce lontana va a chi possiede il brano: qui si mette
-    // in fila, e lo manda il filo del collegamento quando quel dispositivo
-    // risponde. La maniglia si risolve adesso, finché il registro la sa (il
-    // suo lucchetto è una foglia: prenderlo col lettore in mano è ammesso).
+    // Un ascolto è sempre di una riga della libreria: quello di una riga di un
+    // altro dispositivo lo manda al proprietario `scrivi_ascolto`. Una maniglia
+    // di sessione non arriva fin qui (`da_contare` la scarta), e non ha niente
+    // da scrivere.
     if !ospiti::e_di_libreria(ascolto.track_id) {
-        if let Some((dispositivo, brano)) = ospiti::lontana(app, ascolto.track_id) {
-            da_scrivere(app, move |app| {
-                crate::lontano::ascoltato_qui(app, &dispositivo, brano, &ascolto);
-            });
-        }
         return;
     }
     da_scrivere(app, move |app| scrivi_ascolto(app, &ascolto));
@@ -2324,12 +2318,11 @@ fn iniziato(app: &tauri::AppHandle, lettore: &mut Lettore, track_id: i64, posizi
     // ogni voce. Vedi `ospiti::da_contare`.
     let conta = ospiti::da_contare(app, track_id);
 
-    // Quel che si misura: la riga da contare, o la maniglia di una voce
-    // lontana — un brano di un altro dispositivo, che non si conta qui ma si
-    // misura qui, e a ascolto finito si manda a chi lo possiede (vedi
-    // `scrivi_ascolto`). Lo scrobble, quello sì, resta solo per `conta`: lo fa
-    // il proprietario.
-    let misura = conta.or_else(|| ospiti::e_lontana(app, track_id).then_some(track_id));
+    // Quel che si misura è la riga da contare. Un brano di un altro dispositivo
+    // è una riga della libreria unica, e conta come ogni altra: l'ascolto lo
+    // misura chi suona, e a ascolto finito `scrivi_ascolto` lo manda a chi lo
+    // possiede, che lo conta e fa lo scrobble.
+    let misura = conta;
 
     // Il brano rimesso nel solco dopo che il dispositivo è tornato: l'ascolto è
     // quello di prima, fermo, e riparte da dove si era fermato invece di
@@ -3457,12 +3450,15 @@ pub fn radio_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>, brano: i
     }
     let brano = riga_di_libreria(brano).map_err(errore)?;
     let stato_app = libreria_di(&app, "radio").map_err(errore)?;
+    // Una radio non propone la musica di un dispositivo che non risponde.
+    let origine = crate::lontano::origine_che_suona(&app);
     let coda = con_libreria(&stato_app, |libreria| {
         rymembra_app::autoplay::radio(
             &libreria.connection,
             brano,
             rymembra_app::autoplay::RADIO,
             adesso_ms(),
+            &origine,
         )
     })
     .map_err(errore)?;

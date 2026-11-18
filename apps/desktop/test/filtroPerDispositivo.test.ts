@@ -1,0 +1,210 @@
+/**
+ * La libreria unica nella finestra (`src/origine.ts`): il filtro per
+ * dispositivo, le righe grigie e quel che si suona quando un dispositivo non
+ * risponde.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import type { DispositivoLontano, StatoLontano } from "../src/ipc/lontano";
+import {
+  LOCALE,
+  TUTTI,
+  chiaviDiLibreria,
+  chiaveDiOrigine,
+  dispositiviDiLibreria,
+  eFiltrabile,
+  origineConChiavi,
+  origineDi,
+  origineValida,
+  vistaPerIlFiltro,
+  perIlNucleo,
+  pilloleOrigine,
+  primoSpento,
+  statoDellaRiga,
+  suonabili,
+  ugualiOrigini,
+} from "../src/origine";
+
+const PC = "aa".repeat(32);
+const TELEFONO = "bb".repeat(32);
+const VECCHIO = "cc".repeat(32);
+
+function dispositivo(
+  chiave: string,
+  nome: string,
+  piattaforma: string,
+  online: boolean,
+  revocato = false,
+): DispositivoLontano {
+  return {
+    chiave,
+    nome,
+    piattaforma,
+    dispositivo: "",
+    online,
+    vistoMs: null,
+    associatoMs: 0,
+    revocato,
+    versione: null,
+    insiemeAcceso: false,
+    insiemeOspita: false,
+    insieme: null,
+    via: online ? "diretto" : null,
+  };
+}
+
+function stato(...dispositivi: DispositivoLontano[]): StatoLontano {
+  return {
+    attivo: true,
+    acceso: true,
+    chiave: null,
+    impronta: null,
+    relay: null,
+    datiMobili: "chiedi",
+    sottofondo: false,
+    errore: null,
+    dispositivi,
+    invito: null,
+    richieste: [],
+  };
+}
+
+const riga = (chiave: string, id: number) => ({ path: `lontano://${chiave}/${id}` });
+const locale = (n: number) => ({ path: `C:\\Musica\\${n}.flac` });
+
+test("«Tutti» non porta niente al nucleo: è l'assenza, e costa come prima", () => {
+  assert.equal(perIlNucleo(TUTTI), undefined);
+  assert.deepEqual(perIlNucleo(LOCALE), { tipo: "locale" });
+  assert.deepEqual(perIlNucleo(origineDi(PC)), { tipo: "dispositivo", chiave: PC });
+});
+
+test("ogni origine ha la sua chiave, e due origini uguali si riconoscono", () => {
+  assert.equal(chiaveDiOrigine(TUTTI), "tutti");
+  assert.equal(chiaveDiOrigine(LOCALE), "locale");
+  assert.equal(chiaveDiOrigine(origineDi(PC)), `dispositivo:${PC}`);
+  assert.ok(ugualiOrigini(origineDi(PC), origineDi(PC)));
+  assert.ok(!ugualiOrigini(origineDi(PC), origineDi(TELEFONO)));
+  assert.ok(!ugualiOrigini(TUTTI, LOCALE));
+});
+
+test("senza dispositivi collegati non ci sono pillole: due nomi per la stessa cosa", () => {
+  assert.deepEqual(pilloleOrigine(null), []);
+  assert.deepEqual(pilloleOrigine(stato()), []);
+  assert.deepEqual(pilloleOrigine(stato(dispositivo(PC, "PC", "windows", true, true))), []);
+});
+
+test("le pillole sono Tutti, Questo dispositivo e un dispositivo ciascuno, anche se spento", () => {
+  const pillole = pilloleOrigine(
+    stato(dispositivo(TELEFONO, "Telefono", "android", false), dispositivo(PC, "Casa", "windows", true)),
+  );
+  assert.deepEqual(
+    pillole.map((p) => chiaveDiOrigine(p.origine)),
+    ["tutti", "locale", `dispositivo:${PC}`, `dispositivo:${TELEFONO}`],
+    "per nome: Casa prima di Telefono"
+  );
+  assert.equal(pillole[0]?.dispositivo, null);
+  assert.equal(pillole[3]?.dispositivo?.telefono, true);
+  assert.equal(pillole[3]?.dispositivo?.online, false, "spento ma sempre scegliibile");
+});
+
+test("un dispositivo dimenticato o revocato non si può più filtrare: si torna a «Tutti»", () => {
+  const collegati = stato(dispositivo(PC, "PC", "windows", true));
+  assert.deepEqual(origineValida(origineDi(PC), collegati), origineDi(PC));
+  assert.deepEqual(origineValida(origineDi(VECCHIO), collegati), TUTTI);
+  assert.deepEqual(
+    origineValida(origineDi(PC), stato(dispositivo(PC, "PC", "windows", true, true))),
+    TUTTI
+  );
+  assert.deepEqual(origineValida(LOCALE, collegati), LOCALE);
+  // Il pannello non è ancora arrivato: non dice che il dispositivo non c'è.
+  assert.deepEqual(origineValida(origineDi(PC), null), origineDi(PC));
+  assert.deepEqual(dispositiviDiLibreria(null), []);
+});
+
+test("una riga di qui non ha un dispositivo; una del PC sì, e dice se risponde", () => {
+  const acceso = stato(dispositivo(PC, "Casa", "windows", true));
+  const spento = stato(dispositivo(PC, "Casa", "windows", false));
+  assert.equal(statoDellaRiga(locale(1).path, acceso), null);
+  assert.equal(statoDellaRiga(null, acceso), null);
+  assert.deepEqual(statoDellaRiga(riga(PC, 7).path, acceso), {
+    chiave: PC,
+    nome: "Casa",
+    telefono: false,
+    spenta: false,
+  });
+  assert.equal(statoDellaRiga(riga(PC, 7).path, spento)?.spenta, true);
+  assert.equal(statoDellaRiga(riga(PC, 7).path, spento)?.nome, "Casa");
+});
+
+test("una riga di un dispositivo che non è più collegato è spenta e senza nome", () => {
+  const altri = stato(dispositivo(TELEFONO, "Telefono", "android", true));
+  assert.deepEqual(statoDellaRiga(riga(PC, 7).path, altri), {
+    chiave: PC,
+    nome: "",
+    telefono: false,
+    spenta: true,
+  });
+  const revocato = stato(dispositivo(PC, "Casa", "windows", true, true));
+  assert.equal(statoDellaRiga(riga(PC, 7).path, revocato)?.spenta, true);
+});
+
+test("finché il pannello non c'è, nessuna riga è grigia: un grigio sarebbe un'invenzione", () => {
+  assert.equal(statoDellaRiga(riga(PC, 7).path, null)?.spenta, false);
+});
+
+test("quel che si suona a liste intere salta le righe di un PC spento", () => {
+  const spento = stato(
+    dispositivo(PC, "Casa", "windows", false),
+    dispositivo(TELEFONO, "Telefono", "android", true)
+  );
+  const lista = [locale(1), riga(PC, 2), riga(TELEFONO, 3), riga(PC, 4), locale(5)];
+  const tutto = suonabili(lista, 0, spento);
+  assert.deepEqual(tutto.brani, [lista[0], lista[2], lista[4]]);
+  assert.equal(tutto.indice, 0);
+  // Da una riga che resta: l'indice segue il suo posto nella lista che resta.
+  assert.equal(suonabili(lista, 2, spento).indice, 1, "la riga del telefono è la seconda");
+  assert.equal(suonabili(lista, 4, spento).indice, 2);
+  // Da una riga che salta: si parte dalla prima suonabile dopo.
+  assert.equal(suonabili(lista, 1, spento).indice, 1);
+});
+
+test("una lista tutta di un PC spento non ha niente da suonare, e dice chi", () => {
+  const spento = stato(dispositivo(PC, "Casa", "windows", false));
+  const lista = [riga(PC, 1), riga(PC, 2)];
+  const niente = suonabili(lista, 0, spento);
+  assert.deepEqual(niente.brani, []);
+  assert.equal(niente.indice, 0);
+  assert.equal(primoSpento(lista, spento)?.nome, "Casa");
+  assert.equal(primoSpento([locale(1)], spento), null);
+  // Con il PC acceso niente cambia.
+  const acceso = stato(dispositivo(PC, "Casa", "windows", true));
+  assert.deepEqual(suonabili(lista, 1, acceso), { brani: lista, indice: 1 });
+});
+
+test("il filtro si segue per chiavi: un dispositivo che sparisce riporta a «Tutti»", () => {
+  const collegati = stato(
+    dispositivo(PC, "PC", "windows", true),
+    dispositivo(TELEFONO, "T", "android", false),
+  );
+  const chiavi = chiaviDiLibreria(collegati);
+  assert.equal(chiavi, [PC, TELEFONO].sort().join(","));
+  assert.deepEqual(origineConChiavi(origineDi(PC), chiavi), origineDi(PC));
+  assert.deepEqual(origineConChiavi(origineDi(VECCHIO), chiavi), TUTTI);
+  assert.deepEqual(origineConChiavi(origineDi(PC), null), origineDi(PC), "pannello non arrivato");
+  assert.deepEqual(origineConChiavi(LOCALE, ""), LOCALE);
+  assert.equal(chiaviDiLibreria(null), null);
+  assert.equal(chiaviDiLibreria(stato()), "");
+});
+
+test("scegliere un dispositivo apre la libreria dov'era, se il filtro la riguarda", () => {
+  assert.equal(vistaPerIlFiltro("brani"), "brani");
+  assert.equal(vistaPerIlFiltro("artisti"), "artisti");
+  assert.equal(vistaPerIlFiltro("preferiti"), "preferiti");
+  for (const altra of ["home", "playlist", "cartelle", "impostazioni", "altro", "cerca"]) {
+    assert.equal(vistaPerIlFiltro(altra), "album", altra);
+  }
+  assert.ok(eFiltrabile("album"));
+  assert.ok(!eFiltrabile("cartelle"), "le cartelle sono di questa macchina");
+  assert.ok(!eFiltrabile("playlist"), "una playlist nomina le sue righe una per una");
+});

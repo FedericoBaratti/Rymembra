@@ -237,6 +237,47 @@ pub enum Installazione {
     AltraChiave,
 }
 
+/// Quale distribuzione è questa copia: `github` (l'APK delle release, con
+/// l'aggiornatore) o `play` (il Google Play Store, senza aggiornatore e senza il
+/// permesso di installare app). La dice la costante di build
+/// `BuildConfig.DISTRIBUZIONE`, che `app/build.gradle.kts` imposta dalla
+/// proprietà `distribuzione`: così un solo `.so` serve tutte e due.
+///
+/// # Errori
+///
+/// Se il ponte non risponde.
+pub fn distribuzione() -> Result<String, Errore> {
+    chiama("sistema.distribuzione", &())
+}
+
+/// Com'è andato il controllo del certificato di un APK.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlloApk {
+    /// È questa app, firmata come questa app: si può consegnare.
+    Buono,
+    /// È questa app ma firmata con un'altra chiave, e Kotlin l'ha già
+    /// cancellato: vedi [`Installazione::AltraChiave`].
+    AltraChiave,
+}
+
+/// Controlla il certificato di un APK della cartella `aggiornamenti` **senza**
+/// consegnarlo all'installatore: il passo «Verifico» dell'aggiornamento, che
+/// sul telefono si ferma a «Installa». Con l'APK sbagliato — un altro pacchetto,
+/// un archivio che non si legge — Kotlin lo cancella e risponde con un errore.
+///
+/// # Errori
+///
+/// Se il ponte non risponde, se il percorso non è testo o non sta in quella
+/// cartella, e se l'APK non si legge o è un altro pacchetto. Non vuole un'attività:
+/// il controllo finisce quando finisce il download, anche con l'app in secondo piano.
+pub fn controlla_apk(percorso: &Path) -> Result<ControlloApk, Errore> {
+    let percorso = percorso
+        .to_str()
+        .ok_or_else(|| Errore::nuovo("il percorso dell'APK non è testo"))?;
+    chiama("sistema.controllaApk", &Apk { percorso })
+}
+
 /// Le impronte SHA-256 dei certificati con cui è firmata la Rymembra
 /// installata, in esadecimale minuscolo: quelle che un aggiornamento deve
 /// avere perché Android lo installi sopra. Vuoto se Android non le dice.
@@ -456,11 +497,37 @@ pub fn scarico(acceso: bool, numero: u32, di: u32, titolo: &str) -> Result<(), E
 }
 
 #[derive(Serialize)]
+struct AggiornamentoPronto<'a> {
+    acceso: bool,
+    versione: &'a str,
+}
+
+/// Accende, o spegne, la notifica «Pronto da installare» (`AggiornamentoPronto`
+/// in Kotlin): l'APK di `versione` è scaricato e verificato, e aspetta il tocco
+/// su «Installa». Toccarla riapre l'app, dov'è la scheda dell'aggiornamento.
+///
+/// Kotlin decide se mostrarla: non con l'app in vista (la scheda è lì), non con
+/// le notifiche spente (non si chiedono), non nella distribuzione `play`. Per
+/// spegnerla `versione` non conta.
+///
+/// # Errori
+///
+/// Se il ponte non risponde, o se la distribuzione non ha l'aggiornatore (è un
+/// errore di chi chiama: lì non c'è nessun APK da installare).
+pub fn aggiornamento_pronto(acceso: bool, versione: &str) -> Result<(), Errore> {
+    chiama(
+        "sistema.aggiornamentoPronto",
+        &AggiornamentoPronto { acceso, versione },
+    )
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Sottofondo<'a> {
     acceso: bool,
     collegati: &'a [String],
     dalla_persona: bool,
+    parti_con_auto: bool,
 }
 
 /// Accende, o spegne, il servizio in primo piano di «Resta attiva in
@@ -472,19 +539,41 @@ struct Sottofondo<'a> {
 /// uno «Spegni» della notifica non ancora arrivato al nucleo, e al primo
 /// «acceso» chiede le notifiche.
 ///
+/// `parti_con_auto` è «Parti con l'auto» com'è adesso: ogni chiamata la porta,
+/// perché il servizio la ricorda da quel che gli si dice, e una chiamata che la
+/// tacesse — l'interruttore del sottofondo, per dire — la spegnerebbe fino al
+/// giro dopo. Vale solo col sottofondo acceso.
+///
 /// # Errori
 ///
 /// Se il ponte non risponde. Un servizio che il sistema non lascia partire
 /// dallo sfondo non è un errore: riparte quando l'app torna in vista.
-pub fn sottofondo(acceso: bool, collegati: &[String], dalla_persona: bool) -> Result<(), Errore> {
+pub fn sottofondo(
+    acceso: bool,
+    collegati: &[String],
+    dalla_persona: bool,
+    parti_con_auto: bool,
+) -> Result<(), Errore> {
     chiama(
         "sistema.sottofondo",
         &Sottofondo {
             acceso,
             collegati,
             dalla_persona,
+            parti_con_auto,
         },
     )
+}
+
+/// Se questa build offre «Parti con l'auto»: la costante di build
+/// `PARTENZA_CON_AUTO`, che la variante per Google Play mette a falso. Non cambia
+/// mai nella vita del processo; non aspetta niente.
+///
+/// # Errori
+///
+/// Se il ponte non risponde.
+pub fn partenza_con_auto_offerta() -> Result<bool, Errore> {
+    chiama("sistema.partenzaConAuto", &())
 }
 
 /// Se «Spegni» è stato premuto sulla notifica del sottofondo e il nucleo non
@@ -699,13 +788,15 @@ mod prove {
 
     #[test]
     fn il_sottofondo_parla_a_kotlin_con_i_nomi_che_kotlin_legge() {
-        // `Ponte.kt` legge `acceso`, `collegati` e `dallaPersona`: un nome
-        // scritto in un altro modo da questo lato non dà un errore, dà un
-        // `JSONException` sul telefono.
+        // `Ponte.kt` legge `acceso`, `collegati`, `dallaPersona` e
+        // `partiConAuto`: un nome scritto in un altro modo da questo lato non
+        // dà un errore, dà un `JSONException` sul telefono — o peggio, per
+        // `optBoolean`, un `false` muto che spegne «Parti con l'auto».
         let a = serde_json::to_value(Sottofondo {
             acceso: true,
             collegati: &["PC di casa".to_owned(), "Studio".to_owned()],
             dalla_persona: true,
+            parti_con_auto: true,
         })
         .unwrap();
         assert_eq!(
@@ -714,6 +805,7 @@ mod prove {
                 "acceso": true,
                 "collegati": ["PC di casa", "Studio"],
                 "dallaPersona": true,
+                "partiConAuto": true,
             })
         );
     }
@@ -721,7 +813,8 @@ mod prove {
     #[test]
     fn fuori_da_android_il_ponte_dice_che_non_c_e() {
         for esito in [
-            sottofondo(true, &[], false).err(),
+            sottofondo(true, &[], false, false).err(),
+            partenza_con_auto_offerta().err(),
             sottofondo_spento_dalla_notifica().err(),
             senza_risparmio_batteria().err(),
             apri_risparmio_batteria().err(),

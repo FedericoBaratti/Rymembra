@@ -111,7 +111,7 @@ export function impostazioniFinte(): ComponentProps<typeof Impostazioni> {
     onImportaLink: niente,
     onImportaAccount: niente,
     onVista: niente,
-    onSfogliaDispositivo: niente,
+    onMostraDispositivo: niente,
     importazioni: IMPORTAZIONI,
     arricchimento: null,
     avanzaArricchimento: null,

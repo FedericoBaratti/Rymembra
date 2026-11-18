@@ -280,6 +280,39 @@
     background: Highlight;
   }
 
+  /* La scheda dell'aggiornamento: i passi sono pallini, e il motore toglie i
+     colori di sfondo — senza queste righe «fatto», «adesso» e «dopo» sarebbero
+     tutti e tre un cerchio vuoto. Pieno di testo = fatto; `Highlight` = adesso;
+     solo contorno = dopo. Il passo corrente resta in grassetto, e il pacchetto
+     che aspetta da troppo ha il bordo di sistema invece dell'avviso. L'icona
+     perde il tondo colorato e tiene un contorno. */
+  .aggiornamento .passo[data-stato='fatto']::before {
+    background: CanvasText;
+  }
+  .aggiornamento .passo[data-stato='corrente']::before {
+    background: Highlight;
+    border-color: Highlight;
+  }
+  .aggiornamento .icona-fase {
+    border: 1px solid CanvasText;
+    color: CanvasText;
+  }
+  .aggiornamento[data-sollecito] {
+    border-color: Highlight;
+    border-width: 2px;
+  }
+
+  /* I puntini delle Novità: lo stesso rischio dei passi dell'aggiornamento — il
+     motore toglie lo sfondo, e «visto», «adesso» e «dopo» sarebbero un cerchio
+     vuoto. Pieno di testo = visto; `Highlight` = adesso; solo contorno = dopo. */
+  .novita-puntino[data-stato='fatto'] {
+    background: CanvasText;
+  }
+  .novita-puntino[data-stato='corrente'] {
+    background: Highlight;
+    border-color: Highlight;
+  }
+
   /* I cursori: la barra di posizione, il volume, la dissolvenza e la latenza
      (`.scorrimento`), e le dieci bande dell'equalizzatore. La loro pista è
      **solo** un gradiente, cioè quel che il motore toglie del tutto, e l'input

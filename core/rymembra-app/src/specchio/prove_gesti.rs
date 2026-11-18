@@ -941,3 +941,90 @@ fn ogni_domanda_di_libreria_regge_ogni_origine_con_righe_nascoste_e_in_grazia() 
         "il brano 3 una volta sola: {chiavi_dei_brani:?}"
     );
 }
+
+#[test]
+fn le_righe_in_grazia_restano_fuori_dalle_domande_di_artista_autoplay_smart_e_scarico() {
+    // Dopo l'unione con F3a e F3c: le domande nuove prendono un'origine, e la riga
+    // in grazia (`copia_di = id`) non deve entrare in nessuna — la pagina
+    // dell'artista, le sue partecipazioni, la radio, le playlist intelligenti,
+    // «Scarica qui». Le righe visibili del PC, invece, sì.
+    use crate::autoplay::radio;
+    use crate::library::{
+        OrdineBraniArtista, Partecipazione, brani_artista, id_dei_brani_artista,
+        id_delle_partecipazioni, partecipazioni, partecipazioni_conta,
+    };
+    use crate::smart::brani_da;
+    use crate::specchio::Origine;
+    use rymembra_domain::regole::Insieme;
+
+    let (c, m3, _) = telefono_con_una_riga_in_grazia();
+    let m4 = id_specchio(&c, PC, 4);
+    // Il brano 3 (in grazia) e il 4 hanno un artista d'interprete e un altro del
+    // disco: sono «partecipazioni esatte» di «Artista».
+    c.execute(
+        "UPDATE tracks SET album_artist = 'Altro' WHERE id IN (?1, ?2)",
+        [m3, m4],
+    )
+    .expect("artista del disco");
+    let pc = chiave(PC);
+    let origini = [
+        Origine::Tutti,
+        Origine::Dispositivo(pc.clone()),
+        Origine::Raggiungibili(vec![pc.clone()]),
+    ];
+    for origine in &origini {
+        let chiaro = format!("{origine:?}");
+        for ordine in [OrdineBraniArtista::Titolo, OrdineBraniArtista::Album] {
+            let ids = id_dei_brani_artista(&c, origine, "Altro", ordine).expect("id artista");
+            assert!(!ids.contains(&m3), "id dei brani dell'artista {chiaro}");
+            let pagina: Vec<i64> = brani_artista(&c, origine, "Altro", ordine, 0, 100)
+                .expect("brani")
+                .into_iter()
+                .map(|t| t.id)
+                .collect();
+            assert_eq!(ids, pagina, "{chiaro}");
+        }
+        let esatte: Vec<i64> =
+            partecipazioni(&c, origine, "Artista", Partecipazione::Esatta, 0, 100)
+                .expect("partecipazioni")
+                .into_iter()
+                .map(|t| t.id)
+                .collect();
+        assert!(!esatte.contains(&m3), "partecipazioni {chiaro}");
+        assert_eq!(
+            esatte,
+            id_delle_partecipazioni(&c, origine, "Artista", Partecipazione::Esatta)
+                .expect("id partecipazioni"),
+            "{chiaro}"
+        );
+        partecipazioni_conta(&c, origine, "Artista").expect("conteggio");
+        let intelligenti = brani_da(&c, &Insieme::default(), ADESSO, origine).expect("smart");
+        assert!(
+            !intelligenti.iter().any(|t| t.id == m3),
+            "playlist intelligente {chiaro}"
+        );
+        let radio_di_qui = radio(&c, 1, 50, ADESSO, origine).expect("radio");
+        assert!(!radio_di_qui.contains(&m3), "radio {chiaro}");
+    }
+    // Una riga visibile del PC, invece, c'è dove deve (Tutti e Dispositivo).
+    let esatte_tutti: Vec<i64> = partecipazioni(
+        &c,
+        &Origine::Tutti,
+        "Artista",
+        Partecipazione::Esatta,
+        0,
+        100,
+    )
+    .expect("partecipazioni")
+    .into_iter()
+    .map(|t| t.id)
+    .collect();
+    assert!(esatte_tutti.contains(&m4), "{esatte_tutti:?}");
+    // «Scarica qui»: la riga in grazia non ha più un file da dare.
+    let gruppi = crate::specchio::scarico::righe_da_scaricare(&c, &[m3, m4]).expect("righe");
+    let scaricabili: Vec<i64> = gruppi
+        .iter()
+        .flat_map(|(_, brani)| brani.iter().map(|b| b.id))
+        .collect();
+    assert_eq!(scaricabili, vec![4], "solo il brano 4, che il PC ha ancora");
+}

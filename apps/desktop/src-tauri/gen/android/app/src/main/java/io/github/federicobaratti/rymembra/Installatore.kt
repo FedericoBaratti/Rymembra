@@ -42,10 +42,37 @@ object Installatore {
   private const val CARTELLA = "aggiornamenti"
 
   /**
+   * Il controllo del certificato, **senza** consegnare niente: `buono` o
+   * `altraChiave`; un APK che non è questa app — un altro pacchetto, un
+   * archivio illeggibile — si cancella e arriva a Rust come errore. È il passo
+   * «Verifico» dell'aggiornamento: l'APK si scarica, si verifica, e solo al
+   * tocco su «Installa» si apre l'installatore di Android ([installa], che
+   * ripete questo controllo: costa poco, e il file ha aspettato nella cache).
+   * Vedi `sistema::controlla_apk` in Rust.
+   */
+  fun controlla(contesto: Context, percorso: String): String {
+    soloFuoriDalPlay()
+    return if (verifica(contesto, apk(contesto, percorso))) "buono" else "altraChiave"
+  }
+
+  /**
+   * L'aggiornatore APK c'è solo nella distribuzione `github`: nel Play Store gli
+   * aggiornamenti passano dal Play, e il manifesto non ha nemmeno il permesso
+   * `REQUEST_INSTALL_PACKAGES` (`app/build.gradle.kts`, la proprietà
+   * `distribuzione`). Rust non lo chiama, e qui se arrivasse è un errore, non
+   * un'installazione. Lo stesso controllo lo fa la notifica «Pronto da
+   * installare» ([AggiornamentoPronto]).
+   */
+  internal fun soloFuoriDalPlay() {
+    check(BuildConfig.AGGIORNATORE_APK) { "l'aggiornatore APK non c'è nella distribuzione play" }
+  }
+
+  /**
    * `installatore`, `permesso` o `altraChiave`: vedi `sistema::Installazione`
    * in Rust.
    */
   fun installa(attivita: MainActivity, percorso: String): String {
+    soloFuoriDalPlay()
     val file = apk(attivita, percorso)
     // Prima del permesso: un APK che non è Rymembra non vale la domanda.
     if (!verifica(attivita, file)) return "altraChiave"
@@ -98,8 +125,8 @@ object Installatore {
    * Il file da installare: un APK della cartella degli aggiornamenti, e nessun
    * altro. È anche il solo file che [verifica] può cancellare.
    */
-  private fun apk(attivita: MainActivity, percorso: String): File {
-    val cartella = File(attivita.cacheDir, CARTELLA).canonicalFile
+  private fun apk(contesto: Context, percorso: String): File {
+    val cartella = File(contesto.cacheDir, CARTELLA).canonicalFile
     val file = File(percorso).canonicalFile
     check(file.parentFile == cartella) { "l'APK non sta nella cartella degli aggiornamenti: $percorso" }
     check(file.isFile) { "l'APK non c'è: $percorso" }
@@ -115,17 +142,17 @@ object Installatore {
    * distingue (vedi [installa]). Gli altri rifiuti — un archivio illeggibile,
    * un altro pacchetto — sono un'eccezione, e arrivano a Rust come errore.
    */
-  private fun verifica(attivita: MainActivity, file: File): Boolean {
+  private fun verifica(contesto: Context, file: File): Boolean {
     fun rifiuta(perche: String): Nothing {
       file.delete()
       throw SecurityException("l'aggiornamento scaricato non è questa Rymembra: $perche")
     }
-    val pm = attivita.packageManager
+    val pm = contesto.packageManager
     val archivio = leggi(pm, file.path) ?: rifiuta("l'APK non si legge")
-    if (archivio.packageName != attivita.packageName) {
+    if (archivio.packageName != contesto.packageName) {
       rifiuta("è il pacchetto ${archivio.packageName}")
     }
-    if (!stessaFirma(archivio, installata(pm, attivita.packageName))) {
+    if (!stessaFirma(archivio, installata(pm, contesto.packageName))) {
       file.delete()
       return false
     }

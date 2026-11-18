@@ -61,12 +61,7 @@ export type SegmentoCerca = "cerca" | "esplora";
 function schedaDellaVista(vista: Vista): SchedaTelefono {
   if (vista === "home") return "home";
   if (vista === "cerca" || vista === "esplora") return "cerca";
-  if (
-    vista === "altro" ||
-    vista === "impostazioni" ||
-    vista === "importazioni" ||
-    vista === "dispositivo"
-  ) {
+  if (vista === "altro" || vista === "impostazioni" || vista === "importazioni") {
     return "altro";
   }
   return "libreria";
@@ -89,7 +84,6 @@ export function schedaDi(pagina: Pagina, vista: Vista): SchedaTelefono {
     case "altro":
     case "impostazioni":
     case "importazioni":
-    case "dispositivo":
       return "altro";
     case "home":
       return "home";
@@ -141,8 +135,7 @@ export type PassoIndietro =
  * Il passo di Indietro quando la scala comune non ha chiuso niente.
  *
  * Nell'ordine: la playlist aperta, la sezione delle Impostazioni, le pagine
- * che si aprono da Altro — Impostazioni, Importazioni e «Sfoglia» di un
- * dispositivo, che tornano ad Altro —
+ * che si aprono da Altro — Impostazioni e Importazioni, che tornano ad Altro —
  * e infine la radice di qualunque scheda, che torna alla Home. Dalla Home non
  * c'è un passo: `null`, e `MainActivity` manda l'app dietro senza chiuderla.
  *
@@ -164,7 +157,7 @@ export function passoIndietroTelefono({
 }): PassoIndietro {
   if (playlistAperta) return "playlist";
   if (vista === "impostazioni" && dentroLaSezione && !sezioneDaFuori) return "sezioni";
-  if (vista === "impostazioni" || vista === "importazioni" || vista === "dispositivo") {
+  if (vista === "impostazioni" || vista === "importazioni") {
     return { vai: "altro" };
   }
   if (vista !== "home") return { vai: "home" };

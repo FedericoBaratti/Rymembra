@@ -71,14 +71,26 @@ test("se chi aveva aperto è sparito, la scheda dove la griglia si era fermata, 
 
 test("il cablaggio: App chiede il fuoco aprendo e chiudendo, «In riproduzione» ritrova il tasto rinato", () => {
   const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-  for (const apri of ["const apriAlbum = useCallback(", "const apriArtista = useCallback("]) {
-    const corpo = app.slice(app.indexOf(apri), app.indexOf("}, []);", app.indexOf(apri)));
-    assert.match(corpo, /verso: "testata"/, apri);
-    assert.match(corpo, /verso: "ritorno"/, apri);
-  }
-  // La scala di Escape chiede il ritorno a ogni livello che chiude.
+  const apriAlbum = app.slice(
+    app.indexOf("const apriAlbum = useCallback("),
+    app.indexOf("}, []);", app.indexOf("const apriAlbum = useCallback(")),
+  );
+  assert.match(apriAlbum, /verso: "testata"/);
+  assert.match(apriAlbum, /verso: "ritorno"/);
+  // L'artista passa da `useStabile` (legge l'artista aperto e da dove si è
+  // arrivati per tornare a «In riproduzione»), e chiede il fuoco allo stesso modo.
+  const apriArtista = app.slice(
+    app.indexOf("const apriArtista = useStabile("),
+    app.indexOf("\n  });", app.indexOf("const apriArtista = useStabile(")),
+  );
+  assert.match(apriArtista, /verso: "testata"/);
+  assert.match(apriArtista, /verso: "ritorno"/);
+  // La scala di Escape chiede il ritorno a ogni livello che chiude: il disco da
+  // sé, l'artista passando da `apriArtista(null)`, che lo chiede e — se la
+  // pagina l'ha aperta il nome di «In riproduzione» — riapre quella.
   const scala = app.slice(app.indexOf("if (aperto) {"), app.indexOf("if (MOBILE) {", app.indexOf("if (aperto) {")));
-  assert.equal([...scala.matchAll(/verso: "ritorno"/g)].length, 2);
+  assert.equal([...scala.matchAll(/verso: "ritorno"/g)].length, 1);
+  assert.match(scala, /if \(artistaAperto\) \{[^}]*apriArtista\(null\);/s);
   assert.match(app, /fuocoDiRitorno\(\[chi, pagina\.querySelector\(SCHEDA_FERMA\)\], pagina, attivo\)/);
   assert.equal(SCHEDA_FERMA, '.scheda[tabindex="0"]');
 

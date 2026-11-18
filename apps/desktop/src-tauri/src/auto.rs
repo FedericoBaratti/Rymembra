@@ -523,21 +523,14 @@ fn raggiungibili(
     origine: &Origine,
     brani: Vec<TrackSummary>,
 ) -> Result<Vec<TrackSummary>, AppError> {
-    let Origine::Raggiungibili(chiavi) = origine else {
+    if !matches!(origine, Origine::Raggiungibili(_)) {
         return Ok(brani);
-    };
+    }
     let ids: Vec<i64> = brani.iter().map(|brano| brano.id).collect();
     let in_grazia = rymembra_app::specchio::archivio::in_grazia(connessione, &ids)?;
     Ok(brani
         .into_iter()
-        .filter(|brano| {
-            !in_grazia.contains(&brano.id)
-                && brano
-                    .path
-                    .as_deref()
-                    .and_then(rymembra_app::specchio::parti)
-                    .is_none_or(|(dispositivo, _)| chiavi.iter().any(|c| c == dispositivo))
-        })
+        .filter(|brano| !in_grazia.contains(&brano.id) && origine.raggiunge(brano.path.as_deref()))
         .collect())
 }
 
@@ -976,7 +969,7 @@ pub fn leggi<T>(
     let store = stato.copertine()?;
     // Nell'auto non c'è una riga grigia: un brano che non parte è un guasto al
     // volante. Le righe dei dispositivi che adesso non rispondono non si mostrano.
-    let origine = Origine::Raggiungibili(crate::lontano::specchio::dispositivi_raggiungibili(app));
+    let origine = crate::lontano::origine_che_suona(app);
     con_libreria(&stato, |libreria| {
         lettura(&libreria.connection, &origine, &store)
     })

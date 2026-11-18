@@ -37,8 +37,6 @@ test("Impostazioni e Importazioni stanno sotto Altro", () => {
   assert.equal(schedaDi({ tipo: "impostazioni" }, "impostazioni"), "altro");
   assert.equal(schedaDi({ tipo: "importazioni" }, "importazioni"), "altro");
   assert.equal(schedaDi({ tipo: "altro" }, "altro"), "altro");
-  // «Sfoglia» di un dispositivo si apre da Altro, e lì resta accesa la scheda.
-  assert.equal(schedaDi({ tipo: "dispositivo" }, "dispositivo"), "altro");
 });
 
 test("la pagina di una vista del telefono", () => {
@@ -46,8 +44,8 @@ test("la pagina di una vista del telefono", () => {
   assert.deepEqual(paginaCorrente({ ...base, vista: "altro" }), { tipo: "altro" });
   // Di servizio: la casella della libreria non la copre, e un album aperto
   // prima resta sotto.
-  assert.deepEqual(paginaCorrente({ ...base, vista: "dispositivo", cercando: true }), {
-    tipo: "dispositivo",
+  assert.deepEqual(paginaCorrente({ ...base, vista: "impostazioni", cercando: true }), {
+    tipo: "impostazioni",
   });
   assert.deepEqual(paginaCorrente({ ...base, vista: "cerca" }), { tipo: "cerca" });
   assert.deepEqual(paginaCorrente({ ...base, vista: "playlist" }), {
@@ -86,7 +84,6 @@ test("Indietro risale nella scheda, poi alla Home, poi esce", () => {
   });
   assert.deepEqual(passo("impostazioni"), { vai: "altro" });
   assert.deepEqual(passo("importazioni"), { vai: "altro" });
-  assert.deepEqual(passo("dispositivo"), { vai: "altro" });
   assert.deepEqual(passo("altro"), { vai: "home" });
   assert.deepEqual(passo("artisti"), { vai: "home" });
   assert.deepEqual(passo("esplora"), { vai: "home" });

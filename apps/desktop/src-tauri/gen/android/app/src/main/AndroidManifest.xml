@@ -40,8 +40,13 @@
          ai `.lrc` e ai `.cue` accanto (e ai `.lrc` dei testi sincronizzati) e
          ai file da eliminare (vedi `Permessi.kt`). Niente «foto e video»: per un lettore
          sarebbe una domanda sospetta, e quel che darebbe lo dà già l'accesso a
-         tutti i file. Rymembra si distribuisce fuori dal Play Store, che quel
-         permesso a un lettore non lo concederebbe. -->
+         tutti i file. Questo manifesto è di tutte e due le distribuzioni
+         (`github` e `play`, vedi `app/build.gradle.kts`), e «Accesso a tutti i
+         file» sta in tutte e due: la policy di Google Play lo riserva ai
+         gestori di file, ai backup, agli antivirus e simili, e per un lettore
+         di musica la revisione può non concederlo. Se tenerlo sul Play lo
+         decide chi pubblica, non questo file; senza, l'app lavora con i soli
+         brani (vedi `permessoMusica.ts`). -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -53,10 +58,12 @@
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
-    <!-- Gli aggiornamenti: l'APK nuovo, scaricato dalle release di GitHub, si
-         consegna all'installatore di Android, che chiede conferma; prima si
-         verifica che sia questa app, firmata come questa app (vedi
-         `Installatore.kt`). -->
+    <!-- Gli aggiornamenti, solo nella distribuzione `github`: l'APK nuovo,
+         scaricato dalle release di GitHub, si consegna all'installatore di
+         Android, che chiede conferma; prima si verifica che sia questa app,
+         firmata come questa app (vedi `Installatore.kt`). La distribuzione
+         `play` toglie questa riga (`src/distribuzione-play`): lì aggiorna il
+         Play. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- «Collega un dispositivo»: la fotocamera legge il QR mostrato dal PC
@@ -208,6 +215,23 @@
             android:name=".Presenza"
             android:foregroundServiceType="connectedDevice"
             android:exported="false" />
+
+        <!-- Il tasto play di una cuffia o dell'auto, e la scheda di ripresa del
+             sistema, che riaccendono la musica quando l'app non suona. Spento
+             di serie: a nucleo spento il play farebbe nascere il servizio della
+             musica in primo piano senza che niente suoni, e Android chiude
+             l'app. Lo accende `Presenza` (`setComponentEnabledSetting`) solo
+             con «Resta attiva in sottofondo» acceso, e anche allora non parte
+             niente se il nucleo non c'è (vedi `RicevitoreTasti`). Esportato
+             perché a mandare il tasto è il sistema. -->
+        <receiver
+            android:name=".RicevitoreTasti"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
 
         <!-- Le copertine per l'auto e la schermata di blocco, che stanno in un
              altro processo e un file privato non lo aprono. Esportato e senza

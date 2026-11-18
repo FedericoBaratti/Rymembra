@@ -43,6 +43,15 @@ export interface Brano {
    * prende da `desiderati`): negli elenchi è `null`.
    */
   licenza: string | null;
+  /**
+   * L'artista del disco, se il tag c'è.
+   *
+   * Con `artist` fa l'artista **effettivo** sotto cui il brano sta negli elenchi
+   * (`artistaEffettivo` in `artista.ts`): il nome in «In riproduzione» apre la
+   * pagina di quello. `null` per una voce di «Ascolta insieme», che un disco non
+   * ce l'ha.
+   */
+  albumArtist: string | null;
 }
 
 /** Un risultato della ricerca nei cataloghi liberi. */
@@ -805,6 +814,26 @@ export interface VoceCronologia {
 export type Ordine = "scaffale" | "recenti" | "ascoltati" | "titolo";
 
 /**
+ * Come si ordinano i brani nella pagina di un artista: per disco, per anno, per
+ * titolo, o dai più ascoltati. Gli stessi nomi di `ordine_artista_da` in
+ * `src-tauri/src/viste.rs`.
+ */
+export type OrdineArtista = "album" | "anno" | "titolo" | "ascoltati";
+
+/**
+ * Le due specie di «Compare anche in»: `esatte` (il suo nome in un disco di un
+ * altro: le raccolte) ed `euristiche` (il suo nome fra i crediti di un brano di
+ * un altro: i «feat.»).
+ */
+export type SpecieDiPartecipazione = "esatte" | "euristiche";
+
+/** Quante partecipazioni ha un artista, per specie. */
+export interface ContoPartecipazioni {
+  esatte: number;
+  euristiche: number;
+}
+
+/**
  * Quale elenco di brani si sta guardando, detto al nucleo.
  *
  * Le stesse domande delle pagine — `brani`, `preferiti`, `cerca` — senza la
@@ -815,7 +844,9 @@ export type Ordine = "scaffale" | "recenti" | "ascoltati" | "titolo";
 export type VistaBrani =
   | { tipo: "brani"; ordine: Ordine }
   | { tipo: "preferiti" }
-  | { tipo: "ricerca"; query: string };
+  | { tipo: "ricerca"; query: string }
+  | { tipo: "artista"; nome: string; ordine: OrdineArtista }
+  | { tipo: "partecipazioni"; nome: string; specie: SpecieDiPartecipazione };
 
 /**
  * Da dove si guarda la libreria, detto al nucleo (`rymembra_app::specchio::Origine`).

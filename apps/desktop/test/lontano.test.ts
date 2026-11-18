@@ -7,7 +7,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import type {
-  BranoRemoto,
   DispositivoLontano,
   DispositivoSincronia,
   FidatoInsieme,
@@ -15,14 +14,10 @@ import type {
   StatoLontano,
 } from "../src/ipc";
 import {
-  aGruppi,
-  albumDaiBrani,
-  albumDi,
   archivioDatiMobili,
   archivioLontano,
   chiedeIDatiMobili,
-  copertineDegliAlbum,
-  durataTotale,
+  conIlSiDeiDatiMobili,
   gestoLontano,
   annullatoDaQui,
   linkDa,
@@ -35,7 +30,6 @@ import {
   scaricoConNonAudio,
   scaricoFinito,
   serveAccendere,
-  sfogliabili,
   unisciDispositivi,
 } from "../src/lontano";
 
@@ -115,23 +109,6 @@ test("i dispositivi: online prima, poi per nome, i revocati in fondo", () => {
   assert.deepEqual(
     ordinati.map((d) => d.nome),
     ["Gamma", "Alfa", "Beta", "Zeta"],
-  );
-});
-
-test("si sfogliano solo i dispositivi online e non revocati", () => {
-  assert.deepEqual(sfogliabili(null), []);
-  const visti = sfogliabili(
-    stato({
-      dispositivi: [
-        dispositivo("Spento"),
-        dispositivo("Revocato", { online: true, revocato: true }),
-        dispositivo("Acceso", { online: true }),
-      ],
-    }),
-  );
-  assert.deepEqual(
-    visti.map((d) => d.nome),
-    ["Acceso"],
   );
 });
 
@@ -339,82 +316,42 @@ test("un collegamento annullato da qui non è un errore da dire", () => {
   assert.equal(annullatoDaQui(null), false);
 });
 
-/** Un brano dell'altro, coi campi che servono alla prova. */
-function brano(id: number, album: string | null, copertina: string | null = null): BranoRemoto {
-  return {
-    id,
-    title: `Brano ${id}`,
-    artist: "Artista",
-    album: album ?? "",
-    albumKey: album,
-    trackNumber: null,
-    discNumber: null,
-    durationMs: 1_000 * id,
-    year: 2001,
-    coverArtHash: copertina,
-    playCount: 0,
-    liked: false,
-    rating: 0,
-    estensione: "flac",
-    dimensione: 1,
-    versione: "1:1",
-    segmento: null,
-  };
-}
 
-test("il disco di un brano: la chiave, e nessun numero di brani inventato", () => {
-  const disco = albumDi(brano(1, "k1", "lontano-ab"));
-  assert.deepEqual(disco, {
-    albumKey: "k1",
-    title: "k1",
-    artist: "Artista",
-    year: 2001,
-    genre: null,
-    totalTracks: 0,
-    coverArtHash: "lontano-ab",
-  });
-  assert.equal(albumDi(brano(2, null)), null);
-});
+test("sui dati mobili con «Chiedi» il gesto aspetta il sì invece di fallire; gli altri errori salgono", async () => {
+  const prima = archivioLontano.leggi();
+  archivioLontano.scrivi(stato({ datiMobili: "chiedi" }));
+  try {
+    let chiamate = 0;
+    const gesto = async () => {
+      chiamate += 1;
+      if (chiamate === 1) throw { code: "lontano.reteAConsumo", params: {} };
+    };
+    await conIlSiDeiDatiMobili(gesto);
+    assert.equal(chiamate, 1);
+    const rifai = archivioDatiMobili.leggi();
+    assert.notEqual(rifai, null, "il gesto è in attesa del sì");
+    await rifai?.();
+    assert.equal(chiamate, 2, "dopo il sì si rifà lo stesso gesto");
+    archivioDatiMobili.scrivi(null);
 
-test("gli aggiunti di recente: un disco una volta, nell'ordine dei brani, al più quanti", () => {
-  const brani = [brano(1, "a"), brano(2, "a"), brano(3, null), brano(4, "b"), brano(5, "c")];
-  assert.deepEqual(
-    albumDaiBrani(brani, 12).map((a) => a.albumKey),
-    ["a", "b", "c"],
-  );
-  assert.deepEqual(
-    albumDaiBrani(brani, 2).map((a) => a.albumKey),
-    ["a", "b"],
-  );
-  assert.deepEqual(albumDaiBrani([], 12), []);
-});
+    // Un altro guasto non è una domanda: sale a chi ha chiamato.
+    await assert.rejects(
+      conIlSiDeiDatiMobili(async () => {
+        throw { code: "lontano.irraggiungibile", params: {} };
+      }),
+    );
+    assert.equal(archivioDatiMobili.leggi(), null);
 
-test("il mosaico di un artista: quattro copertine diverse, senza i dischi che non ne hanno", () => {
-  const dischi = ["x", null, "x", "y", "z", "w", "v"].map((c, i) =>
-    albumDi(brano(i, `k${i}`, c)),
-  );
-  assert.deepEqual(
-    copertineDegliAlbum(dischi.filter((d) => d !== null)),
-    ["x", "y", "z", "w"],
-  );
-});
-
-test("la durata di un disco è la somma dei suoi brani", () => {
-  assert.equal(durataTotale([brano(1, "a"), brano(2, "a")]), 3_000);
-  assert.equal(durataTotale([]), 0);
-});
-
-test("a gruppi: mai più di tanti in volo, e le risposte nell'ordine delle voci", async () => {
-  let inVolo = 0;
-  let massimo = 0;
-  const esiti = await aGruppi([1, 2, 3, 4, 5, 6, 7], 3, async (n) => {
-    inVolo += 1;
-    massimo = Math.max(massimo, inVolo);
-    await new Promise((fatto) => setTimeout(fatto, 8 - n));
-    inVolo -= 1;
-    return n * 10;
-  });
-  assert.deepEqual(esiti, [10, 20, 30, 40, 50, 60, 70]);
-  assert.equal(massimo, 3);
-  assert.deepEqual(await aGruppi([], 3, async (n: number) => n), []);
+    // Con «No» l'errore dei dati mobili sale e dice perché.
+    archivioLontano.scrivi(stato({ datiMobili: "no" }));
+    await assert.rejects(
+      conIlSiDeiDatiMobili(async () => {
+        throw { code: "lontano.reteAConsumo", params: {} };
+      }),
+    );
+    assert.equal(archivioDatiMobili.leggi(), null);
+  } finally {
+    archivioLontano.scrivi(prima);
+    archivioDatiMobili.scrivi(null);
+  }
 });

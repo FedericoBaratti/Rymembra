@@ -457,6 +457,30 @@
   white-space: nowrap;
 }
 
+/* Il nome dell'artista come pulsante (`parti/NomeArtista.tsx`). Un dito non
+   sorvola: la sottolineatura dice sempre che si può toccare. Il riquadro del
+   tocco è più alto della riga — il padding che si riprende col margine — perché
+   una riga di quindici pixel non si centra con un dito. Un blocco e non una
+   riga di testo, perché l'ellissi di un nome lungo la fa il suo contenitore
+   solo sul testo, non su un elemento in linea. */
+:root[data-forma="telefono"] .artista-np .artista-link {
+  display: block;
+  max-width: 100%;
+  margin: -10px 0;
+  padding: 10px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  overflow: hidden;
+  text-align: start;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-overflow: ellipsis;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
 /* Il cursore: la pista a tutta larghezza, i due tempi sotto, ai lati. La
    pallina c'è sempre: sul computer compare al sorvolo, e un dito non sorvola.
    Dopo il prefisso tre classi, per vincere sulla parte `player-progress` di

@@ -177,7 +177,16 @@ object Ponte {
       "sistema.cartellaCache" -> contesto().cacheDir.absolutePath
       "sistema.condividi" ->
         Condividi.file(attivita(), a.getString("percorso"), a.getString("tipo"), a.getString("titolo")).let { null }
+      "sistema.distribuzione" -> BuildConfig.DISTRIBUZIONE
+      // Il contesto e non l'attività: «Verifico» finisce quando il download finisce,
+      // e chi ha toccato «Aggiorna» può già essere in un'altra app, col servizio che
+      // tiene vivo il processo e nessuna attività. Solo «Installa» ne ha bisogno.
+      "sistema.controllaApk" -> Installatore.controlla(contesto(), a.getString("percorso"))
       "sistema.installaApk" -> Installatore.installa(attivita(), a.getString("percorso"))
+      // La notifica «Pronto da installare»: col contesto, perché l'APK è pronto
+      // anche con l'app in tasca. Non chiede le notifiche (vedi `AggiornamentoPronto`).
+      "sistema.aggiornamentoPronto" ->
+        AggiornamentoPronto.imposta(contesto(), a.getBoolean("acceso"), a.optString("versione")).let { null }
       "sistema.firmatari" -> Installatore.firmatari(contesto())
       "sistema.apriIndirizzo" -> Browser.apri(attivita(), a.getString("indirizzo")).let { null }
       "legale.leggi" -> avvisoLegale(a.getString("nome"))
@@ -205,8 +214,17 @@ object Ponte {
         // Le notifiche si chiedono quando chi accende l'interruttore sa perché
         // arriva la domanda, e non a ogni giro del nucleo.
         if (acceso && dallaPersona) Permessi.notificheAlBisogno(attivita.get(), aspetta = false)
-        Presenza.imposta(contesto(), acceso, testi(a, "collegati"), dallaPersona).let { null }
+        Presenza.imposta(
+          contesto(),
+          acceso,
+          testi(a, "collegati"),
+          dallaPersona,
+          a.optBoolean("partiConAuto", false),
+        ).let { null }
       }
+      // Questa build offre «Parti con l'auto»? La costante di build che la
+      // toglie dalla variante per Google Play: la finestra non disegna la riga.
+      "sistema.partenzaConAuto" -> BuildConfig.PARTENZA_CON_AUTO
       "sistema.sottofondoSpento" -> Presenza.prendiLoSpegnimentoDellaNotifica(contesto())
       "sistema.senzaRisparmio" -> Presenza.senzaRisparmio(contesto())
       "sistema.apriRisparmio" -> {

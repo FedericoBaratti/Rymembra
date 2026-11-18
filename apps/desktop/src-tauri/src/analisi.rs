@@ -1620,13 +1620,23 @@ mod prove {
         );
     }
 
+    /// La scadenza delle due prove sulla radice spenta, e quanto resta appesa
+    /// la share. Con 50 ms le prove fallivano a PC carico (altre compilazioni
+    /// in corso): anche la misura finta dei brani locali, che risponde subito,
+    /// passava la scadenza solo aspettando il suo turno di CPU, e la radice
+    /// locale finiva fra le morte. Quel che conta è il rapporto: la share resta
+    /// appesa molto più della scadenza, il disco risponde molto prima.
+    const SCADENZA_LARGA: Duration = Duration::from_millis(1_000);
+    /// Vedi [`SCADENZA_LARGA`].
+    const APPESO_SUL_NAS: Duration = Duration::from_millis(4_000);
+
     /// Una misura finta che sulla share spenta resta appesa e sul disco
     /// risponde subito.
     fn dal_nas_non_torna(scheda: SchedaSorgente) -> Misurato {
         if matches!(&scheda.collocazione,
             rymembra_app::playback::Collocazione::File(p) if p.starts_with("\\\\nas"))
         {
-            std::thread::sleep(Duration::from_millis(400));
+            std::thread::sleep(APPESO_SUL_NAS);
         }
         Misurato::Fatta {
             track_id: scheda.track_id,
@@ -1661,7 +1671,7 @@ mod prove {
         let morte = RadiciMorte::default();
         let misurati = misura_lotto_con(
             &schede,
-            Duration::from_millis(50),
+            SCADENZA_LARGA,
             || true,
             dal_nas_non_torna,
             &morte,
@@ -1691,13 +1701,13 @@ mod prove {
         schede.extend((3..=8).map(|id| scheda_in(id, "C:\\Musica")));
         let misurati = misura_intensita_con(
             &schede,
-            |_| Duration::from_millis(50),
+            |_| SCADENZA_LARGA,
             || true,
             |scheda, _| {
                 if matches!(&scheda.collocazione,
                     rymembra_app::playback::Collocazione::File(p) if p.starts_with("\\\\nas"))
                 {
-                    std::thread::sleep(Duration::from_millis(400));
+                    std::thread::sleep(APPESO_SUL_NAS);
                 }
                 volume::Misurato::Negata {
                     track_id: scheda.track_id,

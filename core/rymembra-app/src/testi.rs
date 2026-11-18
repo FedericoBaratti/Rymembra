@@ -6,6 +6,12 @@
 //!
 //! # La catena, e perché in quest'ordine
 //!
+//! 0. **Il proprietario del brano**, solo per una riga specchio (`lontano://…`,
+//!    un brano di un altro dispositivo): il disco di qui non ha niente da
+//!    leggere, e il testo — composto con la catena intera di chi ce l'ha — si
+//!    chiede a lui ([`condiviso`]). Se non risponde o non ha niente, si va avanti
+//!    con la catena di qui, che per quel brano è la riga in tabella e il
+//!    catalogo.
 //! 1. **Il sidecar** `brano.lrc` accanto al file. È l'unica fonte che sta *sul
 //!    disco dell'utente e riferita a quel file esatto*: se c'è, è la risposta.
 //!    Lo si rilegge ogni volta invece di fidarsi della copia in tabella, perché
@@ -59,6 +65,7 @@ use rymembra_meta::lrclib;
 use crate::library::{db_error, now_ms};
 
 mod catalogo;
+pub mod condiviso;
 mod disco;
 
 pub use catalogo::{
@@ -66,6 +73,7 @@ pub use catalogo::{
     cerca_di_nuovo_in_rete, cerca_in_rete, copertura, da_cercare, dimentica_esito,
     quanti_da_cercare, ricorda_esito, ricorda_scelta, rifiuta, rimanda,
 };
+pub use condiviso::{DalProprietario, Remoto};
 use disco::leggi_sidecar_con_data;
 pub use disco::{
     CHIAVE_ACCANTO, accanto_ai_file, leggi_sidecar, percorso_sidecar, scrivi_sidecar,
@@ -182,6 +190,11 @@ pub struct BranoDaTestare {
     /// artista, titolo e durata, e quelli un flusso ce li ha — ma non c'è
     /// nessun file accanto a cui posare un `.lrc`.
     ///
+    /// `None` anche per una riga specchio (`lontano://…`): il file sta su un
+    /// altro dispositivo, e un percorso così, dato a chi legge o scrive un
+    /// sidecar, diventerebbe una cartella relativa dove capita. Di chi è il
+    /// brano lo dice [`remoto`](Self::remoto).
+    ///
     /// `None` anche per un brano d'immagine CD, per la stessa ragione detta
     /// dall'altro lato: il suo percorso, `…\Album.cue|03`, non è un file, e il
     /// file vero è l'immagine di tutto il disco. Un `.lrc` accanto sarebbe di
@@ -203,6 +216,10 @@ pub struct BranoDaTestare {
     pub duration_ms: i64,
     /// Il testo che stava nel tag, se ce n'era uno.
     pub lyrics: Option<String>,
+    /// Il proprietario del brano, se è una riga specchio: il testo lo possiede
+    /// lui, e si chiede a lui (vedi [`condiviso`]). `None` per un brano di
+    /// questa macchina.
+    pub remoto: Option<Remoto>,
 }
 
 /// Le colonne di [`BranoDaTestare`], nell'ordine in cui le legge `brano_da_riga`.
@@ -215,10 +232,18 @@ pub struct BranoDaTestare {
 /// vedi [`BranoDaTestare::path`]. Così ogni strada che posa o legge un sidecar
 /// — anche quelle della finestra, che passano da [`brano`] — lo tratta da sé
 /// come un brano senza file, invece di dover ricordare a ognuna la domanda.
-const COLONNE: &str = "t.id, CASE WHEN t.immagine IS NULL THEN t.path END, t.track_key,
-     t.title, t.artist, t.album, t.duration_ms, t.lyrics";
+///
+/// Lo stesso per una riga specchio (`lontano://…`, l'intervallo di
+/// [`crate::specchio::SQL_SPECCHIO`]): il suo percorso esce `NULL` dal `path` e
+/// pieno dall'ultima colonna, `percorso_remoto`, da cui si ricava di chi è.
+const COLONNE: &str = "t.id,
+     CASE WHEN t.immagine IS NULL
+           AND NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0') THEN t.path END,
+     t.track_key, t.title, t.artist, t.album, t.duration_ms, t.lyrics,
+     CASE WHEN t.path >= 'lontano://' AND t.path < 'lontano:/0' THEN t.path END";
 
 fn brano_da_riga(row: &rusqlite::Row<'_>) -> rusqlite::Result<BranoDaTestare> {
+    let percorso_remoto: Option<String> = row.get(8)?;
     Ok(BranoDaTestare {
         id: row.get(0)?,
         path: row.get(1)?,
@@ -228,6 +253,13 @@ fn brano_da_riga(row: &rusqlite::Row<'_>) -> rusqlite::Result<BranoDaTestare> {
         album: row.get(5)?,
         duration_ms: row.get(6)?,
         lyrics: row.get(7)?,
+        remoto: percorso_remoto
+            .as_deref()
+            .and_then(crate::specchio::parti)
+            .map(|(dispositivo, id_remoto)| Remoto {
+                dispositivo: dispositivo.to_owned(),
+                id_remoto,
+            }),
     })
 }
 
@@ -300,6 +332,12 @@ pub struct DalDisco {
     pub sidecar_ms: Option<i64>,
     /// L'LRC dentro il file musicale, se c'è e se serviva aprirlo.
     pub tag: Option<String>,
+    /// Il testo che ha il proprietario del brano, per una riga specchio: il
+    /// disco di qui non ce l'ha, e lo si chiede a lui (vedi [`condiviso`]).
+    /// Lo riempie chi ha la rete, fra le due prese del lucchetto; vale
+    /// `None` per un brano di questa macchina, e per un proprietario che non
+    /// risponde o non ha niente.
+    pub proprietario: Option<DalProprietario>,
 }
 
 /// Legge il sidecar e — solo se serve — il tag sincronizzato del file.
@@ -337,6 +375,7 @@ pub fn leggi_dal_disco(brano: &BranoDaTestare, riga: Option<&Riga>) -> DalDisco 
         sidecar,
         sidecar_ms,
         tag,
+        proprietario: None,
     }
 }
 
@@ -351,7 +390,59 @@ pub fn componi(
     riga: Option<Riga>,
     disco: DalDisco,
 ) -> TestoBrano {
+    componi_con(Some(connection), brano, riga, disco)
+}
+
+/// Come [`componi`], **senza scrivere** la cache in tabella: la riga e il disco
+/// sono già in mano, e non serve nemmeno una connessione. Per chi risponde a un
+/// altro dispositivo, che legge fuori dal lucchetto della libreria e non scrive
+/// niente di sua iniziativa perché qualcuno gliel'ha chiesto.
+#[must_use]
+pub fn componi_senza_scrivere(
+    brano: &BranoDaTestare,
+    riga: Option<Riga>,
+    disco: DalDisco,
+) -> TestoBrano {
+    componi_con(None, brano, riga, disco)
+}
+
+/// Il cuore di [`componi`] e [`componi_senza_scrivere`]: `connection` è dove si
+/// ricorda quel che si è trovato, se c'è.
+pub(crate) fn componi_con(
+    connection: Option<&Connection>,
+    brano: &BranoDaTestare,
+    riga: Option<Riga>,
+    disco: DalDisco,
+) -> TestoBrano {
     let durata = u64::try_from(brano.duration_ms).unwrap_or(0);
+    // Quel che si trova su un disco si ricorda in tabella, se c'è dove.
+    let ricordalo = |grezzo: &str, testo: &Testo, fonte: Fonte| {
+        if let Some(connection) = connection {
+            ricorda(connection, brano, grezzo, testo, fonte);
+        }
+    };
+
+    // ── 0. il proprietario del brano ────────────────────────────────────────
+    // Per una riga specchio il testo lo possiede l'altro dispositivo, e quel
+    // che dice lui — composto con la sua catena intera — viene prima di ogni
+    // altra cosa. Chi ha la rete lo ha già chiesto, fuori dal lucchetto; qui si
+    // decide solo se vale (`vale_il_proprietario`) e lo si ricorda in tabella,
+    // così resta anche col dispositivo spento e per la copia di qui dello
+    // stesso brano.
+    if let Some(dal) = disco
+        .proprietario
+        .as_ref()
+        .filter(|dal| vale_il_proprietario(dal, riga.as_ref()))
+    {
+        if let Some(connection) = connection {
+            ricorda_dal_proprietario(connection, brano, dal);
+        }
+        // «Si è già chiesto al catalogo» lo sa lui, o lo sappiamo noi: una
+        // ricerca fatta da qui non si rifà a ogni apertura solo perché il
+        // proprietario non l'ha mai fatta.
+        let cercato = dal.cercato || riga.as_ref().is_some_and(|r| r.cercato);
+        return finisci(dal.testo.clone(), dal.fonte, dal.scarto_ms, durata, cercato);
+    }
 
     // Uno strumentale è una risposta, e vince su tutto: non c'è niente da
     // cercare altrove, ed è la riga in tabella l'unica che possa saperlo.
@@ -416,7 +507,7 @@ pub fn componi(
             // sincronizzato, quindi riscriverlo sarebbe scriverci sopra sé
             // stesso, e in un anno di riscritture un carattere si perde.
             if !riga.as_ref().is_some_and(|r| r.fonte.e_di_chi_ascolta()) {
-                ricorda(connection, brano, &grezzo, &testo, Fonte::Sidecar);
+                ricordalo(&grezzo, &testo, Fonte::Sidecar);
             }
             return finisci(testo, Fonte::Sidecar, scarto_ms, durata, cercato);
         }
@@ -444,7 +535,7 @@ pub fn componi(
         // riscrittura della riga.
         if testo.sincronizzato() {
             if !riga.as_ref().is_some_and(|r| r.fonte.e_di_chi_ascolta()) {
-                ricorda(connection, brano, &grezzo, &testo, Fonte::Tag);
+                ricordalo(&grezzo, &testo, Fonte::Tag);
             }
             return finisci(testo, Fonte::Tag, scarto_ms, durata, cercato);
         }
@@ -474,7 +565,7 @@ pub fn componi(
     if let Some(grezzo) = brano.lyrics.as_deref().filter(|t| !t.trim().is_empty()) {
         let testo = testo::leggi(grezzo);
         if !testo.vuoto() {
-            ricorda(connection, brano, grezzo, &testo, Fonte::Tag);
+            ricordalo(grezzo, &testo, Fonte::Tag);
             return finisci(testo, Fonte::Tag, scarto_ms, durata, cercato);
         }
     }
@@ -485,6 +576,87 @@ pub fn componi(
         da_chiedere: !cercato,
         ..TestoBrano::default()
     }
+}
+
+/// Il testo del proprietario passa davanti alla catena di qui? Sì, tranne due
+/// volte, che sono le regole di sempre applicate a lui.
+///
+/// - Un testo sincronizzato **a mano** qui non si scavalca mai: è lavoro di chi
+///   ascolta, e vale per ogni scrittore di questa tabella. Se il proprietario ne
+///   ha uno più nuovo, si vedrà quando quello di qui sarà stato rifatto.
+/// - Un testo **senza tempi** non passa davanti a una riga che i tempi ce li ha:
+///   come un sidecar senza tempi (`copre_i_tempi`). Il catalogo, cercato da qui,
+///   può averne uno che scorre mentre il proprietario ha solo le parole.
+///
+/// Un proprietario senza niente non è un testo, e non si guarda nemmeno.
+fn vale_il_proprietario(dal: &DalProprietario, riga: Option<&Riga>) -> bool {
+    if dal.testo.vuoto() {
+        return false;
+    }
+    let Some(riga) = riga else {
+        return true;
+    };
+    if riga.fonte.e_di_chi_ascolta() && riga.grezzo().is_some() {
+        return false;
+    }
+    dal.testo.sincronizzato() || dal.testo.strumentale || !riga.ha_i_tempi()
+}
+
+/// Ricorda in tabella il testo che il proprietario ha dato, come copia.
+///
+/// Sovrascrive quel che c'era — il proprietario è chi ha ragione sul suo
+/// brano — tranne un testo a mano di qui (`source = 'mano'`), che non si
+/// tocca mai. Non scrive se non è cambiato niente: ogni apertura del pannello
+/// non deve far sembrare nuova una riga che viaggia nel profilo. `checked_at`
+/// non si tocca: dice che si è chiesto al catalogo **da qui**, e non è successo.
+///
+/// Un id ≤ 0 non si ricorda, come in [`ricorda`].
+fn ricorda_dal_proprietario(
+    connection: &Connection,
+    brano: &BranoDaTestare,
+    dal: &DalProprietario,
+) {
+    if brano.id <= 0 {
+        return;
+    }
+    let grezzo = dal.grezzo.as_str();
+    let (synced, plain) = if dal.testo.strumentale {
+        (None, None)
+    } else if dal.testo.sincronizzato() {
+        (Some(grezzo), None)
+    } else {
+        (None, Some(grezzo))
+    };
+    let _ = connection.execute(
+        "INSERT INTO lyrics
+           (track_key, plain, synced, source, offset_ms, instrumental, duration_ms, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(track_key) DO UPDATE SET
+           plain = excluded.plain,
+           synced = excluded.synced,
+           source = excluded.source,
+           offset_ms = excluded.offset_ms,
+           instrumental = excluded.instrumental,
+           duration_ms = excluded.duration_ms,
+           updated_at = excluded.updated_at,
+           scelta = 0
+         WHERE lyrics.source <> 'mano'
+           AND (lyrics.plain IS NOT excluded.plain
+             OR lyrics.synced IS NOT excluded.synced
+             OR lyrics.source IS NOT excluded.source
+             OR lyrics.offset_ms IS NOT excluded.offset_ms
+             OR lyrics.instrumental IS NOT excluded.instrumental)",
+        rusqlite::params![
+            brano.track_key,
+            plain,
+            synced,
+            dal.fonte.nome(),
+            dal.scarto_ms,
+            i64::from(dal.testo.strumentale),
+            brano.duration_ms,
+            now_ms(),
+        ],
+    );
 }
 
 /// I due LRC hanno le stesse righe agli stessi tempi — e le stesse parole, se

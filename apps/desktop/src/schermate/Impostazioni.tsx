@@ -1966,7 +1966,7 @@ export function Impostazioni({
   onImportaLink,
   onImportaAccount,
   onVista,
-  onSfogliaDispositivo,
+  onMostraDispositivo,
   importazioni,
   arricchimento,
   avanzaArricchimento,
@@ -2153,8 +2153,8 @@ export function Impostazioni({
    * qui — e la prossima uscita non aggiunge una prop.
    */
   onVista: (v: Vista) => void;
-  /** Apre «Sfoglia» di un dispositivo collegato via internet. */
-  onSfogliaDispositivo: (chiave: string) => void;
+  /** Apre la libreria filtrata per un dispositivo collegato via internet. */
+  onMostraDispositivo: (chiave: string) => void;
   /**
    * Le importazioni da un servizio esterno e la coda che le scarica.
    *
@@ -3704,13 +3704,13 @@ export function Impostazioni({
             </Scheda>
           )}
           {/* Il collegamento via internet: il QR, i dispositivi collegati, e da
-              lì «Sfoglia». Vedi `parti/Dispositivi.tsx`. */}
+              lì la sua musica in libreria. Vedi `parti/Dispositivi.tsx`. */}
           {sezione === "dispositivi" && (
             <Scheda icona="i-server" titolo={t("settings.devices.title")} guida="devices">
               <SchedaDispositivi
                 onErrore={onErrore}
                 onNotizia={onNotizia}
-                onSfoglia={onSfogliaDispositivo}
+                onMostra={onMostraDispositivo}
                 sincronia={sincronia}
                 onSincroniaAccoppia={onSincroniaAccoppia}
                 onSincroniaDimentica={onSincroniaDimentica}

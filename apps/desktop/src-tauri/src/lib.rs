@@ -65,6 +65,7 @@ mod maiusc;
 mod manutenzione;
 mod media;
 mod metadati;
+mod novita;
 mod nuvola;
 mod nuvola_app;
 mod nuvola_musica;
@@ -872,6 +873,8 @@ pub fn run() {
             avvio_con_windows::avvio_con_windows_imposta,
             avvio_con_windows::proposta_sottofondo_da_fare,
             avvio_con_windows::proposta_sottofondo_rispondi,
+            novita::novita_da_mostrare,
+            novita::novita_viste,
             comandi::avvio,
             comandi::imposta_cartelle,
             comandi::cartelle_trasloca,
@@ -906,7 +909,11 @@ pub fn run() {
             comandi::settimana_apri,
             comandi::album,
             comandi::album_artista,
+            comandi::brani_artista,
+            comandi::partecipazioni,
+            comandi::partecipazioni_conta,
             comandi::artisti,
+            comandi::conteggi,
             comandi::brani_album,
             comandi::preferiti,
             comandi::preferito,
@@ -1071,6 +1078,7 @@ pub fn run() {
             lontano::lontano_relay,
             lontano::lontano_dati_mobili,
             lontano::lontano_sottofondo,
+            lontano::lontano_parti_con_auto,
             lontano::lontano_qr_crea,
             lontano::lontano_qr_annulla,
             lontano::lontano_collega,
@@ -1081,17 +1089,7 @@ pub fn run() {
             lontano::specchio::lontano_specchio_conferma,
             lontano::specchio::lontano_specchio_ora,
             lontano::specchio::lontano_specchio_stato,
-            lontano::sfoglia::lontano_album,
-            lontano::sfoglia::lontano_album_artista,
-            lontano::sfoglia::lontano_artisti,
-            lontano::sfoglia::lontano_brani,
-            lontano::sfoglia::lontano_brani_album,
-            lontano::sfoglia::lontano_cerca,
-            lontano::sfoglia::lontano_cerca_conteggio,
-            lontano::sfoglia::lontano_suona,
-            lontano::sfoglia::lontano_accoda,
-            lontano::sfoglia::lontano_dopo,
-            lontano::scarico::lontano_scarica,
+            lontano::scarico::lontano_scarica_righe,
             lontano::scarico::lontano_scarico_annulla,
             lontano::scarico::lontano_scarico_stato,
             lontano::lontano_link_in_attesa,
@@ -1360,9 +1358,26 @@ pub fn run() {
                 return;
             }
 
+            // Una chiusura di una persona — la X senza vassoio, Alt+F4 — si segna
+            // **prima** di spegnere: l'aggiornamento che aspetta la chiusura parte
+            // solo se è passata di qui, o da «Esci» (`chiusura::esci_adesso`). Quando
+            // Windows spegne il computer arriva `Exit` da solo, senza nessuna delle
+            // due, e un installer lanciato in quel momento verrebbe ucciso a metà.
+            #[cfg(desktop)]
+            if chiusura {
+                aggiornamenti::uscita_voluta();
+            }
+
             // La sequenza vera sta in `spegnimento::spegni`, perché la usa
             // anche l'aggiornamento, che esce da un'altra strada: vedi lì.
             spegnimento::spegni(mano);
+
+            // E solo dopo aver spento tutto, e solo sull'uscita vera: il pacchetto
+            // verificato che aspettava si installa, senza riaprire Rymembra.
+            #[cfg(desktop)]
+            if matches!(evento, tauri::RunEvent::Exit) {
+                aggiornamenti::alla_chiusura(mano);
+            }
         }),
         Err(err) => {
             // Su disco e non solo su `stderr`: questo è un ramo in cui la
@@ -2301,6 +2316,44 @@ mod prove {
             "il ramo Nascondi impedisce la chiusura o nasconde la finestra"
         );
         assert!(nascondi.contains("lontano::finestra_nascosta(mano)"));
+    }
+
+    /// §11.2.4: il pacchetto di un aggiornamento in attesa si installa
+    /// all'uscita vera e solo lì. La chiusura di una persona — la X senza
+    /// vassoio, o «Esci» — si segna **prima** della sequenza di spegnimento; il
+    /// pacchetto parte **dopo**, e solo sull'`Exit`. Quando Windows spegne il
+    /// computer tao manda `Exit` da solo, senza nessuna delle due.
+    #[test]
+    fn l_aggiornamento_in_attesa_si_installa_solo_all_uscita_voluta() {
+        let ciclo = ciclo_degli_eventi();
+        let segna = ciclo
+            .find("aggiornamenti::uscita_voluta()")
+            .expect("la chiusura voluta non si segna");
+        let spegni = ciclo
+            .find("spegnimento::spegni(mano)")
+            .expect("la sequenza di spegnimento non si trova");
+        let installa = ciclo
+            .find("aggiornamenti::alla_chiusura(mano)")
+            .expect("il pacchetto in attesa non si installa mai");
+        assert!(
+            segna < spegni,
+            "la chiusura voluta si segna dopo lo spegnimento"
+        );
+        assert!(spegni < installa, "si installa prima di aver spento tutto");
+        let davanti = ciclo
+            .get(installa.saturating_sub(120)..installa)
+            .unwrap_or_default();
+        assert!(
+            davanti.contains("tauri::RunEvent::Exit"),
+            "si installa anche su un evento che non è l'uscita"
+        );
+        let prima = ciclo
+            .get(segna.saturating_sub(120)..segna)
+            .unwrap_or_default();
+        assert!(
+            prima.contains("if chiusura"),
+            "si segna la chiusura voluta anche per un'uscita che non viene dalla finestra"
+        );
     }
 
     /// Morta la finestra, quel che la pagina aveva acceso — lo spettro, i

@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::spegnimento::Emette as _;
 use rymembra_app::enrich::DepositoSqlite;
 use rymembra_app::settings;
+use rymembra_app::testi::condiviso::{self, NuovoTesto, Scrittura};
 use rymembra_app::testi::{self, Copertura, Fonte};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::testo::{Aderenza, Parola, Riga, Testo, parole_combaciano};
@@ -181,23 +182,25 @@ pub async fn testo_brano(app: AppHandle, id: i64) -> Esito<TestoIpc> {
             })
             .with_cause("la libreria non è più fra gli stati gestiti"));
         };
-        testo_gia_saputo(&stato, id)
+        testo_gia_saputo(&mano, &stato, id)
     })
     .await
     .map_err(errore)?
     .map_err(errore)
 }
 
-/// Quel che si sa già del testo di un brano, senza toccare la rete.
+/// Quel che si sa già del testo di un brano, senza toccare la rete **del
+/// catalogo dei testi**: per una riga specchio, però, si chiede al dispositivo
+/// che ha il brano, e un dispositivo che non risponde è «nessun testo da lui».
 ///
 /// Separata dal comando perché la chiamano in due: [`testo_brano`], che la manda
 /// in disparte, e [`testo_cerca`] quando la rete è spenta — e quella è già su un
 /// filo suo, con il brano appena letto sotto lo stesso lucchetto. Due copie della
 /// stessa lettura sarebbero due copie che divergono il giorno in cui qualcuno
 /// cambia cosa vuol dire «il testo che si ha».
-fn testo_gia_saputo(stato: &Stato, id: i64) -> Result<TestoIpc, AppError> {
+fn testo_gia_saputo(app: &AppHandle, stato: &Stato, id: i64) -> Result<TestoIpc, AppError> {
     let brano = con_libreria(stato, |libreria| testi::brano(&libreria.connection, id))?;
-    testo_di(stato, &brano).map(TestoIpc::from)
+    testo_di(app, stato, &brano).map(TestoIpc::from)
 }
 
 /// Il testo di un brano, con il lucchetto della libreria preso **due volte** e
@@ -216,11 +219,26 @@ fn testo_gia_saputo(stato: &Stato, id: i64) -> Result<TestoIpc, AppError> {
 /// che scrive un esito — e non è un problema: `componi` la usa per decidere da
 /// dove viene il testo, e quel che scrive passa dagli `UPSERT` che proteggono il
 /// lavoro di chi ascolta.
-fn testo_di(stato: &Stato, brano: &testi::BranoDaTestare) -> Result<testi::TestoBrano, AppError> {
+///
+/// # Un brano di un altro dispositivo
+///
+/// Una riga specchio non ha un file: nel mezzo, al posto del disco, si chiede il
+/// testo al dispositivo che ha il brano (vedi `lontano::testo`). È la stessa
+/// forma: la rete sta fuori dal lucchetto, e non fallisce mai — un dispositivo
+/// spento, di una versione di prima o senza niente da dire vale «nessun testo
+/// da lui», e la catena di qui prosegue. Mai una fascia rossa.
+fn testo_di(
+    app: &AppHandle,
+    stato: &Stato,
+    brano: &testi::BranoDaTestare,
+) -> Result<testi::TestoBrano, AppError> {
     let riga = con_libreria(stato, |libreria| {
         Ok(testi::leggi_riga(&libreria.connection, &brano.track_key))
     })?;
-    let disco = testi::leggi_dal_disco(brano, riga.as_ref());
+    let mut disco = testi::leggi_dal_disco(brano, riga.as_ref());
+    if let Some(remoto) = &brano.remoto {
+        disco.proprietario = crate::lontano::dal_proprietario(app, remoto);
+    }
     con_libreria(stato, |libreria| {
         Ok(testi::componi(&libreria.connection, brano, riga, disco))
     })
@@ -246,12 +264,56 @@ pub fn testo_scarto(
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let esito = con_libreria(&stato, |libreria| {
         let brano = testi::brano(&libreria.connection, id)?;
-        testi::imposta_scarto(&libreria.connection, &brano.track_key, scarto_ms)
+        testi::imposta_scarto(&libreria.connection, &brano.track_key, scarto_ms)?;
+        // Per un brano di un altro dispositivo la correzione è sua: qui resta la
+        // copia, e a lui va dalla posta.
+        al_proprietario(&libreria.connection, &brano, &Scrittura::Scarto(scarto_ms))
     })
+    .map(|da_svegliare| svegliali(&app, da_svegliare))
     .map_err(errore);
     // Come `preferito` e `valutazione`: è una decisione di chi ascolta, e va
     // dove vanno le altre.
     crate::nuvola::se_riuscito(&app, esito)
+}
+
+/// Un gesto dato al testo di un brano di un altro dispositivo va in posta al suo
+/// proprietario: il testo è suo, e a lui si scrive — subito se risponde, più
+/// tardi se è spento. Per un brano di questa macchina non fa niente.
+///
+/// Restituisce il dispositivo a cui c'è posta nuova, da svegliare con
+/// [`svegliali`] **dopo** aver lasciato il lucchetto. Un testo troppo lungo per
+/// una domanda non parte — il proprietario non lo prenderebbe, e una voce
+/// ferma in posta fermerebbe le altre — e resta solo qui: si dice nel diario.
+///
+/// Va chiamata **subito dopo** la scrittura della copia di qui: una voce scelta
+/// o un «non è questo» che lì non hanno cambiato niente non partono (vedi
+/// [`condiviso::dopo_un_gesto`]).
+///
+/// # Errori
+///
+/// Quelli del database.
+fn al_proprietario(
+    connection: &rusqlite::Connection,
+    brano: &testi::BranoDaTestare,
+    gesto: &Scrittura,
+) -> Result<Option<String>, AppError> {
+    match condiviso::dopo_un_gesto(connection, brano, gesto, adesso_ms())? {
+        condiviso::Posta::Mandare(dispositivo) => Ok(Some(dispositivo)),
+        condiviso::Posta::Niente => Ok(None),
+        condiviso::Posta::TroppoLungo => {
+            nota!(
+                "[testi] una correzione troppo lunga per il proprietario resta solo su questo dispositivo"
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Sveglia chi manda la posta ai dispositivi che ne hanno di nuova.
+fn svegliali(app: &AppHandle, dispositivo: Option<String>) {
+    if let Some(dispositivo) = dispositivo {
+        crate::lontano::posta_nuova(app, &[dispositivo]);
+    }
 }
 
 // ── lo stato che vive quanto l'applicazione ─────────────────────────────────
@@ -529,7 +591,7 @@ fn cerca_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
     if !rete {
         // Non è un errore: è una scelta di chi usa il programma, e la risposta
         // giusta è quel che si sa senza rete.
-        return testo_gia_saputo(&stato, id).map_err(errore);
+        return testo_gia_saputo(app, &stato, id).map_err(errore);
     }
 
     // ── senza nessun lucchetto ──────────────────────────────────────────────
@@ -541,7 +603,9 @@ fn cerca_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
         testi::ricorda_esito(&libreria.connection, &brano, voce.as_ref())
     })
     .map_err(errore)?;
-    testo_di(&stato, &brano).map(TestoIpc::from).map_err(errore)
+    testo_di(app, &stato, &brano)
+        .map(TestoIpc::from)
+        .map_err(errore)
 }
 
 /// Richiede il testo al catalogo **ignorando quel che si ricordava**.
@@ -600,7 +664,7 @@ fn cerca_di_nuovo_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
     .map_err(errore)?;
 
     if !rete {
-        return testo_gia_saputo(&stato, id).map_err(errore);
+        return testo_gia_saputo(app, &stato, id).map_err(errore);
     }
 
     // ── senza nessun lucchetto ──────────────────────────────────────────────
@@ -612,7 +676,9 @@ fn cerca_di_nuovo_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
         testi::ricorda_esito(&libreria.connection, &brano, voce.as_ref())
     })
     .map_err(errore)?;
-    testo_di(&stato, &brano).map(TestoIpc::from).map_err(errore)
+    testo_di(app, &stato, &brano)
+        .map(TestoIpc::from)
+        .map_err(errore)
 }
 
 /// Una voce del catalogo, come la vede chi sceglie a mano.
@@ -798,11 +864,42 @@ fn scegli_adesso(app: &AppHandle, id: i64, candidato: i64) -> Esito<TestoIpc> {
             })?
         }
     };
-    con_libreria(&stato, |libreria| {
-        testi::ricorda_scelta(&libreria.connection, &brano, &voce)
+    let da_svegliare = con_libreria(&stato, |libreria| {
+        testi::ricorda_scelta(&libreria.connection, &brano, &voce)?;
+        // Per un brano di un altro dispositivo la scelta è sua: qui resta la
+        // copia, e a lui va dalla posta con il testo dentro.
+        al_proprietario(
+            &libreria.connection,
+            &brano,
+            &Scrittura::Testo(scelta_del_catalogo(&voce)),
+        )
     })
     .map_err(errore)?;
-    testo_di(&stato, &brano).map(TestoIpc::from).map_err(errore)
+    svegliali(app, da_svegliare);
+    testo_di(app, &stato, &brano)
+        .map(TestoIpc::from)
+        .map_err(errore)
+}
+
+/// La voce scelta dall'elenco, nella forma che parte verso il proprietario.
+///
+/// Il testo senza tempi si manda solo se la voce non ha l'LRC: l'LRC lo
+/// contiene già, e la cornice di una domanda ha un tetto.
+fn scelta_del_catalogo(voce: &rymembra_meta::lrclib::Voce) -> NuovoTesto {
+    let sincronizzato = voce
+        .sincronizzato
+        .clone()
+        .filter(|lrc| !lrc.trim().is_empty());
+    NuovoTesto::Scelta {
+        id_catalogo: voce.candidato.id,
+        piatto: if sincronizzato.is_some() {
+            None
+        } else {
+            voce.piatto.clone()
+        },
+        sincronizzato,
+        strumentale: voce.candidato.strumentale,
+    }
 }
 
 /// Scarta il testo che il catalogo aveva dato a questo brano: «non è questo».
@@ -828,13 +925,23 @@ pub async fn testo_rifiuta(app: AppHandle, id: i64) -> Esito<TestoIpc> {
 /// Il corpo di [`testo_rifiuta`], sul pool bloccante.
 fn rifiuta_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
     let stato = gestito::<Stato>(app, "rifiuto di un testo").map_err(errore)?;
-    let brano = con_libreria(&stato, |libreria| {
+    let (brano, da_svegliare) = con_libreria(&stato, |libreria| {
         let brano = testi::brano(&libreria.connection, id)?;
         testi::rifiuta(&libreria.connection, &brano.track_key)?;
-        Ok(brano)
+        // Per un brano di un altro dispositivo è lui che deve buttare il testo
+        // del suo catalogo: dalla posta.
+        let da_svegliare = al_proprietario(
+            &libreria.connection,
+            &brano,
+            &Scrittura::Testo(NuovoTesto::Rifiuta),
+        )?;
+        Ok((brano, da_svegliare))
     })
     .map_err(errore)?;
-    testo_di(&stato, &brano).map(TestoIpc::from).map_err(errore)
+    svegliali(app, da_svegliare);
+    testo_di(app, &stato, &brano)
+        .map(TestoIpc::from)
+        .map_err(errore)
 }
 
 /// Un pannello del testo si è aperto (`true`) o chiuso (`false`).
@@ -1659,10 +1766,17 @@ fn precarica_adesso(app: &AppHandle, id: i64) {
     let Ok(Some(brano)) = letto else {
         return;
     };
+    // Un brano di un altro dispositivo, su una rete a consumo: niente anticipo.
+    // Il testo del brano dopo si chiederebbe al dispositivo che ha il brano — e
+    // al catalogo — usando dati che nessuno ha deciso di usare: lo chiederà il
+    // pannello, se qualcuno lo guarda quando quel brano suona.
+    if brano.remoto.is_some() && crate::lontano::rete_a_consumo() {
+        return;
+    }
     // La condizione è quella del pannello, letta dal nucleo: un brano che il
     // testo ce l'ha già — o a cui si è già chiesto — non si chiede. Con il
     // disco letto fuori dal lucchetto, come il pannello.
-    if !testo_di(&stato, &brano).is_ok_and(|trovato| trovato.da_chiedere) {
+    if !testo_di(app, &stato, &brano).is_ok_and(|trovato| trovato.da_chiedere) {
         return;
     }
 
@@ -1752,6 +1866,22 @@ pub async fn testo_aggancia(app: AppHandle, id: i64, battute: Vec<u32>) -> Esito
 /// Il corpo di [`testo_aggancia`], sul pool bloccante.
 fn aggancia_adesso(app: &AppHandle, id: i64, battute: &[u32]) -> Esito<Vec<u32>> {
     let stato = gestito::<Stato>(app, "aggancio di un testo").map_err(errore)?;
+    // Un brano di un altro dispositivo non ha un file qui: l'audio sta là, e
+    // cercarne gli attacchi vorrebbe dire scaricarlo per intero — megabyte, su
+    // una rete che può essere a consumo — per raddrizzare di qualche decina di
+    // millisecondi delle battute già date a orecchio. Le battute tornano com'erano
+    // (come per un brano di cui non si trova nessun attacco). L'editor non arriva
+    // nemmeno qui per un brano così: il tasto diventa «Avanti», con una nota che
+    // dice di chi è l'audio (`Sincronizza.tsx`); questa è la rete di sicurezza
+    // per chi chiamasse il comando da un'altra strada, e non cade in una fascia
+    // rossa.
+    let del_proprietario = con_libreria(&stato, |libreria| {
+        testi::brano(&libreria.connection, id).map(|brano| brano.remoto.is_some())
+    })
+    .map_err(errore)?;
+    if del_proprietario {
+        return Ok(battute.to_vec());
+    }
     // Sotto lucchetto ci va **solo** la riga di database. L'apertura del file no:
     // su una condivisione di rete morta dura quaranta secondi, e tenerci dentro
     // il lucchetto della libreria vorrebbe dire fermare la scansione,
@@ -1880,7 +2010,7 @@ fn salva_adesso(app: &AppHandle, id: i64, righe: Vec<RigaSalvata>) -> Esito<Salv
     // traduzione da portare, non battute perse.
     let esito = con_libreria(&stato, |libreria| testi::brano(&libreria.connection, id))
         .and_then(|brano| {
-            let prima = testo_di(&stato, &brano)
+            let prima = testo_di(app, &stato, &brano)
                 .map(|trovato| trovato.testo.righe)
                 .unwrap_or_default();
             let gemelli = componi(righe, &prima);
@@ -1889,14 +2019,22 @@ fn salva_adesso(app: &AppHandle, id: i64, righe: Vec<RigaSalvata>) -> Esito<Salv
             // Prima del file, e la ragione sta su
             // `rymembra_app::testi::salva_a_mano`: una cartella di sola lettura
             // non deve costare mezz'ora di battute.
-            let accanto = con_libreria(&stato, |libreria| {
-                testi::registra_a_mano(
+            let (accanto, da_svegliare) = con_libreria(&stato, |libreria| {
+                let lrc = gemelli.esteso.as_deref().unwrap_or(&gemelli.semplice);
+                testi::registra_a_mano(&libreria.connection, &brano, lrc)?;
+                // Per un brano di un altro dispositivo il testo è suo: qui resta
+                // la copia, e a lui va dalla posta (il file accanto al brano non
+                // c'è: vedi `nei_file`).
+                let da_svegliare = al_proprietario(
                     &libreria.connection,
                     &brano,
-                    gemelli.esteso.as_deref().unwrap_or(&gemelli.semplice),
+                    &Scrittura::Testo(NuovoTesto::Mano {
+                        lrc: lrc.to_owned(),
+                    }),
                 )?;
-                Ok(testi::accanto_ai_file(&libreria.connection))
+                Ok((testi::accanto_ai_file(&libreria.connection), da_svegliare))
             })?;
+            svegliali(app, da_svegliare);
             Ok((brano, gemelli, accanto))
         })
         .and_then(|(brano, gemelli, accanto)| {
@@ -1933,7 +2071,7 @@ fn salva_adesso(app: &AppHandle, id: i64, righe: Vec<RigaSalvata>) -> Esito<Salv
             }
             // ── di nuovo sotto lucchetto: quel che il pannello deve mostrare ───
             Ok(SalvatoIpc {
-                testo: testo_di(&stato, &brano).map(TestoIpc::from)?,
+                testo: testo_di(app, &stato, &brano).map(TestoIpc::from)?,
                 file_non_scritto: nei_file.err().map(crate::errore::ErroreIpc::from),
             })
         })

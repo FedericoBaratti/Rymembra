@@ -34,8 +34,8 @@ let scala: Gestore = () => false;
  *
  * `sulComputer`: chiudere quel gestore è anche quel che fa Escape (e `Alt+←`,
  * e il tasto indietro del mouse) sul computer — i livelli di una pagina che sul
- * telefono e sul computer si aprono nello stesso modo, come i dischi di
- * «Sfoglia». Senza, il gestore è del solo telefono: sul computer la coda e la
+ * telefono e sul computer si aprono nello stesso modo, come i dischi delle
+ * pagine della libreria. Senza, il gestore è del solo telefono: sul computer la coda e la
  * terza colonna stanno accanto alla pagina, e Escape non deve chiuderle.
  */
 export function suIndietro(

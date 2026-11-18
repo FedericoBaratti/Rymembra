@@ -72,6 +72,7 @@ use rymembra_play::impronta::RAGGRUPPAMENTO;
 use crate::library::{self, TrackSummary};
 use crate::smart;
 use crate::sonora;
+use crate::specchio::Origine;
 
 /// Da quanti giorni un brano dev'essere fermo per contare come «non di recente».
 ///
@@ -199,6 +200,14 @@ pub const DA_TANTO_MS: i64 = 180 * 24 * 60 * 60 * 1000;
 /// chiama (`riproduzione::coda::scegli_da_solo`) legge un errore come «niente
 /// da proporre».
 ///
+/// # I dispositivi che non rispondono
+///
+/// `origine` dice da dove si può scegliere. Chi suona passa
+/// [`Origine::Raggiungibili`] con i dispositivi che **adesso** rispondono: la
+/// musica di un PC spento resta fuori dalla scelta (§4.6), perché un brano
+/// scelto da solo che non parte è un silenzio che nessuno ha chiesto. Una copia
+/// di qui che «Tutti» nasconde dietro quel PC torna a essere candidata.
+///
 /// # Errori
 ///
 /// `library.trackNotFound` se `corrente` ≤ 0; `db.queryFailed` se il database
@@ -208,8 +217,15 @@ pub fn prossimo(
     corrente: i64,
     esclusi: &[i64],
     adesso_ms: i64,
+    origine: &Origine,
 ) -> Result<Option<Scelta>, AppError> {
-    cascata(&mut Tenuta(connection), corrente, esclusi, adesso_ms)
+    cascata(
+        &mut Tenuta(connection),
+        corrente,
+        esclusi,
+        adesso_ms,
+        origine,
+    )
 }
 
 /// Come [`prossimo`], ma il database lo presta un [`library::Deposito`] un
@@ -235,8 +251,15 @@ pub fn prossimo_con<D: library::Deposito>(
     corrente: i64,
     esclusi: &[i64],
     adesso_ms: i64,
+    origine: &Origine,
 ) -> Result<Option<Scelta>, AppError> {
-    cascata(&mut DaDeposito(deposito), corrente, esclusi, adesso_ms)
+    cascata(
+        &mut DaDeposito(deposito),
+        corrente,
+        esclusi,
+        adesso_ms,
+        origine,
+    )
 }
 
 /// Chi presta la connessione alla cascata, per un gradino.
@@ -277,6 +300,7 @@ fn cascata(
     corrente: i64,
     esclusi: &[i64],
     adesso_ms: i64,
+    origine: &Origine,
 ) -> Result<Option<Scelta>, AppError> {
     crate::playback::riga_della_libreria(corrente)?;
 
@@ -286,7 +310,7 @@ fn cascata(
     let (brano, del_disco) = presta.presta(|connection| {
         let brano = library::read_summary(connection, corrente)?;
         let del_disco = match brano.as_ref() {
-            Some(brano) => resto_dell_album(connection, brano, esclusi)?,
+            Some(brano) => resto_dell_album(connection, brano, esclusi, origine)?,
             None => None,
         };
         Ok((brano, del_disco))
@@ -305,24 +329,24 @@ fn cascata(
     let contesto = contesto.as_ref();
 
     if let Some(brano) = brano.as_ref() {
-        if let Some(scelta) = presta
-            .presta(|connection| stesso_artista(connection, brano, esclusi, adesso_ms, contesto))?
-        {
+        if let Some(scelta) = presta.presta(|connection| {
+            stesso_artista(connection, brano, esclusi, adesso_ms, contesto, origine)
+        })? {
             return Ok(Some(scelta));
         }
         if let Some(scelta) = presta.presta(|connection| {
-            stesso_genere(connection, corrente, esclusi, adesso_ms, contesto)
+            stesso_genere(connection, corrente, esclusi, adesso_ms, contesto, origine)
         })? {
             return Ok(Some(scelta));
         }
     }
 
-    if let Some(scelta) = presta
-        .presta(|connection| un_preferito_mai_sentito(connection, esclusi, adesso_ms, contesto))?
-    {
+    if let Some(scelta) = presta.presta(|connection| {
+        un_preferito_mai_sentito(connection, esclusi, adesso_ms, contesto, origine)
+    })? {
         return Ok(Some(scelta));
     }
-    presta.presta(|connection| uno_qualunque(connection, esclusi, adesso_ms, contesto))
+    presta.presta(|connection| uno_qualunque(connection, esclusi, adesso_ms, contesto, origine))
 }
 
 /// Quanti brani semina una radio.
@@ -378,12 +402,13 @@ pub fn radio(
     seme: i64,
     quanti: usize,
     adesso_ms: i64,
+    origine: &Origine,
 ) -> Result<Vec<i64>, AppError> {
     crate::playback::riga_della_libreria(seme)?;
     if quanti == 0 {
         return Ok(Vec::new());
     }
-    let trovati = bacino_della_radio(connection, seme)?;
+    let trovati = bacino_della_radio(connection, seme, origine)?;
     let ammessi: Vec<&TrackSummary> = trovati.iter().filter(|b| b.id != seme).collect();
     if ammessi.is_empty() {
         return Ok(Vec::new());
@@ -466,10 +491,18 @@ const BACINO_PER_AFFINITA: i64 = 500;
 ///
 /// L'ordine è casuale: senza una scala, o a pari punteggio, la radio resta un
 /// mescolamento, come è sempre stata.
-fn bacino_della_radio(connection: &Connection, seme: i64) -> Result<Vec<TrackSummary>, AppError> {
+fn bacino_della_radio(
+    connection: &Connection,
+    seme: i64,
+    origine: &Origine,
+) -> Result<Vec<TrackSummary>, AppError> {
+    // Una radio, come l'autoplay, non propone la musica di un dispositivo che
+    // adesso non risponde: la condizione di origine sta sulla riga intera, non
+    // sul riempimento casuale (che pescherebbe anche da lì).
+    let origine = origine.sql("t.")?;
     let sql = format!(
         "SELECT {} FROM tracks t
-          WHERE t.id <> ?1 AND t.copia_di IS NULL AND t.id IN (
+          WHERE t.id <> ?1 AND {origine} AND t.id IN (
             SELECT vicino_id FROM brano_vicino WHERE track_id = ?1
             UNION
             SELECT id FROM (
@@ -511,6 +544,7 @@ fn resto_dell_album(
     connection: &Connection,
     brano: &TrackSummary,
     esclusi: &[i64],
+    raggiungibili: &Origine,
 ) -> Result<Option<i64>, AppError> {
     let Some(chiave) = brano.album_key.as_deref() else {
         return Ok(None);
@@ -521,10 +555,13 @@ fn resto_dell_album(
     let tracce = library::album_tracks(connection, &origine, chiave)?;
     // Solo quel che viene **dopo** il brano corrente: ripescare l'inizio del
     // disco che si è appena finito è la cosa che fa sembrare rotto un lettore.
+    // E solo quel che adesso si può suonare: il disco di un PC che ha smesso di
+    // rispondere non continua.
     let dopo_il_corrente = tracce
         .iter()
         .skip_while(|t| t.id != brano.id)
         .skip(1)
+        .filter(|t| raggiungibili.raggiunge(t.path.as_deref()))
         .map(|t| t.id);
     Ok(scegli(dopo_il_corrente, esclusi))
 }
@@ -536,6 +573,7 @@ fn stesso_artista(
     esclusi: &[i64],
     adesso_ms: i64,
     contesto: Option<&Contesto>,
+    origine: &Origine,
 ) -> Result<Option<Scelta>, AppError> {
     if brano.artist.is_empty() {
         return Ok(None);
@@ -564,6 +602,7 @@ fn stesso_artista(
         adesso_ms,
         contesto,
         Motivo::Artista,
+        origine,
     )
 }
 
@@ -578,6 +617,7 @@ fn stesso_genere(
     esclusi: &[i64],
     adesso_ms: i64,
     contesto: Option<&Contesto>,
+    origine: &Origine,
 ) -> Result<Option<Scelta>, AppError> {
     // Nessuna riga **non** è un guasto, ed è l'unico punto della catena in cui
     // lo si sbagliava. Il brano corrente può sparire da `tracks` mentre suona:
@@ -620,6 +660,7 @@ fn stesso_genere(
         adesso_ms,
         contesto,
         Motivo::Genere,
+        origine,
     )
 }
 
@@ -629,6 +670,7 @@ fn un_preferito_mai_sentito(
     esclusi: &[i64],
     adesso_ms: i64,
     contesto: Option<&Contesto>,
+    origine: &Origine,
 ) -> Result<Option<Scelta>, AppError> {
     let insieme = Insieme {
         combinazione: Combinazione::Tutte,
@@ -646,6 +688,7 @@ fn un_preferito_mai_sentito(
         adesso_ms,
         contesto,
         Motivo::Preferito,
+        origine,
     )
 }
 
@@ -658,6 +701,7 @@ fn uno_qualunque(
     esclusi: &[i64],
     adesso_ms: i64,
     contesto: Option<&Contesto>,
+    origine: &Origine,
 ) -> Result<Option<Scelta>, AppError> {
     let insieme = Insieme {
         combinazione: Combinazione::Tutte,
@@ -672,6 +716,7 @@ fn uno_qualunque(
         adesso_ms,
         contesto,
         Motivo::Caso,
+        origine,
     )
 }
 
@@ -697,8 +742,9 @@ fn candidati(
     adesso_ms: i64,
     contesto: Option<&Contesto>,
     ripiego: Motivo,
+    origine: &Origine,
 ) -> Result<Option<Scelta>, AppError> {
-    let trovati = smart::brani(connection, insieme, adesso_ms)?;
+    let trovati = smart::brani_da(connection, insieme, adesso_ms, origine)?;
     match contesto {
         None => Ok(
             scegli(trovati.iter().map(|t| t.id), esclusi).map(|id| Scelta {
@@ -1044,7 +1090,7 @@ mod prove {
     /// perché: passare da qui invece che da `prossimo` tiene le asserzioni sul
     /// fatto che interessa. Il motivo ha le sue prove, qui sotto.
     fn chi(connection: &Connection, corrente: i64, esclusi: &[i64], adesso_ms: i64) -> Option<i64> {
-        prossimo(connection, corrente, esclusi, adesso_ms)
+        prossimo(connection, corrente, esclusi, adesso_ms, &Origine::Tutti)
             .expect("scelta")
             .map(|scelta| scelta.id)
     }
@@ -1148,7 +1194,8 @@ mod prove {
         };
         // Il 4 è solo nel suo disco e il resto dell'artista è in coda: si
         // scende fino all'ultimo gradino, che trova il 5.
-        let scelta = prossimo_con(&mut deposito, 4, &[1, 2, 3, 4], 0).expect("scelta");
+        let scelta =
+            prossimo_con(&mut deposito, 4, &[1, 2, 3, 4], 0, &Origine::Tutti).expect("scelta");
         assert_eq!(scelta.map(|s| s.id), Some(5));
         assert_eq!(scelta.map(|s| s.motivo), Some(Motivo::Caso));
         // Album, contesto, artista, genere, preferito, uno qualunque.
@@ -1158,7 +1205,7 @@ mod prove {
             connection: libreria(),
             prese: 0,
         };
-        let scelta = prossimo_con(&mut deposito, 1, &[1], 0).expect("scelta");
+        let scelta = prossimo_con(&mut deposito, 1, &[1], 0, &Origine::Tutti).expect("scelta");
         assert_eq!(scelta.map(|s| s.id), Some(2));
         assert_eq!(deposito.prese, 1);
     }
@@ -1359,7 +1406,7 @@ mod prove {
     #[test]
     fn la_radio_non_contiene_il_seme() {
         let connection = libreria();
-        let coda = radio(&connection, 1, 4, 0).expect("radio");
+        let coda = radio(&connection, 1, 4, 0, &Origine::Tutti).expect("radio");
         assert!(
             !coda.contains(&1),
             "il seme è finito nella sua stessa radio"
@@ -1379,7 +1426,7 @@ mod prove {
             &mut connection,
             &[(1, 500.0), (5, 500.0), (2, 900.0), (3, 900.0), (4, 900.0)],
         );
-        let coda = radio(&connection, 1, 3, 0).expect("radio");
+        let coda = radio(&connection, 1, 3, 0, &Origine::Tutti).expect("radio");
         assert_eq!(
             coda.first(),
             Some(&5),
@@ -1402,7 +1449,7 @@ mod prove {
         // brano corrente con una `query_row` e trattava la sua assenza come un
         // guasto. Passando da `prossimo` la prova non direbbe niente — i
         // gradini prima rispondono da soli e questo non lo si raggiunge.
-        let scelta = stesso_genere(&connection, 9999, &[], 0, None);
+        let scelta = stesso_genere(&connection, 9999, &[], 0, None, &Origine::Tutti);
         assert_eq!(
             scelta.expect("un brano corrente sparito non è un guasto del database"),
             None,
@@ -1417,7 +1464,7 @@ mod prove {
     #[test]
     fn una_radio_non_e_un_disco_solo() {
         let connection = libreria_larga(4, 5);
-        let coda = radio(&connection, 1, 8, 0).expect("radio");
+        let coda = radio(&connection, 1, 8, 0, &Origine::Tutti).expect("radio");
         assert_eq!(coda.len(), 8);
         let mut per_artista: HashMap<String, usize> = HashMap::new();
         for id in &coda {
@@ -1441,7 +1488,7 @@ mod prove {
     #[test]
     fn il_tetto_cede_quando_non_c_e_altro() {
         let connection = libreria_larga(1, 9);
-        let coda = radio(&connection, 1, 6, 0).expect("radio");
+        let coda = radio(&connection, 1, 6, 0, &Origine::Tutti).expect("radio");
         assert_eq!(coda.len(), 6, "il tetto ha accorciato la radio");
     }
 
@@ -1452,7 +1499,7 @@ mod prove {
     #[test]
     fn senza_impronte_la_radio_e_un_mescolamento() {
         let connection = libreria();
-        let coda = radio(&connection, 1, 4, 0).expect("radio");
+        let coda = radio(&connection, 1, 4, 0, &Origine::Tutti).expect("radio");
         assert_eq!(coda.len(), 4);
         assert!(coda.iter().all(|id| *id != 1));
     }
@@ -1505,7 +1552,7 @@ mod prove {
         sonora::ritara(&tx, 1_000).expect("taratura");
         tx.commit().expect("commit");
 
-        let bacino = bacino_della_radio(&connection, 1).expect("bacino");
+        let bacino = bacino_della_radio(&connection, 1, &Origine::Tutti).expect("bacino");
         assert!(
             bacino.iter().all(|brano| brano.id != 1),
             "il seme nel bacino"
@@ -1516,7 +1563,7 @@ mod prove {
                 "il vicino {vicino} non è nel bacino"
             );
         }
-        let coda = radio(&connection, 1, 30, 0).expect("radio");
+        let coda = radio(&connection, 1, 30, 0, &Origine::Tutti).expect("radio");
         for vicino in vicini {
             assert!(
                 coda.contains(&vicino),
@@ -1529,14 +1576,18 @@ mod prove {
     #[test]
     fn una_libreria_di_un_brano_non_ha_radio() {
         let connection = libreria_larga(1, 1);
-        assert!(radio(&connection, 1, 10, 0).expect("radio").is_empty());
+        assert!(
+            radio(&connection, 1, 10, 0, &Origine::Tutti)
+                .expect("radio")
+                .is_empty()
+        );
     }
 
     // ── il perché ───────────────────────────────────────────────────────────
 
     /// Il perché di una scelta, per esteso.
     fn perche(connection: &Connection, corrente: i64, esclusi: &[i64], adesso_ms: i64) -> Motivo {
-        prossimo(connection, corrente, esclusi, adesso_ms)
+        prossimo(connection, corrente, esclusi, adesso_ms, &Origine::Tutti)
             .expect("scelta")
             .expect("una scelta c'è")
             .motivo
@@ -1595,7 +1646,7 @@ mod prove {
                 [],
             )
             .expect("vicino");
-        let scelta = prossimo(&connection, 4, &[4], 0)
+        let scelta = prossimo(&connection, 4, &[4], 0, &Origine::Tutti)
             .expect("scelta")
             .expect("una scelta c'è");
         assert_eq!(scelta.id, 2, "non ha scelto il vicino");
@@ -1678,14 +1729,14 @@ mod prove {
             .expect("righe impossibili");
         for id in [0, -7] {
             assert_eq!(
-                prossimo(&connection, id, &[id], 0)
+                prossimo(&connection, id, &[id], 0, &Origine::Tutti)
                     .err()
                     .map(|err| err.code().kind()),
                 Some(rymembra_domain::errors::ErrorCodeKind::LibraryTrackNotFound),
                 "autoplay da {id}"
             );
             assert_eq!(
-                radio(&connection, id, 4, 0).map_err(|err| err.code().kind()),
+                radio(&connection, id, 4, 0, &Origine::Tutti).map_err(|err| err.code().kind()),
                 Err(rymembra_domain::errors::ErrorCodeKind::LibraryTrackNotFound),
                 "radio da {id}"
             );
@@ -1693,6 +1744,93 @@ mod prove {
         assert!(
             chi(&connection, 999, &[], 0).is_some(),
             "un brano sparito continua come sempre"
+        );
+    }
+
+    // ── i dispositivi che non rispondono ────────────────────────────────────
+
+    /// La libreria di sopra più due brani di un PC collegato, dello stesso
+    /// disco: i loro id, nell'ordine del disco.
+    fn libreria_con_un_pc() -> (Connection, String, Vec<i64>) {
+        use crate::specchio::comuni::{ADESSO, chiave, giro, riga};
+        let connection = libreria();
+        let pc = chiave('a');
+        giro(&connection, &pc, &[riga(1), riga(2)], ADESSO);
+        let mut del_pc: Vec<i64> = connection
+            .prepare("SELECT id FROM tracks WHERE path LIKE 'lontano://%' ORDER BY id")
+            .and_then(|mut q| q.query_map([], |r| r.get(0)).and_then(Iterator::collect))
+            .expect("righe del pc");
+        del_pc.sort_unstable();
+        assert_eq!(del_pc.len(), 2, "il giro non ha scritto le righe");
+        (connection, pc, del_pc)
+    }
+
+    /// §4.6: l'autoplay include le righe specchio ma salta i dispositivi che in
+    /// quel momento non rispondono. Tutto quel che c'è di qui è già passato in
+    /// coda: se il PC tace non resta niente, se risponde si va da lui.
+    #[test]
+    fn l_autoplay_salta_il_pc_che_non_risponde() {
+        let (connection, pc, del_pc) = libreria_con_un_pc();
+        let di_qui = [1, 2, 3, 4, 5];
+        let scelta = |origine: &Origine| {
+            prossimo(&connection, 5, &di_qui, 0, origine)
+                .expect("scelta")
+                .map(|s| s.id)
+        };
+        assert_eq!(
+            scelta(&Origine::Raggiungibili(Vec::new())),
+            None,
+            "ha proposto un brano di un PC spento"
+        );
+        let acceso = scelta(&Origine::Raggiungibili(vec![pc]));
+        assert!(
+            acceso.is_some_and(|id| del_pc.contains(&id)),
+            "con il PC acceso la sua musica è candidata: {acceso:?}"
+        );
+        assert!(
+            scelta(&Origine::Tutti).is_some_and(|id| del_pc.contains(&id)),
+            "«Tutti» è com'era"
+        );
+    }
+
+    /// Un disco del PC non continua se il PC non risponde: il brano dopo
+    /// sarebbe un brano che non parte.
+    #[test]
+    fn il_resto_di_un_disco_del_pc_non_continua_se_il_pc_tace() {
+        let (connection, pc, del_pc) = libreria_con_un_pc();
+        let corrente = del_pc[0];
+        let motivo = |origine: &Origine| {
+            prossimo(&connection, corrente, &[corrente], 0, origine)
+                .expect("scelta")
+                .map(|s| (s.id, s.motivo))
+        };
+        assert_eq!(
+            motivo(&Origine::Raggiungibili(vec![pc])),
+            Some((del_pc[1], Motivo::Album)),
+            "con il PC acceso il disco continua"
+        );
+        let spento = motivo(&Origine::Raggiungibili(Vec::new()));
+        assert!(
+            spento.is_none_or(|(id, _)| !del_pc.contains(&id)),
+            "il disco è continuato su un PC spento: {spento:?}"
+        );
+    }
+
+    /// Anche la radio: il bacino da cui sceglie non contiene un PC che tace.
+    #[test]
+    fn la_radio_salta_il_pc_che_non_risponde() {
+        let (connection, pc, del_pc) = libreria_con_un_pc();
+        let spento =
+            radio(&connection, 1, 10, 0, &Origine::Raggiungibili(Vec::new())).expect("radio");
+        assert!(
+            spento.iter().all(|id| !del_pc.contains(id)),
+            "la radio ha messo in coda un brano di un PC spento: {spento:?}"
+        );
+        let acceso =
+            radio(&connection, 1, 10, 0, &Origine::Raggiungibili(vec![pc])).expect("radio");
+        assert!(
+            acceso.iter().any(|id| del_pc.contains(id)),
+            "con il PC acceso la sua musica entra nel bacino: {acceso:?}"
         );
     }
 }

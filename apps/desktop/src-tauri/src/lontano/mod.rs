@@ -44,6 +44,7 @@ pub(crate) mod scarico;
 mod servizio;
 pub(crate) mod sfoglia;
 pub(crate) mod specchio;
+mod testo;
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, channel};
@@ -61,8 +62,12 @@ use crate::stato::adesso_ms;
 use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
-pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina, voce_salvata};
-pub(crate) use specchio::{apri_riga, copertina_di_una_riga, posta_nuova, scegli_la_copia};
+pub(crate) use sfoglia::rete_a_consumo;
+pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina};
+pub(crate) use specchio::{
+    apri_riga, copertina_di_una_riga, origine_che_suona, posta_nuova, scegli_la_copia,
+};
+pub(crate) use testo::dal_proprietario;
 
 /// Quanto un comando aspetta che il filo abbia riletto: accendere il nodo
 /// vuol dire aprire i socket, e il portachiavi può chiedere un attimo.
@@ -399,16 +404,52 @@ pub async fn lontano_sottofondo(app: AppHandle, attivo: bool) -> Esito<StatoLont
         // La scelta più recente vince: un «Spegni» della notifica non ancora
         // scritto non disfa quel che la persona ha appena deciso.
         comune(&app)?.spegnere.store(false, Ordering::Release);
-        scrivi_in_libreria(&app, |c| dispositivi::sottofondo(c, attivo))?;
+        // La scelta dell'auto si rilegge dopo la scrittura: spegnere il
+        // sottofondo spegne anche lei, e il servizio deve sentirlo da qui — se
+        // gli si dicesse quella di prima, resterebbe a guardare l'auto fino al
+        // giro dopo.
+        let parti_con_auto = scrivi_in_libreria(&app, |c| {
+            dispositivi::sottofondo(c, attivo)?;
+            Ok(dispositivi::impostazioni(c)?.parti_con_auto)
+        })?;
         // Subito, e non al giro del filo: la persona vuole vedere la notifica
         // — o sentirla andare — adesso, e al primo «acceso» le si chiedono le
         // notifiche. Il filo poi dice al servizio a chi si è collegati.
-        rymembra_android::sistema::sottofondo(attivo, &[], true).map_err(|err| {
-            AppError::new(ErrorCode::InternalUnexpected {
-                detail: Some("servizio del sottofondo".to_owned()),
-            })
-            .with_cause(err.to_string())
-        })?;
+        rymembra_android::sistema::sottofondo(attivo, &[], true, attivo && parti_con_auto)
+            .map_err(|err| {
+                AppError::new(ErrorCode::InternalUnexpected {
+                    detail: Some("servizio del sottofondo".to_owned()),
+                })
+                .with_cause(err.to_string())
+            })?;
+        rileggi_e_aspetta(&app)
+    })
+    .await;
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, attivo);
+        Err(errore(AppError::new(ErrorCode::InternalAborted {
+            what: Some("solo su Android".to_owned()),
+        })))
+    }
+}
+
+/// «Parti con l'auto» (solo il telefono): quando l'auto si collega, Rymembra
+/// riprende da sola la coda salvata, al posto dell'ultima app usata.
+///
+/// Si accende solo col sottofondo acceso — `internal.aborted` se è spento: la
+/// finestra non lo permette, e arrivarci vuol dire che si è spento un istante
+/// prima — e con lui si spegne (`dispositivi::sottofondo`). Dove la build non
+/// la offre (la variante per Google Play) non è un comando che la finestra
+/// chiami: la riga non c'è. Il servizio lo sa dal filo del collegamento, a
+/// questo giro, ed è `rileggi_e_aspetta` che lo aspetta.
+///
+/// Fuori da Android è `internal.aborted`: la finestra non lo chiama.
+#[tauri::command]
+pub async fn lontano_parti_con_auto(app: AppHandle, attivo: bool) -> Esito<StatoLontanoIpc> {
+    #[cfg(target_os = "android")]
+    return in_disparte(move || {
+        scrivi_in_libreria(&app, |c| dispositivi::parti_con_auto(c, attivo))?;
         rileggi_e_aspetta(&app)
     })
     .await;
@@ -561,9 +602,13 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
         if let Some(nodo) = comune.nodo() {
             nodo.revoca(&chiave);
         }
-        // I suoi brani in coda non si aprono più.
-        crate::riproduzione::togli_lontane(&app, &chiave);
+        // Le sue righe in coda non si aprono più: le righe se ne vanno con lui
+        // (`specchio::archivio::dimentica_dispositivo`), e `apri_riga` rifiuta
+        // un dispositivo che non è più collegato.
         specchio::dimenticato(&chiave);
+        // E le sue copertine in cache: non devono restare su disco, né uscire
+        // da una scheda di sistema, finché la potatura non le trova.
+        sfoglia::togli_le_copertine_di(&app, &chiave);
         // Nella libreria appena si può, con la sua chiave di «Ascolta
         // insieme» che il QR aveva reso fidata: lo scrittore fa rileggere la
         // rete di «Ascolta insieme», che chiude le sue connessioni.

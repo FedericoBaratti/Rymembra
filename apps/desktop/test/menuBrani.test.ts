@@ -369,3 +369,94 @@ test("App: la coda e le playlist a mano passano le mosse al menù, anche sul com
   // Sul computer la riga di una playlist a mano apre lo stesso menù del telefono.
   assert.doesNotMatch(app, /onMenu=\{MOBILE && !pagina\.playlist\.isSmart \? menuRigaPlaylist/);
 });
+
+// ── i brani di un altro dispositivo (F3c, §6.2) ─────────────────────────────
+
+const DISPOSITIVO = "a".repeat(64);
+/** Una riga specchio: id > 0, il percorso è `lontano://<chiave>/<id remoto>`. */
+const remoto = (id: number) =>
+  ({
+    id,
+    path: `lontano://${DISPOSITIVO}/${id + 1000}`,
+    fonte: null,
+    fontePagina: null,
+    liked: false,
+  }) as unknown as Brano;
+
+test("un brano di un altro dispositivo ha il menù, senza le voci che toccano il file", () => {
+  // Il file sta sull'altro dispositivo: il nucleo risponde `lontano.nonQui` a
+  // «Mostra nella cartella», a «Togli dalla libreria» e a «Elimina dal disco», e
+  // una voce che risponde con un errore a un clic ragionevole è peggio di una
+  // voce che non c'è.
+  const { fai } = azioni();
+  const voci = vociBrani([7], inMano(remoto(7)), { ...fai, scaricaQui: () => undefined }, t).map(
+    (v) => v.etichetta,
+  );
+  assert.deepEqual(voci, [
+    "action.radio",
+    "action.playNext",
+    "action.enqueue",
+    "devices.download",
+    "action.addToPlaylist",
+    "menu.goToAlbum",
+    "menu.goToArtist",
+  ]);
+  for (const toccaIlFile of ["menu.showInFolder", "menu.removeFromLibrary", "menu.deleteFromDisk"]) {
+    assert.ok(!voci.includes(toccaIlFile), toccaIlFile);
+  }
+});
+
+test("il cuore, la playlist e il resto restano sul brano di un altro dispositivo", () => {
+  // Il cuore e le stelle si salvano sul proprietario (`Valuta`): la voce c'è.
+  const { fai } = azioni();
+  const voci = vociBrani(
+    [7],
+    inMano(remoto(7)),
+    { ...fai, preferito: () => undefined },
+    t,
+  ).map((v) => v.etichetta);
+  assert.ok(voci.includes("track.like"));
+  assert.ok(voci.includes("action.addToPlaylist"));
+});
+
+test("in una selezione dove c'è un brano di un altro dispositivo, nessuna voce che tocca il file", () => {
+  // Il nucleo rifiuta il gesto **intero** se una riga è dell'altro dispositivo:
+  // la voce accesa sarebbe un errore sicuro, qualunque sia il resto.
+  const { fai } = azioni();
+  const voci = vociBrani([1, 2], inMano(file(1), remoto(2)), fai, t).map((v) => v.etichetta);
+  assert.deepEqual(voci, ["action.playNext", "action.enqueue", "action.addToPlaylist"]);
+});
+
+test("un brano che l'elenco non ha non si sa che sia dell'altro dispositivo: le voci di prima", () => {
+  const { fai } = azioni();
+  const voci = vociBrani([1, 3], inMano(remoto(1)), fai, t).map((v) => v.etichetta);
+  // Il 3 non è in mano, ma l'1 sì ed è remoto: basta a togliere le voci.
+  assert.ok(!voci.includes("menu.removeFromLibrary"));
+  const ignoto = vociBrani([3], inMano(), fai, t).map((v) => v.etichetta);
+  assert.ok(ignoto.includes("menu.removeFromLibrary"));
+  assert.ok(ignoto.includes("menu.deleteFromDisk"));
+});
+
+test("«Scarica qui» compare solo se c'è un brano di un altro dispositivo da portare", () => {
+  const { fai } = azioni();
+  const con = { ...fai, scaricaQui: () => undefined };
+  assert.ok(vociBrani([1], inMano(remoto(1)), con, t).some((v) => v.etichetta === "devices.download"));
+  assert.ok(!vociBrani([1], inMano(file(1)), con, t).some((v) => v.etichetta === "devices.download"));
+});
+
+test("la coda e «In riproduzione» aprono il menù sulle righe di libreria, anche dell'altro dispositivo", () => {
+  // Le righe specchio hanno id > 0: `idDiLibreria` le lascia passare, e il menù
+  // c'è dove c'era per i brani di qui. Chi guarda una voce di sessione (id < 0)
+  // resta senza.
+  const coda = readFileSync(new URL("../src/Coda.tsx", import.meta.url), "utf8");
+  assert.match(coda, /apriMenu !== undefined && brano !== undefined && idDiLibreria\(id\)/);
+  const np = readFileSync(
+    new URL("../src/schermate/InRiproduzioneTelefono.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(np, /const diLibreria = idDiLibreria\(brano\.id\);/);
+  assert.match(np, /\{diLibreria && \(\s*<button[^>]*onClick=\{\(e\) => onMenu\(e, brano\)\}/s);
+  assert.match(np, /\{diLibreria && <Stelle /);
+  const voci = vociBrani([-5], inMano(), azioni().fai, t);
+  assert.deepEqual(voci, [], "una voce di sessione non ha un menù di libreria");
+});
