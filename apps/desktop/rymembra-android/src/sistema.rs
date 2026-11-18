@@ -268,9 +268,9 @@ pub enum ControlloApk {
 ///
 /// # Errori
 ///
-/// Se il ponte non risponde, se non c'è un'attività, se il percorso non è
-/// testo o non sta in quella cartella, e se l'APK non si legge o è un altro
-/// pacchetto.
+/// Se il ponte non risponde, se il percorso non è testo o non sta in quella
+/// cartella, e se l'APK non si legge o è un altro pacchetto. Non vuole un'attività:
+/// il controllo finisce quando finisce il download, anche con l'app in secondo piano.
 pub fn controlla_apk(percorso: &Path) -> Result<ControlloApk, Errore> {
     let percorso = percorso
         .to_str()

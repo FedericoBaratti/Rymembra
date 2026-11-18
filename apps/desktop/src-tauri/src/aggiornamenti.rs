@@ -671,7 +671,7 @@ pub fn aggiornamenti_installa(
         })));
     }
     // Il pacchetto già pronto, se c'è: «Installa ora» dopo «Alla chiusura» non
-    // riscarica settanta megabyte. Si prende dal posto **dopo** aver alzato il
+    // riscarica l'installer. Si prende dal posto **dopo** aver alzato il
     // bit, così un secondo click non trova un posto vuoto e un installer solo.
     let aggiornamento = aggiornamenti
         .trovato
@@ -2412,7 +2412,7 @@ mod prove {
     }
 
     /// Chi spegne il controllo, o salta una versione, o preme «Annulla» sul
-    /// pacchetto in attesa, non lo vuole più: il pacchetto — settanta megabyte
+    /// pacchetto in attesa, non lo vuole più: il pacchetto — un installer intero,
     /// in memoria — se ne va. E una passata che trova un'altra versione lo butta.
     #[test]
     fn il_pacchetto_in_attesa_se_ne_va_con_chi_lo_rifiuta() {
