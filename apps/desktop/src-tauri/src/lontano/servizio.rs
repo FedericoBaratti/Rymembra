@@ -1,5 +1,15 @@
 //! Le domande degli altri dispositivi sulla libreria di questo: gli elenchi,
-//! le copertine, i byte dei brani, gli ascolti da contare qui.
+//! le copertine, i byte dei brani, gli ascolti da contare qui, i voti, il testo
+//! della canzone e le sue correzioni.
+//!
+//! # I testi
+//!
+//! [`Domanda::Testo`] dà il testo di un brano **condiviso** già composto con la
+//! catena intera di qui, senza scrivere e fuori dal lucchetto della libreria;
+//! [`Domanda::TestoScrivi`] applica una correzione con le funzioni dei comandi
+//! di sempre, solo nel database (nessun file accanto ai brani). Per un brano del
+//! cloud, di catalogo, di un terzo dispositivo o che non c'è, tutte e due
+//! rispondono `lontano.fileCambiato`. Vedi `rymembra_app::testi::condiviso`.
 //!
 //! Si condividono solo i file delle cartelle sorvegliate, senza percorsi:
 //! vedi `rymembra_app::library::condivisa`.
@@ -24,6 +34,7 @@ use rymembra_app::dispositivi;
 use rymembra_app::library::TrackOrder;
 use rymembra_app::library::condivisa::{self, FileCondiviso};
 use rymembra_app::playback;
+use rymembra_app::testi::{self, condiviso};
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_domain::listen::{Listen, counts_as_play};
 use rymembra_lontano::protocollo::{MASSIMA_PAGINA, MASSIMO_PEZZO};
@@ -98,6 +109,11 @@ pub fn rispondi(app: &AppHandle, da: &str, domanda: Domanda) -> Result<Risposta,
             quando_ms,
             chiave: _,
         } => valuta(app, brano, liked, rating, quando_ms),
+        // Il testo della canzone, e le sue correzioni: sempre da un brano
+        // condiviso (`condiviso::brano_condiviso`), mai da un brano del cloud,
+        // di catalogo o di un terzo dispositivo.
+        Domanda::Testo { brano } => dai_il_testo(app, brano),
+        Domanda::TestoScrivi { brano, cosa } => scrivi_il_testo(app, brano, cosa),
         Domanda::Presenza | Domanda::Annuncio(_) | Domanda::Dimenticami | Domanda::Sconosciuta => {
             Err(AppError::new(ErrorCode::LontanoProtocollo)
                 .with_cause("una domanda a cui risponde il nodo"))
@@ -305,6 +321,83 @@ fn valuta(
         crate::nuvola::sporca(app);
     }
     Ok(Risposta::Fatto)
+}
+
+/// Il testo della canzone di un brano condiviso, già composto con la catena
+/// intera di qui — il `.lrc` accanto al file, i tag, la tabella —, o `Fatto` se
+/// non c'è niente da dire. Non cerca in rete: chi risponde non ha nessun
+/// pannello aperto, e i testi che non ha li cerca chi li chiede.
+fn dai_il_testo(app: &AppHandle, brano: i64) -> Result<Risposta, AppError> {
+    let stato = app.try_state::<Stato>().ok_or_else(|| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some("lontano".to_owned()),
+        })
+    })?;
+    il_testo_di(&stato, brano)
+}
+
+/// Il cuore di [`dai_il_testo`], sullo stato: la cucitura delle prove.
+///
+/// Nei tre tempi di `testo_brano`, e **tutti fuori dal lucchetto della
+/// libreria**: la riga si legge a parte (come ogni altra domanda, vedi
+/// [`leggi_da`]), il disco — che può essere una cartella di rete — non tiene
+/// niente, e la composizione non scrive la cache. Dopo una scansione che tiene
+/// il lucchetto per ore (reperto 00-9) il testo risponde lo stesso.
+fn il_testo_di(stato: &Stato, brano: i64) -> Result<Risposta, AppError> {
+    let Some((dato, riga)) = leggi_da(stato, |c| {
+        Ok(condiviso::brano_condiviso(c, brano)?.map(|dato| {
+            let riga = testi::leggi_riga(c, &dato.track_key);
+            (dato, riga)
+        }))
+    })?
+    else {
+        return Err(AppError::new(ErrorCode::LontanoFileCambiato)
+            .with_cause("il brano non è più condiviso"));
+    };
+    let disco = testi::leggi_dal_disco(&dato, riga.as_ref());
+    match condiviso::testo_da_dare(&dato, riga, disco) {
+        Some(testo) => dati(&testo),
+        None => Ok(Risposta::Fatto),
+    }
+}
+
+/// Una correzione al testo di un brano condiviso, arrivata da un altro
+/// dispositivo: la scrive qui con la logica dei comandi di sempre. Solo la
+/// libreria, mai un file accanto al brano.
+fn scrivi_il_testo(
+    app: &AppHandle,
+    brano: i64,
+    cosa: rymembra_lontano::protocollo::ScritturaTesto,
+) -> Result<Risposta, AppError> {
+    let Some(scrittura) = super::testo::dal_protocollo(cosa) else {
+        return Err(AppError::new(ErrorCode::LontanoProtocollo)
+            .with_cause("una correzione di una versione più nuova"));
+    };
+    let stato = app.try_state::<Stato>().ok_or_else(|| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some("lontano".to_owned()),
+        })
+    })?;
+    scrivi_un_testo(&stato, brano, &scrittura)?;
+    // Il testo sta nel profilo di chi lo possiede: come ogni suo gesto.
+    crate::nuvola::sporca(app);
+    Ok(Risposta::Fatto)
+}
+
+/// Il cuore di [`scrivi_il_testo`], sullo stato: la cucitura delle prove.
+fn scrivi_un_testo(
+    stato: &Stato,
+    brano: i64,
+    scrittura: &condiviso::Scrittura,
+) -> Result<(), AppError> {
+    crate::stato::con_libreria_entro(stato, ATTESA_LETTURA, |libreria| {
+        condiviso::scrivi_dal_dispositivo(&libreria.connection, brano, scrittura)
+    })
+    .unwrap_or_else(|| {
+        Err(occupata(&AppError::new(ErrorCode::DbLocked).with_cause(
+            "la libreria è occupata: la correzione ricevuta non l'aspetta",
+        )))
+    })
 }
 
 /// Al più tanti ascolti ricevuti all'ora da ogni dispositivo: contro un
@@ -697,5 +790,154 @@ mod prove {
         let dopo = leggi_da(stato, |c| condivisa::brani(c, TrackOrder::Title, 0, 20))
             .expect("la domanda dopo");
         assert_eq!(dopo.len(), 2);
+    }
+
+    fn codice_di(esito: Result<Risposta, AppError>) -> String {
+        esito
+            .expect_err("un errore")
+            .code()
+            .kind()
+            .code()
+            .to_owned()
+    }
+
+    #[test]
+    fn il_testo_si_da_solo_di_un_brano_condiviso() {
+        // Un testo c'è per ognuno di questi brani, e solo uno è dato: quello
+        // che la libreria condivide. Gli altri rispondono come un brano che non
+        // c'è, e di quel che non c'è non si dice altro.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let stato = &stato;
+        let chiave_dello_specchio = "ab".repeat(32);
+        crate::stato::con_libreria(stato, |l| {
+            metti_il_brano(&l.connection, 1)?;
+            let c = &l.connection;
+            c.execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified)
+                 VALUES (2, 'nuvola://drive/2.mp3', 'k2', 'T', 'A', 'B', 1, 0, 0)",
+                [],
+            )
+            .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))?;
+            c.execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified, source)
+                 VALUES (3, ?1, 'k3', 'T', 'A', 'B', 1, 0, 0, 'lontano')",
+                [rymembra_app::specchio::percorso(&chiave_dello_specchio, 9)],
+            )
+            .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))?;
+            for k in ["k1", "k2", "k3"] {
+                c.execute(
+                    "INSERT INTO lyrics (track_key, synced, source, updated_at)
+                     VALUES (?1, '[00:01.00]ciao\n', 'lrclib', 1)",
+                    [k],
+                )
+                .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))?;
+            }
+            Ok(())
+        })
+        .expect("la libreria di prova");
+
+        let Ok(Risposta::Dati(testo)) = il_testo_di(stato, 1) else {
+            panic!("il brano condiviso dà il suo testo");
+        };
+        assert_eq!(testo["fonte"], "lrclib");
+        assert_eq!(testo["sincronizzato"], "[00:01.00]ciao\n");
+        for (id, cosa) in [(2, "del cloud"), (3, "di un terzo"), (99, "che non c'è")] {
+            assert_eq!(
+                codice_di(il_testo_di(stato, id)),
+                "lontano.fileCambiato",
+                "un brano {cosa}"
+            );
+            // E nemmeno si corregge.
+            assert_eq!(
+                scrivi_un_testo(stato, id, &condiviso::Scrittura::Scarto(50))
+                    .expect_err("rifiutata")
+                    .code()
+                    .kind()
+                    .code(),
+                "lontano.fileCambiato",
+                "un brano {cosa}"
+            );
+        }
+        // Un brano condiviso, invece, si corregge, e il testo che si dà dopo è
+        // quello nuovo.
+        scrivi_un_testo(stato, 1, &condiviso::Scrittura::Scarto(-120)).expect("scritta");
+        let Ok(Risposta::Dati(dopo)) = il_testo_di(stato, 1) else {
+            panic!("il testo di dopo");
+        };
+        assert_eq!(dopo["scartoMs"], -120);
+    }
+
+    #[test]
+    fn un_brano_senza_testo_risponde_fatto() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        crate::stato::con_libreria(&stato, |l| metti_il_brano(&l.connection, 1)).expect("brano");
+        assert_eq!(il_testo_di(&stato, 1).expect("risposta"), Risposta::Fatto);
+    }
+
+    #[test]
+    fn il_testo_non_aspetta_il_lucchetto_che_tiene_una_scrittura_lunga() {
+        // Come la domanda di Sfoglia (reperto 00-9): dopo una scansione i lavori
+        // di sottofondo tengono la libreria a turno, e il testo di un brano —
+        // che apre anche il disco — deve rispondere lo stesso, perché sta
+        // fuori dal lucchetto in tutti e tre i tempi.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let stato = &stato;
+        let giornale =
+            crate::stato::con_libreria(stato, |l| Ok(l.giornale.clone())).expect("libreria aperta");
+        assert_eq!(giornale, "wal", "senza WAL questa prova non prova niente");
+        crate::stato::con_libreria(stato, |l| {
+            metti_il_brano(&l.connection, 1)?;
+            l.connection
+                .execute(
+                    "INSERT INTO lyrics (track_key, synced, source, updated_at)
+                     VALUES ('k1', '[00:01.00]ciao\n', 'lrclib', 1)",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))
+        })
+        .expect("il brano di prima");
+
+        let (preso, lavoro_partito) = std::sync::mpsc::channel::<()>();
+        let (risposto, domanda_finita) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|ambito| {
+            let lavoro = ambito.spawn(move || {
+                crate::stato::con_libreria(stato, |l| {
+                    let tx = l
+                        .connection
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))?;
+                    metti_il_brano(&tx, 2)?;
+                    let _ = preso.send(());
+                    let _ = domanda_finita.recv_timeout(ATTESA_LETTURA * 3);
+                    tx.commit()
+                        .map_err(|err| rymembra_app::db::codice_da_sqlite("prova", &err))
+                })
+            });
+            lavoro_partito
+                .recv()
+                .expect("il lavoro ha preso la libreria");
+            let inizio = std::time::Instant::now();
+            let esito = il_testo_di(stato, 1);
+            let tempo = inizio.elapsed();
+            let _ = risposto.send(());
+            lavoro
+                .join()
+                .expect("il lavoro non cade")
+                .expect("il lavoro scrive");
+            assert!(
+                matches!(esito, Ok(Risposta::Dati(_))),
+                "il testo ha risposto: {esito:?}"
+            );
+            assert!(
+                tempo < ATTESA_LETTURA,
+                "il testo ha aspettato il lavoro: {tempo:?}"
+            );
+        });
     }
 }

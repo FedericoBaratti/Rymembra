@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_lontano::nodo::TENTATIVI_AL_MINUTO;
-use rymembra_lontano::protocollo::{CAPACITA_CATALOGO, SCRITTURE_AL_MINUTO};
+use rymembra_lontano::protocollo::{
+    CAPACITA_CATALOGO, CAPACITA_TESTI, SCRITTURE_AL_MINUTO, ScritturaTesto,
+};
 use rymembra_lontano::{
     Domanda, Evento, Flusso, Identita, Impostazioni, Nodo, Ospite, PariNoto, Presentazione,
     Presenza, Rete, Risposta,
@@ -87,10 +89,23 @@ impl Ospite for Finta {
             Domanda::CatalogoRiassunto
             | Domanda::CatalogoSecchio { .. }
             | Domanda::Valuta { .. }
+            | Domanda::Testo { .. }
+            | Domanda::TestoScrivi { .. }
                 if *self.vecchia.lock().unwrap() =>
             {
                 Err(AppError::new(ErrorCode::LontanoProtocollo))
             }
+            // Un brano che non è condiviso non ha un testo da dare.
+            Domanda::Testo { brano: 404 } => Err(AppError::new(ErrorCode::LontanoFileCambiato)),
+            Domanda::Testo { brano } => Ok(Risposta::Dati(serde_json::json!({
+                "sincronizzato": format!("[00:01.00]brano {brano}\n"),
+                "piatto": null,
+                "strumentale": false,
+                "fonte": "mano",
+                "scartoMs": 120,
+                "cercato": true,
+            }))),
+            Domanda::TestoScrivi { .. } => Ok(Risposta::Fatto),
             Domanda::CatalogoRiassunto => Ok(Risposta::Dati(
                 serde_json::json!({ "generazione": 7, "secchi": [] }),
             )),
@@ -896,6 +911,11 @@ fn nuove_domande() -> Vec<Domanda> {
             quando_ms: 1,
             chiave: "v".to_owned(),
         },
+        Domanda::Testo { brano: 1 },
+        Domanda::TestoScrivi {
+            brano: 1,
+            cosa: ScritturaTesto::Scarto { scarto_ms: 100 },
+        },
     ]
 }
 
@@ -903,14 +923,16 @@ fn nuove_domande() -> Vec<Domanda> {
 fn a_un_pari_di_prima_le_domande_nuove_non_si_fanno_e_quelle_di_sempre_si() {
     // Sul telefono e sul PC dell'utente gira una build che non dichiara
     // `catalogo`: qui un nodo nuovo parla con uno così.
-    let (nuovo, del_nuovo) = nodo_con("Nuovo", &[CAPACITA_CATALOGO]);
+    let (nuovo, del_nuovo) = nodo_con("Nuovo", &[CAPACITA_CATALOGO, CAPACITA_TESTI]);
     let (vecchio, del_vecchio) = nodo("Vecchio");
     collegati(&nuovo, &vecchio, &del_vecchio, &del_nuovo);
     del_vecchio.viste.lock().unwrap().clear();
 
     // Il nodo sa cosa dichiara l'altro.
     assert!(!nuovo.dichiara(&vecchio.chiave(), CAPACITA_CATALOGO));
+    assert!(!nuovo.dichiara(&vecchio.chiave(), CAPACITA_TESTI));
     assert!(vecchio.dichiara(&nuovo.chiave(), CAPACITA_CATALOGO));
+    assert!(vecchio.dichiara(&nuovo.chiave(), CAPACITA_TESTI));
 
     for domanda in nuove_domande() {
         // Rifiutata in locale con lo stesso codice con cui risponderebbe una
@@ -1067,6 +1089,132 @@ fn le_scritture_di_un_pari_hanno_un_tetto_al_minuto_e_gli_altri_non_ne_risentono
     uno.chiedi(
         &server.chiave(),
         Domanda::CatalogoRiassunto,
+        Duration::from_secs(10),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_un_pari_col_catalogo_ma_senza_i_testi_le_domande_dei_testi_non_si_fanno() {
+    // Una build di mezzo: sa il catalogo e non i testi. Ha la sua capacità
+    // ogni famiglia di domande, e a lei i testi non si chiedono.
+    let (nuovo, del_nuovo) = nodo_con("Nuovo", &[CAPACITA_CATALOGO, CAPACITA_TESTI]);
+    let (di_mezzo, del_di_mezzo) = nodo_con("DiMezzo", &[CAPACITA_CATALOGO]);
+    collegati(&nuovo, &di_mezzo, &del_di_mezzo, &del_nuovo);
+    assert!(nuovo.dichiara(&di_mezzo.chiave(), CAPACITA_CATALOGO));
+    assert!(!nuovo.dichiara(&di_mezzo.chiave(), CAPACITA_TESTI));
+    del_di_mezzo.viste.lock().unwrap().clear();
+
+    for domanda in [
+        Domanda::Testo { brano: 1 },
+        Domanda::TestoScrivi {
+            brano: 1,
+            cosa: ScritturaTesto::Rifiuta,
+        },
+    ] {
+        assert_eq!(
+            codice(nuovo.chiedi(&di_mezzo.chiave(), domanda.clone(), Duration::from_secs(10))),
+            ErrorCodeKind::LontanoProtocollo,
+            "{domanda:?}"
+        );
+    }
+    assert!(del_di_mezzo.viste.lock().unwrap().is_empty());
+    // Il catalogo, invece, passa.
+    nuovo
+        .chiedi(
+            &di_mezzo.chiave(),
+            Domanda::CatalogoRiassunto,
+            Duration::from_secs(10),
+        )
+        .unwrap();
+}
+
+#[test]
+fn fra_due_pari_che_dichiarano_i_testi_le_due_domande_passano() {
+    let (a, di_a) = nodo_con("A", &[CAPACITA_CATALOGO, CAPACITA_TESTI]);
+    let (b, di_b) = nodo_con("B", &[CAPACITA_CATALOGO, CAPACITA_TESTI]);
+    collegati(&a, &b, &di_b, &di_a);
+    assert!(a.dichiara(&b.chiave(), CAPACITA_TESTI));
+    di_b.viste.lock().unwrap().clear();
+
+    // Il testo già composto da chi serve.
+    let Risposta::Dati(testo) = a
+        .chiedi(
+            &b.chiave(),
+            Domanda::Testo { brano: 7 },
+            Duration::from_secs(10),
+        )
+        .unwrap()
+    else {
+        panic!("un testo");
+    };
+    assert_eq!(testo["fonte"], "mano");
+    assert_eq!(testo["scartoMs"], 120);
+    assert_eq!(testo["sincronizzato"], "[00:01.00]brano 7\n");
+    // Un brano che non c'è (o non è condiviso) lo dice come ogni altra lettura.
+    assert_eq!(
+        codice(a.chiedi(
+            &b.chiave(),
+            Domanda::Testo { brano: 404 },
+            Duration::from_secs(10)
+        )),
+        ErrorCodeKind::LontanoFileCambiato
+    );
+
+    // E la correzione, in ognuna delle sue forme.
+    for cosa in [
+        ScritturaTesto::Scarto { scarto_ms: -90 },
+        ScritturaTesto::Mano {
+            lrc: "[00:01.00]la cura\n".to_owned(),
+        },
+        ScritturaTesto::Scelta {
+            id_catalogo: 9,
+            piatto: Some("la cura".to_owned()),
+            sincronizzato: None,
+            strumentale: false,
+        },
+        ScritturaTesto::Rifiuta,
+    ] {
+        assert_eq!(
+            a.chiedi(
+                &b.chiave(),
+                Domanda::TestoScrivi { brano: 7, cosa },
+                Duration::from_secs(10)
+            )
+            .unwrap(),
+            Risposta::Fatto
+        );
+    }
+    assert_eq!(di_b.viste.lock().unwrap().len(), 2 + 4);
+}
+
+#[test]
+fn le_correzioni_dei_testi_sono_scritture_e_hanno_il_tetto_al_minuto() {
+    let (server, del_server) = nodo_con("Server", &[CAPACITA_CATALOGO, CAPACITA_TESTI]);
+    let (uno, di_uno) = nodo_con("Uno", &[CAPACITA_CATALOGO, CAPACITA_TESTI]);
+    collegati(&uno, &server, &del_server, &di_uno);
+    let correggi = |n: usize| Domanda::TestoScrivi {
+        brano: 1,
+        cosa: ScritturaTesto::Scarto {
+            scarto_ms: i32::try_from(n).unwrap(),
+        },
+    };
+    for n in 0..SCRITTURE_AL_MINUTO {
+        uno.chiedi(&server.chiave(), correggi(n), Duration::from_secs(10))
+            .unwrap_or_else(|err| panic!("la correzione {n}: {err:?}"));
+    }
+    // Il tetto è uno solo per tutte le scritture: oltre, anche un voto sente
+    // `lontano.irraggiungibile`, e la correzione resta in posta.
+    let prima = del_server.viste.lock().unwrap().len();
+    assert_eq!(
+        codice(uno.chiedi(&server.chiave(), correggi(999), Duration::from_secs(10))),
+        ErrorCodeKind::LontanoIrraggiungibile
+    );
+    assert_eq!(del_server.viste.lock().unwrap().len(), prima);
+    // Le letture di un testo non sono scritture.
+    uno.chiedi(
+        &server.chiave(),
+        Domanda::Testo { brano: 1 },
         Duration::from_secs(10),
     )
     .unwrap();

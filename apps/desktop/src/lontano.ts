@@ -22,6 +22,7 @@
 import { creaArchivio, sceltaRicordata, ugualiInSuperficie } from "./archivio";
 import { ordinaFidati } from "./insieme";
 import { eventiEFotografia } from "./ultima";
+import { dispositivoDellaRiga } from "./ipc/libreria";
 import type { Chiave, Valori } from "./lingue";
 import type {
   Album,
@@ -38,6 +39,28 @@ import type {
 
 /** Il pannello, `null` finché il nucleo non ha risposto. */
 export const archivioLontano = creaArchivio<StatoLontano | null>(null);
+
+/** Nessun dispositivo: un elenco fisso, che un selettore dell'archivio può dare senza rifarsi a ogni lettura. */
+export const NESSUN_DISPOSITIVO: readonly DispositivoLontano[] = Object.freeze([]);
+
+/**
+ * Di chi è l'audio di un brano della libreria unica, dal suo percorso: `null`
+ * se è di questa macchina, altrimenti il dispositivo che lo possiede — col nome
+ * che ha nel pannello, o `nome: null` se non lo si conosce più (dimenticato).
+ *
+ * Serve a chi vuole fare, sull'audio, qualcosa che qui non si può: l'editor di
+ * sincronizzazione non ne cerca gli attacchi (`Sincronizza.tsx`). Pura: il
+ * percorso è quello di `Brano.path`, e la forma `lontano://<64hex>/<id>` la
+ * riconosce `dispositivoDellaRiga`.
+ */
+export function proprietarioDellAudio(
+  percorso: string | null | undefined,
+  dispositivi: readonly DispositivoLontano[],
+): { chiave: string; nome: string | null } | null {
+  const chiave = dispositivoDellaRiga(percorso);
+  if (chiave === null) return null;
+  return { chiave, nome: dispositivi.find((d) => d.chiave === chiave)?.nome ?? null };
+}
 
 /**
  * Gli eventi `lontano:stato` contro le risposte dei comandi (`ultima.ts`).

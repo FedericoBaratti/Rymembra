@@ -203,9 +203,71 @@ pub enum Domanda {
         /// Distingue questo invio dall'altro per lo stesso brano.
         chiave: String,
     },
+    /// Il testo della canzone di un brano dell'altro, già composto da lui con
+    /// tutta la sua catena (accanto al file, nei tag, in tabella): risponde
+    /// [`Risposta::Dati`] se ne ha uno, [`Risposta::Fatto`] se non ha niente.
+    /// Dietro [`CAPACITA_TESTI`].
+    Testo {
+        /// Il brano, con l'id della libreria dell'altro.
+        brano: i64,
+    },
+    /// Una correzione al testo di un brano dell'altro, dato qui: la scrive lui,
+    /// con la logica dei suoi comandi (`testo_scarto`, `testo_salva`,
+    /// `testo_scegli`, `testo_rifiuta`). Innocua se arriva due volte: dice
+    /// come deve restare il testo, e non cosa aggiungere. Dietro
+    /// [`CAPACITA_TESTI`], e conta fra le scritture
+    /// ([`Domanda::e_una_scrittura`]).
+    TestoScrivi {
+        /// Il brano, con l'id della libreria dell'altro.
+        brano: i64,
+        /// Cosa è cambiato.
+        cosa: ScritturaTesto,
+    },
     /// Dimentica questo dispositivo.
     Dimenticami,
     /// Una domanda di una versione più nuova.
+    #[serde(other)]
+    Sconosciuta,
+}
+
+/// Una correzione al testo di un brano, come arriva a chi lo possiede.
+///
+/// Una per domanda: chi ha messo in posta più gesti per lo stesso brano li
+/// manda uno dopo l'altro, nell'ordine in cui vanno applicati.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "tipo",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ScritturaTesto {
+    /// Quanto spostare il testo, nel verso dello standard LRC (positivo
+    /// anticipa): la correzione di chi ascolta.
+    Scarto {
+        /// Millisecondi.
+        scarto_ms: i32,
+    },
+    /// Un testo sincronizzato a mano: l'LRC intero, con i tempi delle parole
+    /// quando ci sono. Azzera lo scarto, come quando lo si fa dove sta il brano.
+    Mano {
+        /// L'LRC.
+        lrc: String,
+    },
+    /// Una voce del catalogo dei testi scelta dall'elenco. Il testo viaggia
+    /// con la scelta: chi la riceve non deve avere la rete per scriverla.
+    Scelta {
+        /// L'identificativo della voce nel catalogo.
+        id_catalogo: i64,
+        /// Il testo senza tempi, se la voce non ha l'LRC.
+        piatto: Option<String>,
+        /// L'LRC, quando la voce ce l'ha.
+        sincronizzato: Option<String>,
+        /// La voce dice che il brano non ha parole.
+        strumentale: bool,
+    },
+    /// «Non è questo»: butta il testo che era arrivato dal catalogo.
+    Rifiuta,
+    /// Una correzione di una versione più nuova.
     #[serde(other)]
     Sconosciuta,
 }
@@ -220,6 +282,7 @@ impl Domanda {
             Self::CatalogoRiassunto | Self::CatalogoSecchio { .. } | Self::Valuta { .. } => {
                 Some(CAPACITA_CATALOGO)
             }
+            Self::Testo { .. } | Self::TestoScrivi { .. } => Some(CAPACITA_TESTI),
             _ => None,
         }
     }
@@ -229,7 +292,7 @@ impl Domanda {
     /// [`SCRITTURE_AL_MINUTO`] da ogni dispositivo.
     #[must_use]
     pub const fn e_una_scrittura(&self) -> bool {
-        matches!(self, Self::Valuta { .. })
+        matches!(self, Self::Valuta { .. } | Self::TestoScrivi { .. })
     }
 
     /// La stessa domanda coi tetti di questo protocollo: pagine e pezzi non
@@ -274,6 +337,18 @@ impl Domanda {
 /// `lontano.protocollo` senza mandarle, e quelle di sempre continuano a
 /// funzionare.
 pub const CAPACITA_CATALOGO: &str = "catalogo";
+
+/// La capacità di dare e ricevere il testo della canzone di un brano: le
+/// domande [`Domanda::Testo`] e [`Domanda::TestoScrivi`].
+///
+/// È una sigla a sé e non un allargamento di [`CAPACITA_CATALOGO`] per due
+/// ragioni. Quella del catalogo c'è già in una build che non conosce i testi,
+/// e «sa il catalogo» non dice «sa i testi»: una domanda che l'altro non sa
+/// leggere gli arriverebbe come `Sconosciuta`, andrebbe a vuoto sul filo, e una
+/// correzione in posta si ripeterebbe per trenta giorni. E ogni famiglia di
+/// domande che dichiara la sua capacità si può spegnere da sola, senza
+/// toccare le altre.
+pub const CAPACITA_TESTI: &str = "testi";
 
 /// Quante capacità, al più, si ricordano di un altro dispositivo.
 pub const MASSIME_CAPACITA: usize = 8;
@@ -389,7 +464,7 @@ pub struct Presenza {
     /// E sta ospitando una sessione.
     pub insieme_ospita: bool,
     /// Cosa sa fare oltre a quel che sapevano tutte le versioni
-    /// ([`CAPACITA_CATALOGO`]). Una build di prima non manda il campo: vale
+    /// ([`CAPACITA_CATALOGO`], [`CAPACITA_TESTI`]). Una build di prima non manda il campo: vale
     /// «niente», e a lei le domande nuove non si fanno.
     pub capacita: Vec<String>,
 }
@@ -650,9 +725,51 @@ mod prove {
                 quando_ms: 1_700_000_000_001,
                 chiave: "v2".to_owned(),
             },
+            Domanda::Testo { brano: 3 },
+            Domanda::TestoScrivi {
+                brano: 3,
+                cosa: ScritturaTesto::Scarto { scarto_ms: -250 },
+            },
+            Domanda::TestoScrivi {
+                brano: 3,
+                cosa: ScritturaTesto::Mano {
+                    lrc: "[00:01.00]la\n[00:02.50]cura\n".to_owned(),
+                },
+            },
+            Domanda::TestoScrivi {
+                brano: 3,
+                cosa: ScritturaTesto::Scelta {
+                    id_catalogo: 4_242,
+                    piatto: None,
+                    sincronizzato: Some("[00:01.00]la\n".to_owned()),
+                    strumentale: false,
+                },
+            },
+            Domanda::TestoScrivi {
+                brano: 3,
+                cosa: ScritturaTesto::Rifiuta,
+            },
         ] {
             assert_eq!(andata_e_ritorno(&domanda), domanda);
         }
+    }
+
+    #[test]
+    fn una_scrittura_di_testo_di_domani_e_sconosciuta_e_non_un_guasto() {
+        // Un tipo di correzione che questa versione non conosce non rompe la
+        // domanda: diventa `Sconosciuta`, e chi risponde la rifiuta con
+        // `lontano.protocollo` senza far cadere la connessione.
+        let domani: Domanda = serde_json::from_str(
+            r#"{"tipo":"testoScrivi","brano":3,"cosa":{"tipo":"traduzione","lingua":"fr"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            domani,
+            Domanda::TestoScrivi {
+                brano: 3,
+                cosa: ScritturaTesto::Sconosciuta
+            }
+        );
     }
 
     #[test]
@@ -675,6 +792,21 @@ mod prove {
                 nuova.capacita_richiesta(),
                 Some(CAPACITA_CATALOGO),
                 "{nuova:?}"
+            );
+        }
+        // I testi hanno la loro capacità: un dispositivo che ha il catalogo
+        // ma non i testi (una build di mezzo) non li riceve.
+        for testo in [
+            Domanda::Testo { brano: 1 },
+            Domanda::TestoScrivi {
+                brano: 1,
+                cosa: ScritturaTesto::Rifiuta,
+            },
+        ] {
+            assert_eq!(
+                testo.capacita_richiesta(),
+                Some(CAPACITA_TESTI),
+                "{testo:?}"
             );
         }
         for vecchia in [
@@ -707,9 +839,10 @@ mod prove {
     }
 
     #[test]
-    fn solo_valuta_e_una_scrittura_verso_il_proprietario() {
+    fn valuta_e_la_correzione_di_un_testo_sono_le_scritture_verso_il_proprietario() {
         // Gli ascolti hanno il loro tetto (all'ora, e dura quanto la
-        // ricezione); `Valuta` è la scrittura che si limita per pari.
+        // ricezione); `Valuta` e `TestoScrivi` sono le scritture che si
+        // limitano per pari.
         assert!(
             Domanda::Valuta {
                 brano: 1,
@@ -720,6 +853,18 @@ mod prove {
             }
             .e_una_scrittura()
         );
+        // E la correzione di un testo, in ogni sua forma.
+        for cosa in [
+            ScritturaTesto::Scarto { scarto_ms: 100 },
+            ScritturaTesto::Mano {
+                lrc: "[00:01.00]a".to_owned(),
+            },
+            ScritturaTesto::Rifiuta,
+        ] {
+            assert!(Domanda::TestoScrivi { brano: 1, cosa }.e_una_scrittura());
+        }
+        // Leggere un testo no: è una lettura, come quelle del catalogo.
+        assert!(!Domanda::Testo { brano: 1 }.e_una_scrittura());
         assert!(!Domanda::CatalogoRiassunto.e_una_scrittura());
         assert!(!Domanda::Album { da: 0, quanti: 1 }.e_una_scrittura());
     }

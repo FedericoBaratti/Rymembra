@@ -945,6 +945,7 @@ fn i_segnaposto_non_arrivano_al_catalogo() {
         album: album.to_owned(),
         duration_ms: 200_000,
         lyrics: None,
+        remoto: None,
     };
 
     // Il nome del file porta l'artista: si prende da lì, e il titolo senza
@@ -1387,6 +1388,7 @@ fn voce_di_sessione(id: i64, percorso: &Path) -> BranoDaTestare {
         album: "Album".to_owned(),
         duration_ms: 120_000,
         lyrics: None,
+        remoto: None,
     }
 }
 

@@ -551,7 +551,21 @@ pub fn rifiuta(connection: &Connection, track_key: &str) -> Result<(), AppError>
 ///
 /// Una voce scelta a mano non è una domanda aperta, anche senza tempi: vedi
 /// [`ricorda_scelta`].
-const IN_CODA: &str = "t.id IN (SELECT MIN(id) FROM tracks GROUP BY track_key)
+///
+/// # I brani di un altro dispositivo non ci stanno
+///
+/// Le righe specchio (`lontano://…`, vedi [`crate::specchio`]) sono fuori dalla
+/// coda, e fuori dal `MIN(id)` che sceglie un file per brano: la passata gira
+/// da sola su tutta la libreria, e mandare a LRCLIB i titoli e gli artisti di un
+/// altro dispositivo senza che nessuno abbia aperto il pannello vorrebbe dire
+/// rompere la promessa di `PRIVACY.md` (le richieste partono col pannello
+/// aperto, o per un gesto sulla libreria di qui). Con la riga specchio dentro
+/// il `MIN`, poi, una copia di qui dello stesso brano con un id più alto non
+/// sarebbe mai stata cercata. I testi dei brani di un altro dispositivo li dà
+/// lui, e quelli che non ha si cercano da qui solo col pannello aperto.
+const IN_CODA: &str = "t.id IN (SELECT MIN(id) FROM tracks
+                    WHERE path IS NULL OR path < 'lontano://' OR path >= 'lontano:/0'
+                    GROUP BY track_key)
        AND NOT EXISTS (
          SELECT 1 FROM lyrics l
          WHERE l.track_key = t.track_key
@@ -675,7 +689,8 @@ pub fn copertura(connection: &Connection) -> Result<Copertura, AppError> {
                                       AND l.plain IS NOT NULL
                                  THEN 1 ELSE 0 END), 0),
                COUNT(*)
-             FROM (SELECT DISTINCT track_key FROM tracks) t
+             FROM (SELECT DISTINCT track_key FROM tracks
+                    WHERE path IS NULL OR path < 'lontano://' OR path >= 'lontano:/0') t
              LEFT JOIN lyrics l ON l.track_key = t.track_key",
         )
         .map_err(|err| db_error("copertura dei testi", &err))?

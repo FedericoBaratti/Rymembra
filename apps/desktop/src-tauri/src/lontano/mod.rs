@@ -44,6 +44,7 @@ pub(crate) mod scarico;
 mod servizio;
 pub(crate) mod sfoglia;
 pub(crate) mod specchio;
+mod testo;
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, channel};
@@ -61,8 +62,10 @@ use crate::stato::adesso_ms;
 use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
+pub(crate) use sfoglia::rete_a_consumo;
 pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina, voce_salvata};
 pub(crate) use specchio::{apri_riga, copertina_di_una_riga, posta_nuova, scegli_la_copia};
+pub(crate) use testo::dal_proprietario;
 
 /// Quanto un comando aspetta che il filo abbia riletto: accendere il nodo
 /// vuol dire aprire i socket, e il portachiavi può chiedere un attimo.
