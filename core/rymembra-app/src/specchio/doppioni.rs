@@ -29,12 +29,23 @@
 //! chi dichiara «flac a 384 kHz» vince su ogni copia di qui. Un controllo di
 //! plausibilità li confronta con quel che la riga dice anche della dimensione
 //! del file e della durata ([`Qualita::da_riga`]): il bitrate medio **reale** è
-//! `dimensione × 8 / durata`. Una copia «senza perdita» che pesa come un MP3
-//! non è senza perdita, e un bitrate dichiarato molto più alto di quel che il
-//! file pesa si riporta a quel che pesa. Senza dimensione o durata non c'è
-//! niente da confrontare, e si crede alla dichiarazione. Non è una prova — chi
-//! mente su tutti e tre in modo coerente non si scopre — ma chiude la bugia
-//! più economica, senza impostazioni nuove.
+//! `dimensione × 8 / durata`. Una copia «senza perdita» che pesa meno di quel
+//! che pesa, per la sua frequenza, un file senza perdita, non è senza perdita,
+//! e un bitrate dichiarato molto più alto di quel che il file pesa si riporta a
+//! quel che pesa. Senza dimensione o durata non c'è niente da confrontare, e si
+//! crede alla dichiarazione. Non è una prova — chi mente su tutti e tre in modo
+//! coerente non si scopre — ma chiude la bugia più economica, senza
+//! impostazioni nuove.
+//!
+//! Il controllo non deve declassare un file vero, e per questo la soglia non è un
+//! numero solo. Un WAV o un AIFF, PCM non compresso, pesa quanto la sua frequenza
+//! (un messaggio vocale a 8 bit, mono, a 22,05 kHz: 176 kbps); un FLAC o un ALAC
+//! di parlato mono a 22,05 kHz pesa 80–150 kbps. Per il PCM la soglia è la metà
+//! di quel che pesa il PCM più leggero (quattro bit per campione, un ADPCM), per
+//! gli altri senza perdita due bit per campione — e mai meno di
+//! [`MINIMO_SENZA_PERDITA_KBPS`]: la soglia cresce con la frequenza dichiarata,
+//! quindi una bugia a 384 kHz si scopre anche pesando 700 kbps, e un FLAC mono
+//! di parlato non si tocca.
 //!
 //! # La coerenza d'album
 //!
@@ -53,10 +64,35 @@ use std::collections::{BTreeMap, HashMap};
 use rymembra_domain::album::UNKNOWN_ALBUM;
 use rymembra_domain::keys::normalize_key;
 
-/// Sotto questo bitrate medio reale (kbps) una copia non è senza perdita: nessun
-/// file senza perdita di musica pesa così poco, e i codec con perdita ci
-/// arrivano comodamente (un MP3 a 320 kbps, un AAC a 256).
-pub const SOGLIA_SENZA_PERDITA_KBPS: i64 = 224;
+/// Sotto questo bitrate medio reale (kbps) una copia senza perdita compressa
+/// (FLAC, ALAC, APE, WavPack) non è creduta, qualunque frequenza dichiari: il
+/// parlato mono a 16 kHz in FLAC pesa 50–80, e sotto i 64 non c'è niente che sia
+/// davvero senza perdita e non una bugia.
+pub const MINIMO_SENZA_PERDITA_KBPS: i64 = 64;
+
+/// Bit per campione sotto i quali un file senza perdita compresso non è
+/// credibile: il parlato mono di un audiolibro, silenzi compresi, sta intorno ai
+/// quattro, due lasciano il margine per quel che ha più silenzio che voce.
+const BIT_PER_CAMPIONE_COMPRESSO: i64 = 2;
+
+/// Lo stesso per il PCM non compresso (WAV, AIFF): il più leggero pesa otto bit
+/// per campione, e un ADPCM quattro.
+const BIT_PER_CAMPIONE_PCM: i64 = 4;
+
+/// Il peso medio sotto cui un file che dichiara di essere senza perdita non è
+/// creduto, per la frequenza di campionamento che dichiara. Vedi il `//!`.
+fn minimo_plausibile_kbps(pcm: bool, campionamento: i64) -> i64 {
+    if pcm {
+        campionamento
+            .saturating_mul(BIT_PER_CAMPIONE_PCM)
+            .div_euclid(1000)
+    } else {
+        campionamento
+            .saturating_mul(BIT_PER_CAMPIONE_COMPRESSO)
+            .div_euclid(1000)
+            .max(MINIMO_SENZA_PERDITA_KBPS)
+    }
+}
 
 /// Quanto un bitrate dichiarato può superare quel che il file pesa davvero,
 /// prima di non essere creduto: un quarto, più sedici kbps (il peso di un
@@ -111,6 +147,10 @@ impl Qualita {
     /// Come [`Qualita::da_colonne`], con il controllo di plausibilità contro la
     /// dimensione del file e la durata: vedi il `//!`.
     ///
+    /// «Senza perdita» si declassa solo se il file pesa meno di quel che può pesare
+    /// uno senza perdita di quella frequenza ([`minimo_plausibile_kbps`]): un WAV a
+    /// otto bit o un FLAC di parlato non sono bugie.
+    ///
     /// Con dimensione o durata mancanti, o non positive, vale la dichiarazione.
     /// Un brano d'immagine CD — dove la dimensione è quella dell'intero disco e
     /// la durata quella del pezzo — risulta più pesante di quel che è, e il
@@ -131,7 +171,15 @@ impl Qualita {
         let Some(reale) = reale else {
             return dichiarata;
         };
-        if dichiarata.senza_perdita && reale < SOGLIA_SENZA_PERDITA_KBPS {
+        let pcm = matches!(
+            codec
+                .map(|c| c.trim().to_ascii_lowercase())
+                .unwrap_or_default()
+                .as_str(),
+            "wav" | "wave" | "aiff" | "aif" | "pcm"
+        );
+        if dichiarata.senza_perdita && reale < minimo_plausibile_kbps(pcm, dichiarata.campionamento)
+        {
             // «Senza perdita» che pesa come un MP3: si conta per quel che pesa.
             return Self {
                 senza_perdita: false,
@@ -575,6 +623,42 @@ mod prove {
         assert!(vero.senza_perdita);
         assert_eq!(vero.campionamento, 96_000);
         assert!(vero > mp3(320));
+    }
+
+    #[test]
+    fn la_soglia_cresce_con_la_frequenza_e_non_declassa_un_file_vero() {
+        // I file veri che pesano poco: WAV a 8 bit mono, FLAC e ALAC di parlato.
+        let (dimensione, durata) = peso(176, 3);
+        assert!(
+            Qualita::da_riga(Some("wav"), Some(22_050), Some(176), dimensione, durata)
+                .senza_perdita
+        );
+        let (dimensione, durata) = peso(110, 30);
+        assert!(
+            Qualita::da_riga(Some("flac"), Some(22_050), Some(110), dimensione, durata)
+                .senza_perdita
+        );
+        let (dimensione, durata) = peso(190, 5);
+        assert!(
+            Qualita::da_riga(Some("alac"), Some(44_100), Some(190), dimensione, durata)
+                .senza_perdita
+        );
+        // Le bugie: un PCM a 384 kHz che pesa 128 kbps, un FLAC a 44,1 kHz che pesa
+        // 60, un FLAC senza frequenza che pesa quanto un MP3 da 32.
+        let (dimensione, durata) = peso(128, 4);
+        let wav = Qualita::da_riga(Some("wav"), Some(384_000), Some(128), dimensione, durata);
+        assert!(!wav.senza_perdita, "{wav:?}");
+        let (dimensione, durata) = peso(60, 4);
+        let flac = Qualita::da_riga(Some("flac"), Some(44_100), Some(60), dimensione, durata);
+        assert!(!flac.senza_perdita, "{flac:?}");
+        let (dimensione, durata) = peso(32, 4);
+        let senza = Qualita::da_riga(Some("flac"), None, Some(32), dimensione, durata);
+        assert!(!senza.senza_perdita, "{senza:?}");
+        // Un WAV a 96 kHz che pesa 700 kbps è sopra la metà di quel che pesa il
+        // PCM più leggero a quella frequenza (384 kbps): resta com'è.
+        let (dimensione, durata) = peso(700, 2);
+        let alto = Qualita::da_riga(Some("wav"), Some(96_000), Some(700), dimensione, durata);
+        assert!(alto.senza_perdita, "{alto:?}");
     }
 
     #[test]
