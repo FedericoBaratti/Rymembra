@@ -35,6 +35,13 @@ publish = false
 # `src/maiusc.rs`: Maiusc tenuto mentre l'applicazione si apre): la accendono già
 # `tao`, `wry` e `muda`, quindi nel `Cargo.lock` non entra niente nemmeno
 # stavolta.
+# `Win32_System_Registry` serve anche all'avvio con Windows (`src/registro.rs`:
+# il valore in `HKCU\…\Run` e `StartupApproved`), ed era già accesa. Poi
+# `ApplicationModel` e `ApplicationModel_Activation`, la parte WinRT che nomina
+# `StartupTask` e `AppInstance` (`src/avvio.rs`): l'avvio della copia del Store e
+# il riconoscimento di un login. Sono API sicure, come `ApplicationData` qui
+# sopra, e due feature del `windows` che c'è già: nel `Cargo.lock` non entra
+# niente.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
@@ -48,6 +55,8 @@ windows = { version = "0.62", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    "ApplicationModel",
+    "ApplicationModel_Activation",
     "Storage_Search",
 ] }
 
@@ -60,8 +69,10 @@ windows = { version = "0.62", features = [
 # `src/finestra.rs`, la funzione `chiedi_a_windows` di `src/unita.rs`, le tre
 # funzioni di sistema di `src/sottofondo.rs`, le quattro di `src/espulsione.rs`
 # (il nome del volume, la registrazione degli avvisi di espulsione, la callback
-# che Windows chiama e la registrazione tolta) e la lettura di Maiusc di
-# `src/maiusc.rs` (`GetAsyncKeyState`).
+# che Windows chiama e la registrazione tolta), la lettura di Maiusc di
+# `src/maiusc.rs` (`GetAsyncKeyState`) e le tre chiamate di `src/registro.rs`
+# (`RegGetValueW`, `RegSetKeyValueW` e `RegDeleteKeyValueW`, per l'avvio con
+# Windows).
 #
 # In cambio, tre regole che il resto del workspace non ha bisogno di avere: ogni
 # blocco `unsafe` spiega perché è giusto (`undocumented_unsafe_blocks`), e dentro

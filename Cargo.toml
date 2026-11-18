@@ -119,7 +119,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 # COM con la barra e mettersi in mezzo ai messaggi della finestra, e nessuna
 # dipendenza seria lo fa al posto nostro — come invece fanno `souvlaki` e
 # `trash`. Quel crate non eredita questa tabella: ne ha una sua, uguale tranne
-# `unsafe_code = "deny"`, e l'`unsafe` sta in cinque posti dichiarati: il modulo
+# `unsafe_code = "deny"`, e l'`unsafe` sta in sei posti dichiarati: il modulo
 # `finestra.rs`, la funzione di `unita.rs` che chiede a Windows il genere di
 # un'unità (`GetDriveTypeW`: una chiavetta o un CD non hanno il Cestino, e
 # «Elimina dal disco» lo deve sapere), le tre funzioni di `sottofondo.rs` che
@@ -129,9 +129,12 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 # espulso (`CM_Register_Notification`: senza, la sorveglianza delle cartelle lo
 # tiene aperto e «Espelli» risponde «dispositivo in uso»), e la lettura di
 # `GetAsyncKeyState` di `maiusc.rs`, che dice se Maiusc è tenuto mentre
-# l'applicazione si apre (l'uscita d'emergenza dalle skin, D-48); ogni blocco
-# dice perché è corretto. Qui sotto non cambia niente, e per tutti gli altri crate
-# resta `forbid`.
+# l'applicazione si apre (l'uscita d'emergenza dalle skin, D-48), e le tre
+# funzioni di `registro.rs` che leggono, scrivono e tolgono un valore di
+# `HKCU` (la voce `Run` dell'avvio con Windows, e `StartupApproved`, dove
+# Windows scrive che l'utente l'ha spento); ogni blocco dice perché è
+# corretto. Qui sotto non cambia niente, e per tutti gli altri crate resta
+# `forbid`.
 unsafe_code = "forbid"
 missing_docs = "warn"
 
