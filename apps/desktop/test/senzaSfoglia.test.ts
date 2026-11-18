@@ -111,8 +111,11 @@ test("il codice delle copertine di «Sfoglia» è tolto (FR2), e restano i pezzi
   ]) {
     assert.doesNotMatch(sfoglia, morto, `sfoglia.rs ha ancora ${morto}`);
   }
-  assert.ok(!existsSync(join(RADICE, "src-tauri/src/media/lontane.rs")), "media/lontane.rs c'è ancora");
-  assert.doesNotMatch(leggi("src-tauri/src/media/mod.rs"), /mod lontane;/);
+  // `media/lontane.rs` c'è ancora, ma è un'altra cosa: non chiede più la chiave `lontano-` ma
+  // l'impronta di una riga della libreria unica, con `copertina_di_una_riga`, e il file sta nello
+  // store (vedi `copertineSchede.test.ts`).
+  const lontane = leggi("src-tauri/src/media/lontane.rs");
+  assert.doesNotMatch(lontane, /lontano-|sfoglia::|percorso_in_cache|file_in_cache/);
   for (const file of ["media/android.rs", "media/smtc.rs", "copertine.rs", "lontano/mod.rs"]) {
     const testo = leggi(`src-tauri/src/${file}`);
     assert.doesNotMatch(testo, /e_una_copertina|lontane::file_di|sfoglia::percorso_per_android/, file);

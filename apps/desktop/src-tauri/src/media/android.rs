@@ -57,11 +57,19 @@ const CODA_PRIMA: usize = 10;
 /// Quanti dopo.
 const CODA_DOPO: usize = 40;
 
-/// Un tratto di coda da comporre: da quale posto parte, e i brani.
+/// Un tratto di coda da comporre: da quale posto parte, i brani, e quale è il
+/// brano dopo quello che suona.
+///
+/// Il brano dopo sta qui perché è l'unico della coda per cui si va a chiedere
+/// all'altro dispositivo una copertina che lo store non ha: vedi
+/// [`copertina_di`]. Se cambiasse senza che cambi il resto — un tratto tutto
+/// dentro la coda, che scorre — il tratto non sarebbe più lo stesso, e si
+/// ricompone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Tratto {
     inizio: usize,
     brani: Vec<i64>,
+    prossimo: Option<i64>,
 }
 
 /// Quel che serve a riempire la sessione, e quel che le si è già mandato.
@@ -361,7 +369,11 @@ fn componi_la_coda(app: &tauri::AppHandle, ricevi: &Receiver<Tratto>) {
 
 /// Un tratto di coda per l'auto: le sue righe, alla sessione.
 fn componi(app: &tauri::AppHandle, tratto: Tratto) {
-    let Tratto { inizio, brani: ids } = tratto;
+    let Tratto {
+        inizio,
+        brani: ids,
+        prossimo,
+    } = tratto;
     let righe = match crate::riproduzione::righe_della_coda(app, &ids) {
         Ok(righe) => righe,
         Err(err) => {
@@ -387,10 +399,18 @@ fn componi(app: &tauri::AppHandle, tratto: Tratto) {
                 titolo: riga.title,
                 artista: riga.artist,
                 album: riga.album,
-                // Solo quel che è già nello store: una coda di cinquanta voci
-                // non mette in fila cinquanta richieste al PC.
+                // Delle voci di un altro dispositivo, solo quel che è già nello
+                // store e il brano dopo: una coda di cinquanta voci non deve
+                // mettere in fila cinquanta richieste al PC.
                 copertina: copertine.as_ref().and_then(|store| {
-                    copertina_di(app, store, riga.cover_art_hash.as_deref(), false)
+                    copertina_di(
+                        app,
+                        store,
+                        riga.cover_art_hash.as_deref(),
+                        riga.path.as_deref(),
+                        false,
+                        Some(riga.id) == prossimo,
+                    )
                 }),
                 durata_ms: u64::try_from(riga.duration_ms).unwrap_or(0),
             })
@@ -483,6 +503,8 @@ fn tratto_di(coda: &[i64], posto: Option<usize>) -> Tratto {
     Tratto {
         inizio,
         brani: coda.get(inizio..fine).unwrap_or_default().to_vec(),
+        // Dopo il brano che suona; senza un brano che suona, nessuno.
+        prossimo: posto.and_then(|dove| coda.get(dove.saturating_add(1)).copied()),
     }
 }
 
@@ -490,9 +512,14 @@ fn tratto_di(coda: &[i64], posto: Option<usize>) -> Tratto {
 /// cartella delle copertine di Kotlin.
 ///
 /// Per un brano della libreria è quello dello store (`grande`: la piena prima
-/// della media). Una riga di un altro dispositivo ci ha la copertina solo se è
-/// già nello store, sotto la sua impronta: ce la mette
-/// `specchio::copertina_di_una_riga`, quando la finestra la chiede.
+/// della media). Per una riga di un altro dispositivo — `percorso` è
+/// `lontano://…` — la copertina sta nello store solo se qualcuno l'ha già
+/// chiesta all'altro (`lontano::copertina_di_una_riga`): la finestra quando la
+/// mostra. Chi guida col telefono in tasca la finestra non la guarda, e allora
+/// `chiedi` la fa venire in disparte, una volta sola (vedi [`super::lontane`]),
+/// e quando arriva si ripubblica la scheda e si ricompone la coda
+/// ([`copertina_arrivata`]). Fra le due cose la scheda esce senza copertina,
+/// com'era, e non aspetta la rete.
 ///
 /// Per una voce di «Ascolta insieme» (`insieme-<uid>`) i byte stanno in
 /// memoria, e la prima volta si scrivono in una cartella riservata della cache
@@ -503,18 +530,41 @@ fn copertina_di(
     app: &tauri::AppHandle,
     store: &CoverStore,
     hash: Option<&str>,
+    percorso: Option<&str>,
     grande: bool,
+    chiedi: bool,
 ) -> Option<String> {
     let hash = hash?;
     if crate::insieme::e_una_chiave_di_sessione(hash) {
         let file = crate::insieme::copertina_su_file(app, hash)?;
         return crate::insieme::percorso_per_android(&file);
     }
-    if grande {
+    let nello_store = if grande {
         auto::copertina_grande(store, Some(hash))
     } else {
         auto::copertina(store, Some(hash))
+    };
+    if nello_store.is_none() && chiedi && super::lontane::e_di_un_altro_dispositivo(percorso) {
+        super::lontane::richiedi(app, hash, copertina_arrivata);
     }
+    nello_store
+}
+
+/// È arrivata la copertina di una riga di un altro dispositivo: la scheda si
+/// ripubblica, e il tratto di coda si rifà (`tratto = None`, così `aggiorna` lo
+/// rimanda al filo della coda, che adesso la trova nello store). Si ripubblica lo
+/// stato, non solo la scheda: la scheda la compone `aggiorna`, da un posto solo.
+fn copertina_arrivata(app: &tauri::AppHandle) {
+    if let Some(media) = app.try_state::<StatoMedia>()
+        && let Some(controlli) = media
+            .controlli
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+    {
+        controlli.tratto = None;
+    }
+    crate::riproduzione::insieme::aggiorna_finestra(app);
 }
 
 /// Quel che la notifica deve mostrare per questo stato.
@@ -546,7 +596,14 @@ fn scheda_di(app: &tauri::AppHandle, stato: &StatoRiproduzione, copertine: &Cove
         titolo: brano.title.clone(),
         artista: brano.artist.clone(),
         album: brano.album.clone(),
-        copertina: copertina_di(app, copertine, brano.cover_art_hash.as_deref(), true),
+        copertina: copertina_di(
+            app,
+            copertine,
+            brano.cover_art_hash.as_deref(),
+            brano.path.as_deref(),
+            true,
+            true,
+        ),
         durata_ms: stato.durata_ms,
         posizione_ms: stato.posizione_ms,
         suona: !stato.in_pausa,
