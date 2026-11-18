@@ -203,6 +203,16 @@ pub(super) fn dove(
     Ok(filtro(connection, origine, alias)?.unwrap_or_else(|| "1".to_owned()))
 }
 
+/// Gli album i cui brani sono **tutti** nascosti da «Tutti» (dietro una copia
+/// migliore di un altro dispositivo, o in grazia): partono dalle sole righe
+/// nascoste, che l'indice parziale di `copia_di` serve da solo, e per ognuna
+/// chiedono se l'album ha anche un brano visibile.
+const ALBUM_TUTTI_NASCOSTI: &str = "SELECT h.album_key
+       FROM (SELECT DISTINCT album_key FROM tracks
+              WHERE copia_di IS NOT NULL AND album_key IS NOT NULL) h
+      WHERE NOT EXISTS (SELECT 1 FROM tracks v
+                         WHERE v.album_key = h.album_key AND v.copia_di IS NULL)";
+
 /// I numeri della libreria, in una query sola.
 ///
 /// Gli album e gli artisti sono quelli che hanno almeno un brano di questa
@@ -218,6 +228,25 @@ pub fn counts(connection: &Connection, origine: &Origine) -> Result<Counts, AppE
                         (SELECT COUNT(*) FROM tracks WHERE liked = 1),
                         (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)"
             .to_owned(),
+        // «Tutti» con righe nascoste: i totali meno i nascosti. Le righe nascoste
+        // sono poche (l'indice parziale di `copia_di` le trova da solo) e il
+        // filtro riga per riga costava, su sessantamila brani, tredici volte il
+        // conteggio senza: una scansione di `tracks` per ogni numero, e un album
+        // dopo l'altro con la sua sottoquery.
+        Some(_) if origine.e_tutti() => format!(
+            "SELECT (SELECT COUNT(*) FROM tracks)
+                      - (SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL),
+                    (SELECT COUNT(*) FROM albums)
+                      - (SELECT COUNT(*) FROM ({ALBUM_TUTTI_NASCOSTI})),
+                    (SELECT COUNT(DISTINCT {ARTISTA_EFFETTIVO}) FROM tracks
+                      WHERE {ARTISTA_EFFETTIVO} <> ''
+                        AND id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)),
+                    (SELECT COUNT(*) FROM tracks WHERE liked = 1)
+                      - (SELECT COUNT(*) FROM tracks WHERE liked = 1 AND copia_di IS NOT NULL),
+                    (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)
+                      - (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks
+                          WHERE copia_di IS NOT NULL)"
+        ),
         Some(t) => {
             let senza_alias = origine.sql("")?;
             format!(
@@ -1085,6 +1114,12 @@ pub fn list_albums(
     // tutto dietro una copia migliore di un altro dispositivo no.
     let con_brani = match filtro(connection, origine, "t.")? {
         None => "1".to_owned(),
+        // «Tutti» con righe nascoste: si tolgono gli album i cui brani sono
+        // **tutti** nascosti, trovati una volta dalle sole righe nascoste, e non
+        // si chiede a ogni album se ha un brano visibile.
+        Some(_) if origine.e_tutti() => {
+            format!("a.album_key NOT IN ({ALBUM_TUTTI_NASCOSTI})")
+        }
         Some(t) => {
             format!("EXISTS (SELECT 1 FROM tracks t WHERE t.album_key = a.album_key AND {t})")
         }

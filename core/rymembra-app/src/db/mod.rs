@@ -3666,7 +3666,11 @@ mod tests {
                 "idx_lontano_brani_content_key",
                 "content_key",
             ),
-            ("cover_remota = 'x'", "idx_lontano_brani_cover", "cover_remota"),
+            (
+                "cover_remota = 'x'",
+                "idx_lontano_brani_cover",
+                "cover_remota",
+            ),
             // Com'è scritta da «Dimentica»: tutte le chiavi in un parametro solo.
             (
                 "content_key IN (SELECT value FROM json_each('[\"a\"]'))",
@@ -3698,6 +3702,32 @@ mod tests {
                 "{condizione}: {dettagli:?}"
             );
         }
+        // L'indice parziale delle righe sparite: ogni giro le conta, e il caso
+        // comune — nessuna — non deve leggere le righe di un catalogo.
+        assert_eq!(
+            colonna(
+                c,
+                "SELECT name FROM pragma_index_info('idx_lontano_brani_sparite')"
+            ),
+            ["dispositivo", "sparito_ms"]
+        );
+        let mut piano = c
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM lontano_brani
+                  WHERE dispositivo = 'x' AND sparito_ms IS NOT NULL",
+            )
+            .expect("piano");
+        let dettagli: Vec<String> = piano
+            .query_map([], |r| r.get::<_, String>(3))
+            .expect("lettura")
+            .collect::<Result<_, _>>()
+            .expect("righe del piano");
+        assert!(
+            dettagli
+                .iter()
+                .any(|d| d.contains("idx_lontano_brani_sparite")),
+            "{dettagli:?}"
+        );
     }
 
     #[test]

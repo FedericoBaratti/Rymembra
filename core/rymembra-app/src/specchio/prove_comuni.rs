@@ -158,7 +158,12 @@ pub(crate) fn locale(c: &Connection, id: i64, numero: i64) {
         "INSERT INTO tracks (id, path, track_key, content_key, title, artist, album, file_size,
                              date_added, date_modified)
          VALUES (?1, ?2, ?3, ?3, ?4, 'Artista', 'Album', 1000, 1, 1)",
-        params![id, format!("/musica/{numero}.mp3"), k, format!("Titolo {numero}")],
+        params![
+            id,
+            format!("/musica/{numero}.mp3"),
+            k,
+            format!("Titolo {numero}")
+        ],
     )
     .expect("brano di qui");
 }
@@ -252,12 +257,7 @@ pub(crate) fn passata(qui: &mut Connection, io: &str, altro: (&str, Contenuto), 
 
 /// Il PC e il telefono si scambiano i documenti, nei due versi.
 pub(crate) fn scambio(pc: &mut Connection, telefono: &mut Connection, adesso_ms: i64) {
-    passata(
-        telefono,
-        "telefono",
-        ("pc", documento(pc, "pc")),
-        adesso_ms,
-    );
+    passata(telefono, "telefono", ("pc", documento(pc, "pc")), adesso_ms);
     passata(
         pc,
         "pc",

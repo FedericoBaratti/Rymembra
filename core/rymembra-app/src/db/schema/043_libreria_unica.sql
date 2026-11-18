@@ -179,6 +179,13 @@ CREATE UNIQUE INDEX idx_lontano_brani_remoto ON lontano_brani(dispositivo, id_re
 CREATE INDEX idx_lontano_brani_content_key ON lontano_brani(content_key);
 CREATE INDEX idx_lontano_brani_cover ON lontano_brani(cover_remota);
 
+-- Le righe che il proprietario non manda più (in grazia, o in attesa di una
+-- conferma): poche, e ogni giro le conta, le nasconde e toglie le scadute. Un
+-- indice parziale le serve da solo, senza leggere le righe di un catalogo da
+-- centomila.
+CREATE INDEX idx_lontano_brani_sparite ON lontano_brani(dispositivo, sparito_ms)
+  WHERE sparito_ms IS NOT NULL;
+
 CREATE TABLE dispositivi_posta (
   id          INTEGER PRIMARY KEY,
   dispositivo TEXT    NOT NULL,

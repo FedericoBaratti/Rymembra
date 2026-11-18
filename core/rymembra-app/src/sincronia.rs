@@ -722,7 +722,9 @@ fn brani_assenti(connection: &Connection) -> Result<Assenti, AppError> {
         )
         .map_err(|err| db_error("brani delle playlist che qui mancano", &err))?;
     let chiavi = statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+        })
         .map_err(|err| db_error("brani delle playlist che qui mancano", &err))?;
     let mut assenti = Assenti {
         senza_riga: BTreeSet::new(),

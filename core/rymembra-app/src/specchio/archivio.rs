@@ -1135,9 +1135,7 @@ fn nascondi_le_sparite(
         .prepare_cached("UPDATE tracks SET copia_di = id WHERE id = ?1")
         .map_err(|err| db_error(cosa, &err))?;
     for id in &da_nascondere {
-        nascondi
-            .execute([id])
-            .map_err(|err| db_error(cosa, &err))?;
+        nascondi.execute([id]).map_err(|err| db_error(cosa, &err))?;
     }
     Ok(spostate)
 }
@@ -1154,6 +1152,12 @@ pub struct Blocco {
     pub in_attesa: usize,
     /// Righe sparite che restano per la grazia.
     pub in_grazia: usize,
+    /// Fra le righe tolte ce n'era una non ancora nascosta: i doppioni si
+    /// rifanno. Le righe sparite sono già nascoste — e fuori dalla scelta dei
+    /// doppioni — dal giro che le ha segnate, e toglierle non cambia quel che
+    /// resta: rifare ogni volta la scelta su tutta la libreria costava, a ogni
+    /// blocco, quanto il blocco.
+    pub doppioni_da_rifare: bool,
 }
 
 /// Toglie un blocco di righe sparite, in una transazione già aperta.
@@ -1177,51 +1181,67 @@ fn togli_un_blocco_in(
     blocco: usize,
 ) -> Result<Blocco, AppError> {
     let cosa = "righe specchio da togliere";
-    let (sparite, scadute, totali): (i64, i64, i64) = tx
+    // Le sparite dall'indice parziale (poche): se non ce n'è nessuna, e il
+    // caso comune lo è, non si legge niente d'altro.
+    let (sparite, scadute): (i64, i64) = tx
         .query_row(
-            "SELECT COUNT(*) FILTER (WHERE sparito_ms IS NOT NULL),
-                    COUNT(*) FILTER (WHERE sparito_ms IS NOT NULL AND sparito_ms <= ?2),
-                    COUNT(*)
-               FROM lontano_brani WHERE dispositivo = ?1",
+            "SELECT COUNT(*), COUNT(*) FILTER (WHERE sparito_ms <= ?2)
+               FROM lontano_brani WHERE dispositivo = ?1 AND sparito_ms IS NOT NULL",
             params![dispositivo, adesso_ms.saturating_sub(GRAZIA_MS)],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|err| db_error(cosa, &err))?;
-    let (sparite, scadute, totali) = (
+    let (sparite, scadute) = (
         usize::try_from(sparite).unwrap_or(0),
         usize::try_from(scadute).unwrap_or(0),
-        usize::try_from(totali).unwrap_or(0),
     );
     if sparite == 0 {
         return Ok(Blocco::default());
     }
-    let strage =
-        sparite > SOGLIA_RIMOZIONI && sparite.saturating_mul(FRAZIONE_SOSPETTA) > totali;
+    // Le righe del dispositivo, per il rapporto della rimozione di massa: dal
+    // solo indice (dispositivo, id remoto).
+    let totali = usize::try_from(
+        tx.query_row(
+            "SELECT COUNT(*) FROM lontano_brani WHERE dispositivo = ?1",
+            [dispositivo],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(|err| db_error(cosa, &err))?,
+    )
+    .unwrap_or(0);
+    let strage = sparite > SOGLIA_RIMOZIONI && sparite.saturating_mul(FRAZIONE_SOSPETTA) > totali;
     if strage {
         return Ok(Blocco {
             in_attesa: sparite,
             ..Blocco::default()
         });
     }
-    let da_togliere: Vec<(i64, String)> = {
+    let (da_togliere, non_nascoste): (Vec<(i64, String)>, bool) = {
         let mut st = tx
             .prepare_cached(
-                "SELECT t.id, t.path FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
+                "SELECT t.id, t.path, t.copia_di IS NOT t.id
+                   FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
                   WHERE l.dispositivo = ?1 AND l.sparito_ms IS NOT NULL AND l.sparito_ms <= ?2
                   ORDER BY t.id LIMIT ?3",
             )
             .map_err(|err| db_error(cosa, &err))?;
-        st.query_map(
-            params![
-                dispositivo,
-                adesso_ms.saturating_sub(GRAZIA_MS),
-                i64::try_from(blocco).unwrap_or(i64::MAX)
-            ],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+        let righe = st
+            .query_map(
+                params![
+                    dispositivo,
+                    adesso_ms.saturating_sub(GRAZIA_MS),
+                    i64::try_from(blocco).unwrap_or(i64::MAX)
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, bool>(2)?)),
+            )
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error(cosa, &err))?;
+        let non_nascoste = righe.iter().any(|(_, _, visibile)| *visibile);
+        (
+            righe.into_iter().map(|(id, path, _)| (id, path)).collect(),
+            non_nascoste,
         )
-        .map_err(|err| db_error(cosa, &err))?
-        .collect::<Result<_, _>>()
-        .map_err(|err| db_error(cosa, &err))?
     };
     let tolte = togli(tx, &da_togliere, toccati)?;
     Ok(Blocco {
@@ -1229,6 +1249,7 @@ fn togli_un_blocco_in(
         restano: scadute.saturating_sub(tolte),
         in_attesa: 0,
         in_grazia: sparite.saturating_sub(scadute),
+        doppioni_da_rifare: non_nascoste,
     })
 }
 
@@ -1264,11 +1285,18 @@ pub fn togli_un_blocco_di(
     adesso_ms: i64,
     grandezza: usize,
 ) -> Result<Blocco, AppError> {
+    // Chi non ha righe sparite — il caso comune, a ogni giro — non apre una
+    // transazione di scrittura per niente.
+    if sparite_in_attesa(connection, dispositivo)? == 0 {
+        return Ok(Blocco::default());
+    }
     let tx = transazione(connection)?;
     let mut toccati = Toccati::nessuno();
     let blocco = togli_un_blocco_in(&tx, dispositivo, adesso_ms, &mut toccati, grandezza)?;
     if blocco.tolte > 0 {
-        ricalcola_doppioni_in(&tx)?;
+        if blocco.doppioni_da_rifare {
+            ricalcola_doppioni_in(&tx)?;
+        }
         ricostruisci_aggregati(&tx, &toccati)?;
     }
     tx.commit()
@@ -1300,29 +1328,38 @@ pub fn conferma_un_blocco_di(
 ) -> Result<Blocco, AppError> {
     let cosa = "righe specchio da togliere";
     let tx = transazione(connection)?;
-    let da_togliere: Vec<(i64, String)> = {
+    let (da_togliere, non_nascoste): (Vec<(i64, String)>, bool) = {
         let mut st = tx
             .prepare_cached(
-                "SELECT t.id, t.path FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
+                "SELECT t.id, t.path, t.copia_di IS NOT t.id
+                   FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
                   WHERE l.dispositivo = ?1 AND l.sparito_ms IS NOT NULL
                   ORDER BY t.id LIMIT ?2",
             )
             .map_err(|err| db_error(cosa, &err))?;
-        st.query_map(
-            params![
-                dispositivo,
-                i64::try_from(grandezza).unwrap_or(i64::MAX)
-            ],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+        let righe = st
+            .query_map(
+                params![dispositivo, i64::try_from(grandezza).unwrap_or(i64::MAX)],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, bool>(2)?)),
+            )
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error(cosa, &err))?;
+        let non_nascoste = righe.iter().any(|(_, _, visibile)| *visibile);
+        (
+            righe.into_iter().map(|(id, path, _)| (id, path)).collect(),
+            non_nascoste,
         )
-        .map_err(|err| db_error(cosa, &err))?
-        .collect::<Result<_, _>>()
-        .map_err(|err| db_error(cosa, &err))?
     };
     let mut toccati = Toccati::nessuno();
     let tolte = togli(&tx, &da_togliere, &mut toccati)?;
     if tolte > 0 {
-        ricalcola_doppioni_in(&tx)?;
+        // Le righe segnate sparite sono nascoste dal giro che le ha segnate, e
+        // fuori dalla scelta dei doppioni: se lo sono tutte, non c'è niente da
+        // rifare (vedi `Blocco::doppioni_da_rifare`).
+        if non_nascoste {
+            ricalcola_doppioni_in(&tx)?;
+        }
         ricostruisci_aggregati(&tx, &toccati)?;
     }
     let restano = sparite_in_attesa(&tx, dispositivo)?;
@@ -1331,6 +1368,7 @@ pub fn conferma_un_blocco_di(
     Ok(Blocco {
         tolte,
         restano,
+        doppioni_da_rifare: non_nascoste,
         ..Blocco::default()
     })
 }

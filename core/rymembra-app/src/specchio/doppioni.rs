@@ -125,9 +125,7 @@ impl Qualita {
     ) -> Self {
         let dichiarata = Self::da_colonne(codec, campionamento, bitrate);
         let reale = match (dimensione, durata_ms) {
-            (Some(byte), Some(ms)) if byte > 0 && ms > 0 => {
-                byte.saturating_mul(8).checked_div(ms)
-            }
+            (Some(byte), Some(ms)) if byte > 0 && ms > 0 => byte.saturating_mul(8).checked_div(ms),
             _ => None,
         };
         let Some(reale) = reale else {
@@ -141,7 +139,10 @@ impl Qualita {
                 bitrate: reale,
             };
         }
-        if dichiarata.bitrate > reale.saturating_add(reale / 4).saturating_add(TOLLERANZA_BITRATE_KBPS)
+        if dichiarata.bitrate
+            > reale
+                .saturating_add(reale / 4)
+                .saturating_add(TOLLERANZA_BITRATE_KBPS)
         {
             return Self {
                 bitrate: reale,
@@ -589,9 +590,17 @@ mod prove {
 
     #[test]
     fn senza_dimensione_o_durata_si_crede_alla_dichiarazione() {
-        for (dimensione, durata) in [(None, Some(240_000)), (Some(5_000_000), None), (Some(0), Some(240_000)), (Some(5_000_000), Some(0))] {
+        for (dimensione, durata) in [
+            (None, Some(240_000)),
+            (Some(5_000_000), None),
+            (Some(0), Some(240_000)),
+            (Some(5_000_000), Some(0)),
+        ] {
             let q = Qualita::da_riga(Some("flac"), Some(96_000), Some(1_000), dimensione, durata);
-            assert_eq!(q, Qualita::da_colonne(Some("flac"), Some(96_000), Some(1_000)));
+            assert_eq!(
+                q,
+                Qualita::da_colonne(Some("flac"), Some(96_000), Some(1_000))
+            );
         }
     }
 
@@ -600,7 +609,13 @@ mod prove {
         // La dimensione è quella dell'immagine intera, la durata quella del
         // pezzo: il bitrate risulta più alto del vero, e il controllo — che si
         // muove solo verso il basso — lo lascia stare.
-        let q = Qualita::da_riga(Some("flac"), Some(44_100), Some(900), Some(300_000_000), Some(240_000));
+        let q = Qualita::da_riga(
+            Some("flac"),
+            Some(44_100),
+            Some(900),
+            Some(300_000_000),
+            Some(240_000),
+        );
         assert!(q.senza_perdita);
         assert_eq!(q.bitrate, 900);
     }

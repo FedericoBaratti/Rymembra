@@ -113,8 +113,17 @@ fn tag_corretto_sul_telefono(con_la_riga_specchio: bool) -> (Connection, Connect
     }
     playlist_con(&tel, "sera", &[1]);
     passata(&mut tel, "telefono", ("pc", documento(&pc, "pc")), 2_000);
-    passata(&mut pc, "pc", ("telefono", documento(&tel, "telefono")), 3_000);
-    assert_eq!(in_playlist(&pc, "sera"), vec![k.clone()], "il punto di partenza");
+    passata(
+        &mut pc,
+        "pc",
+        ("telefono", documento(&tel, "telefono")),
+        3_000,
+    );
+    assert_eq!(
+        in_playlist(&pc, "sera"),
+        vec![k.clone()],
+        "il punto di partenza"
+    );
 
     // «Correggi i tag» sul telefono: la chiave della riga di qui cambia.
     tel.execute(
@@ -123,7 +132,12 @@ fn tag_corretto_sul_telefono(con_la_riga_specchio: bool) -> (Connection, Connect
     )
     .expect("correzione");
     passata(&mut tel, "telefono", ("pc", documento(&pc, "pc")), 4_000);
-    passata(&mut pc, "pc", ("telefono", documento(&tel, "telefono")), 5_000);
+    passata(
+        &mut pc,
+        "pc",
+        ("telefono", documento(&tel, "telefono")),
+        5_000,
+    );
     (pc, tel, k)
 }
 
@@ -283,7 +297,8 @@ fn controllo_un_file_locale_che_torna_ritrova_il_suo_posto_nella_playlist() {
     let k = riga(2).track_key;
     locale(&c, 2, &k, Some(&k));
     playlist_con(&c, "sera", &[2]);
-    c.execute("DELETE FROM tracks WHERE id = 2", []).expect("via");
+    c.execute("DELETE FROM tracks WHERE id = 2", [])
+        .expect("via");
     assert!(in_playlist(&c, "sera").is_empty());
     locale(&c, 3, &k, Some(&k));
     assert_eq!(in_playlist(&c, "sera"), vec![k]);
@@ -308,8 +323,13 @@ fn rev2_04_in_auto_un_brano_resta_se_un_dispositivo_che_risponde_ne_ha_una_copia
     flac.sample_rate = Some(96_000);
     giro(&c, &pc1, &[flac], ADESSO);
     giro(&c, &pc2, &[riga(1)], ADESSO);
-    assert_eq!(n(&c, "SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL"), 1);
-    let sql = Origine::Raggiungibili(vec![pc2]).sql("t.").expect("origine");
+    assert_eq!(
+        n(&c, "SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL"),
+        1
+    );
+    let sql = Origine::Raggiungibili(vec![pc2])
+        .sql("t.")
+        .expect("origine");
     let in_auto = n(&c, &format!("SELECT COUNT(*) FROM tracks t WHERE {sql}"));
     assert_eq!(
         in_auto, 1,
@@ -370,7 +390,12 @@ fn rev2_06_il_ritorno_alla_42_non_lascia_album_senza_brani() {
     // prova di F2 confronta lo schema e le righe di `tracks`, non gli aggregati.
     let c = libreria();
     locale(&c, 1, &riga(1).track_key, Some(&riga(1).track_key));
-    giro(&c, &chiave(PC), &(10..=14).map(riga).collect::<Vec<_>>(), ADESSO);
+    giro(
+        &c,
+        &chiave(PC),
+        &(10..=14).map(riga).collect::<Vec<_>>(),
+        ADESSO,
+    );
     c.execute_batch(RITORNO_DALLA_43).expect("ritorno");
     let fantasmi = n(
         &c,
@@ -393,14 +418,18 @@ fn rev2_07_la_ricetta_di_ritorno_non_lascia_voci_che_puntano_nel_vuoto_a_chiavi_
         .query_row("SELECT track_id FROM lontano_brani", [], |r| r.get(0))
         .expect("riga");
     playlist_con(&c, "sera", &[specchio]);
-    c.execute_batch("PRAGMA foreign_keys = OFF").expect("come sqlite3");
+    c.execute_batch("PRAGMA foreign_keys = OFF")
+        .expect("come sqlite3");
     c.execute_batch(RITORNO_DALLA_43).expect("ritorno");
     let nel_vuoto = n(
         &c,
         "SELECT COUNT(*) FROM playlist_tracks pt
           WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = pt.track_id)",
     );
-    assert_eq!(nel_vuoto, 0, "voci di playlist che puntano a un brano che non c'è");
+    assert_eq!(
+        nel_vuoto, 0,
+        "voci di playlist che puntano a un brano che non c'è"
+    );
 }
 
 // ── misure (ignorate di serie: `--ignored --nocapture`) ──────────────────────────
@@ -450,7 +479,8 @@ fn misura_la_043_su_un_database_alla_42_di_sessantamila_brani() {
         for m in MIGRATIONS.iter().filter(|m| m.version <= 42) {
             c.execute_batch(m.sql).expect("migrazione");
         }
-        c.execute_batch("PRAGMA user_version = 42").expect("versione");
+        c.execute_batch("PRAGMA user_version = 42")
+            .expect("versione");
         tanti_locali(&c, 1, 60_000);
         let tx = c.unchecked_transaction().expect("tx");
         for p in 1..=300_i64 {
@@ -479,7 +509,8 @@ fn misura_la_043_su_un_database_alla_42_di_sessantamila_brani() {
         tx.commit().expect("commit");
         // Le chiavi d'ordine ci sono, come in un database vero alla 042.
         c.execute_batch("UPDATE tracks SET ordine_titolo = lower(title), ordine_artista = lower(artist), ordine_album = lower(album)").expect("chiavi");
-        c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").expect("checkpoint");
+        c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .expect("checkpoint");
     }
     let dimensione = std::fs::metadata(&percorso).map(|m| m.len()).unwrap_or(0);
     // Il solo SQL della 043, su una copia, in una transazione come fa migrate.
@@ -492,7 +523,10 @@ fn misura_la_043_su_un_database_alla_42_di_sessantamila_brani() {
         let tx = c.unchecked_transaction().expect("tx");
         tx.execute_batch(MIGRATIONS[42].sql).expect("043");
         tx.commit().expect("commit");
-        eprintln!("MISURA solo l'SQL della 043: {} ms", t.elapsed().as_millis());
+        eprintln!(
+            "MISURA solo l'SQL della 043: {} ms",
+            t.elapsed().as_millis()
+        );
     }
     let t = Instant::now();
     let aperto = open(&percorso).expect("apertura con migrazione");
@@ -509,7 +543,9 @@ fn misura_la_043_su_un_database_alla_42_di_sessantamila_brani() {
 #[test]
 #[ignore = "misura"]
 fn misura_i_piani_e_i_tempi_con_e_senza_dispositivi() {
-    use crate::library::{TrackOrder, counts, id_dei_brani, list_albums, list_artists, list_tracks, search};
+    use crate::library::{
+        TrackOrder, counts, id_dei_brani, list_albums, list_artists, list_tracks, search,
+    };
     use crate::specchio::Origine;
     let c = libreria();
     tanti_locali(&c, 1, 60_000);
@@ -519,7 +555,11 @@ fn misura_i_piani_e_i_tempi_con_e_senza_dispositivi() {
         eprintln!("MISURA {nome}: {} ms", t.elapsed().as_millis());
     };
     let esegui = |c: &Connection| {
-        for ordine in [TrackOrder::Title, TrackOrder::Shelf, TrackOrder::RecentlyAdded] {
+        for ordine in [
+            TrackOrder::Title,
+            TrackOrder::Shelf,
+            TrackOrder::RecentlyAdded,
+        ] {
             tempo(&format!("id_dei_brani {ordine:?}"), &|| {
                 let v = id_dei_brani(c, &Origine::Tutti, ordine).expect("id");
                 assert!(v.len() > 1000);
@@ -568,9 +608,12 @@ fn misura_i_piani_e_i_tempi_con_e_senza_dispositivi() {
     esegui(&c);
     for sql in [
         "SELECT t.id FROM tracks t WHERE t.copia_di IS NULL ORDER BY t.ordine_titolo",
+        "SELECT t.id FROM tracks t WHERE t.id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL) ORDER BY t.ordine_titolo, t.ordine_artista, t.id",
         "SELECT t.id FROM tracks t ORDER BY t.ordine_titolo",
     ] {
-        let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).expect("piano");
+        let mut st = c
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .expect("piano");
         let piano: Vec<String> = st
             .query_map([], |r| r.get::<_, String>(3))
             .expect("piano")
@@ -578,6 +621,16 @@ fn misura_i_piani_e_i_tempi_con_e_senza_dispositivi() {
             .collect();
         eprintln!("PIANO {sql}\n   {piano:?}");
     }
+    // Il riferimento: lo stesso database, con gli aggregati costruiti, senza
+    // nessuna riga nascosta. Quel che costa «Tutti» con righe nascoste è la
+    // differenza con questo, non con il database senza dispositivi (dove le
+    // tabelle degli album sono ancora vuote).
+    c.execute("UPDATE tracks SET copia_di = NULL", [])
+        .expect("senza righe nascoste");
+    eprintln!(
+        "--- riferimento: con un dispositivo, aggregati costruiti, nessuna riga nascosta ---"
+    );
+    esegui(&c);
 }
 
 #[test]
@@ -603,7 +656,16 @@ fn misura_dimenticare_un_dispositivo_con_tante_voci_di_playlist() {
     }
     let t = Instant::now();
     let a = anteprima_dimentica(&c, &pc).expect("anteprima");
-    eprintln!("MISURA anteprima_dimentica (3000 voci): {} ms {a:?}", t.elapsed().as_millis());
+    eprintln!(
+        "MISURA anteprima_dimentica (3000 voci): {} ms {a:?}",
+        t.elapsed().as_millis()
+    );
+    let t = Instant::now();
+    let fatto = dimentica_dispositivo(&c, &pc).expect("dimenticato");
+    eprintln!(
+        "MISURA dimentica_dispositivo (3000 voci, 20.000 righe): {} ms {fatto:?}",
+        t.elapsed().as_millis()
+    );
     let mut st = c
         .prepare(
             "EXPLAIN QUERY PLAN SELECT t.id FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
@@ -630,16 +692,39 @@ fn misura_togliere_un_quinto_di_un_catalogo_grande_in_una_transazione_sola() {
     let righe: Vec<_> = (1..=100_000_i64).map(|i| riga(100_000 + i)).collect();
     let t = Instant::now();
     giro(&c, &pc, &righe, ADESSO);
-    eprintln!("MISURA primo giro 100.000 righe: {} ms", t.elapsed().as_millis());
+    eprintln!(
+        "MISURA primo giro 100.000 righe: {} ms",
+        t.elapsed().as_millis()
+    );
     // Il PC non manda più il 19% delle righe: sotto «un quinto», quindi nessuna conferma.
     let restano: Vec<_> = righe.iter().filter(|r| r.id % 100 >= 19).cloned().collect();
     let t = Instant::now();
     let chiusura = giro(&c, &pc, &restano, ADESSO + 10_000);
     eprintln!(
-        "MISURA secondo giro (tolte {}, in attesa {}): {} ms — tutto in una transazione col lucchetto",
+        "MISURA secondo giro (tolte {}, in grazia {}, in attesa {}): {} ms",
         chiusura.tolte,
+        chiusura.in_grazia,
         chiusura.in_attesa,
         t.elapsed().as_millis()
+    );
+    // Dopo la grazia le righe si tolgono a blocchi, ognuno in una presa sua del
+    // lucchetto: quel che conta è il blocco più lungo, non il totale.
+    let dopo = ADESSO + 10_000 + crate::specchio::archivio::GRAZIA_MS + 1_000;
+    let (mut blocchi, mut piu_lungo_ms, mut totale_ms, mut tolte) = (0, 0, 0, 0);
+    loop {
+        let t = Instant::now();
+        let blocco = crate::specchio::archivio::togli_un_blocco(&c, &pc, dopo).expect("blocco");
+        let ms = t.elapsed().as_millis();
+        blocchi += 1;
+        piu_lungo_ms = piu_lungo_ms.max(ms);
+        totale_ms += ms;
+        tolte += blocco.tolte;
+        if blocco.restano == 0 || blocco.tolte == 0 {
+            break;
+        }
+    }
+    eprintln!(
+        "MISURA rimozioni a blocchi: {tolte} righe in {blocchi} blocchi, il piu' lungo {piu_lungo_ms} ms (totale {totale_ms} ms) — col lucchetto preso solo il blocco"
     );
 }
 
@@ -666,7 +751,10 @@ fn telefono_con_la_stessa_canzone_in_due_posti(righe_del_pc: i64) -> Connection 
     // Il brano è un gruppo: la copia del PC (mp3 320, 44100) batte quella di qui,
     // che non ha nessun dato di qualità.
     assert_eq!(
-        n(&c, "SELECT COUNT(*) FROM tracks WHERE id = 1 AND copia_di IS NOT NULL"),
+        n(
+            &c,
+            "SELECT COUNT(*) FROM tracks WHERE id = 1 AND copia_di IS NOT NULL"
+        ),
         1,
         "il punto di partenza: la copia di qui sta dietro quella del PC"
     );
@@ -717,7 +805,10 @@ fn rev2_08b_se_il_pc_toglie_il_brano_non_parte_una_lapide_per_la_playlist_degli_
         .elementi()
         .filter(|(_, e)| e.tolto.is_some())
         .count();
-    assert_eq!(tolte, 0, "una lapide per un brano che l'utente non ha toccato");
+    assert_eq!(
+        tolte, 0,
+        "una lapide per un brano che l'utente non ha toccato"
+    );
 }
 
 #[test]
@@ -748,11 +839,15 @@ fn rev2_09_la_voce_di_una_copia_che_se_ne_va_non_passa_a_una_riga_specchio_gia_s
     // Il PC non manda più niente: tutte in attesa (più di cinquanta e di un quinto).
     giro(&c, &chiave(PC), &[riga(1000)], ADESSO + 10_000);
     assert!(
-        n(&c, "SELECT COUNT(*) FROM lontano_brani WHERE sparito_ms IS NOT NULL") >= 60,
+        n(
+            &c,
+            "SELECT COUNT(*) FROM lontano_brani WHERE sparito_ms IS NOT NULL"
+        ) >= 60,
         "tutte in attesa"
     );
     // La voce sta sulla copia di qui, che poi se ne va (un file tolto, una scansione).
-    c.execute("UPDATE playlist_tracks SET track_id = 1", []).expect("voce su L");
+    c.execute("UPDATE playlist_tracks SET track_id = 1", [])
+        .expect("voce su L");
     crate::library::applica_rimozioni(
         &mut c,
         &[crate::library::RimozioneInAttesa {
@@ -780,9 +875,7 @@ fn misura_quanto_pesa_in_memoria_un_giro_di_un_pari_ostile_al_tetto() {
     // ha un tetto sotto `MAX_RIGHE_PER_DISPOSITIVO` (200.000); `riabbina` ne clona
     // anche le chiavi in un secondo vettore. Un pari che prima manda una riga e poi
     // duecentomila righe al tetto dei testi fa tenere tutto in RAM.
-    use crate::specchio::convalida::{
-        MAX_CHIAVE, MAX_CODEC, MAX_GENERE, MAX_ID_MB, MAX_NOME, MAX_RIGHE_PER_DISPOSITIVO,
-    };
+    use crate::specchio::convalida::{MAX_CHIAVE, MAX_CODEC, MAX_GENERE, MAX_ID_MB, MAX_NOME};
     let r = crate::library::condivisa::BranoCatalogo {
         title: "t".repeat(MAX_NOME),
         artist: "a".repeat(MAX_NOME),
@@ -815,9 +908,12 @@ fn misura_quanto_pesa_in_memoria_un_giro_di_un_pari_ostile_al_tetto() {
         + r.versione.len();
     let per_riga = heap + std::mem::size_of_val(&r);
     let chiavi_clonate = MAX_CHIAVE; // `riabbina` clona `content_key`/`track_key` in un `Vec<String>`
-    let totale = (per_riga + chiavi_clonate) * MAX_RIGHE_PER_DISPOSITIVO;
+    // Il tetto di `Giro::nuove` (`TETTO_RIABBINAMENTO`): le righe oltre entrano lo
+    // stesso in libreria, ma non si tengono in memoria per riabbinarle.
+    let totale = (per_riga + chiavi_clonate) * crate::specchio::archivio::TETTO_RIABBINAMENTO;
     eprintln!(
-        "MISURA riga al tetto: {per_riga} byte; {MAX_RIGHE_PER_DISPOSITIVO} righe in `Giro::nuove` + le chiavi clonate: {} MiB",
+        "MISURA riga al tetto: {per_riga} byte; {} righe in `Giro::nuove` (il tetto) + le chiavi clonate: {} MiB",
+        crate::specchio::archivio::TETTO_RIABBINAMENTO,
         totale / (1 << 20)
     );
 }
@@ -872,12 +968,21 @@ fn rev2_11_raggiungibili_senza_alias_ripiega_sulla_copia_di_qui_come_con_l_alias
     let origine = Origine::Raggiungibili(vec![portatile]);
     let con_alias = n(
         &c,
-        &format!("SELECT COUNT(*) FROM tracks t WHERE {}", origine.sql("t.").unwrap()),
+        &format!(
+            "SELECT COUNT(*) FROM tracks t WHERE {}",
+            origine.sql("t.").unwrap()
+        ),
     );
     let senza_alias = n(
         &c,
-        &format!("SELECT COUNT(*) FROM tracks WHERE {}", origine.sql("").unwrap()),
+        &format!(
+            "SELECT COUNT(*) FROM tracks WHERE {}",
+            origine.sql("").unwrap()
+        ),
     );
     assert_eq!(con_alias, 3, "la 1, la 2 (ripiego) e la 20");
-    assert_eq!(senza_alias, con_alias, "senza alias la copia di qui non torna");
+    assert_eq!(
+        senza_alias, con_alias,
+        "senza alias la copia di qui non torna"
+    );
 }

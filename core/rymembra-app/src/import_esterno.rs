@@ -533,13 +533,8 @@ pub(crate) fn seppellisci_le_tolte(
     playlist_id: i64,
     solo_specchio_di_prima: &[String],
 ) -> Result<(), AppError> {
-    crate::sincronia::seppellisci_le_voci_tolte(
-        tx,
-        playlist_id,
-        solo_specchio_di_prima,
-        now_ms(),
-    )
-    .map(|_| ())
+    crate::sincronia::seppellisci_le_voci_tolte(tx, playlist_id, solo_specchio_di_prima, now_ms())
+        .map(|_| ())
 }
 
 /// Come si chiama una fonte nel nome di una playlist messa accanto a un'altra:
@@ -1742,9 +1737,11 @@ mod prove {
             panic!("la playlist c'è");
         };
         let nome: String = db
-            .query_row("SELECT playlist_key FROM playlists WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT playlist_key FROM playlists WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .expect("la chiave");
         giro(&db, &chiave('a'), &[riga(5)], ADESSO);
         let remoto = id_specchio(&db, 'a', 5);

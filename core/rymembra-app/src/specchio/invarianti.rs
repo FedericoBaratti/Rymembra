@@ -296,7 +296,10 @@ mod prove {
         .expect("correzione");
         sincronia::allinea(&mut c, "telefono", 2_000).expect("allineamento");
         let (vive, tolte) = pubblicata(&c, "sera");
-        assert_eq!(tolte, 0, "nessuna lapide: la vecchia voce non è stata tolta");
+        assert_eq!(
+            tolte, 0,
+            "nessuna lapide: la vecchia voce non è stata tolta"
+        );
         assert!(
             vive.contains(&riga(1).track_key) && vive.contains(&"corretta|uno|album".to_owned()),
             "la vecchia voce resta viva e la nuova la affianca: {vive:?}"

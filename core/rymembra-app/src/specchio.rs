@@ -198,7 +198,14 @@ impl Origine {
     /// esadecimali.
     pub fn sql(&self, prefisso: &str) -> Result<String, AppError> {
         Ok(match self {
-            Self::Tutti => format!("{prefisso}copia_di IS NULL"),
+            // «Tutti»: le righe che nessuna copia migliore (o la grazia) nasconde. Come
+            // `NOT IN` dei nascosti e non `copia_di IS NULL`: i nascosti sono pochi, e
+            // l'indice parziale di `copia_di` li dà da solo, mentre il confronto
+            // riga per riga costringeva a leggere ogni riga di `tracks` anche dove
+            // l'indice d'ordine da solo bastava (id_dei_brani: tre volte più lento).
+            Self::Tutti => {
+                format!("{prefisso}id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)")
+            }
             Self::Locale => di_questa_macchina(prefisso),
             Self::Dispositivo(chiave) => del_dispositivo(chiave, prefisso)?,
             Self::Raggiungibili(chiavi) => {
@@ -207,7 +214,11 @@ impl Origine {
                 // (`list_artists`, `albums_by_artist`) il ripiego sulla copia di
                 // qui non scattava mai. Con la tabella per nome la riga di fuori
                 // si nomina lo stesso: le sottoquery danno alle loro un alias.
-                let fuori = if prefisso.is_empty() { "tracks." } else { prefisso };
+                let fuori = if prefisso.is_empty() {
+                    "tracks."
+                } else {
+                    prefisso
+                };
                 let sue = chiavi
                     .iter()
                     .map(|chiave| del_dispositivo(chiave, prefisso))
@@ -320,8 +331,10 @@ mod prove {
     #[test]
     fn l_intervallo_di_prefisso_prende_le_righe_specchio_e_nient_altro() {
         let c = rusqlite::Connection::open_in_memory().unwrap();
-        c.execute_batch("CREATE TABLE tracks (id INTEGER PRIMARY KEY, path TEXT, copia_di INTEGER)")
-            .unwrap();
+        c.execute_batch(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY, path TEXT, copia_di INTEGER)",
+        )
+        .unwrap();
         let k = chiave('c');
         for (id, p) in [
             (1, "C:/Musica/a.flac".to_owned()),
@@ -452,8 +465,14 @@ mod prove {
                 "{storta}"
             );
         }
-        assert_eq!(Origine::Tutti.sql("t.").unwrap(), "t.copia_di IS NULL");
-        assert_eq!(Origine::Tutti.sql("").unwrap(), "copia_di IS NULL");
+        assert_eq!(
+            Origine::Tutti.sql("t.").unwrap(),
+            "t.id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)"
+        );
+        assert_eq!(
+            Origine::Tutti.sql("").unwrap(),
+            "id NOT IN (SELECT id FROM tracks WHERE copia_di IS NOT NULL)"
+        );
     }
 
     #[test]

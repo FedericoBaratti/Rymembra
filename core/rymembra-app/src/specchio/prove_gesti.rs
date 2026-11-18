@@ -86,7 +86,11 @@ fn togliere_dalla_playlist_un_brano_solo_remoto_si_propaga_al_pc() {
     playlists::remove_at(&mut tel, sera, 1, m2).expect("tolto");
     assert_eq!(in_playlist(&tel, "sera"), vec![k(1), k(3)]);
     let (vive, tolte) = pubblicata(&tel, "sera");
-    assert_eq!((vive, tolte), (vec![k(1), k(3)], 1), "una lapide sola, la sua");
+    assert_eq!(
+        (vive, tolte),
+        (vec![k(1), k(3)], 1),
+        "una lapide sola, la sua"
+    );
 
     // E il giro dopo non lo riaggancia, né lo ricorda in nessun altro modo.
     sincronia::allinea(&mut tel, "telefono", 2_000).expect("allineamento");
@@ -276,8 +280,8 @@ fn dimenticare_un_dispositivo_non_lascia_lapidi_neanche_con_una_copia_di_qui() {
     let (m1, m2) = (id_specchio(&c, PC, 1), id_specchio(&c, PC, 2));
     playlist_con(&c, "sera", &[m1, m2]);
     sincronia::allinea(&mut c, "telefono", 1_000).expect("allineamento");
-    let (rimappate, tolte) = specchio::archivio::dimentica_dispositivo(&c, &chiave(PC))
-        .expect("dimenticato");
+    let (rimappate, tolte) =
+        specchio::archivio::dimentica_dispositivo(&c, &chiave(PC)).expect("dimenticato");
     assert_eq!((rimappate, tolte), (1, 2));
     sincronia::allinea(&mut c, "telefono", 2_000).expect("allineamento");
     // La voce del brano 1 è passata alla copia di qui; quella del brano 2 non
@@ -376,7 +380,9 @@ fn una_riga_in_grazia_non_si_suona_e_non_si_conta_da_nessuna_parte() {
 
     // Resta in libreria — è lì per la sua voce di playlist — ma non in nessun elenco.
     let nei_tracks: i64 = c
-        .query_row("SELECT COUNT(*) FROM tracks WHERE id = ?1", [m3], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM tracks WHERE id = ?1", [m3], |r| {
+            r.get(0)
+        })
         .expect("conteggio");
     assert_eq!(nei_tracks, 1, "la riga c'è ancora");
 
@@ -413,14 +419,15 @@ fn una_riga_in_grazia_non_si_suona_e_non_si_conta_da_nessuna_parte() {
         3
     );
     // Gli album: quello della riga in grazia è lo stesso dei suoi vicini, e resta.
-    assert!(!list_albums(&c, &Origine::Tutti, 0, 50).expect("album").is_empty());
+    assert!(
+        !list_albums(&c, &Origine::Tutti, 0, 50)
+            .expect("album")
+            .is_empty()
+    );
     // Le playlist intelligenti guardano «Tutti» e non la trovano.
-    let intelligenti = crate::smart::brani(
-        &c,
-        &rymembra_domain::regole::Insieme::default(),
-        ADESSO,
-    )
-    .expect("playlist intelligente");
+    let intelligenti =
+        crate::smart::brani(&c, &rymembra_domain::regole::Insieme::default(), ADESSO)
+            .expect("playlist intelligente");
     assert!(
         !intelligenti.iter().any(|t| t.title == titolo_della_riga),
         "{:?}",
@@ -439,7 +446,9 @@ fn una_riga_in_grazia_ritorna_visibile_quando_il_proprietario_la_rimanda() {
         .tracks;
     assert_eq!(visibili, 5, "il brano di qui e le quattro del PC");
     let copia: Option<i64> = c
-        .query_row("SELECT copia_di FROM tracks WHERE id = ?1", [m3], |r| r.get(0))
+        .query_row("SELECT copia_di FROM tracks WHERE id = ?1", [m3], |r| {
+            r.get(0)
+        })
         .expect("copia_di");
     assert_eq!(copia, None);
 }
@@ -461,11 +470,20 @@ fn una_copia_che_arriva_durante_la_grazia_riceve_le_voci_alla_scadenza() {
     sincronia::allinea(&mut c, "telefono", 1_000).expect("allineamento");
     let senza: Vec<_> = tutte.iter().filter(|r| r.id != 3).cloned().collect();
     giro(&c, &chiave(PC), &senza, ADESSO + 10_000);
-    assert_eq!(in_playlist(&c, "sera"), vec![k(3)], "la voce aspetta, nessuna alternativa");
+    assert_eq!(
+        in_playlist(&c, "sera"),
+        vec![k(3)],
+        "la voce aspetta, nessuna alternativa"
+    );
 
     // Il file arriva.
     locale(&c, 900, 3);
-    let chiusura = giro(&c, &chiave(PC), &senza, ADESSO + 10_000 + specchio::archivio::GRAZIA_MS + 1_000);
+    let chiusura = giro(
+        &c,
+        &chiave(PC),
+        &senza,
+        ADESSO + 10_000 + specchio::archivio::GRAZIA_MS + 1_000,
+    );
     assert_eq!(chiusura.tolte, 1, "{chiusura:?}");
     assert_eq!(in_playlist(&c, "sera"), vec![k(3)], "la voce ha una riga");
     let su: i64 = c
@@ -482,12 +500,15 @@ fn le_righe_scadute_si_tolgono_anche_se_il_catalogo_non_e_cambiato() {
     // può dipendere da lui. `togli_un_blocco` la fa da sola.
     let (c, m3, quando) = telefono_con_una_riga_in_grazia();
     let adesso = quando + specchio::archivio::GRAZIA_MS + 1_000;
-    let presto = specchio::archivio::togli_un_blocco(&c, &chiave(PC), quando + 1_000).expect("blocco");
+    let presto =
+        specchio::archivio::togli_un_blocco(&c, &chiave(PC), quando + 1_000).expect("blocco");
     assert_eq!((presto.tolte, presto.in_grazia), (0, 1), "ancora in grazia");
     let blocco = specchio::archivio::togli_un_blocco(&c, &chiave(PC), adesso).expect("blocco");
     assert_eq!((blocco.tolte, blocco.restano), (1, 0), "{blocco:?}");
     let ancora: i64 = c
-        .query_row("SELECT COUNT(*) FROM tracks WHERE id = ?1", [m3], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM tracks WHERE id = ?1", [m3], |r| {
+            r.get(0)
+        })
         .expect("conteggio");
     assert_eq!(ancora, 0);
 }
@@ -510,7 +531,10 @@ fn le_rimozioni_si_fanno_a_blocchi_e_una_strage_aspetta_la_conferma() {
     assert_eq!((secondo.tolte, secondo.restano), (20, 5), "{secondo:?}");
     let terzo = togli_un_blocco_di(&c, &chiave(PC), dopo, 20).expect("blocco");
     assert_eq!((terzo.tolte, terzo.restano), (5, 0), "{terzo:?}");
-    assert!(BLOCCO_RIMOZIONI >= 1_000, "il blocco vero è di migliaia di righe");
+    assert!(
+        BLOCCO_RIMOZIONI >= 1_000,
+        "il blocco vero è di migliaia di righe"
+    );
 
     // Una strage — più di cinquanta righe e più di un quinto — non si toglie,
     // nemmeno scaduta: aspetta la conferma, e la conferma è a blocchi.
@@ -520,8 +544,13 @@ fn le_rimozioni_si_fanno_a_blocchi_e_una_strage_aspetta_la_conferma() {
     giro(&d, &chiave(PC), &[riga(200)], ADESSO + 10_000);
     let blocco = togli_un_blocco_di(&d, &chiave(PC), dopo, 20).expect("blocco");
     assert_eq!((blocco.tolte, blocco.in_attesa), (0, 199), "{blocco:?}");
-    let conferma = specchio::archivio::conferma_un_blocco_di(&d, &chiave(PC), 100).expect("conferma");
-    assert_eq!((conferma.tolte, conferma.restano), (100, 99), "{conferma:?}");
+    let conferma =
+        specchio::archivio::conferma_un_blocco_di(&d, &chiave(PC), 100).expect("conferma");
+    assert_eq!(
+        (conferma.tolte, conferma.restano),
+        (100, 99),
+        "{conferma:?}"
+    );
     assert_eq!(
         specchio::archivio::conferma_rimozioni(&d, &chiave(PC)).expect("conferma"),
         99
@@ -567,7 +596,10 @@ fn un_dispositivo_dimenticato_non_riceve_nemmeno_la_chiusura_di_un_giro_in_volo(
     crate::dispositivi::dimentica(&c, &pc).expect("dimentica");
     specchio::archivio::dimentica_dispositivo(&c, &pc).expect("specchio dimenticato");
     let esito = in_volo.chiudi(&c, &[], true, 1, ADESSO + 5_000);
-    assert!(esito.is_err(), "la chiusura non riscrive lo stato del catalogo");
+    assert!(
+        esito.is_err(),
+        "la chiusura non riscrive lo stato del catalogo"
+    );
     let cataloghi: i64 = c
         .query_row("SELECT COUNT(*) FROM lontano_cataloghi", [], |r| r.get(0))
         .expect("conteggio");
@@ -595,10 +627,123 @@ fn dimenticare_cerca_la_copia_per_track_key_e_poi_per_content_key() {
     let m7 = id_specchio(&c, PC, 7);
     playlist_con(&c, "sera", &[m7]);
     let anteprima = specchio::archivio::anteprima_dimentica(&c, &chiave(PC)).expect("anteprima");
-    assert_eq!((anteprima.voci, anteprima.rimappabili, anteprima.perse), (1, 1, 0));
+    assert_eq!(
+        (anteprima.voci, anteprima.rimappabili, anteprima.perse),
+        (1, 1, 0)
+    );
     specchio::archivio::dimentica_dispositivo(&c, &chiave(PC)).expect("dimenticato");
     let su: i64 = c
         .query_row("SELECT track_id FROM playlist_tracks", [], |r| r.get(0))
         .expect("la voce");
     assert_eq!(su, 900, "sulla copia di qui");
+}
+
+#[test]
+fn i_numeri_di_tutti_con_righe_nascoste_sono_quelli_del_filtro_riga_per_riga() {
+    // «Tutti» con righe nascoste conta come totali meno nascosti, e gli album
+    // tutti nascosti si cercano dalle sole righe nascoste: stesse risposte del
+    // filtro `copia_di IS NULL` riga per riga, che è la definizione.
+    use crate::library::{counts, list_albums};
+    use crate::specchio::Origine;
+    let c = libreria();
+    // Cinque brani di qui, tre dei quali (1, 2, 3) hanno anche una copia migliore
+    // sul PC: nascosti, e con loro tutto l'album «Album 9» di cui sono l'unica
+    // presenza; più una riga del PC in grazia.
+    for numero in 1..=5 {
+        locale(&c, numero, numero);
+        c.execute(
+            "UPDATE tracks SET codec = 'mp3', bitrate = 128, sample_rate = 44100,
+                               album = ?2, album_key = ?3, liked = ?4, duration_ms = 1000 * ?1
+              WHERE id = ?1",
+            rusqlite::params![
+                numero,
+                if numero <= 3 { "Album 9" } else { "Altro" },
+                if numero <= 3 {
+                    "chiave-nove"
+                } else {
+                    "chiave-altro"
+                },
+                i64::from(numero % 2),
+            ],
+        )
+        .expect("brano di qui");
+    }
+    let mut dal_pc: Vec<_> = (1..=3)
+        .map(|numero| {
+            let mut r = riga(numero);
+            r.codec = Some("flac".to_owned());
+            r.estensione = "flac".to_owned();
+            r.sample_rate = Some(96_000);
+            r.bitrate = Some(900);
+            r.dimensione = 24_000_000;
+            r.album = "Album 9".to_owned();
+            r
+        })
+        .collect();
+    dal_pc.extend((20..=22).map(riga));
+    giro(&c, &chiave(PC), &dal_pc, ADESSO);
+    let senza: Vec<_> = dal_pc.iter().filter(|r| r.id != 22).cloned().collect();
+    giro(&c, &chiave(PC), &senza, ADESSO + 10_000);
+
+    let nascoste: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM tracks WHERE copia_di IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .expect("nascoste");
+    assert!(
+        nascoste >= 4,
+        "tre copie dietro la flac e una in grazia: {nascoste}"
+    );
+
+    let diretto = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).expect(sql) };
+    let numeri = counts(&c, &Origine::Tutti).expect("conteggi");
+    assert_eq!(
+        numeri.tracks,
+        diretto("SELECT COUNT(*) FROM tracks WHERE copia_di IS NULL")
+    );
+    assert_eq!(
+        numeri.liked,
+        diretto("SELECT COUNT(*) FROM tracks WHERE copia_di IS NULL AND liked = 1")
+    );
+    assert_eq!(
+        numeri.duration_ms,
+        diretto("SELECT COALESCE(SUM(duration_ms), 0) FROM tracks WHERE copia_di IS NULL")
+    );
+    assert_eq!(
+        numeri.albums,
+        diretto(
+            "SELECT COUNT(*) FROM albums a WHERE EXISTS
+               (SELECT 1 FROM tracks t WHERE t.album_key = a.album_key AND t.copia_di IS NULL)"
+        )
+    );
+    assert_eq!(
+        numeri.artists,
+        diretto(
+            "SELECT COUNT(DISTINCT TRIM(COALESCE(NULLIF(TRIM(album_artist), ''), artist)))
+               FROM tracks WHERE copia_di IS NULL"
+        )
+    );
+    let chiavi_visibili: Vec<String> = list_albums(&c, &Origine::Tutti, 0, 100)
+        .expect("album")
+        .into_iter()
+        .map(|a| a.album_key)
+        .collect();
+    let mut direttamente: Vec<String> = {
+        let mut st = c
+            .prepare(
+                "SELECT a.album_key FROM albums a WHERE EXISTS
+                   (SELECT 1 FROM tracks t WHERE t.album_key = a.album_key AND t.copia_di IS NULL)",
+            )
+            .expect("album");
+        st.query_map([], |r| r.get(0))
+            .expect("album")
+            .map(|r| r.expect("riga"))
+            .collect()
+    };
+    let mut trovati = chiavi_visibili;
+    trovati.sort();
+    direttamente.sort();
+    assert_eq!(trovati, direttamente);
 }
