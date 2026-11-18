@@ -141,8 +141,11 @@ test("i passi si leggono dal registro per versione", () => {
   assert.deepEqual(passiDi(registro("3.3.0", 2)), { "3.3.0": 2 });
 });
 
-test("il repository com'è: la versione di oggi ha novità scritte bene", () => {
+test("il repository com'è: le novità che ci sono sono scritte bene", () => {
   const { problemi, avvisi } = controlla(REPO);
   assert.deepEqual(problemi, []);
-  assert.deepEqual(avvisi, []);
+  // Una versione senza novità è un avviso e non un errore (una correttiva non ne
+  // ha): qui può esserci, ma non un avviso di un altro genere. Dopo un
+  // `version:set` la prova non deve diventare rossa.
+  for (const avviso of avvisi) assert.match(avviso, /non ha novità/);
 });

@@ -50,9 +50,9 @@ object Installatore {
    * ripete questo controllo: costa poco, e il file ha aspettato nella cache).
    * Vedi `sistema::controlla_apk` in Rust.
    */
-  fun controlla(attivita: MainActivity, percorso: String): String {
+  fun controlla(contesto: Context, percorso: String): String {
     soloFuoriDalPlay()
-    return if (verifica(attivita, apk(attivita, percorso))) "buono" else "altraChiave"
+    return if (verifica(contesto, apk(contesto, percorso))) "buono" else "altraChiave"
   }
 
   /**
@@ -124,8 +124,8 @@ object Installatore {
    * Il file da installare: un APK della cartella degli aggiornamenti, e nessun
    * altro. È anche il solo file che [verifica] può cancellare.
    */
-  private fun apk(attivita: MainActivity, percorso: String): File {
-    val cartella = File(attivita.cacheDir, CARTELLA).canonicalFile
+  private fun apk(contesto: Context, percorso: String): File {
+    val cartella = File(contesto.cacheDir, CARTELLA).canonicalFile
     val file = File(percorso).canonicalFile
     check(file.parentFile == cartella) { "l'APK non sta nella cartella degli aggiornamenti: $percorso" }
     check(file.isFile) { "l'APK non c'è: $percorso" }
@@ -141,17 +141,17 @@ object Installatore {
    * distingue (vedi [installa]). Gli altri rifiuti — un archivio illeggibile,
    * un altro pacchetto — sono un'eccezione, e arrivano a Rust come errore.
    */
-  private fun verifica(attivita: MainActivity, file: File): Boolean {
+  private fun verifica(contesto: Context, file: File): Boolean {
     fun rifiuta(perche: String): Nothing {
       file.delete()
       throw SecurityException("l'aggiornamento scaricato non è questa Rymembra: $perche")
     }
-    val pm = attivita.packageManager
+    val pm = contesto.packageManager
     val archivio = leggi(pm, file.path) ?: rifiuta("l'APK non si legge")
-    if (archivio.packageName != attivita.packageName) {
+    if (archivio.packageName != contesto.packageName) {
       rifiuta("è il pacchetto ${archivio.packageName}")
     }
-    if (!stessaFirma(archivio, installata(pm, attivita.packageName))) {
+    if (!stessaFirma(archivio, installata(pm, contesto.packageName))) {
       file.delete()
       return false
     }

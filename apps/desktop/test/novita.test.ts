@@ -15,15 +15,20 @@ const en = JSON.parse(leggi("../src/lingue/en.json")) as Record<string, string>;
 const pacchetto = JSON.parse(leggi("../package.json")) as { version: string };
 const app = leggi("../src/App.tsx");
 
-test("la versione di oggi ha le sue novità, da due a quattro passi", () => {
-  const { novitaDi, VERSIONI_CON_NOVITA } = modulo;
-  assert.ok(
-    VERSIONI_CON_NOVITA.includes(pacchetto.version),
-    `la versione di package.json (${pacchetto.version}) non ha novità: a «version:set» la chiave va spostata`,
-  );
-  const passi = novitaDi(pacchetto.version);
-  assert.ok(passi !== null, "novitaDi non trova la versione di oggi");
-  assert.ok(passi.length >= 2 && passi.length <= 4, `${passi.length} passi: ne servono da 2 a 4`);
+test("ogni versione che ha novità ne ha da due a quattro passi", () => {
+  // La versione di `package.json` **non** è obbligata ad averne: una versione
+  // correttiva non ha novità, la finestra non compare e non è un errore (§11.3.1).
+  // Che la versione che si rilascia ne abbia, o la dimentichi, lo dice
+  // `strumenti/novita.js` con un avviso: qui una versione senza novità non rompe
+  // niente, o il primo `version:set` di una correttiva farebbe diventare rossa la CI.
+  const { novitaDi, VERSIONI_CON_NOVITA, NOVITA } = modulo;
+  assert.ok(VERSIONI_CON_NOVITA.length > 0, "il registro non ha nessuna versione");
+  for (const versione of VERSIONI_CON_NOVITA) {
+    const passi = novitaDi(versione);
+    assert.ok(passi !== null, `novitaDi non trova la ${versione}`);
+    assert.ok(passi.length >= 2 && passi.length <= 4, `la ${versione} ha ${passi.length} passi: ne servono da 2 a 4`);
+  }
+  assert.deepEqual(Object.keys(NOVITA), [...VERSIONI_CON_NOVITA]);
 });
 
 test("una versione senza novità non ne ha, e non è un errore", () => {

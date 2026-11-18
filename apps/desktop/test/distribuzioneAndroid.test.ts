@@ -82,6 +82,14 @@ test("Kotlin dice la distribuzione a Rust, e l'installatore non parte sul Play",
   }
 });
 
+test("«Verifico» vuole il contesto e non l'attività: il download può finire con l'app in secondo piano", () => {
+  // Chi ha toccato «Aggiorna» può essere in un'altra app, col servizio che tiene
+  // vivo il processo e nessuna attività: solo «Installa» ne ha bisogno.
+  assert.match(kotlin("Ponte.kt"), /"sistema\.controllaApk" -> Installatore\.controlla\(contesto\(\)/);
+  assert.match(kotlin("Installatore.kt"), /fun controlla\(contesto: Context, percorso: String\)/);
+  assert.match(kotlin("Installatore.kt"), /fun installa\(attivita: MainActivity, percorso: String\)/);
+});
+
 test("Rust spegne l'aggiornatore del telefono sul Play: il controllo, il comando e lo stato", () => {
   const sistema = leggi("../rymembra-android/src/sistema.rs");
   assert.ok(sistema.includes('chiama("sistema.distribuzione", &())'));

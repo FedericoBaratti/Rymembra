@@ -178,7 +178,10 @@ object Ponte {
       "sistema.condividi" ->
         Condividi.file(attivita(), a.getString("percorso"), a.getString("tipo"), a.getString("titolo")).let { null }
       "sistema.distribuzione" -> BuildConfig.DISTRIBUZIONE
-      "sistema.controllaApk" -> Installatore.controlla(attivita(), a.getString("percorso"))
+      // Il contesto e non l'attività: «Verifico» finisce quando il download finisce,
+      // e chi ha toccato «Aggiorna» può già essere in un'altra app, col servizio che
+      // tiene vivo il processo e nessuna attività. Solo «Installa» ne ha bisogno.
+      "sistema.controllaApk" -> Installatore.controlla(contesto(), a.getString("percorso"))
       "sistema.installaApk" -> Installatore.installa(attivita(), a.getString("percorso"))
       "sistema.firmatari" -> Installatore.firmatari(contesto())
       "sistema.apriIndirizzo" -> Browser.apri(attivita(), a.getString("indirizzo")).let { null }
