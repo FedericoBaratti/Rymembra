@@ -94,7 +94,20 @@ test("la chiave dice di quale elenco è la selezione", () => {
   assert.equal(chiaveDellaSelezione({ tipo: "ricerca" }, null, "titolo", "sub"), "ricerca:sub");
   assert.equal(chiaveDellaSelezione({ tipo: "playlist", playlist }, null, "titolo", ""), "playlist:3:17");
   assert.equal(chiaveDellaSelezione({ tipo: "album", album }, null, "titolo", ""), "album:a|b");
-  assert.equal(chiaveDellaSelezione({ tipo: "artista", artista }, null, "titolo", ""), "artista:Nina");
+  // La pagina di un artista ha i suoi brani da scegliere: la chiave porta quel
+  // che App passa come ordine — l'ordinamento e il filtro per dispositivo —,
+  // perché le posizioni ricordate sono di quell'elenco e di nessun altro.
+  assert.equal(chiaveDellaSelezione({ tipo: "artista", artista }, null, "titolo:tutti", ""), "artista:Nina:titolo:tutti");
+  assert.notEqual(
+    chiaveDellaSelezione({ tipo: "artista", artista }, null, "anno:tutti", ""),
+    chiaveDellaSelezione({ tipo: "artista", artista }, null, "titolo:tutti", ""),
+    "un altro ordinamento è un'altra selezione",
+  );
+  assert.notEqual(
+    chiaveDellaSelezione({ tipo: "artista", artista }, null, "anno:locale", ""),
+    chiaveDellaSelezione({ tipo: "artista", artista }, null, "anno:tutti", ""),
+    "un altro filtro è un'altra selezione",
+  );
   assert.equal(chiaveDellaSelezione({ tipo: "libreria", vista: "cartelle" }, null, "titolo", ""), "cartelle");
   assert.equal(chiaveDellaSelezione({ tipo: "home" }, null, "titolo", ""), "home");
 });

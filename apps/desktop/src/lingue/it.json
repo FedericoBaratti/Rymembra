@@ -3825,5 +3825,22 @@
   "player.seeking.failed": "Il salto non è arrivato",
   "player.seeking.failed.title": "Dopo un minuto il punto chiesto non è ancora stato raggiunto: il catalogo non sta consegnando i byte in mezzo. Riprova, o riparti dall’inizio del brano.",
   "player.seeking.stream": "Su un brano in streaming spostarsi può richiedere qualche secondo: i byte in mezzo vanno chiesti al catalogo.",
-  "track.openPage": "Pagina del brano"
+  "track.openPage": "Pagina del brano",
+  "artist.open.aria": "{artista}, pagina dell'artista",
+  "artist.openOther.aria": "{artista}, apre la pagina di {pagina}",
+  "artist.none": "Questo brano non ha un artista da aprire.",
+  "artist.tracks.title": "Brani",
+  "artist.tracks.sort.aria": "Ordina i brani di {nome}",
+  "artist.sort.album": "Per album",
+  "artist.sort.year": "Per anno",
+  "artist.sort.title": "Per titolo",
+  "artist.sort.played": "Più ascoltati",
+  "artist.appears.title": "Compare anche in",
+  "artist.appears.sub": "Brani con il suo nome in un disco di altri, come le raccolte.",
+  "artist.maybe.title": "Forse compare anche in",
+  "artist.maybe.sub": "Il suo nome compare fra i crediti di questi brani, per esempio dopo la parola feat. Rymembra non divide i nomi: è una ricerca, e può sbagliare.",
+  "artist.empty.filter": "Con questo filtro non c'è niente di questo artista. Cambialo per vedere il resto.",
+  "artist.play.aria": "Riproduci i brani di {nome}",
+  "artist.shuffle.aria": "Riproduci i brani di {nome} in ordine casuale",
+  "artist.download.aria": "Scarica qui i brani di {nome} che stanno su altri dispositivi"
 }

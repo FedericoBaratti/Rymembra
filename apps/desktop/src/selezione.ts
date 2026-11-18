@@ -107,7 +107,10 @@ export function chiaveDellaSelezione(
     case "album":
       return `album:${pagina.album.albumKey}`;
     case "artista":
-      return `artista:${pagina.artista.name}`;
+      // Con `ordine` — qui l'ordinamento dei suoi brani e il filtro per
+      // dispositivo, messi insieme da chi chiama — come i Brani: le posizioni
+      // ricordate sono di quell'elenco.
+      return `artista:${pagina.artista.name}:${ordine}`;
     case "libreria":
       return pagina.vista;
     default:

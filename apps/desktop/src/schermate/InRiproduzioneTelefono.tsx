@@ -66,13 +66,14 @@ import { Copertina, Sfocata } from "../Copertina";
 import { RigheCoda, useRigheCoda } from "../Coda";
 import { useDito } from "../dito";
 import { dopoLaTransizione } from "../foglio";
-import { nomeArtista, titoloAlbum } from "../formato";
+import { titoloAlbum } from "../formato";
 import { elastico, esitoStrisciata, esitoTrascinamento } from "../gesti";
 import { useSuIndietro } from "../indietro";
 import { branoDaMostrare, gestoPermesso, idDiLibreria } from "../insieme";
 import { ipc, type Brano, type StatoRiproduzione } from "../ipc";
 import { t } from "../lingue";
 import { Attribuzione } from "../parti/Attribuzione";
+import { NomeArtista } from "../parti/NomeArtista";
 import { Icona } from "../parti/Icone";
 import { Scrubber } from "../parti/Scrubber";
 import { Testo } from "../parti/Testo";
@@ -269,6 +270,7 @@ export function InRiproduzioneTelefono({
   onVoto,
   onMenu,
   onMenuCoda,
+  onArtista,
   onErrore,
   avvisi,
 }: {
@@ -281,6 +283,8 @@ export function InRiproduzioneTelefono({
   onMenu: (e: React.MouseEvent, brano: Brano) => void;
   /** Il menu di una riga della coda: vedi `onMenu` in `RigheCoda`. */
   onMenuCoda: (e: React.MouseEvent, indice: number, brano: Brano) => void;
+  /** Il nome dell'artista apre la sua pagina; Indietro torna qui. */
+  onArtista: (brano: Brano) => void;
   onErrore: (e: unknown) => void;
   /** Le notizie da mostrare sopra il foglio: vedi `InRiproduzione`. */
   avvisi: ReactNode;
@@ -432,7 +436,7 @@ export function InRiproduzioneTelefono({
             {brano.title}
           </h1>
           <p className="artista-np" dir="auto">
-            {nomeArtista(brano.artist)}
+            <NomeArtista brano={brano} onApri={onArtista} />
           </p>
           <Attribuzione brano={brano} onErrore={onErrore} />
         </div>

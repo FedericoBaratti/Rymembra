@@ -46,12 +46,24 @@ test("una riga di qui non iscrive niente al pannello (R13-11)", () => {
 
 test("un tocco su una riga grigia dice chi non risponde, e non è un errore", () => {
   const app = sorgente("App.tsx");
-  // La notizia, non la fascia rossa.
+  // Un avviso neutro: né la fascia rossa dell'errore né la notizia, che porta la
+  // spunta del successo — un tocco che non ha suonato niente non è riuscito.
   const da = app.indexOf("const avvisaNonRaggiungibile = useCallback(");
   assert.ok(da >= 0, "manca avvisaNonRaggiungibile");
-  const corpo = app.slice(da, app.indexOf("[setNotizia],", da));
-  assert.match(corpo, /setNotizia\(/);
-  assert.doesNotMatch(corpo, /segnalaErrore/);
+  const corpo = app.slice(da, app.indexOf("[setAvviso],", da));
+  assert.match(corpo, /setAvviso\(/);
+  assert.doesNotMatch(corpo, /segnalaErrore|setNotizia/);
+  // L'icona è quella del dispositivo, non la spunta.
+  assert.match(corpo, /icona: riga\?\.telefono === true \? "i-telefono" : "i-computer"/);
+  assert.doesNotMatch(corpo, /i-check/);
+  // L'avviso ha la sua forma nella fascia, senza spunta e con l'icona di chi avvisa.
+  const fascia = sorgente("parti/Fascia.tsx");
+  const neutro = fascia.slice(fascia.indexOf("{avviso != null && ("), fascia.indexOf("{messaggio && ("));
+  assert.match(neutro, /data-tono="neutro"/);
+  assert.match(neutro, /<Icona nome=\{avviso\.icona\}/);
+  assert.doesNotMatch(neutro, /i-check/);
+  // E lo dice anche a chi ascolta lo schermo.
+  assert.match(app, /<Annuncio testo=\{avviso\?\.testo \?\? null\} \/>/);
   // Riproduci e il tocco passano dallo stesso posto.
   assert.match(app, /statoDellaRiga\(toccata\.path, pannello\)/);
   assert.match(app, /suonabili\(elenco, indice, pannello\)/);

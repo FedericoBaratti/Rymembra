@@ -3825,5 +3825,22 @@
   "player.seeking.failed": "The jump never landed",
   "player.seeking.failed.title": "After a minute the requested point has still not been reached: the catalog is not delivering the bytes in between. Try again, or start the track over.",
   "player.seeking.stream": "On a streaming track, moving around can take a few seconds: the bytes in between have to be asked for.",
-  "track.openPage": "Track page"
+  "track.openPage": "Track page",
+  "artist.open.aria": "{artista}, artist page",
+  "artist.openOther.aria": "{artista}, opens the page of {pagina}",
+  "artist.none": "This track has no artist to open.",
+  "artist.tracks.title": "Tracks",
+  "artist.tracks.sort.aria": "Sort the tracks of {nome}",
+  "artist.sort.album": "By album",
+  "artist.sort.year": "By year",
+  "artist.sort.title": "By title",
+  "artist.sort.played": "Most played",
+  "artist.appears.title": "Also appears on",
+  "artist.appears.sub": "Tracks with their name on someone else’s album, like compilations.",
+  "artist.maybe.title": "May also appear on",
+  "artist.maybe.sub": "Their name shows up in the credits of these tracks, for example after the word feat. Rymembra doesn’t split names: this is a search, and it can be wrong.",
+  "artist.empty.filter": "Nothing by this artist shows with this filter. Change it to see the rest.",
+  "artist.play.aria": "Play the tracks of {nome}",
+  "artist.shuffle.aria": "Shuffle the tracks of {nome}",
+  "artist.download.aria": "Download here the tracks of {nome} that are on other devices"
 }
