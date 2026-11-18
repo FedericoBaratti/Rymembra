@@ -76,7 +76,17 @@ Poi si apre Rymembra dal menu Start e si controlla:
   proposta di copiare quella libreria compare una volta sola, la copia riesce
   e la cartella della copia NSIS resta com'era;
 - Esplora, backup su Drive e scrobbling si collegano (i segreti vanno nel
-  portachiavi di Windows, che il pacchetto non isola).
+  portachiavi di Windows, che il pacchetto non isola);
+- Impostazioni → Avvio e chiusura → «Avvia Rymembra con Windows» si accende, e
+  Rymembra compare in Gestione attività → Avvio col nome «Rymembra»; spento da
+  lì, l'interruttore lo dice e non si lascia accendere (Windows non lo permette
+  da fuori); riacceso da lì, torna toccabile alla riapertura delle Impostazioni.
+  Al login successivo la finestra compare ridotta a icona nella barra, una volta
+  sola, e il vassoio c'è;
+- il protocollo `rymembra:` — da «Esegui» (`Win+R`) o da un link in una pagina,
+  `rymembra://collega/…` — apre Rymembra e mostra la finestrella di conferma del
+  collegamento; con Rymembra già aperta (anche chiusa nel vassoio) la porta
+  davanti, senza una seconda copia.
 
 Si toglie con:
 
@@ -94,6 +104,17 @@ Partner Center → l'app MSIX → *Start your submission* → **Packages** → c
 `.msix`. La capacità `runFullTrust` va giustificata: Rymembra è un programma
 Win32 che legge e scrive nelle cartelle di musica dell'utente, usa il
 dispositivo audio e il portachiavi di Windows.
+
+Il manifesto dichiara anche due estensioni — l'attività di avvio
+(`windows.startupTask`, `TaskId` `RymembraAvvio`, spenta di serie) e il protocollo
+`rymembra:` (`windows.protocol`, con i parametri `"%1"`, ammessi solo per i
+programmi a piena fiducia) — e `msix.js` si ferma se mancano o se il `TaskId`
+non è quello che il codice cerca (`ID_ATTIVITA_STORE` in
+`rymembra-barra/src/avvio.rs`). Lo schema dell'attività non ha un attributo per
+gli argomenti: il programma riconosce di essere partito dal login con
+l'attivazione del pacchetto, non da una riga di comando. Nelle note per la
+certificazione conviene dire che il programma parte al login solo se l'utente
+lo accende.
 
 Ogni invio deve avere una versione **più alta** dell'ultimo, con la quarta cifra
 a zero (`3.0.3.0`). La versione viene da `tauri.conf.json`, cioè da

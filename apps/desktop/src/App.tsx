@@ -152,6 +152,7 @@ import { notaDelPermesso, useAccessoTelefono } from "./parti/AccessoTelefono";
 import { AvvisoCoda } from "./parti/AvvisoCoda";
 import { AvvisoDatabase } from "./parti/Avvisi";
 import { LibreriaDiPrima } from "./parti/LibreriaDiPrima";
+import { PropostaSottofondo } from "./parti/PropostaSottofondo";
 import { AvvisoConti } from "./parti/AvvisoConti";
 import { Fascia } from "./parti/Fascia";
 import { Icona } from "./parti/Icone";
@@ -539,6 +540,16 @@ export function App() {
   const [giroDaFare, setGiroDaFare] = useState(false);
   /** Il giro guidato è aperto adesso. */
   const [giroAperto, setGiroAperto] = useStatoPresente(false);
+  /**
+   * La proposta «parti con Windows e resta nel vassoio» può comparire adesso.
+   *
+   * Mai durante `Primo`, né durante il giro — né quando il giro sta per
+   * partire: chi comincia ha altro da guardare. **È il solo posto** in cui si
+   * decide quando aspettare: la finestra delle Novità (§11 della guida) vi
+   * aggiungerà «e la finestra è chiusa», perché la proposta viene dopo di lei.
+   * `PropostaSottofondo` non conosce né il giro né le Novità, e non deve.
+   */
+  const propostaPuoMostrarsi = !primoVisibile && !giroDaFare && !giroAperto;
   const [codaAperta, setCodaAperta] = useStatoPresente(false);
   const [daImportare, setDaImportare] = useStatoPresente<string | null>(null);
   /**
@@ -4897,6 +4908,16 @@ export function App() {
                     />
                   )}
                 </ConImportazioni>
+                {/* Una volta sola, sul computer: la risposta la ricorda il nucleo.
+                    Il telefono ha un'altra proposta, con altre parole, e non
+                    monta questa. */}
+                {!MOBILE && (
+                  <PropostaSottofondo
+                    pronta={propostaPuoMostrarsi}
+                    onErrore={segnalaErrore}
+                    onNotizia={setNotizia}
+                  />
+                )}
               </PilaToast>
             </>
           )}
