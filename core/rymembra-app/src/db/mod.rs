@@ -943,6 +943,12 @@ fn verifica_le_chiavi(connection: &Connection, serve: bool) -> Result<(), rusqli
 /// prove di `db` perché lo usano anche quelle del riconciliatore
 /// (`specchio::revisione`): una ricetta sola, e `le_ricette_di_ritorno_stanno_in_testa_alla_quarantatre`
 /// dice che è quella che la migrazione porta scritta.
+///
+/// Comincia col `PRAGMA foreign_keys = ON`, che va eseguito **fuori da una
+/// transazione**: dentro, SQLite lo ignora senza dire niente, e la cascata che
+/// porta via le voci di playlist e la cronologia delle righe cancellate resta
+/// spenta. `execute_batch` non apre nessuna transazione, e va bene; chi la
+/// lancia a mano non deve metterci un `BEGIN` davanti.
 #[cfg(test)]
 pub(crate) const RITORNO_DALLA_43: &str = "PRAGMA foreign_keys = ON;
          DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;

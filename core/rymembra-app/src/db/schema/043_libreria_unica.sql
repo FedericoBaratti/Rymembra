@@ -82,7 +82,11 @@
 -- La ricetta va lanciata a Rymembra chiusa, e **comincia accendendo le chiavi
 -- esterne**: il programma `sqlite3` le tiene spente di serie, e spente la
 -- cascata non porta via le voci di playlist e la cronologia delle righe
--- cancellate, che restano a puntare nel vuoto — e `tracks.id`, senza
+-- cancellate. Quel `PRAGMA foreign_keys = ON` va eseguito **fuori da una
+-- transazione** (dentro un `BEGIN` SQLite lo ignora senza dire niente, e la
+-- ricetta sembra riuscire con la cascata spenta) e prima di tutto il resto.
+-- Spenta, le voci e la cronologia delle righe cancellate restano a puntare
+-- nel vuoto — e `tracks.id`, senza
 -- `AUTOINCREMENT`, può riusare quegli id per brani nuovi, che si ritroverebbero
 -- nelle playlist di altri. Gli album e gli artisti che non hanno più nessun
 -- brano si tolgono a mano, e il segno `aggregati = 0` fa rifare gli altri —

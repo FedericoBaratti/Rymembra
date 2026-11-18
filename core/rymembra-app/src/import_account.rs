@@ -1168,6 +1168,35 @@ mod prove {
     }
 
     #[test]
+    fn reimportare_l_archivio_toglie_con_la_lapide_le_voci_dei_brani_di_un_altro_dispositivo() {
+        // La sostituzione della playlist da un account è un gesto dell'utente: una
+        // voce di un brano che qui c'è solo come riga specchio (il brano di un altro
+        // dispositivo, finita nella playlist per la sincronia) ha la sua lapide
+        // scritta dal gesto, e solo lei — i brani di qui, che l'importazione rimette,
+        // non ne lasciano. Come per il file e il catalogo (`import_playlist`,
+        // `import_esterno`).
+        use crate::specchio::comuni::{ADESSO, chiave, giro, id_specchio, pubblicata, riga};
+        let mut db = database();
+        libreria_di_prova(&db);
+        let snapshot = snapshot_completo();
+        assert!(import(&mut db, &snapshot, &Scelte::default()).is_ok());
+        let corsa: i64 = db
+            .query_row("SELECT id FROM playlists", [], |r| r.get(0))
+            .unwrap_or(-1);
+        giro(&db, &chiave('a'), &[riga(5)], ADESSO);
+        let remoto = id_specchio(&db, 'a', 5);
+        assert!(crate::playlists::add_tracks(&mut db, corsa, &[remoto]).is_ok());
+        assert!(crate::sincronia::allinea(&mut db, "telefono", 1_000).is_ok());
+        assert_eq!(pubblicata(&db, "corsa").1, 0, "il punto di partenza");
+
+        assert!(import(&mut db, &snapshot, &Scelte::default()).is_ok());
+        assert!(crate::sincronia::allinea(&mut db, "telefono", 2_000).is_ok());
+        let (vive, tolte) = pubblicata(&db, "corsa");
+        assert_eq!(tolte, 1, "la voce del brano remoto è una lapide");
+        assert_eq!(vive.len(), 2, "restano i due brani di qui: {vive:?}");
+    }
+
+    #[test]
     fn importare_due_volte_non_raddoppia_niente() {
         // La prova che conta più di tutte. Tre scritture ripetibili, tre
         // guardie diverse: la playlist si sostituisce, la cronologia ha
