@@ -977,6 +977,36 @@ pub(crate) fn copertina(app: &AppHandle, chiave: &str) -> Result<Option<Vec<u8>>
     copertina_in(&cartella, &comune, dispositivo, impronta)
 }
 
+/// Toglie dalla cache le copertine di un dispositivo: la sua cartella
+/// `copertine-lontane/<dispositivo>/`.
+///
+/// Per «Dimentica» e «Dimenticami». Il cancello (`copertina_in`,
+/// `file_in_cache`) già non le serve più, ma restavano su disco fino alla
+/// potatura, e le leggeva ancora chi non passa dal cancello: la scheda di
+/// ripresa e il fornitore di Android (reperto di F1).
+pub(crate) fn togli_le_copertine_di(app: &AppHandle, dispositivo: &str) {
+    if let Some(cartella) = cartella_copertine(app) {
+        togli_la_cartella_di(&cartella, dispositivo);
+    }
+}
+
+/// [`togli_le_copertine_di`] dentro `cartella`. `true` se c'era e se n'è
+/// andata. La chiave dev'essere di 64 cifre esadecimali minuscole, e solo
+/// allora diventa un nome di cartella: niente `..`, niente separatori.
+fn togli_la_cartella_di(cartella: &Path, dispositivo: &str) -> bool {
+    if !e_una_chiave(dispositivo) {
+        return false;
+    }
+    match std::fs::remove_dir_all(cartella.join(dispositivo)) {
+        Ok(()) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => {
+            nota!("[lontano] le copertine di un dispositivo dimenticato non si tolgono: {err}");
+            false
+        }
+    }
+}
+
 /// Il file di una copertina dell'altro nella cache:
 /// `<dispositivo>/<impronta>.jpg`, tutti e due già controllati
 /// ([`parti_della_copertina`]: solo cifre esadecimali).
@@ -1648,6 +1678,42 @@ mod prove {
         assert_eq!(rimasti.len(), 40);
         assert!(!rimasti.contains(&format!("{:016x}.jpg", 0)));
         assert!(rimasti.contains(&format!("{:016x}.jpg", 54)));
+        let _ = std::fs::remove_dir_all(&cartella);
+    }
+    /// «Dimentica» e «Dimenticami» tolgono la cartella delle copertine del
+    /// dispositivo, e solo la sua.
+    #[test]
+    fn dimenticare_un_dispositivo_toglie_le_sue_copertine_e_solo_quelle() {
+        let cartella = std::env::temp_dir().join(format!(
+            "rymembra-prova-togli-copertine-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&cartella);
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        for dispositivo in [&a, &b] {
+            let dentro = cartella.join(dispositivo);
+            std::fs::create_dir_all(&dentro).unwrap();
+            std::fs::write(dentro.join("0123456789abcdef.jpg"), b"x").unwrap();
+        }
+        std::fs::write(cartella.join("vecchia.jpg"), b"x").unwrap();
+
+        assert!(togli_la_cartella_di(&cartella, &a));
+        assert!(!cartella.join(&a).exists(), "le sue copertine se ne vanno");
+        assert!(
+            cartella.join(&b).join("0123456789abcdef.jpg").exists(),
+            "quelle di un altro restano"
+        );
+        assert!(cartella.join("vecchia.jpg").exists());
+        assert!(
+            !togli_la_cartella_di(&cartella, &a),
+            "due volte è una volta"
+        );
+
+        // Una chiave che non è una chiave non diventa un percorso.
+        for storta in ["", "..", "../b", &b.to_uppercase(), &"b".repeat(63)] {
+            assert!(!togli_la_cartella_di(&cartella, storta), "{storta:?}");
+        }
+        assert!(cartella.join(&b).exists());
         let _ = std::fs::remove_dir_all(&cartella);
     }
 }

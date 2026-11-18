@@ -62,7 +62,9 @@ use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
 pub(crate) use sfoglia::{ascoltato_qui, copertina, e_una_copertina, voce_salvata};
-pub(crate) use specchio::{apri_riga, copertina_di_una_riga, posta_nuova, scegli_la_copia};
+pub(crate) use specchio::{
+    apri_riga, copertina_di_una_riga, origine_che_suona, posta_nuova, scegli_la_copia,
+};
 
 /// Quanto un comando aspetta che il filo abbia riletto: accendere il nodo
 /// vuol dire aprire i socket, e il portachiavi può chiedere un attimo.
@@ -564,6 +566,9 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
         // I suoi brani in coda non si aprono più.
         crate::riproduzione::togli_lontane(&app, &chiave);
         specchio::dimenticato(&chiave);
+        // E le sue copertine in cache: non devono restare su disco, né uscire
+        // da una scheda di sistema, finché la potatura non le trova.
+        sfoglia::togli_le_copertine_di(&app, &chiave);
         // Nella libreria appena si può, con la sua chiave di «Ascolta
         // insieme» che il QR aveva reso fidata: lo scrittore fa rileggere la
         // rete di «Ascolta insieme», che chiude le sue connessioni.

@@ -793,21 +793,31 @@ pub(crate) fn scegli_la_copia(
     })
 }
 
-/// Le chiavi dei dispositivi che rispondono adesso, per chi non può mostrare
-/// una riga grigia: Android Auto.
+/// Le chiavi dei dispositivi che rispondono adesso: quelli che il filo di rete
+/// vede in questo momento (`presenze`), la stessa fonte con cui si sceglie la
+/// copia da suonare (`scegli_la_copia`). Se il filo non è partito — nessun
+/// dispositivo collegato — l'elenco è vuoto.
 ///
-/// Quelli che il filo di rete vede in questo momento (`presenze`). Se il filo
-/// non è partito — nessun dispositivo collegato — l'elenco è vuoto, e l'auto
-/// mostra solo quel che c'è su questo telefono.
-#[cfg(mobile)]
+/// In ordine: due chiamate con gli stessi dispositivi danno la stessa lista, e
+/// chi la usa come chiave (la cache delle query) non la rifà per l'ordine con
+/// cui la mappa l'ha restituita.
 pub(crate) fn dispositivi_raggiungibili(app: &AppHandle) -> Vec<String> {
     let Ok(comune) = comune(app) else {
         return Vec::new();
     };
-    super::filo::prendi(&comune.presenze)
+    let mut chiavi: Vec<String> = super::filo::prendi(&comune.presenze)
         .keys()
         .cloned()
-        .collect()
+        .collect();
+    chiavi.sort_unstable();
+    chiavi
+}
+
+/// Da dove sceglie chi suona da solo — l'autoplay, la radio, una playlist
+/// intelligente — e chi non può mostrare una riga grigia, come Android Auto:
+/// «Tutti», meno i dispositivi che adesso non rispondono (§4.6).
+pub(crate) fn origine_che_suona(app: &AppHandle) -> rymembra_app::specchio::Origine {
+    rymembra_app::specchio::Origine::Raggiungibili(dispositivi_raggiungibili(app))
 }
 
 /// I byte di una riga specchio: la sorgente a blocchi sul nodo del suo

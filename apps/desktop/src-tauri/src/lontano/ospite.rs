@@ -154,6 +154,9 @@ impl rymembra_lontano::Ospite for Ospite {
         self.comune.registra(da, Modifica::Revoca);
         // I suoi brani in coda non si aprono più: l'altro non ci risponde.
         crate::riproduzione::togli_lontane(&self.app, da);
+        // Le sue copertine in cache se ne vanno con lui: chi ci ha dimenticati
+        // non è più un posto da cui mostrare niente.
+        super::sfoglia::togli_le_copertine_di(&self.app, da);
         scrivi_il_registro(&self.app, &self.comune);
         self.comune.sveglia(Posta::Rileggi {
             risposta: None,

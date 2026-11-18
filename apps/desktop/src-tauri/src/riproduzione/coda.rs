@@ -205,6 +205,7 @@ pub(super) fn scegli_da_solo(
         corrente,
         esclusi,
         adesso_ms(),
+        &crate::lontano::origine_che_suona(app),
     )
     .ok()
     .flatten()

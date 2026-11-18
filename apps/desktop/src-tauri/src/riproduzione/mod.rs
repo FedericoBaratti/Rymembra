@@ -3426,12 +3426,15 @@ pub fn radio_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>, brano: i
     }
     let brano = riga_di_libreria(brano).map_err(errore)?;
     let stato_app = libreria_di(&app, "radio").map_err(errore)?;
+    // Una radio non propone la musica di un dispositivo che non risponde.
+    let origine = crate::lontano::origine_che_suona(&app);
     let coda = con_libreria(&stato_app, |libreria| {
         rymembra_app::autoplay::radio(
             &libreria.connection,
             brano,
             rymembra_app::autoplay::RADIO,
             adesso_ms(),
+            &origine,
         )
     })
     .map_err(errore)?;
