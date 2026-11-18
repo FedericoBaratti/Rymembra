@@ -42,12 +42,18 @@ publish = false
 # il riconoscimento di un login. Sono API sicure, come `ApplicationData` qui
 # sopra, e due feature del `windows` che c'è già: nel `Cargo.lock` non entra
 # niente.
+# `Win32_System_LibraryLoader` (`GetModuleHandleW`) e `Win32_Graphics_Gdi` (che
+# la `WNDCLASSEXW` nomina per il suo pennello) sono per la finestra dei messaggi
+# delle SMTC (`src/messaggi.rs`): le accendono già `tao` e `wry`, e nel
+# `Cargo.lock` non entra niente.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_LibraryLoader",
     "Win32_System_Power",
     "Win32_System_Registry",
     "Win32_System_Threading",
@@ -70,9 +76,11 @@ windows = { version = "0.62", features = [
 # funzioni di sistema di `src/sottofondo.rs`, le quattro di `src/espulsione.rs`
 # (il nome del volume, la registrazione degli avvisi di espulsione, la callback
 # che Windows chiama e la registrazione tolta), la lettura di Maiusc di
-# `src/maiusc.rs` (`GetAsyncKeyState`) e le tre chiamate di `src/registro.rs`
+# `src/maiusc.rs` (`GetAsyncKeyState`), le tre chiamate di `src/registro.rs`
 # (`RegGetValueW`, `RegSetKeyValueW` e `RegDeleteKeyValueW`, per l'avvio con
-# Windows).
+# Windows) e il modulo `src/messaggi.rs`, la finestra nativa mai mostrata su cui
+# si appendono le SMTC (la classe, `CreateWindowExW`, `DestroyWindow`, la
+# procedura che passa tutto a `DefWindowProcW`).
 #
 # In cambio, tre regole che il resto del workspace non ha bisogno di avere: ogni
 # blocco `unsafe` spiega perché è giusto (`undocumented_unsafe_blocks`), e dentro

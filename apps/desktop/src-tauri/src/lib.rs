@@ -870,6 +870,8 @@ pub fn run() {
             vassoio::vassoio_lingua,
             avvio_con_windows::avvio_con_windows_stato,
             avvio_con_windows::avvio_con_windows_imposta,
+            avvio_con_windows::proposta_sottofondo_da_fare,
+            avvio_con_windows::proposta_sottofondo_rispondi,
             comandi::avvio,
             comandi::imposta_cartelle,
             comandi::cartelle_trasloca,

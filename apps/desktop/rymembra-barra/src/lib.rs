@@ -14,14 +14,14 @@
 //! pacchetto che lo offre per Tauri è alla prima versione, ha un solo commit, e
 //! perde lo stato dei pulsanti quando la barra li ricrea.
 //!
-//! Così il codice `unsafe` sta tutto in sei posti, il modulo `finestra`, una
+//! Così il codice `unsafe` sta tutto in sette posti, il modulo `finestra`, una
 //! funzione di [`unita`](crate::unita_di), le tre chiamate di
 //! [`sottofondo`](crate::Sottofondo), le quattro di
 //! [`espulsione`](crate::osserva_volume), la lettura di Maiusc di
-//! [`maiusc`](crate::maiusc_giu) e le tre del [`registro`](crate::Registro),
-//! dentro un crate che dichiara l'eccezione nel suo `Cargo.toml` e nel
-//! `Cargo.toml` della radice. Il resto di questo crate, e tutto il resto di
-//! Rymembra, resta senza.
+//! [`maiusc`](crate::maiusc_giu), le tre del [`registro`](crate::Registro) e la
+//! finestra nativa di [`messaggi`](crate::FinestraDeiMessaggi), dentro un crate
+//! che dichiara l'eccezione nel suo `Cargo.toml` e nel `Cargo.toml` della
+//! radice. Il resto di questo crate, e tutto il resto di Rymembra, resta senza.
 //!
 //! # L'altra domanda al sistema: il genere di un'unità
 //!
@@ -71,6 +71,14 @@
 //! invece l'API WinRT `StartupTask`, che è sicura: vedi
 //! [`avvio_leggi_dal_store`].
 //!
+//! # La settima: una finestra per le SMTC, che sopravvive alla finestra
+//!
+//! I tasti multimediali si chiedono a una finestra (`GetForWindow`). Con la X
+//! sul vassoio la finestra dell'applicazione si chiude e il motore resta, e i
+//! tasti devono restare con lui: si appendono a una finestra nativa nostra, mai
+//! mostrata e senza genitore, che vive quanto il motore. Sono la classe, la
+//! creazione e la distruzione: vedi [`FinestraDeiMessaggi`].
+//!
 //! # E una domanda che non vuole `unsafe`: dove sta la cartella del pacchetto MSIX
 //!
 //! Nella copia del Microsoft Store i file che l'app crea in `%APPDATA%` e in
@@ -116,6 +124,8 @@ mod finestra;
 )]
 mod glifi;
 mod maiusc;
+#[cfg(windows)]
+mod messaggi;
 mod pacchetto;
 mod registro;
 mod sottofondo;
@@ -130,6 +140,8 @@ pub use avvio::{
 };
 pub use espulsione::{Avviso, Registrazione, osserva_volume, volume_di};
 pub use maiusc::{Ascolto, Esito, FINESTRA, PASSO, TENUTO, maiusc_giu};
+#[cfg(windows)]
+pub use messaggi::FinestraDeiMessaggi;
 pub use pacchetto::cartella_cache_del_pacchetto;
 pub use registro::Registro;
 #[cfg(windows)]
