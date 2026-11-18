@@ -161,3 +161,63 @@ test("il pannello porta alla finestra la scelta e se la build la offre, e il com
   assert.match(pannello, /pub parti_con_auto: bool,/);
   assert.match(pannello, /pub partenza_con_auto: bool,/);
 });
+
+// ── la proposta del sottofondo sul telefono (F7, §8.4) ──────────────────────
+
+test("la proposta del telefono usa le sue parole, la stessa chiave, e lo stesso comando dell'interruttore", () => {
+  const proposta = sorgente("../src/parti/PropostaSottofondo.tsx");
+  const codice = senzaCommenti(proposta);
+  // Le parole del telefono sono dietro `MOBILE`, quelle del computer no.
+  for (const chiave of [
+    "background.proposal.phone.text",
+    "background.proposal.phone.yes",
+    "background.proposal.phone.no",
+    "background.proposal.phone.needsInternet",
+  ]) {
+    assert.ok(codice.includes(`"${chiave}"`), `il componente non usa «${chiave}»`);
+  }
+  assert.match(codice, /import \{ MOBILE \} from "\.\.\/piattaforma"/);
+  // «Sì» ricorda la risposta e poi accende il sottofondo **con il comando
+  // dell'interruttore** (che chiede anche le notifiche); «No» non accende niente.
+  const risponde = codice.slice(codice.indexOf("const risponde"));
+  assert.ok(risponde.indexOf("propostaSottofondoRispondi(accetta)") >= 0);
+  assert.ok(
+    risponde.indexOf("propostaSottofondoRispondi(accetta)") < risponde.indexOf("ipc.lontanoSottofondo(true)"),
+    "la risposta si ricorda prima di accendere il servizio",
+  );
+  assert.match(risponde, /if \(!accetta\) return;\s*const stato = await ipc\.lontanoSottofondo\(true\)/);
+  // Il sottofondo da solo non apre niente verso internet: lo si dice.
+  assert.match(risponde, /if \(!stato\.attivo\) onNotizia\(t\("background\.proposal\.phone\.needsInternet"\)\)/);
+  // Una chiave sola per tutti e due: niente `ui.proposta.sottofondo` nuovo.
+  assert.doesNotMatch(codice, /proposta\.sottofondo\.(phone|telefono)/);
+});
+
+test("la proposta del telefono dice quel che la guida promette, in italiano e in inglese", () => {
+  const it = JSON.parse(sorgente("../src/lingue/it.json")) as Record<string, string>;
+  const en = JSON.parse(sorgente("../src/lingue/en.json")) as Record<string, string>;
+  assert.equal(
+    it["background.proposal.phone.text"],
+    "Vuoi che Rymembra resti attiva in sottofondo, così i tuoi PC la raggiungono sempre?",
+  );
+  assert.equal(it["background.proposal.phone.no"], "No, grazie");
+  for (const chiave of [
+    "background.proposal.phone.text",
+    "background.proposal.phone.yes",
+    "background.proposal.phone.no",
+    "background.proposal.phone.needsInternet",
+  ]) {
+    assert.ok(it[chiave] && en[chiave], `«${chiave}» manca in una delle lingue`);
+    assert.ok(!(en[chiave] ?? "").includes("'"), `${chiave}: apostrofo dritto in inglese`);
+  }
+});
+
+test("la proposta si monta anche sul telefono, e aspetta come sul computer", () => {
+  const app = sorgente("../src/App.tsx");
+  assert.match(app, /<PropostaSottofondo\s+pronta=\{propostaPuoMostrarsi\}/);
+  assert.doesNotMatch(app, /\{!MOBILE && \(\s*<PropostaSottofondo/);
+  // Il punto in cui si decide quando aspettare è uno solo, e non è cambiato.
+  const riga = /const propostaPuoMostrarsi = ([^;]+);/.exec(app)?.[1] ?? "";
+  for (const motivo of ["primoVisibile", "giroDaFare", "giroAperto"]) {
+    assert.ok(riga.includes(`!${motivo}`), `la proposta non aspetta «${motivo}»`);
+  }
+});

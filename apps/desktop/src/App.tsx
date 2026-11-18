@@ -4908,16 +4908,14 @@ export function App() {
                     />
                   )}
                 </ConImportazioni>
-                {/* Una volta sola, sul computer: la risposta la ricorda il nucleo.
-                    Il telefono ha un'altra proposta, con altre parole, e non
-                    monta questa. */}
-                {!MOBILE && (
-                  <PropostaSottofondo
-                    pronta={propostaPuoMostrarsi}
-                    onErrore={segnalaErrore}
-                    onNotizia={setNotizia}
-                  />
-                )}
+                {/* Una volta sola, sul computer e sul telefono: la risposta la
+                    ricorda il nucleo, e il componente ha le parole di tutti e
+                    due. */}
+                <PropostaSottofondo
+                  pronta={propostaPuoMostrarsi}
+                  onErrore={segnalaErrore}
+                  onNotizia={setNotizia}
+                />
               </PilaToast>
             </>
           )}

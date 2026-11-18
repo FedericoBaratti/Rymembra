@@ -23,7 +23,6 @@
 //! - **Fuori da Windows** e **sul telefono**: `nonDisponibile`. Il registro dei
 //!   comandi è uno solo, e la pagina non deve ricevere un «command not found».
 
-#[cfg(desktop)]
 use rymembra_app::preferenze::{self, RispostaProposta};
 use rymembra_barra::{Impedimento, StatoAvvio};
 use serde::Serialize;
@@ -35,10 +34,11 @@ use crate::errore::errore;
 #[cfg(windows)]
 use crate::nota;
 use crate::stato::Stato;
-#[cfg(desktop)]
 use crate::stato::con_libreria;
 #[cfg(any(windows, mobile))]
-use rymembra_domain::errors::{AppError, ErrorCode};
+use rymembra_domain::errors::AppError;
+#[cfg(windows)]
+use rymembra_domain::errors::ErrorCode;
 
 /// Perché l'interruttore non si tocca, come lo legge la pagina.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -166,8 +166,8 @@ pub fn avvio_con_windows_imposta(app: tauri::AppHandle, acceso: bool) -> Esito<A
     dal_sistema(Some(acceso)).map_err(errore)
 }
 
-/// Cosa fare della proposta «parti con Windows e resta nel vassoio».
-#[cfg(desktop)]
+/// Cosa fare della proposta: «parti con Windows e resta nel vassoio» sul
+/// computer, «resta attiva in sottofondo» sul telefono.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Proposta {
     /// Mostrarla.
@@ -202,6 +202,34 @@ fn da_proporre(
     Proposta::DaFare
 }
 
+/// La regola della proposta **del telefono**, senza libreria: «resta attiva in
+/// sottofondo».
+///
+/// - **Una volta sola**, con la stessa chiave del computer
+///   (`ui.proposta.sottofondo`): con una risposta già data non si ripropone.
+/// - **Non a chi ha già il sottofondo acceso**: sarebbe una domanda inutile, e
+///   si ricorda come risposta «già», com'è sul computer.
+///
+/// Non guarda «Raggiungibile da internet»: il sottofondo da solo non lo
+/// accende, e se manca lo dice la finestra dopo il «sì» — la proposta resta
+/// quella della guida.
+#[cfg_attr(
+    not(mobile),
+    allow(
+        dead_code,
+        reason = "la regola del telefono, che le prove vedono ovunque"
+    )
+)]
+fn da_proporre_sul_telefono(risposta: Option<RispostaProposta>, sottofondo: bool) -> Proposta {
+    if risposta.is_some() {
+        Proposta::No
+    } else if sottofondo {
+        Proposta::GiaAcceso
+    } else {
+        Proposta::DaFare
+    }
+}
+
 /// La risposta alla proposta, e com'è rimasto tutto: la pagina disegna da qui.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -215,8 +243,9 @@ pub struct RispostaPropostaIpc {
 /// C'è da fare la proposta? Si chiede una volta, quando la pagina è pronta a
 /// riceverla (`parti/PropostaSottofondo.tsx`): né col primo avvio né col giro.
 ///
-/// Sul telefono no: la sua parte — il servizio persistente — ha un'altra
-/// strada, e nessuna domanda da fare da qui.
+/// Sul computer è «parti con Windows e resta nel vassoio»; sul telefono, «resta
+/// attiva in sottofondo» ([`da_proporre_sul_telefono`]). Una chiave sola, ma
+/// ogni installazione ha la sua risposta.
 #[tauri::command(async)]
 pub fn proposta_sottofondo_da_fare(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<bool> {
     #[cfg(desktop)]
@@ -254,8 +283,35 @@ pub fn proposta_sottofondo_da_fare(app: tauri::AppHandle, stato: State<'_, Stato
     }
     #[cfg(mobile)]
     {
-        let _ = (app, stato);
-        Ok(false)
+        // Una copia di prova è un fatto del computer: il telefono non ne ha.
+        let _ = app;
+        let risposta = con_libreria(&stato, |libreria| {
+            preferenze::proposta_sottofondo(&libreria.connection)
+        })
+        .map_err(errore)?;
+        // Già risposto: non si chiede nemmeno alle impostazioni.
+        if risposta.is_some() {
+            return Ok(false);
+        }
+        let sottofondo = con_libreria(&stato, |libreria| {
+            rymembra_app::dispositivi::impostazioni(&libreria.connection)
+        })
+        .map_err(errore)?
+        .sottofondo;
+        match da_proporre_sul_telefono(risposta, sottofondo) {
+            Proposta::DaFare => Ok(true),
+            Proposta::No => Ok(false),
+            Proposta::GiaAcceso => {
+                con_libreria(&stato, |libreria| {
+                    preferenze::imposta_proposta_sottofondo(
+                        &libreria.connection,
+                        RispostaProposta::Gia,
+                    )
+                })
+                .map_err(errore)?;
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -306,10 +362,24 @@ pub fn proposta_sottofondo_rispondi(
     }
     #[cfg(mobile)]
     {
-        let _ = (app, stato, accetta);
-        Err(errore(AppError::new(ErrorCode::InternalAborted {
-            what: Some("proposta del sottofondo sul telefono".to_owned()),
-        })))
+        let _ = app;
+        let risposta = if accetta {
+            RispostaProposta::Si
+        } else {
+            RispostaProposta::No
+        };
+        con_libreria(&stato, |libreria| {
+            preferenze::imposta_proposta_sottofondo(&libreria.connection, risposta)
+        })
+        .map_err(errore)?;
+        // Qui si ricorda e basta. Il servizio in primo piano lo accende la
+        // finestra, con lo stesso comando dell'interruttore delle Impostazioni
+        // (`lontano_sottofondo`), che chiede anche le notifiche; l'avvio con
+        // Windows e il vassoio sul telefono non esistono.
+        Ok(RispostaPropostaIpc {
+            avvio: AvvioConWindowsIpc::NON_DISPONIBILE,
+            secondo_piano: false,
+        })
     }
 }
 
@@ -331,6 +401,63 @@ mod prove {
             da_proporre(None, &avvio(true, None), false),
             Proposta::DaFare
         );
+    }
+
+    #[test]
+    fn la_proposta_del_telefono_si_fa_una_volta_a_chi_non_ha_il_sottofondo() {
+        // Sul telefono la proposta è «resta attiva in sottofondo»: a chi non
+        // l'ha acceso e non ha mai risposto.
+        assert_eq!(da_proporre_sul_telefono(None, false), Proposta::DaFare);
+        // Chi l'ha già acceso non ha niente da accettare: si ricorda, e non si
+        // chiede.
+        assert_eq!(da_proporre_sul_telefono(None, true), Proposta::GiaAcceso);
+        // Una volta sola, qualunque cosa sia rimasta accesa.
+        for risposta in [
+            RispostaProposta::Si,
+            RispostaProposta::No,
+            RispostaProposta::Gia,
+        ] {
+            for sottofondo in [false, true] {
+                assert_eq!(
+                    da_proporre_sul_telefono(Some(risposta), sottofondo),
+                    Proposta::No,
+                    "{risposta:?}, sottofondo {sottofondo}"
+                );
+            }
+        }
+    }
+
+    /// Sul telefono il comando ricorda la risposta con la stessa chiave del
+    /// computer e basta: il servizio lo accende la finestra, con il comando
+    /// dell'interruttore (`lontano_sottofondo`), che chiede anche le notifiche.
+    #[test]
+    fn sul_telefono_il_comando_ricorda_la_risposta_e_non_accende_niente() {
+        let sorgente = include_str!("avvio_con_windows.rs");
+        let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
+        let corpo = sorgente
+            .split("pub fn proposta_sottofondo_rispondi(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        let telefono = corpo.split("#[cfg(mobile)]").nth(1).unwrap_or_default();
+        assert!(
+            telefono.contains("imposta_proposta_sottofondo("),
+            "sul telefono la risposta non si ricorda"
+        );
+        assert!(
+            !telefono.contains("dal_sistema(") && !telefono.contains("imposta_il_secondo_piano("),
+            "sul telefono il comando tocca l'avvio con Windows o il vassoio"
+        );
+        // La domanda stessa: una chiave sola, quella di sempre.
+        let da_fare = sorgente
+            .split("pub fn proposta_sottofondo_da_fare(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .and_then(|resto| resto.split("#[cfg(mobile)]").nth(1))
+            .unwrap_or_default();
+        assert!(da_fare.contains("preferenze::proposta_sottofondo("));
+        assert!(da_fare.contains("da_proporre_sul_telefono("));
+        assert!(da_fare.contains("RispostaProposta::Gia"));
     }
 
     #[test]
