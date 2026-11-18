@@ -52,6 +52,13 @@
 //! ([`togli_un_blocco`], [`conferma_un_blocco`]), e non oltre
 //! [`TETTO_RIMOZIONI_PER_GIRO`] per giro: un pari che ritira un quinto di un
 //! catalogo da centomila righe non tiene fermo il lettore per venti secondi.
+//! Anche **nascondere** le righe che il pari non manda più è a blocchi della
+//! stessa grandezza: la chiusura del giro ne nasconde un blocco, e
+//! [`togli_un_blocco`] i blocchi dopo, ognuno in una presa sua. Nascondere non
+//! costringe a rifare né i doppioni né gli aggregati: la scelta dei doppioni
+//! lascia fuori le righe segnate sparite (lo sono già dal giro che le ha
+//! segnate) e gli aggregati contano le righe di `tracks` senza guardare
+//! `copia_di`. Si fanno una volta sola, nella chiusura del giro.
 //! Le righe nuove che un giro tiene per riabbinarle sono al più
 //! [`TETTO_RIABBINAMENTO`]. E ogni scrittura controlla, nella sua transazione,
 //! che il dispositivo sia ancora collegato: un secchio che arriva dopo
@@ -803,8 +810,12 @@ impl Giro {
         }
         // Le righe che il proprietario non manda più, e che restano per la
         // grazia o per la conferma, non si suonano né si contano da nessuna
-        // parte: vedi `nascondi_le_sparite`.
-        chiusura.spostate = nascondi_le_sparite(&tx, &self.dispositivo, &mut self.toccati)?;
+        // parte: vedi `nascondi_le_sparite`. Un blocco solo: se ce ne sono di
+        // più, `da_nascondere` lo dice e li chiede chi chiama, ognuno in una
+        // presa sua del lucchetto (`togli_un_blocco`).
+        let nascoste = nascondi_le_sparite(&tx, &self.dispositivo, BLOCCO_RIMOZIONI)?;
+        chiusura.spostate = nascoste.spostate;
+        chiusura.da_nascondere = nascoste.restano;
         chiusura.copie_cambiate = ricalcola_doppioni_in(&tx)?;
         ricostruisci_aggregati(&tx, &self.toccati)?;
         tx.execute(
@@ -904,6 +915,10 @@ pub struct Chiusura {
     /// Righe scadute e da togliere che non sono entrate nel blocco di questa
     /// presa: si chiedono con [`togli_un_blocco`], finché non sono zero.
     pub da_togliere: usize,
+    /// Restano righe sparite da nascondere, oltre il blocco di questa presa: si
+    /// chiedono con [`togli_un_blocco`], finché non lo dice più. Intanto restano
+    /// visibili com'erano, con le loro voci.
+    pub da_nascondere: bool,
     /// Voci di playlist passate a un'altra copia dello stesso brano perché la
     /// riga che le aveva è entrata in grazia.
     pub spostate: usize,
@@ -1181,42 +1196,68 @@ pub fn in_grazia(connection: &Connection, ids: &[i64]) -> Result<HashSet<i64>, A
 /// la grazia protegge solo le voci che non hanno un'altra strada, e una voce
 /// non resta su una riga che nessuno suona mentre il brano sta sul telefono.
 ///
-/// Restituisce quante voci ha spostato.
+/// **Un blocco**, di al più `grandezza` righe: chi ne ritira quarantamila non
+/// tiene il lucchetto della libreria per quanto ci mette a nasconderle tutte.
+/// Non rifà né i doppioni né gli aggregati — vedi il `//!` —, quindi un blocco
+/// costa quel che nasconde.
 fn nascondi_le_sparite(
     tx: &Connection,
     dispositivo: &str,
-    toccati: &mut Toccati,
-) -> Result<usize, AppError> {
+    grandezza: usize,
+) -> Result<Nascoste, AppError> {
     let cosa = "righe specchio sparite da nascondere";
     // Solo quelle che non lo sono già: chi non ha niente da nascondere non
-    // riscrive una riga.
-    let da_nascondere: Vec<i64> = {
+    // riscrive una riga. Una in più del blocco, per sapere se ne restano.
+    let mut da_nascondere: Vec<i64> = {
         let mut st = tx
             .prepare_cached(
                 "SELECT l.track_id FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
                   WHERE l.dispositivo = ?1 AND l.sparito_ms IS NOT NULL
-                    AND t.copia_di IS NOT t.id",
+                    AND t.copia_di IS NOT t.id
+                  ORDER BY l.track_id LIMIT ?2",
             )
             .map_err(|err| db_error(cosa, &err))?;
-        st.query_map([dispositivo], |r| r.get(0))
-            .map_err(|err| db_error(cosa, &err))?
-            .collect::<Result<_, _>>()
-            .map_err(|err| db_error(cosa, &err))?
+        st.query_map(
+            params![
+                dispositivo,
+                i64::try_from(grandezza.saturating_add(1)).unwrap_or(i64::MAX)
+            ],
+            |r| r.get(0),
+        )
+        .map_err(|err| db_error(cosa, &err))?
+        .collect::<Result<_, _>>()
+        .map_err(|err| db_error(cosa, &err))?
     };
+    let restano = da_nascondere.len() > grandezza;
+    da_nascondere.truncate(grandezza);
     if da_nascondere.is_empty() {
-        return Ok(0);
+        return Ok(Nascoste::default());
     }
     // Le voci prima di nasconderle: una riga sparita non è più un'alternativa
     // per nessuno, e `sposta_le_voci` la scarta già dalle candidate.
     let spostate = sposta_le_voci(tx, &da_nascondere)?;
-    toccati.segna_brani(tx, &da_nascondere)?;
     let mut nascondi = tx
         .prepare_cached("UPDATE tracks SET copia_di = id WHERE id = ?1")
         .map_err(|err| db_error(cosa, &err))?;
     for id in &da_nascondere {
         nascondi.execute([id]).map_err(|err| db_error(cosa, &err))?;
     }
-    Ok(spostate)
+    Ok(Nascoste {
+        nascoste: da_nascondere.len(),
+        spostate,
+        restano,
+    })
+}
+
+/// Quel che un blocco di [`nascondi_le_sparite`] ha fatto.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Nascoste {
+    /// Righe nascoste in questo blocco.
+    nascoste: usize,
+    /// Voci di playlist passate a un'altra copia dello stesso brano.
+    spostate: usize,
+    /// Restano righe sparite da nascondere.
+    restano: bool,
 }
 
 /// Quel che un blocco di rimozioni ha fatto.
@@ -1237,6 +1278,10 @@ pub struct Blocco {
     /// resta: rifare ogni volta la scelta su tutta la libreria costava, a ogni
     /// blocco, quanto il blocco.
     pub doppioni_da_rifare: bool,
+    /// Righe sparite nascoste in questo blocco ([`togli_un_blocco`]).
+    pub nascoste: usize,
+    /// Restano righe sparite da nascondere: si chiede un altro blocco.
+    pub da_nascondere: bool,
 }
 
 /// Toglie un blocco di righe sparite, in una transazione già aperta.
@@ -1329,17 +1374,21 @@ fn togli_un_blocco_in(
         in_attesa: 0,
         in_grazia: sparite.saturating_sub(scadute),
         doppioni_da_rifare: non_nascoste,
+        ..Blocco::default()
     })
 }
 
 /// Un blocco di rimozioni, in una presa sua del lucchetto: le righe sparite da
-/// più della grazia, se non sono troppe. Doppioni e aggregati si rifanno.
+/// più della grazia, se non sono troppe. Doppioni e aggregati si rifanno. Con
+/// lui, un blocco di righe sparite da nascondere
+/// ([`Chiusura::da_nascondere`]).
 ///
 /// È quel che chiude il giro quando restano righe da togliere
-/// ([`Chiusura::da_togliere`]), e quel che fa il giro che non ha niente da
-/// leggere: le righe scadono anche se il catalogo non è cambiato. Chi chiama
-/// ripete finché `restano` è zero, ma non oltre [`TETTO_RIMOZIONI_PER_GIRO`]
-/// righe per giro.
+/// ([`Chiusura::da_togliere`]) o da nascondere, e quel che fa il giro che non ha
+/// niente da leggere: le righe scadono anche se il catalogo non è cambiato. Chi
+/// chiama ripete finché `restano` è zero e `da_nascondere` è falso, ma non oltre
+/// [`TETTO_RIMOZIONI_PER_GIRO`] righe tolte per giro, e si ferma se un blocco non
+/// ha tolto né nascosto niente.
 ///
 /// # Errori
 ///
@@ -1371,7 +1420,12 @@ pub fn togli_un_blocco_di(
     }
     let tx = transazione(connection)?;
     let mut toccati = Toccati::nessuno();
-    let blocco = togli_un_blocco_in(&tx, dispositivo, adesso_ms, &mut toccati, grandezza)?;
+    let mut blocco = togli_un_blocco_in(&tx, dispositivo, adesso_ms, &mut toccati, grandezza)?;
+    // E un blocco di righe sparite da nascondere, se ne restano dalla chiusura
+    // del giro: il lucchetto si libera fra un blocco e l'altro.
+    let nascoste = nascondi_le_sparite(&tx, dispositivo, grandezza)?;
+    blocco.nascoste = nascoste.nascoste;
+    blocco.da_nascondere = nascoste.restano;
     if blocco.tolte > 0 {
         if blocco.doppioni_da_rifare {
             ricalcola_doppioni_in(&tx)?;

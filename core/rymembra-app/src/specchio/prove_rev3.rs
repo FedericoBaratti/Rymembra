@@ -162,6 +162,23 @@ fn misura_la_chiusura_quando_il_pc_non_manda_piu_niente() {
             ULTIMA_CHIUSURA_MS.with(std::cell::Cell::get),
             t.elapsed().as_millis()
         );
+        // I blocchi dopo, ognuno in una presa sua: quanti sono e il più lungo.
+        let (mut blocchi, mut il_piu_lungo, mut totale) = (0, 0, 0);
+        loop {
+            let t = Instant::now();
+            let blocco =
+                crate::specchio::archivio::togli_un_blocco(&c, &chiave(PC), ADESSO + 20_000)
+                    .expect("blocco");
+            let ms = t.elapsed().as_millis();
+            (blocchi, il_piu_lungo, totale) = (blocchi + 1, il_piu_lungo.max(ms), totale + ms);
+            if !blocco.da_nascondere {
+                break;
+            }
+        }
+        eprintln!(
+            "MISURA   e poi {blocchi} blocchi: il più lungo {il_piu_lungo} ms, in tutto {totale} ms, nascoste {}",
+            n(&c, "SELECT COUNT(*) FROM tracks WHERE copia_di = id")
+        );
     }
 }
 

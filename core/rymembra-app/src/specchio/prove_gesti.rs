@@ -1137,3 +1137,61 @@ fn la_cronologia_conta_quello_che_mostra_senza_le_righe_in_grazia() {
     assert_eq!(ids(&c), vec![1, m3, m2]);
     assert_eq!(count_history(&c), Ok(3));
 }
+
+#[test]
+fn le_righe_sparite_si_nascondono_a_blocchi_e_alla_fine_non_resta_niente_di_visibile() {
+    use crate::library::counts;
+    use crate::specchio::Origine;
+    use crate::specchio::archivio::{BLOCCO_RIMOZIONI, togli_un_blocco};
+    // Un PC che non manda più niente: tutte le sue righe diventano sparite, e
+    // sono più di un blocco. La chiusura ne nasconde un blocco e dice che ne
+    // restano; il blocco dopo, in una presa sua, le altre.
+    let c = libreria();
+    let quante = i64::try_from(BLOCCO_RIMOZIONI).expect("blocco") + 500;
+    let righe: Vec<_> = (1..=quante).map(riga).collect();
+    giro(&c, &chiave(PC), &righe, ADESSO);
+    // Una playlist con la voce di un brano che è anche di qui: sta nel secondo
+    // blocco, e passa alla copia di qui quando la sua riga si nasconde.
+    locale(&c, 900_000, quante);
+    let ultima = id_specchio(&c, PC, quante);
+    let sera = playlist_con(&c, "sera", &[ultima]);
+
+    let chiusura = giro(&c, &chiave(PC), &[], ADESSO + 10_000);
+    assert!(chiusura.da_nascondere, "{chiusura:?}");
+    let visibili = |c: &Connection| counts(c, &Origine::Tutti).expect("conteggi").tracks;
+    assert_eq!(
+        visibili(&c),
+        501,
+        "il blocco nascosto, e quel che resta + il brano di qui"
+    );
+    let voce_di = |c: &Connection| -> i64 {
+        c.query_row(
+            "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1",
+            [sera],
+            |r| r.get(0),
+        )
+        .expect("voce")
+    };
+    assert_eq!(
+        voce_di(&c),
+        ultima,
+        "la riga non è ancora nascosta, la voce sta com'era"
+    );
+
+    let blocco = togli_un_blocco(&c, &chiave(PC), ADESSO + 20_000).expect("blocco");
+    assert_eq!(
+        (blocco.nascoste, blocco.da_nascondere, blocco.tolte),
+        (500, false, 0),
+        "{blocco:?}"
+    );
+    assert_eq!(visibili(&c), 1, "resta il brano di qui");
+    assert_eq!(voce_di(&c), 900_000, "la voce è passata alla copia di qui");
+
+    // Niente da fare: nessuna scrittura, e nessun blocco.
+    let ancora = togli_un_blocco(&c, &chiave(PC), ADESSO + 30_000).expect("blocco");
+    assert_eq!(
+        (ancora.nascoste, ancora.da_nascondere),
+        (0, false),
+        "{ancora:?}"
+    );
+}

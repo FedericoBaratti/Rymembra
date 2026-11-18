@@ -299,7 +299,7 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
         // Il catalogo non è cambiato, ma le righe che il proprietario non manda
         // più scadono lo stesso (la grazia): senza questo, una riga sparita
         // resterebbe nascosta finché il catalogo non cambia.
-        let (righe, in_attesa) = togli_le_scadute(dati, chiave, 0, 0, true);
+        let (righe, in_attesa) = togli_le_scadute(dati, chiave, 0, 0, false, true);
         avanza(
             dati,
             AvanzamentoSpecchio {
@@ -412,8 +412,14 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
     };
     // Le righe da togliere che non sono entrate nel primo blocco, a blocchi:
     // ognuno in una presa sua del lucchetto, e non oltre il tetto per giro.
-    let (righe, in_attesa_dopo) =
-        togli_le_scadute(dati, chiave, chiusura.tolte, chiusura.da_togliere, false);
+    let (righe, in_attesa_dopo) = togli_le_scadute(
+        dati,
+        chiave,
+        chiusura.tolte,
+        chiusura.da_togliere,
+        chiusura.da_nascondere,
+        false,
+    );
     let in_attesa = chiusura.in_attesa.max(in_attesa_dopo);
     avanza(
         dati,
@@ -437,11 +443,14 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
 }
 
 /// Toglie, a blocchi, le righe che il proprietario non manda più e la cui grazia
-/// è finita: ogni blocco in una presa sua del lucchetto, e non oltre
-/// [`TETTO_RIMOZIONI_PER_GIRO`] righe per giro. `tolte` sono quelle già tolte da
-/// questo giro, e `restano` quelle che il primo blocco ha lasciato. Con `guarda_lo_stesso` si
-/// guarda una volta anche se non resta niente, per il giro che non ha niente da
-/// leggere: le righe scadono anche se il catalogo non è cambiato.
+/// è finita, e nasconde quelle appena sparite che la chiusura non ha fatto in
+/// tempo a nascondere: ogni blocco in una presa sua del lucchetto, e non oltre
+/// [`TETTO_RIMOZIONI_PER_GIRO`] righe tolte per giro. `tolte` sono quelle già
+/// tolte da questo giro, `restano` quelle da togliere che il primo blocco ha
+/// lasciato e `da_nascondere` dice se restano righe da nascondere. Con
+/// `guarda_lo_stesso` si guarda una volta anche se non resta niente, per il giro
+/// che non ha niente da leggere: le righe scadono anche se il catalogo non è
+/// cambiato.
 ///
 /// Restituisce quante righe ha adesso il dispositivo e quante aspettano una
 /// conferma. Un guasto non rompe il giro: le righe restano segnate e al giro
@@ -451,6 +460,7 @@ fn togli_le_scadute<D: Dati>(
     chiave: &str,
     mut tolte: usize,
     mut restano: usize,
+    mut da_nascondere: bool,
     guarda_lo_stesso: bool,
 ) -> (usize, usize) {
     let mut in_attesa = 0;
@@ -460,14 +470,17 @@ fn togli_le_scadute<D: Dati>(
         && dati
             .leggi(|c| archivio::sparite_in_attesa(c, chiave))
             .is_ok_and(|n| n > 0);
-    while (restano > 0 || da_guardare) && tolte < TETTO_RIMOZIONI_PER_GIRO {
+    while (restano > 0 || da_nascondere || da_guardare) && tolte < TETTO_RIMOZIONI_PER_GIRO {
         da_guardare = false;
         match dati.scrivi(|c| archivio::togli_un_blocco(c, chiave, adesso_ms())) {
             Ok(blocco) => {
                 tolte = tolte.saturating_add(blocco.tolte);
                 restano = blocco.restano;
+                da_nascondere = blocco.da_nascondere;
                 in_attesa = blocco.in_attesa;
-                if blocco.tolte == 0 {
+                // Un blocco che non ha tolto né nascosto niente non è un
+                // blocco che servirà ripetere.
+                if blocco.tolte == 0 && blocco.nascoste == 0 {
                     break;
                 }
             }
