@@ -455,6 +455,75 @@ pub fn scarico(acceso: bool, numero: u32, di: u32, titolo: &str) -> Result<(), E
     )
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Sottofondo<'a> {
+    acceso: bool,
+    collegati: &'a [String],
+    dalla_persona: bool,
+}
+
+/// Accende, o spegne, il servizio in primo piano di «Resta attiva in
+/// sottofondo» (`Presenza`), e gli dice a chi si è collegati: la notifica
+/// recita «collegata a <PC>». Si ripete a ogni giro del nodo; il servizio rifà
+/// la notifica solo se la frase cambia.
+///
+/// `dalla_persona` è l'interruttore delle impostazioni, e non il giro: annulla
+/// uno «Spegni» della notifica non ancora arrivato al nucleo, e al primo
+/// «acceso» chiede le notifiche.
+///
+/// # Errori
+///
+/// Se il ponte non risponde. Un servizio che il sistema non lascia partire
+/// dallo sfondo non è un errore: riparte quando l'app torna in vista.
+pub fn sottofondo(acceso: bool, collegati: &[String], dalla_persona: bool) -> Result<(), Errore> {
+    chiama(
+        "sistema.sottofondo",
+        &Sottofondo {
+            acceso,
+            collegati,
+            dalla_persona,
+        },
+    )
+}
+
+/// Se «Spegni» è stato premuto sulla notifica del sottofondo e il nucleo non
+/// lo sa ancora: dice sì una volta sola, poi no. Il nucleo lo scrive nelle
+/// impostazioni (`lontano/filo.rs`). Non aspetta niente.
+///
+/// # Errori
+///
+/// Se il ponte non risponde.
+pub fn sottofondo_spento_dalla_notifica() -> Result<bool, Errore> {
+    chiama("sistema.sottofondoSpento", &())
+}
+
+/// Se Rymembra è fuori dal risparmio batteria di Android: un servizio in primo
+/// piano non esenta dal Doze, e con lo schermo spento e il telefono fermo il
+/// sistema sospende la rete delle app che ne restano dentro. Non aspetta.
+///
+/// # Errori
+///
+/// Se il ponte non risponde.
+pub fn senza_risparmio_batteria() -> Result<bool, Errore> {
+    chiama("sistema.senzaRisparmio", &())
+}
+
+/// Apre la pagina di sistema in cui si toglie il risparmio batteria a
+/// Rymembra (`ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`, e se un telefono
+/// non l'ha la scheda dell'app). Non la richiesta diretta, che la policy di
+/// Google Play riserva ad altri.
+///
+/// Bloccante: vedi il preambolo del modulo.
+///
+/// # Errori
+///
+/// Se il ponte non risponde, se non c'è un'attività, o se nessuna delle due
+/// pagine si apre.
+pub fn apri_risparmio_batteria() -> Result<(), Errore> {
+    chiama("sistema.apriRisparmio", &())
+}
+
 /// Se l'app vede la rete di casa.
 ///
 /// Da Android 17 un'app che si dichiara per Android 17 non la vede finché non
@@ -622,4 +691,45 @@ pub struct Riquadri {
 /// Se il ponte non risponde.
 pub fn riquadri() -> Result<Riquadri, Errore> {
     chiama("sistema.riquadri", &())
+}
+
+#[cfg(test)]
+mod prove {
+    use super::*;
+
+    #[test]
+    fn il_sottofondo_parla_a_kotlin_con_i_nomi_che_kotlin_legge() {
+        // `Ponte.kt` legge `acceso`, `collegati` e `dallaPersona`: un nome
+        // scritto in un altro modo da questo lato non dà un errore, dà un
+        // `JSONException` sul telefono.
+        let a = serde_json::to_value(Sottofondo {
+            acceso: true,
+            collegati: &["PC di casa".to_owned(), "Studio".to_owned()],
+            dalla_persona: true,
+        })
+        .unwrap();
+        assert_eq!(
+            a,
+            serde_json::json!({
+                "acceso": true,
+                "collegati": ["PC di casa", "Studio"],
+                "dallaPersona": true,
+            })
+        );
+    }
+
+    #[test]
+    fn fuori_da_android_il_ponte_dice_che_non_c_e() {
+        for esito in [
+            sottofondo(true, &[], false).err(),
+            sottofondo_spento_dalla_notifica().err(),
+            senza_risparmio_batteria().err(),
+            apri_risparmio_batteria().err(),
+        ] {
+            assert!(
+                esito.is_some_and(|e| e.to_string().contains("non su Android")),
+                "un comando del sottofondo che non dice «non su Android»"
+            );
+        }
+    }
 }

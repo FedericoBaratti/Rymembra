@@ -28,6 +28,9 @@ pub struct StatoLontanoIpc {
     pub relay: Option<String>,
     /// «Solo Wi-Fi».
     pub dati_mobili: DatiMobili,
+    /// «Resta attiva in sottofondo» (solo il telefono): il servizio in primo
+    /// piano che tiene il nodo acceso. Indipendente da `attivo`.
+    pub sottofondo: bool,
     /// Perché il nodo non si accende: la chiave del testo (`errors.…`).
     pub errore: Option<String>,
     /// I dispositivi collegati.

@@ -367,6 +367,7 @@ const FUORI: &[&str] = &[
     "l'arricchimento in database (ri-derivabile da una passata)",
     "«Ascolta insieme»: i PC associati, il nome di questo PC e gli indirizzi (fatti di questa macchina)",
     "le cartelle dal cloud: gli account collegati, le app registrate presso Google, Microsoft e Dropbox, e lo specchio dei servizi (fatti di questa macchina; le cartelle scelte viaggiano)",
+    "il sottofondo del telefono: «Resta attiva in sottofondo» (fatto di questo telefono: la sua batteria, e il produttore che lo lascia vivere o no)",
 ];
 
 /// Il file v1, come sta sul disco.

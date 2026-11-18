@@ -284,7 +284,47 @@ fn niente_di_insieme_viaggia_nel_profilo() {
             !chiave.starts_with("lontano."),
             "«{chiave}» è del collegamento via internet e non deve viaggiare"
         );
+        // Né il servizio in primo piano del telefono: un profilo portato su un
+        // altro telefono lo accenderebbe da solo, con la batteria di un altro.
+        assert!(
+            !chiave.starts_with("daemon."),
+            "«{chiave}» è del sottofondo del telefono e non deve viaggiare"
+        );
     }
+}
+
+#[test]
+fn il_sottofondo_del_telefono_resta_qui_e_il_manifesto_lo_dichiara() {
+    let mut c = libreria();
+    crate::dispositivi::sottofondo(&c, true).expect("acceso");
+    let raccolto = raccogli(
+        &mut c,
+        "qui",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        0,
+        &identita_fissa,
+    )
+    .expect("raccolta");
+    assert!(
+        !raccolto
+            .preferenze
+            .voci
+            .contains_key(crate::dispositivi::CHIAVE_SOTTOFONDO),
+        "l'interruttore del sottofondo non entra nel profilo"
+    );
+    assert!(
+        raccolto
+            .lasciate
+            .contains(&crate::dispositivi::CHIAVE_SOTTOFONDO.to_owned()),
+        "e il profilo dice che l'ha lasciato qui"
+    );
+    assert!(
+        super::FUORI
+            .iter()
+            .any(|riga| riga.contains("sottofondo del telefono")),
+        "il manifesto dice che il sottofondo è rimasto fuori, e perché"
+    );
 }
 
 /// Le cose di «Ascolta insieme» che non devono uscire, in una libreria: un PC

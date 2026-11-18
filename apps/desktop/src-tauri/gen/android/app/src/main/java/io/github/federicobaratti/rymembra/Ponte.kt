@@ -198,6 +198,22 @@ object Ponte {
           a.getString("titolo"),
         ).let { null }
       }
+      "sistema.sottofondo" -> {
+        val acceso = a.getBoolean("acceso")
+        val dallaPersona = a.optBoolean("dallaPersona", false)
+        // Le notifiche si chiedono quando chi accende l'interruttore sa perché
+        // arriva la domanda, e non a ogni giro del nucleo.
+        if (acceso && dallaPersona) Permessi.notificheAlBisogno(attivita.get(), aspetta = false)
+        Presenza.imposta(contesto(), acceso, testi(a, "collegati"), dallaPersona).let { null }
+      }
+      "sistema.sottofondoSpento" -> Presenza.prendiLoSpegnimentoDellaNotifica(contesto())
+      "sistema.senzaRisparmio" -> Presenza.senzaRisparmio(contesto())
+      "sistema.apriRisparmio" -> {
+        check(Presenza.apriRisparmio(attivitaPerAspettare())) {
+          "nessuna pagina del risparmio batteria si apre"
+        }
+        null
+      }
       "sistema.cestinabili" -> org.json.JSONArray(Cestino.cestinabili(contesto(), testi(a, "percorsi")))
       "sistema.cestina" -> Cestino.cestina(attivitaPerAspettare(), testi(a, "percorsi"))
       "sistema.multicast" -> Rete.multicast(contesto(), a.getBoolean("acceso")).let { null }

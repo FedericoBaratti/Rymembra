@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- La notifica «Rymembra è attiva»: un punto e due coppie di onde, il segno
+     di chi trasmette. Disegno nostro, senza una fonte da citare in
+     THIRD-PARTY-NOTICES.md. Solo tratti: l'icona di una notifica è una
+     maschera, conta dove c'è colore e non quale. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,10c-1.1,0 -2,0.9 -2,2s0.9,2 2,2 2,-0.9 2,-2 -0.9,-2 -2,-2z" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:pathData="M8.46,8.46A5,5 0 0 0 8.46,15.54M15.54,8.46A5,5 0 0 1 15.54,15.54M5.64,5.64A8,8 0 0 0 5.64,18.36M18.36,5.64A8,8 0 0 1 18.36,18.36" />
+</vector>

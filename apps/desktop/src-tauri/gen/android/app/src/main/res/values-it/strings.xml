@@ -47,6 +47,14 @@
     <string name="scarico_titolo">Rymembra sta scaricando</string>
     <string name="scarico_testo">%1$d di %2$d · %3$s</string>
 
+    <string name="presenza_canale">Resta attiva in sottofondo</string>
+    <string name="presenza_titolo">Rymembra è attiva</string>
+    <string name="presenza_titolo_uno">Rymembra è attiva · collegata a %1$s</string>
+    <string name="presenza_titolo_piu">Rymembra è attiva · collegata a %1$d dispositivi</string>
+    <string name="presenza_titolo_riposo">Rymembra è a riposo</string>
+    <string name="presenza_testo_riposo">Apri Rymembra perché i tuoi dispositivi raggiungano di nuovo questo telefono.</string>
+    <string name="presenza_spegni">Spegni</string>
+
     <string name="qr_istruzioni">Inquadra il QR mostrato da Rymembra sull\'altro dispositivo.</string>
     <string name="qr_torcia">Torcia</string>
     <string name="qr_annulla">Annulla</string>

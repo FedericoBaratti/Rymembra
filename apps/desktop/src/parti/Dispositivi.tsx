@@ -70,6 +70,7 @@ import { comanda, statoDelFidato, useStatoInsieme } from "./Insieme";
 import { Icona } from "./Icone";
 import { Interruttore } from "./Interruttore";
 import { Segmentato } from "./Segmentato";
+import { SottofondoTelefono } from "./SottofondoTelefono";
 
 // ── in App ──────────────────────────────────────────────────────────────────
 
@@ -872,7 +873,11 @@ export function SchedaDispositivi({
       <Interruttore
         etichetta={t("settings.devices.reachable")}
         spiegazione={t(
-          MOBILE ? "settings.devices.reachable.sub.phone" : "settings.devices.reachable.sub",
+          MOBILE
+            ? stato.sottofondo
+              ? "settings.devices.background.reachable.sub"
+              : "settings.devices.reachable.sub.phone"
+            : "settings.devices.reachable.sub",
         )}
         acceso={stato.attivo}
         onCambia={(acceso) => fai(() => ipc.lontanoAttiva(acceso))}
@@ -882,9 +887,12 @@ export function SchedaDispositivi({
           {tSe(stato.errore, t("errors.lontano.spento"))}
         </p>
       )}
-      {MOBILE && stato.attivo && !stato.acceso && stato.errore === null && (
+      {/* Con il sottofondo acceso il nodo non riposa: la nota sarebbe falsa. */}
+      {MOBILE && stato.attivo && !stato.acceso && stato.errore === null && !stato.sottofondo && (
         <p className="nota">{t("settings.devices.asleep")}</p>
       )}
+
+      {MOBILE && <SottofondoTelefono stato={stato} fai={fai} onErrore={onErrore} />}
 
       {MOBILE && (
         <div className="riga-opzione">

@@ -385,6 +385,41 @@ pub async fn lontano_dati_mobili(app: AppHandle, scelta: DatiMobili) -> Esito<St
     .await
 }
 
+/// «Resta attiva in sottofondo» (solo il telefono): accende o spegne il
+/// servizio in primo piano che tiene il nodo acceso anche con l'app chiusa.
+///
+/// Non accende «Raggiungibile da internet»: quello è un sì a parte
+/// ([`lontano_attiva`]), e senza i PC non trovano il telefono lo stesso.
+/// Fuori da Android è `internal.aborted`: la finestra non lo chiama.
+#[tauri::command]
+pub async fn lontano_sottofondo(app: AppHandle, attivo: bool) -> Esito<StatoLontanoIpc> {
+    #[cfg(target_os = "android")]
+    return in_disparte(move || {
+        // La scelta più recente vince: un «Spegni» della notifica non ancora
+        // scritto non disfa quel che la persona ha appena deciso.
+        comune(&app)?.spegnere.store(false, Ordering::Release);
+        scrivi_in_libreria(&app, |c| dispositivi::sottofondo(c, attivo))?;
+        // Subito, e non al giro del filo: la persona vuole vedere la notifica
+        // — o sentirla andare — adesso, e al primo «acceso» le si chiedono le
+        // notifiche. Il filo poi dice al servizio a chi si è collegati.
+        rymembra_android::sistema::sottofondo(attivo, &[], true).map_err(|err| {
+            AppError::new(ErrorCode::InternalUnexpected {
+                detail: Some("servizio del sottofondo".to_owned()),
+            })
+            .with_cause(err.to_string())
+        })?;
+        rileggi_e_aspetta(&app)
+    })
+    .await;
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, attivo);
+        Err(errore(AppError::new(ErrorCode::InternalAborted {
+            what: Some("solo su Android".to_owned()),
+        })))
+    }
+}
+
 /// Un QR nuovo, da mostrare: quello di prima non vale più. Con
 /// «Raggiungibile da internet» spento è `lontano.spento`: vedi
 /// [`attivo_per_collegare`].

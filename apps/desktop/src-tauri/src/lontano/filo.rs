@@ -6,9 +6,17 @@
 //! Con «Raggiungibile da internet» acceso, e:
 //!
 //! - su Windows sempre, finché gira Rymembra (anche dal vassoio);
-//! - sul telefono mentre lo si usa — l'attività è in vista, o la musica
+//! - sul telefono con «Resta attiva in sottofondo» acceso (`daemon.attivo`)
+//!   sempre, finché gira il servizio in primo piano che lo tiene vivo
+//!   (`Presenza.kt`): è il punto, che i PC lo trovino quando lo cercano. Costa
+//!   batteria — il relay di iroh vuole i suoi keepalive —, e per questo è una
+//!   scelta di chi lo usa e non un'abitudine dell'app;
+//! - sul telefono senza, mentre lo si usa — l'attività è in vista, o la musica
 //!   suona — e per [`SVEGLIO_DOPO`] dopo. Poi si spegne: un telefono in tasca
 //!   non tiene aperta una porta per niente, e la batteria ringrazia.
+//!
+//! Il sottofondo da solo non accende niente verso internet: serve anche
+//! «Raggiungibile da internet», che è un sì a parte.
 //!
 //! # Chi scrive cosa
 //!
@@ -79,9 +87,45 @@ const SCRIVI_VISTO_OGNI: Duration = Duration::from_secs(60);
 /// secondo.
 const GRAZIA: Duration = Duration::from_secs(8);
 
-/// Il telefono resta raggiungibile tanto dopo l'ultimo uso.
-#[cfg(target_os = "android")]
+/// Il telefono resta raggiungibile tanto dopo l'ultimo uso, se il sottofondo
+/// è spento.
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(
+        dead_code,
+        reason = "la regola del telefono, che le prove vedono ovunque"
+    )
+)]
 const SVEGLIO_DOPO: Duration = Duration::from_secs(2 * 60);
+
+/// Il telefono deve restare raggiungibile: col sottofondo acceso sempre; senza,
+/// finché lo si usa e per [`SVEGLIO_DOPO`] dopo. `fermo_da` è il tempo
+/// dall'ultimo uso. Una funzione sola, perché la regola si prova anche dove
+/// il telefono non c'è.
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(
+        dead_code,
+        reason = "la regola del telefono, che le prove vedono ovunque"
+    )
+)]
+fn resta_raggiungibile(sottofondo: bool, in_uso_adesso: bool, fermo_da: Duration) -> bool {
+    sottofondo || in_uso_adesso || fermo_da < SVEGLIO_DOPO
+}
+
+/// Chi risponde adesso e si fida, per nome, come lo dice la notifica del
+/// sottofondo («collegata a <PC>»). Nell'ordine del pannello.
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(dead_code, reason = "lo dice la notifica del telefono")
+)]
+fn nomi_collegati(dispositivi: &[DispositivoIpc]) -> Vec<String> {
+    dispositivi
+        .iter()
+        .filter(|d| d.online && !d.revocato)
+        .map(|d| d.nome.clone())
+        .collect()
+}
 
 /// La piattaforma, come la si dice agli altri.
 pub(super) const PIATTAFORMA: &str = if cfg!(target_os = "android") {
@@ -159,6 +203,12 @@ pub(super) struct Comune {
     scritture: AtomicU64,
     /// Uno scrittore del registro è in giro ([`scrivi_il_registro`]).
     scrittore: AtomicBool,
+    /// «Spegni» sulla notifica del sottofondo è stato premuto, e la libreria
+    /// non ha ancora la scelta scritta: finché non c'è, il sottofondo conta
+    /// spento, e non lo rimette in piedi la lettura di prima. Lo toglie chi
+    /// lo scrive, o l'interruttore che la persona riaccende (la scelta più
+    /// recente vince). Solo il telefono lo alza.
+    pub spegnere: AtomicBool,
     /// La cassetta del filo.
     pub posta: Sender<Posta>,
 }
@@ -182,6 +232,7 @@ impl Comune {
             prossima_modifica: AtomicU64::new(1),
             scritture: AtomicU64::new(0),
             scrittore: AtomicBool::new(false),
+            spegnere: AtomicBool::new(false),
             posta,
         }
     }
@@ -823,6 +874,10 @@ struct Filo {
     /// L'ultima volta che il telefono era in uso.
     #[cfg(target_os = "android")]
     in_uso: Instant,
+    /// L'ultimo guasto del ponte nel dire al sistema se il sottofondo è
+    /// voluto: nel diario una volta, non a ogni giro.
+    #[cfg(target_os = "android")]
+    guasto_sottofondo: Option<String>,
 }
 
 impl Filo {
@@ -840,6 +895,8 @@ impl Filo {
             vie: HashMap::new(),
             #[cfg(target_os = "android")]
             in_uso: Instant::now(),
+            #[cfg(target_os = "android")]
+            guasto_sottofondo: None,
         }
     }
 
@@ -932,6 +989,10 @@ impl Filo {
 
     /// Rilegge, accende o spegne, e pubblica. `subito`: vedi [`Posta::Rileggi`].
     fn riconcilia(&mut self, subito: bool) {
+        // «Spegni» sulla notifica va nella libreria prima della lettura, che
+        // così la trova scritta.
+        #[cfg(target_os = "android")]
+        self.scrivi_lo_spegnimento_della_notifica();
         // Prima di leggere: vedi `tieni_la_lettura`.
         let vista = self.comune.scritture_viste();
         let lettura = leggi_a_parte(&self.app, leggi);
@@ -1001,15 +1062,88 @@ impl Filo {
         }
         self.togli_il_qr_finito();
         self.pubblica();
+        // A ogni giro, anche senza novità: un servizio che il sistema ha
+        // rifiutato dallo sfondo riparte appena l'app torna in vista, e uno
+        // chiuso torna.
+        #[cfg(target_os = "android")]
+        self.dillo_al_servizio();
     }
 
-    /// Il telefono è in uso, o lo è stato da poco. Altrove sempre.
+    /// Il telefono è in uso, o lo è stato da poco — o ha il sottofondo acceso,
+    /// e allora sempre. Altrove sempre.
     #[cfg(target_os = "android")]
     fn in_uso(&mut self) -> bool {
-        if rymembra_android::sistema::in_uso().unwrap_or(true) || self.comune.in_volo() {
+        let sottofondo = self.sottofondo_acceso();
+        let adesso = rymembra_android::sistema::in_uso().unwrap_or(true) || self.comune.in_volo();
+        // Anche col sottofondo si segna l'ora: spento, il nodo non si chiude
+        // sotto i piedi di chi l'ha appena spento, ma `SVEGLIO_DOPO` dopo.
+        if sottofondo || adesso {
             self.in_uso = Instant::now();
         }
-        self.in_uso.elapsed() < SVEGLIO_DOPO
+        resta_raggiungibile(sottofondo, adesso, self.in_uso.elapsed())
+    }
+
+    /// «Resta attiva in sottofondo», com'è adesso: quel che la libreria dice,
+    /// meno uno «Spegni» della notifica non ancora scritto.
+    fn sottofondo_acceso(&self) -> bool {
+        self.letto
+            .as_ref()
+            .is_some_and(|l| l.impostazioni.sottofondo)
+            && !self.comune.spegnere.load(Ordering::Acquire)
+    }
+
+    /// «Spegni» sulla notifica del servizio: Kotlin ha già fermato il servizio e
+    /// lo ricorda, e qui lo si scrive nelle impostazioni. La libreria si aspetta
+    /// al più [`ATTESA_LIBRERIA`], come «visto»: occupata, `spegnere` tiene il
+    /// sottofondo spento e si riprova al giro dopo.
+    #[cfg(target_os = "android")]
+    fn scrivi_lo_spegnimento_della_notifica(&self) {
+        let spegnere = &self.comune.spegnere;
+        if !spegnere.load(Ordering::Acquire)
+            && rymembra_android::sistema::sottofondo_spento_dalla_notifica().unwrap_or(false)
+        {
+            nota!("[lontano] «Spegni» sulla notifica: il sottofondo si spegne");
+            spegnere.store(true, Ordering::Release);
+        }
+        if !spegnere.load(Ordering::Acquire) {
+            return;
+        }
+        match in_libreria(&self.app, ATTESA_LIBRERIA, |c| {
+            dispositivi::sottofondo(c, false)
+        }) {
+            Ok(()) => spegnere.store(false, Ordering::Release),
+            Err(err) => nota!(
+                "[lontano] il sottofondo spento dalla notifica non si scrive codice={}: si riprova al giro",
+                err.code().kind().code()
+            ),
+        }
+    }
+
+    /// Dice al servizio del telefono se il sottofondo è voluto e a chi si è
+    /// collegati, a ogni pubblicazione: il servizio rifà la notifica solo se la
+    /// frase cambia. Prima della prima lettura riuscita no: «spento» sarebbe
+    /// un'ipotesi, e fermerebbe un servizio che la libreria vuole acceso.
+    #[cfg(target_os = "android")]
+    fn dillo_al_servizio(&mut self) {
+        if self.letto.is_none() {
+            return;
+        }
+        let acceso = self.sottofondo_acceso();
+        let collegati = if acceso {
+            nomi_collegati(&prendi(&self.comune.vetrina).dispositivi)
+        } else {
+            Vec::new()
+        };
+        match rymembra_android::sistema::sottofondo(acceso, &collegati, false) {
+            Ok(()) => self.guasto_sottofondo = None,
+            Err(err) => {
+                let testo = err.to_string();
+                if self.guasto_sottofondo.as_ref() != Some(&testo) {
+                    nota!("[lontano] il servizio del sottofondo non risponde: {testo}");
+                }
+                self.guasto_sottofondo = Some(testo);
+            }
+        }
     }
 
     #[cfg(not(target_os = "android"))]
@@ -1175,6 +1309,7 @@ impl Filo {
                 .as_ref()
                 .map(|l| l.impostazioni.dati_mobili)
                 .unwrap_or_default(),
+            sottofondo: self.sottofondo_acceso(),
             errore: self.errore.clone(),
             dispositivi: self
                 .letto
@@ -1245,6 +1380,10 @@ impl Filo {
         if self.pubblicata.as_deref() != Some(json.as_str()) {
             self.pubblicata = Some(json);
             self.app.emetti("lontano:stato", ipc);
+            // Chi è collegato è cambiato, o il sottofondo: la notifica si rifà
+            // adesso, non al giro dopo.
+            #[cfg(target_os = "android")]
+            self.dillo_al_servizio();
         }
     }
 
@@ -1314,6 +1453,63 @@ mod prove {
 
     fn occupata() -> Result<Letto, AppError> {
         Err(AppError::new(ErrorCode::DbLocked).with_cause("una scansione tiene la libreria"))
+    }
+
+    #[test]
+    fn col_sottofondo_acceso_il_telefono_non_va_a_dormire() {
+        // Senza il sottofondo il nodo si spegne `SVEGLIO_DOPO` dopo l'ultimo
+        // uso: un telefono in tasca non tiene aperta una porta per niente.
+        // Col sottofondo, deciso da chi lo usa, no — è il punto: i PC lo
+        // raggiungono sempre.
+        let da_molto = SVEGLIO_DOPO * 1_000;
+        assert!(resta_raggiungibile(true, false, da_molto));
+        assert!(resta_raggiungibile(true, true, da_molto));
+        // Spento, vale la regola di prima, alla soglia compresa.
+        assert!(resta_raggiungibile(false, true, da_molto));
+        assert!(resta_raggiungibile(
+            false,
+            false,
+            SVEGLIO_DOPO - Duration::from_millis(1)
+        ));
+        assert!(!resta_raggiungibile(false, false, SVEGLIO_DOPO));
+        assert!(!resta_raggiungibile(false, false, da_molto));
+    }
+
+    /// Un dispositivo del pannello, con quel che serve a «collegata a …».
+    fn nel_pannello(nome: &str, online: bool, revocato: bool) -> DispositivoIpc {
+        DispositivoIpc {
+            chiave: chiave_finta('c'),
+            nome: nome.to_owned(),
+            piattaforma: "windows".to_owned(),
+            dispositivo: "pc-di-prova".to_owned(),
+            online,
+            visto_ms: None,
+            associato_ms: 0,
+            revocato,
+            versione: None,
+            insieme_acceso: false,
+            insieme_ospita: false,
+            insieme: None,
+            via: None,
+        }
+    }
+
+    #[test]
+    fn la_notifica_nomina_solo_chi_risponde_e_si_fida() {
+        // «Rymembra è attiva · collegata a <PC>»: chi non risponde, o ci ha
+        // revocati, non è «collegato», e la notifica non deve dirlo.
+        let pannello = [
+            nel_pannello("PC di casa", true, false),
+            nel_pannello("Portatile", false, false),
+            nel_pannello("Ufficio", true, true),
+            nel_pannello("Studio", true, false),
+        ];
+        assert_eq!(
+            nomi_collegati(&pannello),
+            vec!["PC di casa".to_owned(), "Studio".to_owned()]
+        );
+        assert!(nomi_collegati(&[]).is_empty());
+        assert!(nomi_collegati(&[nel_pannello("Spento", false, false)]).is_empty());
     }
 
     #[test]

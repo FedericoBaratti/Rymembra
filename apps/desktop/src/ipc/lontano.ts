@@ -89,6 +89,8 @@ export interface StatoLontano {
   /** Il relay proprio, se c'è. */
   relay: string | null;
   datiMobili: DatiMobili;
+  /** «Resta attiva in sottofondo» (solo il telefono): il servizio che tiene il nodo acceso. */
+  sottofondo: boolean;
   /** Perché il nodo non si accende: la chiave del testo. */
   errore: string | null;
   dispositivi: DispositivoLontano[];
