@@ -157,22 +157,39 @@ pub enum NuovoTesto {
     Rifiuta,
 }
 
-/// Quel che aspetta in posta per un brano: l'ultimo scarto e l'ultimo testo,
-/// fusi come lo sarebbero applicando i gesti in fila.
+/// Quanti gesti sul testo, al più, aspettano in posta per un brano.
+pub const MASSIMI_GESTI_IN_POSTA: usize = 6;
+
+/// Quel che aspetta in posta per un brano: l'ultimo scarto e i gesti sul testo,
+/// fusi in modo che il proprietario finisca com'è finita la copia di qui.
 ///
-/// Il testo si applica **prima** dello scarto: un testo a mano azzera lo scarto
-/// (le sue battute nascono nello spazio della posizione grezza), quindi uno
-/// scarto dato dopo di lui deve vincere, e uno dato prima deve sparire. La
-/// fusione lo sa: un testo a mano porta con sé uno scarto a zero.
+/// # Lo scarto
+///
+/// Si applica **dopo** i testi: un testo a mano azzera lo scarto (le sue battute
+/// nascono nello spazio della posizione grezza), quindi uno scarto dato dopo di
+/// lui deve vincere, e uno dato prima deve sparire. La fusione lo sa: un testo a
+/// mano porta con sé uno scarto a zero.
+///
+/// # I gesti sul testo, in ordine
+///
+/// Non vale «l'ultimo vince»: scegliere una voce e poi dire «non è questo»
+/// butta **quella voce** — il proprietario la mette fra gli scartati — mentre il
+/// solo «non è questo» butterebbe il testo che il proprietario ha di suo. Quindi
+/// i gesti restano in fila, e si semplifica solo dove il risultato è lo stesso:
+///
+/// - un testo a mano rifà tutto, e prende il posto dei gesti di prima;
+/// - due scelte, o due rifiuti, uno dopo l'altro valgono l'ultimo.
+///
+/// Oltre [`MASSIMI_GESTI_IN_POSTA`] si lasciano i più vecchi.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Correzione {
     /// Lo scarto da mettere, se è cambiato.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scarto_ms: Option<i32>,
-    /// Il testo da mettere, se è cambiato.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub testo: Option<NuovoTesto>,
+    /// I gesti sul testo, nell'ordine in cui sono stati dati.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub testi: Vec<NuovoTesto>,
 }
 
 impl Correzione {
@@ -198,19 +215,30 @@ impl Correzione {
             },
             Scrittura::Testo(testo @ NuovoTesto::Mano { .. }) => Self {
                 scarto_ms: Some(0),
-                testo: Some(testo.clone()),
+                testi: vec![testo.clone()],
             },
-            Scrittura::Testo(testo) => Self {
-                testo: Some(testo.clone()),
-                ..self
-            },
+            Scrittura::Testo(testo) => {
+                let mut testi = self.testi;
+                let stesso_gesto = testi.last().is_some_and(|ultimo| {
+                    std::mem::discriminant(ultimo) == std::mem::discriminant(testo)
+                });
+                if stesso_gesto {
+                    testi.pop();
+                }
+                testi.push(testo.clone());
+                if testi.len() > MASSIMI_GESTI_IN_POSTA {
+                    testi.remove(0);
+                }
+                Self { testi, ..self }
+            }
         }
     }
 
-    /// Le scritture da mandare, nell'ordine in cui vanno applicate.
+    /// Le scritture da mandare, nell'ordine in cui vanno applicate: i gesti sul
+    /// testo, poi lo scarto.
     #[must_use]
     pub fn scritture(&self) -> Vec<Scrittura> {
-        self.testo
+        self.testi
             .iter()
             .cloned()
             .map(Scrittura::Testo)
@@ -462,6 +490,55 @@ pub fn in_attesa(connection: &Connection, remoto: &Remoto) -> Result<bool, AppEr
     .is_some())
 }
 
+/// Cosa fare della posta dopo un gesto dato qui al testo di un brano.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Posta {
+    /// Il gesto è in posta per questo dispositivo: va svegliato chi la manda.
+    Mandare(String),
+    /// Non c'è niente da mandare: il brano è di questa macchina, o il gesto
+    /// non ha cambiato niente qui.
+    Niente,
+    /// Il gesto non parte: è troppo lungo per una domanda.
+    TroppoLungo,
+}
+
+/// Mette in posta, se serve, un gesto che si è **appena** scritto nella copia di
+/// qui del testo di un brano.
+///
+/// Un brano di questa macchina non ha un proprietario a cui scrivere. E una
+/// voce scelta o un «non è questo» che sulla copia di qui non hanno cambiato
+/// niente — il testo è a mano, e le due scritture non lo toccano mai — non
+/// partono: dall'altra parte cambierebbero un testo che chi ha dato il gesto non
+/// ha visto cambiare, e in posta prenderebbero il posto di un testo a mano che
+/// aspetta il suo turno. Per saperlo guarda l'ultima scrittura della connessione
+/// (`changes`): va chiamata subito dopo di lei.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn dopo_un_gesto(
+    connection: &Connection,
+    brano: &BranoDaTestare,
+    gesto: &Scrittura,
+    adesso_ms: i64,
+) -> Result<Posta, AppError> {
+    let Some(remoto) = &brano.remoto else {
+        return Ok(Posta::Niente);
+    };
+    let la_copia_dice_di_si = !matches!(
+        gesto,
+        Scrittura::Testo(NuovoTesto::Scelta { .. } | NuovoTesto::Rifiuta)
+    ) || connection.changes() > 0;
+    if !la_copia_dice_di_si {
+        return Ok(Posta::Niente);
+    }
+    if metti_in_posta(connection, remoto, gesto, adesso_ms)? {
+        Ok(Posta::Mandare(remoto.dispositivo.clone()))
+    } else {
+        Ok(Posta::TroppoLungo)
+    }
+}
+
 /// Mette in posta un gesto dato qui al testo di un brano dell'altro,
 /// fondendolo con quelli che già aspettano. `false` se non parte: un testo
 /// troppo lungo per una domanda non verrebbe mai preso, e una voce che resta
@@ -503,6 +580,7 @@ mod prove {
     use crate::testi::{
         BranoDaTestare, DalDisco, Fonte, Remoto, brano, componi, componi_senza_scrivere, copertura,
         da_cercare, imposta_scarto, leggi_dal_disco, leggi_riga, per_brano, quanti_da_cercare,
+        ricorda_scelta, rifiuta,
     };
 
     use super::*;
@@ -1107,7 +1185,7 @@ mod prove {
             in_posta(&c),
             Correzione {
                 scarto_ms: Some(200),
-                testo: None
+                testi: vec![]
             }
         );
 
@@ -1120,7 +1198,7 @@ mod prove {
             in_posta(&c),
             Correzione {
                 scarto_ms: Some(0),
-                testo: Some(mano.clone())
+                testi: vec![mano.clone()]
             }
         );
         // Uno scarto dopo il testo: si applica dopo di lui.
@@ -1129,22 +1207,18 @@ mod prove {
             in_posta(&c),
             Correzione {
                 scarto_ms: Some(-50),
-                testo: Some(mano)
+                testi: vec![mano.clone()]
             }
         );
-        // Una voce scelta sostituisce il testo, ma non tocca lo scarto.
-        let scelta = NuovoTesto::Scelta {
-            id_catalogo: 9,
-            piatto: Some(PIATTO.to_owned()),
-            sincronizzato: None,
-            strumentale: false,
-        };
+        // Una voce scelta dopo il testo a mano sta in fila dopo di lui, e non
+        // tocca lo scarto.
+        let scelta = voce_scelta(9);
         metti_in_posta(&c, &pc(), &Scrittura::Testo(scelta.clone()), ADESSO + 3).unwrap();
         assert_eq!(
             in_posta(&c),
             Correzione {
                 scarto_ms: Some(-50),
-                testo: Some(scelta)
+                testi: vec![mano, scelta]
             }
         );
         assert_eq!(
@@ -1159,13 +1233,199 @@ mod prove {
     fn la_posta_manda_prima_il_testo_e_poi_lo_scarto() {
         let c = Correzione {
             scarto_ms: Some(30),
-            testo: Some(NuovoTesto::Rifiuta),
+            testi: vec![NuovoTesto::Rifiuta],
         };
         assert_eq!(
             c.scritture(),
             vec![Scrittura::Testo(NuovoTesto::Rifiuta), Scrittura::Scarto(30)]
         );
         assert!(Correzione::default().scritture().is_empty());
+    }
+
+    fn voce_scelta(id_catalogo: i64) -> NuovoTesto {
+        NuovoTesto::Scelta {
+            id_catalogo,
+            piatto: Some(PIATTO.to_owned()),
+            sincronizzato: None,
+            strumentale: false,
+        }
+    }
+
+    #[test]
+    fn scegliere_e_poi_dire_non_e_questo_lascia_al_proprietario_lo_stesso_stato_di_qui() {
+        // La voce scelta e poi rifiutata finisce fra gli scartati: se in posta
+        // restasse solo «non è questo», il proprietario butterebbe il testo che
+        // ha di suo, e la voce scelta non sarebbe bandita. Si prova sulle due
+        // librerie: una con i gesti dati in fila come qui, una con la posta
+        // consegnata dopo.
+        let qui = libreria();
+        locale(&qui, 1, "k1", "C:/non/esiste/1.mp3");
+        let proprietario = libreria();
+        locale(&proprietario, 1, "k1", "C:/non/esiste/1.mp3");
+        for libreria in [&qui, &proprietario] {
+            // Il testo di partenza, che il proprietario aveva dal catalogo.
+            libreria
+                .execute(
+                    "INSERT INTO lyrics (track_key, plain, source, lrclib_id, updated_at)
+                     VALUES ('k1', 'il suo testo', 'lrclib', 111, 1)",
+                    [],
+                )
+                .unwrap();
+        }
+        let gesti = [
+            Scrittura::Testo(voce_scelta(222)),
+            Scrittura::Testo(NuovoTesto::Rifiuta),
+        ];
+        // Qui, in fila.
+        for gesto in &gesti {
+            scrivi_dal_dispositivo(&qui, 1, gesto).unwrap();
+        }
+        // Dalla posta: fusi, e poi consegnati nell'ordine.
+        let mut posta = Correzione::default();
+        for gesto in &gesti {
+            posta = posta.dopo(gesto);
+        }
+        assert_eq!(posta.testi.len(), 2, "restano in fila: {posta:?}");
+        for scrittura in posta.scritture() {
+            scrivi_dal_dispositivo(&proprietario, 1, &scrittura).unwrap();
+        }
+        let stato = |c: &Connection| -> (Option<String>, Option<String>, Option<i64>) {
+            c.query_row(
+                "SELECT plain, scartati, lrclib_id FROM lyrics WHERE track_key = 'k1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(stato(&proprietario), stato(&qui));
+        let (testo, scartati, _) = stato(&proprietario);
+        assert_eq!(testo, None);
+        assert!(scartati.unwrap_or_default().contains("222"));
+    }
+
+    #[test]
+    fn un_testo_a_mano_prende_il_posto_dei_gesti_di_prima_e_gesti_uguali_valgono_l_ultimo() {
+        let mano = NuovoTesto::Mano {
+            lrc: LRC.to_owned(),
+        };
+        let c = Correzione::default()
+            .dopo(&Scrittura::Testo(voce_scelta(1)))
+            .dopo(&Scrittura::Testo(voce_scelta(2)))
+            .dopo(&Scrittura::Testo(NuovoTesto::Rifiuta))
+            .dopo(&Scrittura::Testo(NuovoTesto::Rifiuta));
+        assert_eq!(c.testi, vec![voce_scelta(2), NuovoTesto::Rifiuta]);
+        let c = c.dopo(&Scrittura::Testo(mano.clone()));
+        assert_eq!(c.testi, vec![mano]);
+        assert_eq!(c.scarto_ms, Some(0));
+        // E non crescono senza fine.
+        let mut c = Correzione::default();
+        for n in 0..20 {
+            c = c
+                .dopo(&Scrittura::Testo(voce_scelta(n)))
+                .dopo(&Scrittura::Testo(NuovoTesto::Rifiuta));
+        }
+        assert_eq!(c.testi.len(), MASSIMI_GESTI_IN_POSTA);
+    }
+
+    /// Una voce del catalogo, come la darebbe l'elenco dei candidati.
+    fn voce_del_catalogo(id: i64) -> rymembra_meta::lrclib::Voce {
+        rymembra_meta::lrclib::Voce {
+            candidato: rymembra_domain::testo::Candidato {
+                id,
+                sincronizzato: true,
+                ..Default::default()
+            },
+            piatto: None,
+            sincronizzato: Some(LRC.to_owned()),
+        }
+    }
+
+    #[test]
+    fn un_gesto_che_qui_non_ha_cambiato_niente_non_va_al_proprietario() {
+        // Il testo di qui è a mano: la voce scelta e il «non è questo» non lo
+        // toccano mai, e al proprietario non devono arrivare — né, in posta,
+        // prendere il posto del testo a mano che aspetta il suo turno.
+        let c = libreria();
+        let b = il_brano_specchio(&c);
+        let remoto = b.remoto.clone().expect("una riga specchio");
+        c.execute(
+            "INSERT INTO lyrics (track_key, synced, source, updated_at, checked_at)
+             VALUES (?1, ?2, 'mano', 1, 1)",
+            params![&b.track_key, LRC],
+        )
+        .unwrap();
+        let mano = Scrittura::Testo(NuovoTesto::Mano {
+            lrc: LRC.to_owned(),
+        });
+        assert_eq!(
+            dopo_un_gesto(&c, &b, &mano, ADESSO).unwrap(),
+            Posta::Mandare(remoto.dispositivo.clone()),
+            "un testo a mano parte sempre"
+        );
+
+        ricorda_scelta(&c, &b, &voce_del_catalogo(5)).unwrap();
+        let scelta = Scrittura::Testo(voce_scelta(5));
+        assert_eq!(
+            dopo_un_gesto(&c, &b, &scelta, ADESSO + 1).unwrap(),
+            Posta::Niente
+        );
+        rifiuta(&c, &b.track_key).unwrap();
+        assert_eq!(
+            dopo_un_gesto(&c, &b, &Scrittura::Testo(NuovoTesto::Rifiuta), ADESSO + 2).unwrap(),
+            Posta::Niente
+        );
+        let voce = crate::dispositivi::in_posta(
+            &c,
+            &remoto.dispositivo,
+            crate::dispositivi::POSTA_TESTO,
+            &remoto.id_remoto.to_string(),
+        )
+        .unwrap()
+        .expect("la voce c'è ancora");
+        assert_eq!(
+            Correzione::da_corpo(&voce.corpo).unwrap().testi,
+            vec![NuovoTesto::Mano {
+                lrc: LRC.to_owned()
+            }],
+            "il testo a mano aspetta ancora il suo turno"
+        );
+    }
+
+    #[test]
+    fn un_gesto_che_qui_ha_cambiato_qualcosa_va_al_proprietario() {
+        let c = libreria();
+        let b = il_brano_specchio(&c);
+        let remoto = b.remoto.clone().expect("una riga specchio");
+        ricorda_scelta(&c, &b, &voce_del_catalogo(5)).unwrap();
+        assert_eq!(
+            dopo_un_gesto(&c, &b, &Scrittura::Testo(voce_scelta(5)), ADESSO).unwrap(),
+            Posta::Mandare(remoto.dispositivo.clone())
+        );
+        rifiuta(&c, &b.track_key).unwrap();
+        assert_eq!(
+            dopo_un_gesto(&c, &b, &Scrittura::Testo(NuovoTesto::Rifiuta), ADESSO + 1).unwrap(),
+            Posta::Mandare(remoto.dispositivo.clone())
+        );
+        assert_eq!(in_posta(&c).testi.len(), 2, "scelta e rifiuto, in fila");
+        // Un brano di questa macchina non ha un proprietario.
+        locale(&c, 600, "k600", "C:/Musica/600.mp3");
+        let mio = brano(&c, 600).unwrap();
+        assert_eq!(
+            dopo_un_gesto(&c, &mio, &Scrittura::Scarto(5), ADESSO).unwrap(),
+            Posta::Niente
+        );
+        // E un testo che non sta in una domanda non parte.
+        let lunga = format!("[00:01.00]{}\n", "a".repeat(MASSIMO_TESTO));
+        assert_eq!(
+            dopo_un_gesto(
+                &c,
+                &b,
+                &Scrittura::Testo(NuovoTesto::Mano { lrc: lunga }),
+                ADESSO + 2
+            )
+            .unwrap(),
+            Posta::TroppoLungo
+        );
     }
 
     #[test]

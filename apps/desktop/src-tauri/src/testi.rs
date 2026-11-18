@@ -285,6 +285,10 @@ pub fn testo_scarto(
 /// una domanda non parte — il proprietario non lo prenderebbe, e una voce
 /// ferma in posta fermerebbe le altre — e resta solo qui: si dice nel diario.
 ///
+/// Va chiamata **subito dopo** la scrittura della copia di qui: una voce scelta
+/// o un «non è questo» che lì non hanno cambiato niente non partono (vedi
+/// [`condiviso::dopo_un_gesto`]).
+///
 /// # Errori
 ///
 /// Quelli del database.
@@ -293,16 +297,15 @@ fn al_proprietario(
     brano: &testi::BranoDaTestare,
     gesto: &Scrittura,
 ) -> Result<Option<String>, AppError> {
-    let Some(remoto) = &brano.remoto else {
-        return Ok(None);
-    };
-    if condiviso::metti_in_posta(connection, remoto, gesto, adesso_ms())? {
-        Ok(Some(remoto.dispositivo.clone()))
-    } else {
-        nota!(
-            "[testi] una correzione troppo lunga per il proprietario resta solo su questo dispositivo"
-        );
-        Ok(None)
+    match condiviso::dopo_un_gesto(connection, brano, gesto, adesso_ms())? {
+        condiviso::Posta::Mandare(dispositivo) => Ok(Some(dispositivo)),
+        condiviso::Posta::Niente => Ok(None),
+        condiviso::Posta::TroppoLungo => {
+            nota!(
+                "[testi] una correzione troppo lunga per il proprietario resta solo su questo dispositivo"
+            );
+            Ok(None)
+        }
     }
 }
 
