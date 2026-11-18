@@ -4182,7 +4182,7 @@ export function App() {
         // sopra il vuoto, cioè una tabella che sembra non essersi caricata. Il
         // conto viene da `avvio`, che il cuore tiene allineato da sé
         // (`cambiaPreferito`), quindi non c'è un istante in cui menta.
-        if (v === "preferiti" && avvio !== null && avvio.numeri.liked === 0) {
+        if (v === "preferiti" && numeriDelFiltro !== undefined && numeriDelFiltro.liked === 0) {
           return (
             <StatoVuoto
               icona="i-heart"

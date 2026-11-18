@@ -21,8 +21,12 @@
  * Un dispositivo spento non toglie i suoi brani: restano in libreria, in grigio
  * (`statoDellaRiga`). Sul dispositivo resta l'elenco, non l'audio. Un tocco su
  * una riga grigia dice che quel dispositivo non risponde, e non suona niente: è
- * un avviso, non un errore. Quel che si suona a liste intere — «Riproduci»,
- * un album, la selezione — salta le righe grige (`suonabili`).
+ * un avviso, non un errore. Le liste che la finestra suona da sé — «Riproduci»
+ * su un album, un artista o una playlist — saltano le righe grige (`suonabili`).
+ * Non lo fanno la selezione né la vista intera suonata da una riga (Brani,
+ * Preferiti): lì la finestra ha solo gli id, e prenderne le righe per ogni
+ * selezione di trentamila brani costerebbe più del guasto; una riga grigia
+ * che il lettore raggiunge si salta con l'avviso «saltato» di sempre.
  *
  * Senza React e senza il pannello: le prove di `test/` lo caricano con
  * `node --test`.

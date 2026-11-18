@@ -816,8 +816,20 @@ pub(crate) fn dispositivi_raggiungibili(app: &AppHandle) -> Vec<String> {
 /// Da dove sceglie chi suona da solo — l'autoplay, la radio, una playlist
 /// intelligente — e chi non può mostrare una riga grigia, come Android Auto:
 /// «Tutti», meno i dispositivi che adesso non rispondono (§4.6).
+///
+/// Senza nessun dispositivo — nemmeno uno revocato, che può avere ancora le sue
+/// righe — non c'è niente da saltare, ed è «Tutti»: `Raggiungibili` aggiunge a
+/// ogni riga un confronto di percorso e un `EXISTS` su `copia_di`, e chi non ha
+/// collegato niente non deve pagarli (R21-6: «origine» non costa niente a chi
+/// non ha dispositivi). I risultati sono gli stessi.
 pub(crate) fn origine_che_suona(app: &AppHandle) -> rymembra_app::specchio::Origine {
-    rymembra_app::specchio::Origine::Raggiungibili(dispositivi_raggiungibili(app))
+    use rymembra_app::specchio::Origine;
+    let ne_ha = comune(app)
+        .is_ok_and(|comune| !super::filo::prendi(&comune.vetrina).dispositivi.is_empty());
+    if !ne_ha {
+        return Origine::Tutti;
+    }
+    Origine::Raggiungibili(dispositivi_raggiungibili(app))
 }
 
 /// I byte di una riga specchio: la sorgente a blocchi sul nodo del suo
