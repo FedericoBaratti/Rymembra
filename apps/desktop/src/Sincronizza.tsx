@@ -52,7 +52,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useFinestrella, useVeloInerte } from "./finestrella";
+import { useArchivio } from "./archivio";
 import { ipc, testoErrore, type Brano, type TestoBrano } from "./ipc";
+import { archivioLontano, NESSUN_DISPOSITIVO, proprietarioDellAudio } from "./lontano";
 import { durata, nomeArtista } from "./formato";
 import { t } from "./lingue";
 import { Icona } from "./parti/Icone";
@@ -135,6 +137,28 @@ export function Sincronizza({
   const [tempiParola, setTempiParola] = useState<number[]>([]);
   const [indiceParola, setIndiceParola] = useState(0);
   const [raddrizzo, setRaddrizzo] = useState(false);
+  // Un brano di un altro dispositivo ha l'audio là: «Raddrizza» non ha gli
+  // attacchi da cercare, e l'editor lo dice invece di restare zitto — il tasto
+  // diventa «Avanti», e una nota dice di chi è l'audio e che le battute restano
+  // come le hai battute. Il tasto non sparisce: è il gesto che porta alla
+  // revisione.
+  const dispositivi = useArchivio(
+    archivioLontano,
+    (stato) => stato?.dispositivi ?? NESSUN_DISPOSITIVO,
+  );
+  const remoto = proprietarioDellAudio(brano.path, dispositivi);
+  const audioAltrove = remoto !== null;
+  const etichettaDelTasto =
+    remoto !== null
+      ? t("lyrics.remote.sync.finish")
+      : raddrizzo
+        ? t("sync.tap.straightening")
+        : t("sync.tap.finish");
+  /** Di chi è l'audio, per la nota: il nome, o «un altro dispositivo» se non lo si conosce più. */
+  const notaDellAudio = (nome: string | null) =>
+    t("lyrics.remote.sync.note", {
+      dispositivo: nome ?? t("lyrics.remote.sync.altroDispositivo"),
+    });
   const [salvando, setSalvando] = useState(false);
   // Il dono ha tre stati e non due: «non ancora», «sto mandando» e «mandato».
   // Il secondo dura secondi — la prova di lavoro di LRCLIB è calcolo, non
@@ -371,8 +395,15 @@ export function Sincronizza({
       .pausa()
       .catch(() => {})
       .finally(() => {
-        ipc
-          .testoAggancia(brano.id, perParole ? tempiParola : tempi)
+        const battute = perParole ? tempiParola : tempi;
+        // L'audio di un brano di un altro dispositivo non è qui: non c'è nessun
+        // attacco da cercare, e le battute restano com'erano — lo dice la nota
+        // accanto al tasto (`lyrics.remote.sync.note`), e il nucleo non è
+        // nemmeno interpellato.
+        const raddrizzate = audioAltrove
+          ? Promise.resolve(battute)
+          : ipc.testoAggancia(brano.id, battute);
+        raddrizzate
           .then((raddrizzati) => {
             if (!perParole) {
               setTempi(raddrizzati);
@@ -396,7 +427,7 @@ export function Sincronizza({
             setRaddrizzo(false);
           });
       });
-  }, [siBattonoParole, brano.id, tempi, tempiParola, posti, onErrore]);
+  }, [siBattonoParole, brano.id, audioAltrove, tempi, tempiParola, posti, onErrore]);
 
   // La tastiera vale solo mentre si batte — righe o parole: negli altri momenti
   // Spazio è uno spazio e le frecce muovono un cursore.
@@ -654,8 +685,15 @@ export function Sincronizza({
               {momento === "battute" && (
                 <>
                   <p className="nota">
-                    {tutteBattute ? t("sync.tap.done") : t("sync.tap.help")}
+                    {tutteBattute
+                      ? t(remoto === null ? "sync.tap.done" : "lyrics.remote.sync.tapDone")
+                      : t("sync.tap.help")}
                   </p>
+                  {remoto !== null && (
+                    <p className="nota" data-nota="audio-remoto">
+                      {notaDellAudio(remoto.nome)}
+                    </p>
+                  )}
                   <ol className="elenco-battute">
                     {righe.map((riga, i) => (
                       <li
@@ -703,7 +741,7 @@ export function Sincronizza({
                       disabled={!tutteBattute || raddrizzo}
                       onClick={finisci}
                     >
-                      {raddrizzo ? t("sync.tap.straightening") : t("sync.tap.finish")}
+                      {etichettaDelTasto}
                     </button>
                   </div>
                   <p className="nota">{t("sync.tap.key")}</p>
@@ -838,8 +876,15 @@ export function Sincronizza({
               {momento === "parole" && (
                 <>
                   <p className="nota">
-                    {tutteBattute ? t("sync.words.done") : t("sync.words.help")}
+                    {tutteBattute
+                      ? t(remoto === null ? "sync.words.done" : "lyrics.remote.sync.wordsDone")
+                      : t("sync.words.help")}
                   </p>
+                  {remoto !== null && (
+                    <p className="nota" data-nota="audio-remoto">
+                      {notaDellAudio(remoto.nome)}
+                    </p>
+                  )}
                   {/* Lo stesso elenco delle battute, con le parole al posto dei
                       versi: `data-attesa`, `data-fatta` e le due colonne vengono da
                       lì. `data-capo` marca la prima parola di ogni verso, ed è
@@ -915,7 +960,7 @@ export function Sincronizza({
                       disabled={!tutteBattute || raddrizzo}
                       onClick={finisci}
                     >
-                      {raddrizzo ? t("sync.tap.straightening") : t("sync.tap.finish")}
+                      {etichettaDelTasto}
                     </button>
                     {/* Salvare si può in qualunque momento, e non è una svista: quel
                         che è battuto per intero si scrive, il resto resta

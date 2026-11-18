@@ -1870,9 +1870,11 @@ fn aggancia_adesso(app: &AppHandle, id: i64, battute: &[u32]) -> Esito<Vec<u32>>
     // cercarne gli attacchi vorrebbe dire scaricarlo per intero — megabyte, su
     // una rete che può essere a consumo — per raddrizzare di qualche decina di
     // millisecondi delle battute già date a orecchio. Le battute tornano com'erano
-    // (come per un brano di cui non si trova nessun attacco): l'editor non cade
-    // in una fascia rossa a fine sincronizzazione, e il lavoro si salva e va al
-    // proprietario come ogni altro testo a mano.
+    // (come per un brano di cui non si trova nessun attacco). L'editor non arriva
+    // nemmeno qui per un brano così: il tasto diventa «Avanti», con una nota che
+    // dice di chi è l'audio (`Sincronizza.tsx`); questa è la rete di sicurezza
+    // per chi chiamasse il comando da un'altra strada, e non cade in una fascia
+    // rossa.
     let del_proprietario = con_libreria(&stato, |libreria| {
         testi::brano(&libreria.connection, id).map(|brano| brano.remoto.is_some())
     })
