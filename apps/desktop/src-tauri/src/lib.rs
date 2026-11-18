@@ -1249,6 +1249,23 @@ pub fn run() {
                 return;
             }
 
+            // La finestra è morta — la X sul vassoio, e il motore resta — e con
+            // lei la pagina: quel che la pagina aveva acceso (lo spettro, i
+            // pannelli dei testi) non lo spegne più nessuno, e va spento da qui.
+            // Non uscendo: chi esce spegne tutto con `spegnimento::spegni`.
+            #[cfg(desktop)]
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } = &evento
+                && label == "main"
+                && !spegnimento::in_uscita()
+            {
+                pagina::pagina_finita(mano);
+                return;
+            }
+
             // `CloseRequested` è la presa più precoce che Tauri offra: arriva
             // mentre la finestra c'è ancora, prima che `tao` dichiari il ciclo
             // distrutto. Gli altri due sono la cintura oltre le bretelle — se
@@ -2202,5 +2219,96 @@ mod prove {
             guardia.is_some() && guardia < resto,
             "il resto dell'avvio parte anche uscendo"
         );
+    }
+
+    /// Il ciclo degli eventi di `run`, dalla chiusura della callback in poi.
+    fn ciclo_degli_eventi() -> &'static str {
+        include_str!("lib.rs")
+            .split("Ok(app) => app.run(|mano, evento| {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n        }),\n").next())
+            .unwrap_or_default()
+    }
+
+    /// §8.5: la X col vassoio non spegne il nucleo. La fine dell'ultima finestra
+    /// (`ExitRequested` senza codice) si impedisce se il vassoio c'è e non si sta
+    /// uscendo, **prima** che il ciclo arrivi a `spegnimento::spegni`; e un'uscita
+    /// vera — «Esci», con un codice — passa.
+    #[test]
+    fn la_x_col_vassoio_non_spegne_il_nucleo() {
+        let ciclo = ciclo_degli_eventi();
+        assert!(!ciclo.is_empty(), "il ciclo degli eventi non si trova");
+        let impedisce = ciclo
+            .find("tauri::RunEvent::ExitRequested {\n                code: None, api, ..\n            } = &evento")
+            .expect("manca il ramo di ExitRequested senza codice");
+        let blocco = ciclo.get(impedisce..).unwrap_or_default();
+        let fine = blocco.find("return;").expect("il ramo non torna");
+        let ramo = blocco.get(..fine).unwrap_or_default();
+        assert!(
+            ramo.contains("api.prevent_exit()"),
+            "non impedisce l'uscita"
+        );
+        assert!(
+            ramo.contains("!spegnimento::in_uscita()"),
+            "impedirebbe anche un'uscita voluta"
+        );
+        assert!(
+            ramo.contains("vassoio::nasconde(mano)"),
+            "impedirebbe l'uscita anche senza un'icona a cui tornare"
+        );
+        // Solo `code: None`: un'uscita con un codice è «Esci» o l'aggiornatore.
+        assert!(!ramo.contains("code: Some"));
+        // E sta **prima** della sequenza di spegnimento.
+        let spegni = ciclo
+            .find("spegnimento::spegni(mano)")
+            .expect("la sequenza di spegnimento non si trova");
+        assert!(
+            impedisce < spegni,
+            "l'uscita si impedisce dopo aver spento tutto"
+        );
+        assert!(ciclo.contains("crate::chiusura::CHIUSURA.rinviata()"));
+    }
+
+    /// Alla X col vassoio la finestra si chiude davvero: non si impedisce e non
+    /// si nasconde, o la pagina — con la sua WebView2 — resterebbe viva.
+    #[test]
+    fn la_x_col_vassoio_chiude_la_finestra_invece_di_nasconderla() {
+        let lib = include_str!("lib.rs");
+        let gestore = lib
+            .split(".on_window_event(|finestra, evento| {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n        })\n").next())
+            .unwrap_or_default();
+        assert!(
+            !gestore.is_empty(),
+            "il gestore della chiusura non si trova"
+        );
+        let nascondi = gestore
+            .split("chiusura::Decisione::Nascondi => {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n                }\n").next())
+            .unwrap_or_default();
+        assert!(!nascondi.is_empty(), "il ramo Nascondi non si trova");
+        assert!(
+            !nascondi.contains("prevent_close") && !nascondi.contains(".hide()"),
+            "il ramo Nascondi impedisce la chiusura o nasconde la finestra"
+        );
+        assert!(nascondi.contains("lontano::finestra_nascosta(mano)"));
+    }
+
+    /// Morta la finestra, quel che la pagina aveva acceso — lo spettro, i
+    /// pannelli dei testi — non lo spegne più nessuno: lo spegne il nucleo, alla
+    /// `Destroyed`, e non se si sta uscendo.
+    #[test]
+    fn alla_fine_della_finestra_si_spegne_quel_che_la_pagina_aveva_acceso() {
+        let ciclo = ciclo_degli_eventi();
+        let da = ciclo
+            .find("tauri::WindowEvent::Destroyed")
+            .expect("il ciclo non guarda la fine della finestra");
+        let ramo = ciclo.get(da..).unwrap_or_default();
+        let fine = ramo.find("return;").expect("il ramo non torna");
+        let ramo = ramo.get(..fine).unwrap_or_default();
+        assert!(ramo.contains("pagina::pagina_finita(mano)"));
+        assert!(ramo.contains("!spegnimento::in_uscita()"));
     }
 }

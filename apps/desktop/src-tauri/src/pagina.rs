@@ -138,6 +138,20 @@ fn navigazione_ammessa(url: &Url, sviluppo: Option<&Url>) -> bool {
 /// pagina nuova lo riaccenda, e lo stesso filo dà l'ordine. `try_state` perché
 /// la prima pagina può arrivare prima del `setup`, che registra gli stati.
 fn pagina_nuova(app: &AppHandle) {
+    pagina_finita(app);
+}
+
+/// Spegne quel che la pagina aveva acceso: la stessa pulizia di una pagina nuova,
+/// anche quando la pagina **non ne ha una dopo**.
+///
+/// Con la X sul vassoio la finestra è distrutta e il motore resta (`comparsa`):
+/// una pagina nascosta poteva ancora reagire da sé, una distrutta no. Lo spettro
+/// che la pagina aveva acceso continuerebbe a calcolare e a emettere a nessuno
+/// per tutto il tempo del sottofondo, e i conti dei pannelli dei testi aperti
+/// resterebbero quelli di una pagina che non c'è — cioè proprio il consumo che
+/// «resta solo il motore» vuole togliere. La chiama `lib.rs` alla
+/// `Destroyed` della finestra.
+pub(crate) fn pagina_finita(app: &AppHandle) {
     if let Some(testi) = app.try_state::<crate::testi::StatoTesti>() {
         testi.pagina_nuova();
     }
@@ -361,7 +375,10 @@ mod prove {
         // del `Resized` non ha mai funzionato (R21-3, 144×19).
         let regola = corpo("fn regola_il_disegno(");
         assert!(regola.contains("finestra.is_minimized()"));
-        let nuova = corpo("fn pagina_nuova(");
+        // La pagina nuova fa la pulizia di una pagina finita, che è la stessa
+        // che serve quando la finestra è distrutta e non ne nasce un'altra.
+        assert!(corpo("fn pagina_nuova(").contains("pagina_finita(app)"));
+        let nuova = corpo("pub(crate) fn pagina_finita(");
         for pulizia in [
             "testi.pagina_nuova()",
             "riproduzione::spettro(lettore, false)",
