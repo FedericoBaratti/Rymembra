@@ -644,6 +644,15 @@ pub struct VoceCronologia {
 /// `ON DELETE CASCADE`, quindi il caso è già impossibile per un brano tolto
 /// davvero; la `JOIN` è ciò che rende impossibile anche il resto — una riga
 /// senza titolo né interprete in mezzo a un elenco di canzoni.
+///
+/// # Una riga in grazia non compare
+///
+/// Una riga di un altro dispositivo che il proprietario non manda più resta in
+/// libreria per la grazia, nascosta (`copia_di` uguale al proprio `id`): non si
+/// suona e non si conta da nessuna parte, e nemmeno qui — un tocco su una voce
+/// della cronologia che non parte, con un «non raggiungibile» che a PC acceso
+/// sarebbe falso. Gli ascolti restano nella tabella, e tornano in lista con la
+/// riga, se il proprietario la rimanda.
 pub fn list_history(
     connection: &Connection,
     offset: i64,
@@ -653,6 +662,7 @@ pub fn list_history(
         "SELECT {COLONNE_BRANO}, h.id, h.played_at, h.ms_played, h.source
            FROM play_history AS h
            JOIN tracks AS t ON t.id = h.track_id
+          WHERE t.copia_di IS NOT t.id
           ORDER BY h.played_at DESC, h.id DESC
           LIMIT ?1 OFFSET ?2"
     );
@@ -686,9 +696,18 @@ pub fn list_history(
 /// tabella di centomila righe con un indice su `played_at` costa poco, e la
 /// alternativa — chiedere una riga in più e guardare se arriva — mente sul
 /// totale, che qui è l'unica cosa che dice «hai importato dieci anni».
+///
+/// Come [`list_history`], senza gli ascolti di una riga in grazia: il totale
+/// dice quante voci ci sono nella lista, e le righe in grazia sono poche — si
+/// sottraggono, invece di rifare la `JOIN` su tutta la cronologia.
 pub fn count_history(connection: &Connection) -> Result<i64, AppError> {
     connection
-        .prepare_cached("SELECT COUNT(*) FROM play_history")
+        .prepare_cached(
+            "SELECT (SELECT COUNT(*) FROM play_history)
+                  - (SELECT COUNT(*) FROM play_history
+                      WHERE track_id IN
+                            (SELECT id FROM tracks WHERE copia_di IS NOT NULL AND copia_di = id))",
+        )
         .and_then(|mut statement| statement.query_row([], |row| row.get(0)))
         .map_err(|err| db_error("conteggio della cronologia", &err))
 }

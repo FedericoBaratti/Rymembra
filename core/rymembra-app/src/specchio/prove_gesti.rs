@@ -1107,3 +1107,33 @@ fn una_playlist_a_mano_dice_quali_voci_stanno_su_una_riga_in_grazia() {
     let json = serde_json::to_string(&brani[2]).expect("in JSON");
     assert!(json.contains("\"inGrazia\":true"), "{json}");
 }
+
+#[test]
+fn la_cronologia_conta_quello_che_mostra_senza_le_righe_in_grazia() {
+    // Il totale dice quante voci ha la lista: gli ascolti di una riga in grazia
+    // non sono né nell'una né nell'altro, e tornano con la riga.
+    use crate::library::{count_history, list_history};
+    let (c, m3, quando) = telefono_con_una_riga_in_grazia();
+    let m2 = id_specchio(&c, PC, 2);
+    for (id, ms) in [(m2, 1_000), (m3, 2_000), (1, 3_000)] {
+        c.execute(
+            "INSERT INTO play_history (track_id, played_at, ms_played) VALUES (?1, ?2, 1000)",
+            rusqlite::params![id, ms],
+        )
+        .expect("ascolto");
+    }
+    let ids = |c: &Connection| -> Vec<i64> {
+        list_history(c, 0, 50)
+            .expect("cronologia")
+            .into_iter()
+            .map(|v| v.brano.id)
+            .collect()
+    };
+    assert_eq!(ids(&c), vec![1, m2]);
+    assert_eq!(count_history(&c), Ok(2));
+    // Il PC la rimanda: la riga torna visibile, e con lei i suoi ascolti.
+    let tutte: Vec<_> = (2..=5).map(riga).collect();
+    giro(&c, &chiave(PC), &tutte, quando + 10_000);
+    assert_eq!(ids(&c), vec![1, m3, m2]);
+    assert_eq!(count_history(&c), Ok(3));
+}
