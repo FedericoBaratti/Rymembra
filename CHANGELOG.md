@@ -123,8 +123,9 @@ device that has not updated is under Known limits.
   - **One row per track.** The same track on several devices is shown once, and
     the copy that plays is the best one — lossless first, then the higher
     sample rate, then the bitrate; between two lossy files only the bitrate
-    counts; on a tie the copy on this device wins. An album is taken whole from
-    the device whose copy of it is best. Two copies on the same device stay two
+    counts; on a tie the copy on this device wins. Each track picks its own best
+    copy, and an album whose tracks sit on several devices is still one album,
+    with one card and its tracks counted once. Two copies on the same device stay two
     rows, as before. A copy that claims to be lossless is checked against the
     file’s size and duration it also declares.
   - **Playing.** A tap plays the track streamed from its device; if that device
@@ -136,7 +137,8 @@ device that has not updated is under Known limits.
     says so); with Ask the question comes once, only when the best copy is on
     another device.
   - **A device that is off stays listed.** Its rows are greyed out and keep
-    their menu, heart and stars. Play on an album, an artist or a playlist skips
+    their menu, heart and stars — except a row with a copy on this device, which
+    stays playable and plays that copy. Play on an album, an artist or a playlist skips
     them, and Android Auto, autoplay, radio and smart playlists leave out
     devices that do not answer.
   - **Playlists, hearts and stars work on them.** A playlist can hold a track
@@ -197,7 +199,9 @@ device that has not updated is under Known limits.
 - **A one-time question** on the PC offers to start with Windows and keep
   Rymembra in the tray when you close it; the phone gets its own, about the
   background service below. It does not appear during first-run setup or the
-  tour, and it is asked once.
+  tour (on the phone, which has no tour, it waits only for setup and “What’s
+  new”). “Later” puts it off until Rymembra next starts; once you answer, it is
+  not asked again.
 - **Stay active in the background** (Settings › Devices, Android). A foreground
   service keeps Rymembra running after you swipe it away from recent apps, so
   your PCs can reach the phone whenever they like, with a minimal notification
@@ -298,7 +302,8 @@ device that has not updated is under Known limits.
 - **“Browse <device>” is gone**; the same music is in the library. Tracks of
   other devices are ordinary rows in the queue, and the queue saved by the
   version with “Browse” is moved once onto the library rows (tracks that are no
-  longer there are dropped). A device on 3.2.1 can still browse this one.
+  longer there are dropped); if a device’s catalog has not arrived yet, the move
+  waits for it, up to two minutes. A device on 3.2.1 can still browse this one.
 - **Messages.** The one shown when another device does not answer no longer
   says “with Rymembra open”. A tap on a greyed-out row shows a neutral notice
   with the device’s icon, not a success notice with a check mark.
@@ -322,6 +327,8 @@ device that has not updated is under Known limits.
   lyrics are not prefetched from another device on a metered network.
 - **“Send all my history” and “now playing”** never scrobble tracks of other
   devices: the owner does it.
+- **Notices on the phone** appear in the stack at the bottom of the screen, like
+  on the PC.
 
 ### Fixed
 
@@ -333,6 +340,24 @@ device that has not updated is under Known limits.
   for it — up to ten seconds — instead of failing with “Rymembra can’t play
   that right now”. A pause pressed meanwhile is not held back and cancels the pending
   resume.
+- **Android: the page no longer freezes** while a scan or another long job holds
+  the library or the player. Every command that can wait now runs off the thread
+  the page waits on, and volume, equalizer, stars and settings still apply in the
+  order you made them. On the PC an action no longer gives up after four seconds
+  with “The database is busy”: it waits and completes.
+- **Android: when the car, a cable or headphones disconnect** and the sound would
+  move to the phone’s speaker, Rymembra pauses.
+- **The window reopens where it was** — same size, maximized if it was — after
+  the X with the tray icon and after a restart, instead of at Windows’ cascade
+  position; if its monitor is gone it opens on the main screen.
+- **An update whose signature doesn’t verify says so**: “The update that was
+  downloaded isn’t signed with Rymembra’s key, so it wasn’t installed. Try again
+  later, or download Rymembra from the website.” It used to say “Something went
+  wrong in a way that wasn’t expected”. On the phone a signature that doesn’t
+  read, doesn’t match or covers another version says the same; a failure to
+  check at all is still reported as unexpected.
+- **“Listen together” says why tracks of another device cannot join a session**
+  instead of a generic error: a session plays only tracks on this device.
 
 ### Security
 
@@ -431,7 +456,7 @@ Migration 043, schema 42 → 43, additive.
   not yet delivered; no track of this device is lost.
 - No other migration: the new settings (`daemon.attivo`, `daemon.auto`,
   `lontano.lasciati`, `ui.trayLabels`, `ui.proposta.sottofondo`,
-  `ui.novita.vista`) are rows of `settings` and stay out of profiles. Start with
+  `ui.novita.vista`, `ui.window.geometry`) are rows of `settings` and stay out of profiles. Start with
   Windows lives in the registry, not in the library.
 
 ### Known limits
@@ -481,8 +506,9 @@ release:
 - **Updates.** “Install now” after three days is seen only with the window open.
   The update package holds about 16 MB of memory while it waits. On the phone a
   notification is shown only if notifications are already allowed. The Google
-  Play build has no In-App Update, and `MANAGE_EXTERNAL_STORAGE` is still in it:
-  Google may not allow it for a music player, and without it the app works with
+  Play build has no In-App Update, and it keeps `MANAGE_EXTERNAL_STORAGE`,
+  declared to Google for review: Google may not allow it for a music player, and
+  without it the app works with
   the tracks only (no `.lrc`, `.cue` or covers next to them, no deleting
   non-audio files).
 - **The window on Windows.** Events sent while there is no window are lost (a

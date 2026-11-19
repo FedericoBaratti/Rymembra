@@ -34,7 +34,11 @@ Everything Rymembra knows about you:
   then stays beside it too, as another full copy,
   `rymembra.db.messa-da-parte.bak` (then `…messa-da-parte-2.bak` and on),
   until you delete it yourself.
-- **The settings**, in the same folder.
+- **The settings**, in the same folder — among them, from 3.3, where the
+  window was on screen and how big (`ui.window.geometry`), and how many tracks
+  you chose to keep when a linked device stopped sharing them
+  (`lontano.lasciati`). Both describe this machine, so they stay out of
+  profiles.
 - **The cover art**, in a file cache next to the database — the covers of the
   tracks of your linked devices, which Rymembra asks them for, are saved there
   too, in a version of 320 pixels at most (§ 4-quinquies).
