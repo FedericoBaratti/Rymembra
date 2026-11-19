@@ -3661,6 +3661,7 @@ export function App() {
       onScheda: scegliScheda,
       origine,
       onDispositivo: apriDispositivo,
+      onArtista: apriArtistaDalNome,
     }),
     [
       vista,
@@ -3699,6 +3700,7 @@ export function App() {
       scegliScheda,
       origine,
       apriDispositivo,
+      apriArtistaDalNome,
     ],
   );
 

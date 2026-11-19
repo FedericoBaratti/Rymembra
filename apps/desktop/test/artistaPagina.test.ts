@@ -38,6 +38,32 @@ test("il nome in «In riproduzione» è un pulsante, sul telefono e sul computer
   assert.equal([...app.matchAll(/onArtista=\{apriArtistaDalNome\}/g)].length, 2);
 });
 
+test("il nome nella colonna «In riproduzione» del computer è lo stesso pulsante (FC2-D2)", () => {
+  // Il collaudo in Windows Sandbox: la colonna a destra mostrava il nome come
+  // testo (`<bdi>`), e `NomeArtista` era usato solo dalla schermata intera.
+  const colonna = sorgente("parti/Colonna.tsx");
+  assert.match(colonna, /import \{ NomeArtista \} from "\.\/NomeArtista";/);
+  assert.match(colonna, /<NomeArtista brano=\{brano\} onApri=\{onArtista\} \/>/);
+  // Non resta il vecchio testo: il nome dell'artista non si disegna due volte.
+  assert.doesNotMatch(colonna, /<bdi>\{nomeArtista\(brano\.artist\)\}<\/bdi>/);
+  // Il gesto arriva dal contesto dello scafale, facoltativo (lo Studio disegna
+  // un brano finto e non ha pagine da aprire: lì il nome resta testo).
+  const scafale = sorgente("Impaginazione.tsx");
+  assert.match(scafale, /onArtista\?: \(\(brano: Brano\) => void\) \| undefined;/);
+  assert.match(scafale, /onArtista=\{ctx\.onArtista\}/);
+  assert.doesNotMatch(sorgente("studio/mondo.ts"), /onArtista/);
+  // `App` lo passa — lo stesso gesto della schermata intera e di «Vai
+  // all'artista» — e lo mette fra le dipendenze del contesto, o la colonna
+  // terrebbe il gesto del primo disegno.
+  assert.match(app, /onDispositivo: apriDispositivo,\n {6}onArtista: apriArtistaDalNome,\n {4}\}\),/);
+  const dipendenze = brano(app, "onDispositivo: apriDispositivo,\n      onArtista: apriArtistaDalNome,", "\n  );");
+  assert.match(dipendenze, /\n {6}apriArtistaDalNome,\n/);
+  // Il pulsante si veste come il testo che sostituisce: senza una regola della
+  // colonna, `.in-riproduzione .artista-link` non lo raggiunge e il tasto
+  // nativo grigio finirebbe sotto il titolo.
+  assert.match(sorgente("stile/ascolto.css"), /\.colonna \.artista-link \{/);
+});
+
 test("il tocco sul nome apre l'artista effettivo, e «In riproduzione» si toglie di mezzo", () => {
   const apre = brano(app, "const apriArtistaDelBrano = useStabile(", "\n  });");
   // L'artista effettivo, non l'interprete del brano.

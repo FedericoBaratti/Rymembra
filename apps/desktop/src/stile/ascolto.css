@@ -122,6 +122,23 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Il nome dell'artista come pulsante (`parti/NomeArtista.tsx`), qui come nella
+   schermata intera: si legge come il testo che sostituisce — stesso corpo,
+   stesso colore — e si dichiara al sorvolo. Una regola della colonna e non quella
+   di `.in-riproduzione`, che questo pulsante non ha sopra. */
+.colonna .artista-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-underline-offset: 2px;
+}
+.colonna .artista-link:hover {
+  color: var(--color-text-1);
+  text-decoration: underline;
+}
 
 .colonna .cursore {
   display: flex;
