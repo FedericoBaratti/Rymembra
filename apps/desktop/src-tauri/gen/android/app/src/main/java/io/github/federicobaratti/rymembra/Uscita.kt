@@ -52,7 +52,18 @@ object Uscita {
     AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
   )
 
-  /** `{"nome": …, "bluetooth": …}`, oppure `null` se non c'è nessuna uscita. */
+  /** Le uscite dentro il telefono: l'altoparlante e l'auricolare. */
+  private val INTEGRATE = setOf(
+    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE,
+  )
+
+  /**
+   * `{"nome": …, "bluetooth": …, "integrata": …}`, oppure `null` se non c'è nessuna
+   * uscita. `integrata` dice se la musica esce dal telefono stesso: serve a
+   * mettere in pausa quando l'uscita di fuori — l'auto, le cuffie — se ne va e
+   * Android ripiega sull'altoparlante (vedi `riproduzione/riapertura.rs`).
+   */
   fun adesso(contesto: Context): JSONObject? {
     val audio = contesto.getSystemService(AudioManager::class.java)
     val uscita = (if (Build.VERSION.SDK_INT >= 33) {
@@ -63,6 +74,7 @@ object Uscita {
     return JSONObject()
       .put("nome", nome(contesto, uscita))
       .put("bluetooth", uscita.type in BLUETOOTH)
+      .put("integrata", uscita.type in INTEGRATE)
   }
 
   private fun stimata(audio: AudioManager): AudioDeviceInfo? {

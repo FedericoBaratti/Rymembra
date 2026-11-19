@@ -98,6 +98,9 @@ pub struct UscitaDiAndroid {
     pub nome: String,
     /// È Bluetooth: in pausa il flusso si libera prima, come sul computer.
     pub bluetooth: bool,
+    /// La musica esce dal telefono stesso — l'altoparlante o l'auricolare — e non
+    /// dall'auto, dalle cuffie o da un cavo.
+    pub integrata: bool,
 }
 
 /// Chi lo sa chiedere ad Android, una volta installato.
@@ -138,6 +141,22 @@ pub(crate) fn e_bluetooth(dispositivo: &cpal::Device) -> bool {
     dispositivo
         .description()
         .is_ok_and(|d| d.interface_type() == cpal::InterfaceType::Bluetooth)
+}
+
+/// L'uscita aperta è dentro il telefono — l'altoparlante o l'auricolare —, o fuori
+/// (l'auto, le cuffie, un cavo)? Solo Android lo sa dire: `None` altrove e quando
+/// il ponte non risponde. Serve alla riapertura, che quando un'uscita di fuori se
+/// ne va e Android ripiega sull'altoparlante deve mettere in pausa, non
+/// ripartire dal telefono (D-T2 del collaudo sul telefono vero).
+#[cfg(target_os = "android")]
+pub(crate) fn e_integrata(_dispositivo: &cpal::Device) -> Option<bool> {
+    uscita_di_android().map(|uscita| uscita.integrata)
+}
+
+/// Vedi la versione per Android.
+#[cfg(not(target_os = "android"))]
+pub(crate) fn e_integrata(_dispositivo: &cpal::Device) -> Option<bool> {
+    None
 }
 
 /// Un'uscita audio, come la vede cpal in questo istante.
