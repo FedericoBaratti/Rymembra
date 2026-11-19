@@ -497,7 +497,16 @@ for that reason it is switched off by default: `Presenza` enables it only while
 off; it is a subclass of Media3’s receiver whose guard starts the music service
 only when the core is running **and** the background service is wanted, so a
 play key after a restart without the core starts nothing and cannot make Android
-close the app. The Car App Library (`androidx.car.app:app` 1.7.0, Apache-2.0,
+close the app. The power-on receiver (`AvvioAccensione`, permission
+`RECEIVE_BOOT_COMPLETED`) is not exported, listens only to `BOOT_COMPLETED` —
+after the first unlock, never to the locked-boot broadcast, and it is not direct-boot
+aware, because the library, the settings and the Keystore live in
+credential-encrypted storage — and starts the background service only when “Stay
+active in the background” is on. Starting the core from a service, with no
+activity, shares the process with the window that may be born later: Android’s
+`ndk-context` is set once by whichever starts first, and Kotlin — which alone knows
+whether an activity was ever created — decides whether the service may set it. The
+Car App Library (`androidx.car.app:app` 1.7.0, Apache-2.0,
 listed in `THIRD-PARTY-NOTICES.md`) adds two components that are not exported —
 a permission activity and a notification receiver — no permission, and a query
 for the Android Auto connection provider; Rymembra uses it only to know whether

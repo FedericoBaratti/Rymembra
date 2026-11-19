@@ -207,6 +207,21 @@ device that has not updated is under Known limits.
   A button opens Android’s battery optimization page, with a note for
   manufacturers (Xiaomi, Huawei, Samsung, Nothing, OnePlus, Oppo) that close
   background apps on their own; Rymembra never asks for the exemption itself.
+- **It starts when the phone does** (Android). With “Stay active in the
+  background” on, after a restart of the phone Rymembra starts by itself, without
+  opening the app, as soon as you have unlocked it for the first time: the
+  notification comes back, the PCs you linked reach the phone, Android Auto finds
+  Rymembra ready (the tree, the resume), the play key of a headset or a car works,
+  and “Start with the car” works. When you open the app later it joins what is
+  already running — one core, the music keeps playing. With the setting off
+  nothing changes: nothing starts at power-on.
+- **Android Auto no longer needs the app open.** When the car asks for the
+  library and Rymembra is not running, it now starts its core by itself, even with
+  “Stay active in the background” off, instead of showing “Open Rymembra”. (Android
+  may close the process again when nothing plays and nothing keeps it alive; the
+  car then asks again.) Only the core starts: the backup, the sync, the
+  enrichment, the analysis, the folder watch and the update check wait for the
+  app, so a restart of the phone costs no battery and no disk for them.
 - **Start with the car** (Settings › Devices, Android, under “Stay active in the
   background”). When the phone connects to Android Auto, Rymembra starts playing
   by itself in place of the last app you used, resuming the queue it had saved.
@@ -435,9 +450,11 @@ release:
   the phone even with “Stay active in the background” on. The setting’s card
   opens Android’s page for it. Some manufacturers close background apps on
   their own, and the Google Play review of the service type is not settled.
-  Nothing restarts the service after a reboot yet, and a service that Android
-  brings back by itself shows “Rymembra is resting” until you open the app.
-  The battery cost is not measured.
+  The service now restarts after a reboot and starts the core by itself; the
+  notification says “Rymembra is starting” until the core is up, and “Rymembra is
+  resting” only if the core does not start at all. A file that lives in a cloud
+  folder plays only after the app has been opened once in that run: the cloud
+  folders start with the app. The battery cost is not measured.
 - **“Start with the car”** needs Android Auto and is not
   offered in the Google Play build, because Google’s quality rule for media apps
   in cars (MA-1) forbids starting playback without a user action. It has not

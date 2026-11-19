@@ -441,3 +441,111 @@ test("il ricordo dell'ultimo brano si riscrive anche quando cambia solo la coper
   assert.match(nucleo, /if \(scheda\.id != scritto \|\| scheda\.copertina != copertinaScritta\)/);
   assert.match(nucleo, /copertinaScritta = scheda\.copertina/);
 });
+
+// ── F8: il nucleo che parte da solo, e l'accensione del telefono ──────────────
+
+/** Il tag `<receiver>` di un componente del manifesto, con le sue figlie. */
+function ricevitore(nome: string): string {
+  const blocco = new RegExp(`<receiver\\b[^>]*android:name="\\.${nome}"[^>]*?(?:/>|>[\\s\\S]*?</receiver>)`).exec(manifesto);
+  return blocco?.[0] ?? "";
+}
+
+test("all'accensione riparte solo BOOT_COMPLETED: dopo lo sblocco, non directBootAware, non esportato", () => {
+  const avvio = ricevitore("AvvioAccensione");
+  assert.ok(avvio, "il ricevitore .AvvioAccensione non c'è");
+  assert.match(avvio, /<action\s+android:name="android\.intent\.action\.BOOT_COMPLETED"\s*\/>/);
+  // Il database, le preferenze e il Keystore stanno nello storage con le
+  // credenziali: prima dello sblocco non si aprono, e non c'è niente da avviare.
+  assert.doesNotMatch(avvio, /LOCKED_BOOT_COMPLETED/);
+  assert.doesNotMatch(avvio, /directBootAware/);
+  assert.doesNotMatch(manifesto, /directBootAware="true"/, "nessun componente dell'app è directBootAware");
+  // A mandare la notizia è il sistema, che raggiunge anche un componente non esportato.
+  assert.match(avvio, /android:exported="false"/);
+  assert.ok(permessiChiesti().has("RECEIVE_BOOT_COMPLETED"), "senza il permesso il sistema non manda la notizia");
+  // E il servizio che avvia è quello che può partire da lì su Android 15: connectedDevice.
+  assert.match(manifesto, /android:name="\.Presenza"[^>]*android:foregroundServiceType="connectedDevice"/);
+});
+
+test("il ricevitore dell'accensione avvia Presenza solo se il sottofondo è voluto", () => {
+  const avvio = kotlin("AvvioAccensione.kt");
+  const corpo = /override fun onReceive\([\s\S]*?\n  }\n/.exec(avvio)?.[0] ?? "";
+  assert.ok(corpo, "onReceive non si trova");
+  assert.match(corpo, /intento\.action != Intent\.ACTION_BOOT_COMPLETED\) return/);
+  const voluto = corpo.indexOf("Presenza.voluto(contesto)");
+  const parte = corpo.indexOf("startForegroundService(");
+  assert.ok(voluto > 0 && parte > voluto, "il servizio parte prima di sapere se il sottofondo è voluto");
+  assert.match(corpo, /if \(!Presenza\.voluto\(contesto\)\) return/);
+  // Non fa altro: niente nucleo, niente libreria, niente attività.
+  assert.doesNotMatch(corpo, /Ponte\.|Nucleo\.|startActivity/);
+});
+
+test("il servizio avvia il nucleo da sé, e l'attività toglie il contesto del servizio prima di nascere", () => {
+  const presenza = kotlin("Presenza.kt");
+  // A ogni partenza del servizio, dopo `startForeground` e dopo aver visto che è voluto.
+  const parte = presenza.indexOf("override fun onStartCommand");
+  const corpo = presenza.slice(parte, presenza.indexOf("override fun onDestroy"));
+  assert.ok(corpo.indexOf("startForeground(") > 0);
+  assert.ok(
+    corpo.indexOf("Ponte.avviaIlNucleo(applicationContext)") > corpo.indexOf("if (!voluto(this))"),
+    "il servizio avvia il nucleo anche se il sottofondo è spento",
+  );
+
+  const ponte = kotlin("Ponte.kt");
+  // A decidere se `ndk-context` lo mette il servizio è Kotlin, sul filo principale:
+  // la seconda `initialize_android_context` abortisce l'attività.
+  assert.match(ponte, /private var attivitaGiaNata = false/);
+  assert.match(ponte, /check\(Looper\.myLooper\(\) == Looper\.getMainLooper\(\)\)/);
+  assert.match(ponte, /if \(attivitaGiaNata \|\| nucleoAvviatoDalServizio\) return/);
+  assert.match(ponte, /avviaNucleo\(applicazione, applicazione\.dataDir\.absolutePath, true\)/);
+
+  const attivita = kotlin("MainActivity.kt");
+  const prepara = attivita.indexOf("Ponte.preparaLAttivita()");
+  const super_ = attivita.indexOf("super.onCreate(savedInstanceState)");
+  const nata = attivita.indexOf("Ponte.attivitaNata()");
+  assert.ok(prepara > 0 && prepara < super_, "il contesto del servizio si toglie prima di super.onCreate");
+  assert.ok(nata > super_, "il cancello si riapre dopo super.onCreate");
+});
+
+test("la sveglia dell'auto avvia il nucleo da qui, e non apre più l'attività", () => {
+  const nucleo = kotlin("Nucleo.kt");
+  const sveglia = /fun sveglia\([\s\S]*?\n  }\n/.exec(nucleo)?.[0] ?? "";
+  assert.match(sveglia, /Ponte\.avviaIlNucleo\(applicazione\)/);
+  assert.doesNotMatch(sveglia, /startActivity|MainActivity/);
+  assert.doesNotMatch(kotlin("MainActivity.kt"), /Nucleo\.SFONDO|moveTaskToBack\(true\)\s*\n\s*}\s*\n\s*cercaDaIntento/);
+  // La notifica dice la verità: si sta avviando finché il nucleo non c'è.
+  const presenza = kotlin("Presenza.kt");
+  assert.match(presenza, /if \(!Nucleo\.pronto\) return contesto\.getString\(R\.string\.presenza_titolo_avvio\)/);
+  assert.match(kotlin("Nucleo.kt"), /Presenza\.rinfresca\(contesto\)/);
+});
+
+test("le funzioni native di Ponte tengono il loro nome nella build di rilascio", () => {
+  // La build di rilascio non include le regole di serie di Android, che tengono i
+  // metodi `native`: senza questa, R8 rinomina `avviaNucleo` e JNI non la trova
+  // (`UnsatisfiedLinkError`), solo sul rilascio.
+  const regole = leggi(`${APP}proguard-rules.pro`);
+  assert.match(
+    regole,
+    /-keepclasseswithmembernames class io\.github\.federicobaratti\.rymembra\.Ponte \{\s*native <methods>;\s*\}/,
+  );
+  assert.doesNotMatch(
+    leggi(`${APP}build.gradle.kts`),
+    /proguard-android(-optimize)?\.txt/,
+    "se la build comincia a includere le regole di serie, questa prova e la regola sopra si possono togliere",
+  );
+});
+
+test("Rust esporta le tre funzioni di Ponte, e l'unsafe sta solo in jvm.rs", () => {
+  const jvm = leggi("../rymembra-android/src/jvm.rs");
+  for (const nome of ["rilasciaIlContestoDelServizio", "contestoDiTaoPronto", "avviaNucleo"]) {
+    assert.ok(
+      jvm.includes(`Java_io_github_federicobaratti_rymembra_Ponte_${nome}`),
+      `jvm.rs non esporta Ponte.${nome}`,
+    );
+    assert.match(kotlin("Ponte.kt"), new RegExp(`external fun ${nome}\\(`));
+  }
+  // La macro che scrive `avviaNucleo` la invoca una volta il crate dell'app, che di
+  // `unsafe` non ne ha.
+  const lib = leggi("../src-tauri/src/lib.rs");
+  assert.match(lib, /rymembra_android::esporta_il_nucleo!\(crate::avvia_dal_servizio\);/);
+  assert.doesNotMatch(lib.split("#[cfg(test)]\nmod prove")[0] ?? "", /\bunsafe\b\s*[{(]|unsafe\s+fn|unsafe\(no_mangle\)/);
+});

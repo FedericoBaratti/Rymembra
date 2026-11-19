@@ -33,6 +33,11 @@
          policy di Google Play lo riserva ad altre app, e le impostazioni
          portano alla pagina di sistema da cui togliere il risparmio. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- All'accensione del telefono, se «Resta attiva in sottofondo» era acceso, il
+         servizio riparte da solo e con lui il nucleo (vedi `AvvioAccensione.kt`).
+         Solo `BOOT_COMPLETED`, che arriva dopo il primo sblocco: la libreria, le
+         preferenze e il Keystore stanno nello storage con le credenziali. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- La libreria. Il permesso «musica e audio» basta ai brani e alle
@@ -210,11 +215,25 @@
              collegamento con altri dispositivi su una rete è proprio
              `connectedDevice`. Senza un tempo massimo, e non fra i tipi che da
              Android 15 un `BOOT_COMPLETED` non può avviare (vedi `Presenza`).
-             Non esportato: lo avvia solo l'app. -->
+             Non esportato: lo avvia solo l'app, e il ricevitore qui sotto. -->
         <service
             android:name=".Presenza"
             android:foregroundServiceType="connectedDevice"
             android:exported="false" />
+
+        <!-- L'accensione del telefono: se il sottofondo era acceso, il servizio
+             di sopra riparte e avvia il nucleo senza che nessuno apra l'app (vedi
+             `AvvioAccensione`). Solo `BOOT_COMPLETED`, dopo il primo sblocco, e
+             **non** `directBootAware`: il database sta nello storage con le
+             credenziali, che prima dello sblocco non si apre. Non esportato: a
+             mandare la notizia è il sistema, che lo raggiunge lo stesso. -->
+        <receiver
+            android:name=".AvvioAccensione"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Il tasto play di una cuffia o dell'auto, e la scheda di ripresa del
              sistema, che riaccendono la musica quando l'app non suona. Spento
