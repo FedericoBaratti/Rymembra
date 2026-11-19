@@ -210,6 +210,14 @@ const CATALOGO: &[(&str, Genere)] = &[
     // pesa quindi meno delle altre — ma è un'omissione, e un elenco di
     // inclusioni si difende scrivendo perché una riga manca, non contando su
     // chi la ritroverà.
+    // `ui.window.geometry` (`crate::preferenze::CHIAVE_GEOMETRIA_FINESTRA`)
+    // **non** c'è, per la stessa ragione di `ui.zoom` ma senza la sua attenuante:
+    // sono i pixel fisici di **questa** macchina — i suoi monitor, la loro
+    // scalatura, dove l'utente ha appoggiato la finestra — e su un altro
+    // computer descrivono uno schermo che non c'è. Il desktop la riporterebbe su
+    // un monitor che esiste, ma una finestra che compare dove nessuno l'ha messa
+    // è una sorpresa che non serve a niente. La prova la tiene fuori per
+    // prefisso (`ui.window.`).
     // ── la riproduzione ──
     // `player.queue` **non** c'è, ed è la seconda ragione per cui questo elenco
     // è di inclusioni: contiene identificativi di righe di `tracks`, che su
@@ -369,6 +377,7 @@ const FUORI: &[&str] = &[
     "le cartelle dal cloud: gli account collegati, le app registrate presso Google, Microsoft e Dropbox, e lo specchio dei servizi (fatti di questa macchina; le cartelle scelte viaggiano)",
     "il sottofondo del telefono: «Resta attiva in sottofondo» e «Parti con l'auto» (fatti di questo telefono: la sua batteria, il produttore che lo lascia vivere o no, e l'auto in cui lo si collega: su un altro telefono farebbero partire la musica da sola)",
     "il sottofondo del computer: le etichette del vassoio e la risposta alla proposta di partire con Windows (fatti di questa macchina e di questa installazione; «Avvia con Windows» sta nel registro di Windows, non nella libreria)",
+    "la posizione e la misura della finestra (fatte dei pixel dei monitor di questa macchina e della loro scalatura: portate su un altro computer aprirebbero la finestra dove lì non c'è uno schermo)",
     "le Novità già viste: la versione di cui si è letta la finestra delle Novità (la storia di questa installazione: portata su un altro computer nasconderebbe le novità che lì sono nuove)",
     "le risposte «Lasciali» alle righe che un dispositivo collegato non manda più (la storia di questa macchina con quei dispositivi: su un altro computer nasconderebbero la domanda per cataloghi che lì nessuno ha mai visto)",
 ];

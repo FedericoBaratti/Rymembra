@@ -56,6 +56,8 @@ mod diario;
 mod disparte;
 mod errore;
 mod esplora;
+#[cfg(desktop)]
+mod geometria;
 mod giro;
 mod ia;
 mod importa;
@@ -405,6 +407,10 @@ fn finisci_l_avvio(app: &tauri::AppHandle) {
     if spegnimento::in_uscita() {
         return;
     }
+    // Dov'era la finestra, prima che la pagina — che la mostra — monti: il
+    // cancello si apre dopo. Vedi `comparsa`.
+    #[cfg(desktop)]
+    comparsa::ritrova_la_geometria(app);
     avvia_dopo_la_libreria(app);
     if let Some(stato) = app.try_state::<stato::Stato>() {
         let fase = stato.apri_il_cancello();
@@ -822,6 +828,11 @@ pub fn run() {
             let tauri::WindowEvent::CloseRequested { api, .. } = evento else {
                 return;
             };
+            // Dov'è la finestra, prima di tutto il resto — anche se si sta uscendo
+            // —: è l'ultimo momento in cui c'è qualcosa da leggere, e la X col
+            // vassoio la distrugge. Vedi `comparsa`.
+            #[cfg(desktop)]
+            comparsa::alla_chiusura(finestra.app_handle());
             // Chi sta uscendo davvero passa di qui: «Esci» dal vassoio alza la
             // bandiera prima di chiamare `exit`, e impedirgli la chiusura
             // vorrebbe dire un programma che non si spegne più.
@@ -1259,6 +1270,27 @@ pub fn run() {
             #[cfg(mobile)]
             if matches!(evento, tauri::RunEvent::MainEventsCleared) {
                 telefono::riapri_la_finestra(mano);
+                return;
+            }
+
+            // La finestra si è spostata o ha cambiato misura: si segna e basta, e si
+            // rilegge a eventi finiti (`MainEventsCleared`, qui sotto). Leggere
+            // adesso vedrebbe una finestra ingrandita ancora «non ingrandita»:
+            // vedi `comparsa::finestra_mossa`.
+            #[cfg(desktop)]
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_),
+                ..
+            } = &evento
+                && label == "main"
+            {
+                comparsa::finestra_mossa();
+                return;
+            }
+            #[cfg(desktop)]
+            if matches!(evento, tauri::RunEvent::MainEventsCleared) {
+                comparsa::rileggi_se_mossa(mano);
                 return;
             }
 

@@ -133,6 +133,18 @@ pub const CHIAVE_SECONDO_PIANO: &str = "ui.closeToTray";
 /// Vedi `vassoio.rs`. Non entra nel profilo: è un fatto di questa macchina.
 pub const CHIAVE_ETICHETTE_VASSOIO: &str = "ui.trayLabels";
 
+/// Dove stava la finestra l'ultima volta, come JSON: posizione, misura e se era
+/// ingrandita, in pixel fisici. Serve a rimetterla lì dopo un riavvio e, in
+/// `comparsa`, quando il vassoio la chiude e poi la ricrea. Vedi `geometria.rs`
+/// del desktop.
+///
+/// **Non entra nel profilo**: sono i pixel dei monitor di questa macchina, con
+/// la loro scalatura. Portata su un altro computer aprirebbe la finestra dove lì
+/// non c'è uno schermo — e il desktop, che la riporta su un monitor che esiste,
+/// la butterebbe comunque. È un prefisso (`ui.window.`) e non un nome, perché la
+/// prova che la tiene fuori lo guarda per prefisso.
+pub const CHIAVE_GEOMETRIA_FINESTRA: &str = "ui.window.geometry";
+
 /// La risposta alla proposta «parti con Windows e resta nel vassoio»: vedi
 /// [`proposta_sottofondo`]. Non entra nel profilo: è la storia di questa
 /// installazione, come il giro.
