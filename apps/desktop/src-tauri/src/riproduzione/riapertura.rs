@@ -10,14 +10,13 @@
 //! aprire un dispositivo audio è un'attesa come le altre: si apre il motore
 //! nuovo **prima** di chiedere il lucchetto del lettore.
 
+use crate::nucleo::Nucleo;
 use rymembra_app::playback::{Equalizzazione, Normalizzazione, Volume};
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_domain::queue::Queue;
-use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
-use crate::spegnimento::Emette as _;
 
 use super::coda::{leggi_il_salvato, riga_delle_latenze, rimetti_il_salvato, riprendi_coda};
 use super::fili::prepara_prossimo;
@@ -239,7 +238,7 @@ pub(super) fn ferma_l_ascolto_se_perso(stato: &StatoLettore) {
 /// sistema e può prendersi il suo tempo. Sul filo principale sarebbe la
 /// finestra ferma, su un worker del runtime gli altri comandi: il comando
 /// [`riapri_audio`] lo manda sul pool bloccante.
-pub fn riapri_audio_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+pub fn riapri_audio_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     // A mano si riparte come si stava: se la musica andava, riprende; se era
     // in pausa, resta ferma. La stessa regola dell'automatico — l'ha decisa
     // `annota_ripresa`, non chi chiama. A differenza dell'automatico, a mano si
@@ -290,14 +289,14 @@ pub(super) enum Riaperta {
 /// [`riapri_audio_ora`], sul pool bloccante: vedi
 /// `super::col_lettore_in_disparte`.
 #[tauri::command]
-pub async fn riapri_audio(app: tauri::AppHandle) -> Esito<()> {
+pub async fn riapri_audio(app: Nucleo) -> Esito<()> {
     super::col_lettore_in_disparte(app, "riapertura dell'audio", riapri_audio_ora).await
 }
 
 /// [`riprova_corrente_ora`], sul pool bloccante: vedi
 /// `super::col_lettore_in_disparte`.
 #[tauri::command]
-pub async fn riprova_corrente(app: tauri::AppHandle) -> Esito<()> {
+pub async fn riprova_corrente(app: Nucleo) -> Esito<()> {
     super::col_lettore_in_disparte(app, "riprova", riprova_corrente_ora).await
 }
 
@@ -342,7 +341,7 @@ pub async fn riprova_corrente(app: tauri::AppHandle) -> Esito<()> {
 /// finché qualcuno non attacca le cuffie, e prima di oggi l'unico modo di
 /// accorgersene era riavviare.
 pub(super) fn riapri_su(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     uscita: Option<Option<String>>,
     modo: Modo,
@@ -399,7 +398,7 @@ impl Drop for Riaprendo<'_> {
 /// sparso qui dentro, e con un panico possibile in fondo a ogni chiamata al
 /// driver, l'unico posto in cui abbassarla con certezza è un `Drop`.
 fn riapri_davvero(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     uscita: Option<Option<String>>,
     modo: Modo,
@@ -724,7 +723,7 @@ fn riapri_davvero(
 /// arriva. Il sorvegliante parte **dopo** questo primo tentativo, e non
 /// insieme: due aperture in gara si escluderebbero, e quella perdente non
 /// saprebbe dire se il lettore è ancora «in apertura».
-pub fn apri_il_primo_motore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Receiver<()>) {
+pub fn apri_il_primo_motore(app: Nucleo, orecchio: std::sync::mpsc::Receiver<()>) {
     let avviato = std::thread::Builder::new()
         .name("rymembra-audio-avvio".to_owned())
         .spawn(move || {
@@ -757,7 +756,7 @@ pub fn apri_il_primo_motore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Re
 /// Solo se è ancora «in apertura»: un gesto a mano arrivato nel frattempo
 /// («Riapri», un'uscita scelta) può aver già aperto un motore, o scritto un
 /// guasto suo, e quello vale di più.
-fn primo_guasto(app: &tauri::AppHandle, stato: &StatoLettore, err: AppError) {
+fn primo_guasto(app: &Nucleo, stato: &StatoLettore, err: AppError) {
     {
         let mut guardia = stato
             .lettore
@@ -906,9 +905,7 @@ fn rifiuto_automatico(
 /// chiama **senza** il lucchetto del lettore, e la riga del diario — quando le
 /// voci non si leggono tutte, o la libreria non arriva — si scrive qui, prima
 /// di prenderlo.
-fn leggi_le_latenze(
-    app: &tauri::AppHandle,
-) -> Option<(i64, rymembra_app::playback::LatenzePerUscita)> {
+fn leggi_le_latenze(app: &Nucleo) -> Option<(i64, rymembra_app::playback::LatenzePerUscita)> {
     let stato_app = super::libreria_di(app, "latenze per uscita").ok()?;
     let letto = crate::stato::con_libreria_entro(&stato_app, ATTESA_LATENZE, |libreria| {
         let c = &libreria.connection;
@@ -970,7 +967,7 @@ const SECONDO_TENTATIVO: std::time::Duration = std::time::Duration::from_millis(
 /// vorrebbe dire raddoppiare un'attesa che è già stata lunga, o insistere su
 /// qualcosa che fra un quarto di secondo sarà identico.
 fn apri_con_un_secondo_tentativo(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     voluta: Option<&str>,
 ) -> Result<rymembra_play::Motore, AppError> {
     match apri_motore(app, voluta.map(str::to_owned)) {
@@ -1101,7 +1098,7 @@ fn riparte_fermo(ripresa: &super::Ripresa, adesso_ms: i64, chiesta: (u64, bool))
 /// Dice soltanto se la puntina è tornata nel solco: a play premuto a
 /// dispositivo perso serve sapere se c'è ancora un brano da far partire.
 fn riprendi_dov_era(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     formato: rymembra_play::FormatoUscita,
     per_il_cambio: bool,
@@ -1268,7 +1265,7 @@ fn riprendi_dov_era(
 /// di rete, e quella è esattamente l'attesa da cui la finestra — e i worker
 /// del runtime — vanno tenuti fuori. Il comando [`riprova_corrente`] lo manda
 /// sul pool bloccante.
-pub fn riprova_corrente_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+pub fn riprova_corrente_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     let annotato = *stato
         .ripresa
         .lock()

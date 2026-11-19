@@ -40,6 +40,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::nucleo::{ComeNucleo, Nucleo};
 use rymembra_app::dispositivi::{self, AscoltoLontano, DatiMobili};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::listen::Listen;
@@ -47,7 +48,6 @@ use rymembra_lontano::protocollo::MASSIMO_PEZZO;
 use rymembra_lontano::{Domanda, Risposta};
 use rymembra_net::flusso::Sorgente;
 use rymembra_net::http::Pezzo;
-use tauri::AppHandle;
 
 use super::comune;
 use super::filo::{ATTESA_LIBRERIA, Comune, Posta, in_libreria, prendi};
@@ -332,7 +332,7 @@ pub(super) fn apri_in_rete(comune: &Arc<Comune>, dispositivo: &str, brano: i64) 
 
 /// Un ascolto fatto qui di un brano dell'altro: in fila, da mandargli.
 /// Gira sul filo delle scritture del lettore.
-pub fn ascoltato_qui(app: &AppHandle, dispositivo: &str, brano: i64, ascolto: &Listen) {
+pub fn ascoltato_qui(app: &Nucleo, dispositivo: &str, brano: i64, ascolto: &Listen) {
     let lontano = AscoltoLontano {
         brano,
         quando_ms: ascolto.started_at,
@@ -371,7 +371,7 @@ pub(super) fn da_riprovare() -> bool {
 
 /// Manda gli ascolti in fila ai dispositivi che rispondono adesso — a `solo`,
 /// se è detto. Su un filo suo: il filo del collegamento non aspetta la rete.
-pub(super) fn manda_gli_ascolti(app: &AppHandle, comune: &Arc<Comune>, solo: Option<&str>) {
+pub(super) fn manda_gli_ascolti(app: &Nucleo, comune: &Arc<Comune>, solo: Option<&str>) {
     if comune.nodo().is_none() {
         return;
     }
@@ -411,7 +411,7 @@ pub(super) fn manda_gli_ascolti(app: &AppHandle, comune: &Arc<Comune>, solo: Opt
 /// Solo a un dispositivo ancora collegato, guardato a ogni ascolto: a uno
 /// dimenticato non si chiede più niente, e non è un invio da riprovare
 /// (reperto R01-5).
-fn manda_a(app: &AppHandle, comune: &Comune, chiave: &str) -> bool {
+fn manda_a(app: &Nucleo, comune: &Comune, chiave: &str) -> bool {
     if !comune.associato(chiave) {
         return true;
     }
@@ -476,7 +476,8 @@ fn manda_a(app: &AppHandle, comune: &Comune, chiave: &str) -> bool {
 /// e per la stessa ragione fuori dai dati che vanno in giro coi profili. La
 /// regola è quella di [`crate::cartella_di_cache`]; `None` vuol dire nessuna
 /// cache.
-pub(crate) fn cartella_copertine(app: &AppHandle) -> Option<PathBuf> {
+pub(crate) fn cartella_copertine(app: &impl ComeNucleo) -> Option<PathBuf> {
+    let app = &app.come_nucleo();
     crate::cartella_di_cache(app, "copertine-lontane")
 }
 
@@ -487,7 +488,7 @@ pub(crate) fn cartella_copertine(app: &AppHandle) -> Option<PathBuf> {
 /// ma una cartella lasciata da prima può esserci ancora, e chi non passa da un
 /// cancello — la scheda di ripresa, il fornitore di Android (reperto di F1) — la
 /// leggerebbe: dimenticato il dispositivo, non deve più uscirne niente.
-pub(crate) fn togli_le_copertine_di(app: &AppHandle, dispositivo: &str) {
+pub(crate) fn togli_le_copertine_di(app: &Nucleo, dispositivo: &str) {
     if let Some(cartella) = cartella_copertine(app) {
         togli_la_cartella_di(&cartella, dispositivo);
     }
@@ -534,7 +535,7 @@ struct Ripulita {
 ///
 /// Va su un filo suo, per non fermare l'avvio: sono pochi file, ma su un disco
 /// lento sono secondi.
-pub(crate) fn ripulisci_le_copertine_di_prima(app: &AppHandle) {
+pub(crate) fn ripulisci_le_copertine_di_prima(app: &Nucleo) {
     let sessione_in_corso = crate::insieme::ruolo(app) != crate::insieme::Ruolo::Fuori;
     if !si_ripulisce(sessione_in_corso, &RIPULITA) {
         return;

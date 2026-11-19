@@ -42,6 +42,7 @@ use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::nucleo::Nucleo;
 use rymembra_app::library::condivisa::BranoRemoto;
 use rymembra_app::specchio::scarico::righe_da_scaricare;
 use rymembra_domain::destinazione::segmento_sicuro;
@@ -49,14 +50,12 @@ use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::paths::SUPPORTED_EXTENSIONS;
 use rymembra_lontano::protocollo::MASSIMO_PEZZO;
 use serde::Serialize;
-use tauri::AppHandle;
 
 use super::filo::{leggi_a_parte, prendi};
 use super::sfoglia::{InVolo, Pezzi, ViaNodo, dati_permessi, estensione_buona};
 use super::{comune, in_disparte};
 use crate::errore::Esito;
 use crate::nota;
-use crate::spegnimento::Emette as _;
 
 /// Quanti brani al più in una richiesta: un album intero, o una ricerca.
 const MASSIMI_PER_VOLTA: usize = 5000;
@@ -321,7 +320,7 @@ enum Posto {
     Uguale,
 }
 
-fn annuncia(app: &AppHandle) {
+fn annuncia(app: &Nucleo) {
     let stato = prendi(&CODA).stato.clone();
     app.emetti("lontano:scarico", stato);
 }
@@ -483,7 +482,7 @@ fn copia(
 }
 
 /// Scarica un brano: dal posto libero al file rinominato.
-fn scarica_uno(app: &AppHandle, lavoro: &Lavoro, giro: u64) -> Result<Fatto, AppError> {
+fn scarica_uno(app: &Nucleo, lavoro: &Lavoro, giro: u64) -> Result<Fatto, AppError> {
     let brano = &lavoro.brano;
     if brano.segmento.is_some() {
         return Ok(Fatto::Uguale);
@@ -493,11 +492,14 @@ fn scarica_uno(app: &AppHandle, lavoro: &Lavoro, giro: u64) -> Result<Fatto, App
         return Err(AppError::new(ErrorCode::LontanoNonAssociato));
     }
     dati_permessi(&comune)?;
-    let cartella = crate::procura::cartella_download(app).ok_or_else(|| {
-        AppError::new(ErrorCode::FsNotFound {
-            path: "cartella di scaricamento".to_owned(),
-        })
-    })?;
+    let cartella = app
+        .con_finestra(crate::procura::cartella_download)
+        .flatten()
+        .ok_or_else(|| {
+            AppError::new(ErrorCode::FsNotFound {
+                path: "cartella di scaricamento".to_owned(),
+            })
+        })?;
     let estensione = estensione_audio(&brano.estensione)?;
     let (relativa, base) = dove_va(brano);
     let cartella = cartella.join(relativa);
@@ -551,7 +553,7 @@ const fn notifica(_: bool, _: u32, _: u32, _: &str) {}
 
 /// Il filo di un dispositivo: svuota la sua coda. L'ultimo che finisce
 /// scansiona quel che è arrivato.
-fn gira(app: &AppHandle, dispositivo: &str) {
+fn gira(app: &Nucleo, dispositivo: &str) {
     let (ultimo, scritti) = loop {
         let (lavoro, giro, numero, di) = match prendi(&CODA).prendi(dispositivo) {
             Prossimo::Finito { ultimo, scritti } => break (ultimo, scritti),
@@ -591,14 +593,14 @@ fn gira(app: &AppHandle, dispositivo: &str) {
     notifica(false, 0, 0, "");
     if scritti > 0 && !crate::spegnimento::in_uscita() {
         nota!("[lontano] scesi {scritti} brani: si scansiona la cartella dei download");
-        crate::procura::scansiona_i_download(app);
+        app.con_finestra(crate::procura::scansiona_i_download);
     }
 }
 
 /// Mette in coda i brani di `chiave`, e fa partire il filo del suo dispositivo
 /// se non gira già.
 fn accoda(
-    app: &AppHandle,
+    app: &Nucleo,
     chiave: &str,
     brani: Vec<BranoRemoto>,
 ) -> Result<StatoScaricoIpc, AppError> {
@@ -610,7 +612,11 @@ fn accoda(
         return Err(AppError::new(ErrorCode::LontanoSpento));
     }
     dati_permessi(&comune)?;
-    if crate::procura::cartella_download(app).is_none() {
+    if app
+        .con_finestra(crate::procura::cartella_download)
+        .flatten()
+        .is_none()
+    {
         return Err(AppError::new(ErrorCode::FsNotFound {
             path: "cartella di scaricamento".to_owned(),
         }));
@@ -709,7 +715,7 @@ fn anteprima_di(gruppi: &[(String, Vec<BranoRemoto>)]) -> AnteprimaScarico {
 ///
 /// Quelli del database.
 #[tauri::command]
-pub async fn lontano_scarica_anteprima(app: AppHandle, righe: Vec<i64>) -> Esito<AnteprimaScarico> {
+pub async fn lontano_scarica_anteprima(app: Nucleo, righe: Vec<i64>) -> Esito<AnteprimaScarico> {
     in_disparte(move || {
         let mut tutto = AnteprimaScarico::default();
         for pezzo in righe.chunks(MASSIMI_PER_VOLTA) {
@@ -736,7 +742,7 @@ pub async fn lontano_scarica_anteprima(app: AppHandle, righe: Vec<i64>) -> Esito
 /// questo scende e l'errore è quello del primo: il resto lo dice la finestra
 /// con `lontano:scarico`. I guasti dei singoli brani arrivano lì.
 #[tauri::command]
-pub async fn lontano_scarica_righe(app: AppHandle, righe: Vec<i64>) -> Esito<StatoScaricoIpc> {
+pub async fn lontano_scarica_righe(app: Nucleo, righe: Vec<i64>) -> Esito<StatoScaricoIpc> {
     in_disparte(move || {
         if righe.len() > MASSIMI_PER_VOLTA {
             return Err(AppError::new(ErrorCode::IpcPayloadInvalid {
@@ -765,7 +771,7 @@ pub async fn lontano_scarica_righe(app: AppHandle, righe: Vec<i64>) -> Esito<Sta
 
 /// Svuota le code e ferma i brani in corso, i cui `.part` si cancellano.
 #[tauri::command]
-pub async fn lontano_scarico_annulla(app: AppHandle) -> Esito<StatoScaricoIpc> {
+pub async fn lontano_scarico_annulla(app: Nucleo) -> Esito<StatoScaricoIpc> {
     in_disparte(move || {
         let stato = {
             let mut coda = prendi(&CODA);

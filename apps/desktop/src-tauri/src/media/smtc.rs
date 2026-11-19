@@ -20,6 +20,7 @@ use tauri::Manager as _;
 
 use super::{Gesto, PASSO_SALTO_MS, StatoMedia, avanti_entro, dentro_il_brano, ms_di, premi};
 use crate::nota;
+use crate::nucleo::ComeNucleo;
 use crate::riproduzione::StatoRiproduzione;
 use crate::stato::Stato;
 
@@ -84,7 +85,12 @@ struct Scheda {
 /// sistema che rifiuta — finisce nella stessa riga di registro e lascia
 /// l'applicazione intera: un lettore senza scheda nel riquadro del volume è un
 /// lettore, un lettore che non si apre no.
-pub fn avvia(app: &tauri::AppHandle) {
+pub fn avvia(app: &impl ComeNucleo) {
+    // Le SMTC si appendono a una finestra: senza, niente scheda del sistema.
+    let nucleo = app.come_nucleo();
+    let Some(app) = nucleo.finestra() else {
+        return;
+    };
     let finestra = match rymembra_barra::FinestraDeiMessaggi::crea() {
         Ok(finestra) => finestra,
         Err(err) => {
@@ -170,8 +176,8 @@ pub fn avvia(app: &tauri::AppHandle) {
 /// la chiusura, ma l'aggiornatore la chiama dal suo filo, e lì la finestra
 /// dei messaggi non si può distruggere — si chiude con un messaggio, e se il
 /// suo filo non pompa se ne va con il processo, che è sull'uscire.
-pub fn stacca(app: &tauri::AppHandle) {
-    let Some(stato) = app.try_state::<StatoMedia>() else {
+pub fn stacca(app: &impl ComeNucleo) {
+    let Some(stato) = app.come_nucleo().try_state::<StatoMedia>() else {
         return;
     };
     let mut dentro = stato
@@ -186,7 +192,11 @@ pub fn stacca(app: &tauri::AppHandle) {
 
 /// La parte di [`super::aggiorna`] che tocca Windows: la scheda e lo stato
 /// della riproduzione. Posizione e durata le ha già segnate chi chiama.
-pub(super) fn aggiorna(app: &tauri::AppHandle, media: &StatoMedia, stato: &StatoRiproduzione) {
+pub(super) fn aggiorna(app: &impl ComeNucleo, media: &StatoMedia, stato: &StatoRiproduzione) {
+    let nucleo = app.come_nucleo();
+    let Some(app) = nucleo.finestra() else {
+        return;
+    };
     let mut dentro = media
         .controlli
         .lock()

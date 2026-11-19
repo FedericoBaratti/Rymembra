@@ -9,6 +9,7 @@
 //! [`gesto_di_coda`], che tiene il gesto e la partenza una fuori dall'altra
 //! proprio per non aprire un file con il lucchetto del lettore in mano.
 
+use crate::nucleo::Nucleo;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rymembra_app::library::TrackSummary;
@@ -16,12 +17,10 @@ use rymembra_app::playback;
 use rymembra_domain::errors::AppError;
 use rymembra_domain::queue::{Queue, QueueSnapshot, RepeatMode};
 use serde::Serialize;
-use tauri::{Manager as _, State};
 
 use crate::disparte::leggi_la_libreria;
 use crate::errore::{Esito, errore};
 use crate::nota;
-use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, adesso_ms, con_libreria};
 
 use super::fili::prepara_prossimo;
@@ -95,11 +94,7 @@ struct CodaSostituita {
 /// altro brano — il doppio clic su una riga dell'elenco che sta già suonando —
 /// non ha perso niente: in quei due casi l'eventuale coda messa da parte prima
 /// resta dov'è, perché l'avviso che la offre può essere ancora a schermo.
-pub(super) fn ricorda_coda_di_prima(
-    app: &tauri::AppHandle,
-    lettore: &mut Lettore,
-    nuovi: Option<&[i64]>,
-) {
+pub(super) fn ricorda_coda_di_prima(app: &Nucleo, lettore: &mut Lettore, nuovi: Option<&[i64]>) {
     // In sessione no: l'«Annulla» rimetterebbe una coda di prima della
     // sessione, o di voci che gli altri non hanno più, e la strada lo
     // rifiuta (`Gesto::CodaRipristina`). Offrirlo nell'avviso vorrebbe dire un
@@ -193,7 +188,7 @@ fn merita_l_avviso(svuota: bool, curata: bool, brani: usize) -> bool {
 /// una presa lunga finisce nel diario col suo numero, come quelle della
 /// scansione.
 pub(super) fn scegli_da_solo(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     corrente: i64,
     esclusi: &[i64],
 ) -> Option<rymembra_app::autoplay::Scelta> {
@@ -222,7 +217,7 @@ pub(super) fn scegli_da_solo(
 /// Il lettore resta nella firma perché la regola resta quella di prima: si
 /// chiama dopo aver cambiato la coda, con il lucchetto in mano. Chi scrive
 /// rilegge la coda da lì, e scrive l'ultima — che è la sola che interessi.
-pub(super) fn salva_coda(app: &tauri::AppHandle, _lettore: &Lettore) {
+pub(super) fn salva_coda(app: &Nucleo, _lettore: &Lettore) {
     if let Some(stato) = app.try_state::<StatoLettore>() {
         stato.coda_da_salvare.store(true, Ordering::Relaxed);
     }
@@ -235,7 +230,7 @@ pub(super) fn salva_coda(app: &tauri::AppHandle, _lettore: &Lettore) {
 /// `None` vuol dire «non scritta, la libreria era occupata»; chi chiama rialza
 /// la bandiera.
 pub(super) fn scrivi_coda(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     entro: std::time::Duration,
 ) -> Option<Result<(), AppError>> {
@@ -280,7 +275,7 @@ pub(super) fn scrivi_coda(
 /// attaccate dopo — non passa di qui: lì il lettore nasce già con quel che c'è
 /// scritto, e non vuoto per essere riempito un attimo dopo. Vedi
 /// `riapertura::riapri_davvero`.
-pub fn riprendi_coda(app: &tauri::AppHandle) {
+pub fn riprendi_coda(app: &Nucleo) {
     // `try_state`, come in tutto il modulo: uno stato che non c'è più vuol dire
     // un'applicazione che si chiude, non un panico.
     let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
@@ -330,7 +325,7 @@ fn la_coda_si_puo_sostituire(
 /// posto di quella ripresa **solo se nessuno l'ha toccata**
 /// ([`la_coda_si_puo_sostituire`]); se la persona ha già fatto qualcosa la coda
 /// intera «rimane indietro», e la chiave si toglie da sola senza scrivere niente.
-fn aspetta_la_coda_lontana(app: tauri::AppHandle, ripresa: QueueSnapshot) {
+fn aspetta_la_coda_lontana(app: Nucleo, ripresa: QueueSnapshot) {
     let partito = std::thread::Builder::new()
         .name("rymembra-coda-lontana".to_owned())
         .spawn(move || {
@@ -372,7 +367,7 @@ fn aspetta_la_coda_lontana(app: tauri::AppHandle, ripresa: QueueSnapshot) {
 
 /// Mette nel lettore la coda con le voci lontane, se si può: vedi
 /// [`la_coda_si_puo_sostituire`].
-fn metti_la_coda_lontana(app: &tauri::AppHandle, ripresa: &QueueSnapshot, migrata: QueueSnapshot) {
+fn metti_la_coda_lontana(app: &Nucleo, ripresa: &QueueSnapshot, migrata: QueueSnapshot) {
     let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
         return;
     };
@@ -428,7 +423,7 @@ pub(super) struct Salvato {
 /// serie, l'equalizzatore spento e la normalizzazione di fabbrica — cioè il
 /// primo brano a tutto volume per chi teneva il cursore basso. Il guasto si
 /// scrive nel diario **qui**, dove nessun lucchetto è in mano.
-pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
+pub(super) fn leggi_il_salvato(app: &Nucleo) -> Salvato {
     let letto = super::libreria_di(app, "coda salvata").and_then(|stato| {
         con_libreria(&stato, |libreria| {
             let c = &libreria.connection;
@@ -617,7 +612,7 @@ pub(super) fn riga_delle_latenze(lette: &playback::LatenzeLette) -> Option<Strin
 /// [`avvia_corrente`] da dentro la chiusura è ciò che impedisce di riprendere un
 /// `Mutex` che è già preso — cioè un blocco irreversibile della finestra.
 pub(super) fn gesto_di_coda(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     gesto: impl FnOnce(&mut Lettore) -> Result<bool, AppError>,
 ) -> Result<(), AppError> {
@@ -653,7 +648,7 @@ pub(super) fn al_suo_posto(coda: &Queue, indice: usize, atteso: Option<i64>) -> 
 /// [`coda_accoda_ora`], sul pool bloccante: vedi
 /// `super::col_lettore_in_disparte`.
 #[tauri::command]
-pub async fn coda_accoda(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<()> {
+pub async fn coda_accoda(app: Nucleo, brani: Vec<i64>) -> Esito<()> {
     super::col_lettore_in_disparte(app, "accoda", move |app, stato| {
         coda_accoda_ora(app, stato, brani)
     })
@@ -661,11 +656,7 @@ pub async fn coda_accoda(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<()> {
 }
 
 /// Accoda in fondo.
-pub fn coda_accoda_ora(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    brani: Vec<i64>,
-) -> Esito<()> {
+pub fn coda_accoda_ora(app: Nucleo, stato: StatoLettore, brani: Vec<i64>) -> Esito<()> {
     let gesto = Gesto::Accoda { ids: brani.clone() };
     let Some(voci) = voci_dalla_strada(&app, &gesto).map_err(errore)? else {
         return Ok(());
@@ -694,7 +685,7 @@ pub fn coda_accoda_ora(
 /// [`coda_dopo_ora`], sul pool bloccante: vedi
 /// `super::col_lettore_in_disparte`.
 #[tauri::command]
-pub async fn coda_dopo(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<()> {
+pub async fn coda_dopo(app: Nucleo, brani: Vec<i64>) -> Esito<()> {
     super::col_lettore_in_disparte(app, "metti dopo", move |app, stato| {
         coda_dopo_ora(app, stato, brani)
     })
@@ -702,11 +693,7 @@ pub async fn coda_dopo(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<()> {
 }
 
 /// Mette subito dopo il brano corrente.
-pub fn coda_dopo_ora(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    brani: Vec<i64>,
-) -> Esito<()> {
+pub fn coda_dopo_ora(app: Nucleo, stato: StatoLettore, brani: Vec<i64>) -> Esito<()> {
     let gesto = Gesto::Dopo { ids: brani.clone() };
     let Some(voci) = voci_dalla_strada(&app, &gesto).map_err(errore)? else {
         return Ok(());
@@ -736,7 +723,7 @@ pub fn coda_dopo_ora(
 /// `brano` è quello che la finestra vedeva in `indice`: vedi
 /// [`al_suo_posto`].
 #[tauri::command]
-pub async fn coda_vai(app: tauri::AppHandle, indice: usize, brano: i64) -> Esito<()> {
+pub async fn coda_vai(app: Nucleo, indice: usize, brano: i64) -> Esito<()> {
     super::col_lettore_in_disparte(app, "salto nella coda", move |app, stato| {
         coda_vai_ora(app, stato, indice, Some(brano))
     })
@@ -748,8 +735,8 @@ pub async fn coda_vai(app: tauri::AppHandle, indice: usize, brano: i64) -> Esito
 /// Con `atteso`, solo se in quella posizione c'è ancora quel brano: vedi
 /// [`al_suo_posto`].
 pub fn coda_vai_ora(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
+    app: Nucleo,
+    stato: StatoLettore,
     indice: usize,
     atteso: Option<i64>,
 ) -> Esito<()> {
@@ -778,7 +765,7 @@ pub fn coda_vai_ora(
 /// `brano` è quello che la finestra vedeva in `indice`: vedi
 /// [`al_suo_posto`].
 #[tauri::command]
-pub async fn coda_togli(app: tauri::AppHandle, indice: usize, brano: i64) -> Esito<()> {
+pub async fn coda_togli(app: Nucleo, indice: usize, brano: i64) -> Esito<()> {
     super::col_lettore_in_disparte(app, "togli dalla coda", move |app, stato| {
         coda_togli_ora(app, stato, indice, Some(brano))
     })
@@ -818,8 +805,8 @@ pub async fn coda_togli(app: tauri::AppHandle, indice: usize, brano: i64) -> Esi
 /// brano: vedi [`al_suo_posto`]. Altrimenti non si tocca niente e la finestra
 /// riceve la coda vera.
 pub fn coda_togli_ora(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
+    app: Nucleo,
+    stato: StatoLettore,
     indice: usize,
     atteso: Option<i64>,
 ) -> Esito<()> {
@@ -904,7 +891,7 @@ pub fn coda_togli_ora(
 /// indistinguibili. È la stessa distinzione che in [`coda_togli`] si legge
 /// dall'indice, detta per un insieme di brani invece che per uno solo.
 pub(crate) fn sgombra_dalla_coda(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     brani: &[i64],
     ferma: bool,
@@ -979,7 +966,7 @@ pub(crate) fn sgombra_dalla_coda(
 ///
 /// `brano` è quello che la finestra vedeva in `da`: vedi [`al_suo_posto`].
 #[tauri::command]
-pub async fn coda_riordina(app: tauri::AppHandle, da: usize, a: usize, brano: i64) -> Esito<()> {
+pub async fn coda_riordina(app: Nucleo, da: usize, a: usize, brano: i64) -> Esito<()> {
     super::col_lettore_in_disparte(app, "riordino della coda", move |app, stato| {
         coda_riordina_ora(app, stato, da, a, Some(brano))
     })
@@ -991,8 +978,8 @@ pub async fn coda_riordina(app: tauri::AppHandle, da: usize, a: usize, brano: i6
 /// Con `atteso`, solo se in `da` c'è ancora quel brano: vedi [`al_suo_posto`].
 /// Senza, è il gesto di un membro che l'host ha già risolto per voce.
 pub fn coda_riordina_ora(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
+    app: Nucleo,
+    stato: StatoLettore,
     da: usize,
     a: usize,
     atteso: Option<i64>,
@@ -1021,13 +1008,13 @@ pub fn coda_riordina_ora(
 /// svuota l'anello, e svuotarlo vuole il flusso sveglio. Vedi
 /// `super::sveglia_fuori_dal_lucchetto`.
 #[tauri::command]
-pub async fn coda_svuota(app: tauri::AppHandle) -> Esito<()> {
+pub async fn coda_svuota(app: Nucleo) -> Esito<()> {
     super::col_lettore_in_fila(app, "svuota la coda", coda_svuota_ora).await
 }
 
 /// [`coda_svuota`], sul posto: il lavoro sta qui, e il comando lo mette in
 /// fila sulla corsia del lettore (`crate::corsia`).
-pub fn coda_svuota_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+pub fn coda_svuota_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::CodaSvuota).map_err(errore)? {
         return Ok(());
     }
@@ -1062,7 +1049,7 @@ pub fn coda_svuota_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) ->
 /// giro che comincia a suonare da solo fa saltare sulla sedia chi lo sta
 /// leggendo — e «riproduci» da lì funziona come per la coda ripresa all'avvio.
 #[tauri::command]
-pub async fn coda_prepara(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<bool> {
+pub async fn coda_prepara(app: Nucleo, brani: Vec<i64>) -> Esito<bool> {
     super::col_lettore_in_disparte(app, "coda del giro", move |app, stato| {
         con_lettore(&stato, |lettore| {
             // In sessione no: la coda è di voci, e i brani del giro sono righe
@@ -1086,7 +1073,7 @@ pub async fn coda_prepara(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<bool>
 /// [`coda_ripristina_ora`], sul pool bloccante: vedi
 /// `super::col_lettore_in_disparte`.
 #[tauri::command]
-pub async fn coda_ripristina(app: tauri::AppHandle, numero: u64) -> Esito<bool> {
+pub async fn coda_ripristina(app: Nucleo, numero: u64) -> Esito<bool> {
     super::col_lettore_in_disparte(app, "annulla della coda", move |app, stato| {
         coda_ripristina_ora(app, stato, numero)
     })
@@ -1110,11 +1097,7 @@ pub async fn coda_ripristina(app: tauri::AppHandle, numero: u64) -> Esito<bool> 
 /// **fuori** dal lucchetto del lettore. In più, nel terzo tempo, il brano
 /// riparte dov'era, fermo se era in pausa — con la stessa consegna con cui
 /// `riapertura` rimette il brano dopo un dispositivo sparito (`consegna`).
-pub fn coda_ripristina_ora(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    numero: u64,
-) -> Esito<bool> {
+pub fn coda_ripristina_ora(app: Nucleo, stato: StatoLettore, numero: u64) -> Esito<bool> {
     if let Strada::Fatto = strada(&app, &Gesto::CodaRipristina).map_err(errore)? {
         return Ok(false);
     }
@@ -1208,13 +1191,13 @@ pub fn coda_ripristina_ora(
 
 /// Passa al modo di ripetizione successivo.
 #[tauri::command]
-pub async fn ripeti(app: tauri::AppHandle) -> Esito<()> {
+pub async fn ripeti(app: Nucleo) -> Esito<()> {
     super::col_lettore_in_disparte(app, "ripeti", ripeti_ora).await
 }
 
 /// [`ripeti`], sul posto: lo chiama anche il gesto dell'auto (`auto::esegui`),
 /// dal filo dei gesti.
-pub fn ripeti_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+pub fn ripeti_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Ripeti).map_err(errore)? {
         return Ok(());
     }
@@ -1242,7 +1225,7 @@ pub fn ripeti_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esit
 /// # Errori
 ///
 /// Quelli della strada del gesto; `internal.aborted` se il lettore non c'è.
-pub fn imposta_ripeti(app: &tauri::AppHandle, modo: RepeatMode) -> Result<(), AppError> {
+pub fn imposta_ripeti(app: &Nucleo, modo: RepeatMode) -> Result<(), AppError> {
     if let Strada::Fatto = strada(app, &Gesto::Ripeti)? {
         return Ok(());
     }
@@ -1265,12 +1248,12 @@ pub fn imposta_ripeti(app: &tauri::AppHandle, modo: RepeatMode) -> Result<(), Ap
 
 /// Accende o spegne lo shuffle.
 #[tauri::command]
-pub async fn mescola(app: tauri::AppHandle) -> Esito<()> {
+pub async fn mescola(app: Nucleo) -> Esito<()> {
     super::col_lettore_in_disparte(app, "mescola", mescola_ora).await
 }
 
 /// [`mescola`], sul posto: vedi [`ripeti_ora`].
-pub fn mescola_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+pub fn mescola_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Shuffle).map_err(errore)? {
         return Ok(());
     }
@@ -1308,7 +1291,7 @@ pub fn mescola_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esi
 /// [`crate::disparte::leggi_la_libreria`], come gli altri elenchi; le maniglie
 /// si risolvono dopo, a lettura finita, perché `ospiti` non tocca la libreria.
 #[tauri::command]
-pub async fn brani_per_id(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<Vec<TrackSummary>> {
+pub async fn brani_per_id(app: Nucleo, brani: Vec<i64>) -> Esito<Vec<TrackSummary>> {
     let righe: Vec<i64> = brani
         .iter()
         .copied()
@@ -1358,7 +1341,7 @@ pub async fn brani_per_id(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<Vec<T
 /// Quelli della libreria.
 #[cfg(mobile)]
 pub fn righe_della_coda(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     brani: &[i64],
 ) -> Result<Vec<Option<TrackSummary>>, rymembra_domain::AppError> {
     let righe: Vec<i64> = brani

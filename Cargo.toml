@@ -135,8 +135,19 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 # Windows scrive che l'utente l'ha spento), e il modulo `messaggi.rs`, la
 # finestra nativa mai mostrata su cui si appendono le SMTC, perché i tasti
 # multimediali restino quando la finestra dell'applicazione si chiude; ogni
-# blocco dice perché è corretto. Qui sotto non cambia niente, e per tutti gli
-# altri crate resta `forbid`.
+# blocco dice perché è corretto.
+#
+# La seconda eccezione è `apps/desktop/rymembra-android`, con la stessa tabella
+# e lo stesso `unsafe_code = "deny"`, e il suo `unsafe` sta in un modulo solo,
+# `src/jvm.rs`: i due puntatori che `tao` consegna a `ndk-context`, che
+# diventano oggetti di `jni`; le funzioni `#[no_mangle]` con cui Kotlin entra in
+# Rust (`Ponte.rilasciaIlContestoDelServizio`, `Ponte.contestoDiTaoPronto` e,
+# scritta dalla macro `esporta_il_nucleo!` di quel file e invocata una volta nel
+# crate dell'applicazione, `Ponte.avviaNucleo`: il nome lo cerca la macchina
+# virtuale); e le chiamate che mettono e tolgono il contesto di `ndk-context`
+# quando a partire per primo è un servizio e non l'attività.
+#
+# Qui sotto non cambia niente, e per tutti gli altri crate resta `forbid`.
 unsafe_code = "forbid"
 missing_docs = "warn"
 

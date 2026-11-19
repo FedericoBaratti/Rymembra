@@ -58,6 +58,7 @@ use tauri::{AppHandle, Manager as _, State};
 use crate::disparte::in_disparte;
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
+use crate::nucleo::ComeNucleo;
 use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 
@@ -277,7 +278,11 @@ pub fn copia_misurata(app: &AppHandle, chiave: &Chiave) {
 /// L'archivio del cloud, per chi apre un brano intero (la riproduzione, gli
 /// attacchi dei testi, «Ascolta insieme»).
 #[must_use]
-pub fn archivio(app: &AppHandle) -> Option<Arc<ArchivioNuvola>> {
+pub fn archivio(app: &impl ComeNucleo) -> Option<Arc<ArchivioNuvola>> {
+    // Lo stato del cloud nasce con la finestra: senza, un brano che sta in una
+    // cartella del cloud non si apre, e chi chiama lo dice a modo suo.
+    let nucleo = app.come_nucleo();
+    let app = nucleo.finestra()?;
     app.try_state::<StatoMusicaNuvola>()
         .and_then(|stato| stato.archivio.clone())
 }

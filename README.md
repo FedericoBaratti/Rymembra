@@ -438,7 +438,8 @@ a longer listening history than the public API offers.
 - **The phone stays reachable, and Android Auto finds it ready.** *Settings ›
   Devices* has «Stay active in the background» (off by default): a foreground
   service keeps Rymembra running after you swipe it away, so your PCs can reach
-  the phone whenever they like — it costs battery, a notification stays
+  the phone whenever they like — and it comes back by itself after a restart of
+  the phone, without opening the app. It costs battery, a notification stays
   visible, and a button opens Android’s battery-optimization page, because
   Android suspends the network of an app that is not excluded from it. Under it,
   «Start with the car» (off by default; not in the Google Play build) makes
@@ -1216,11 +1217,17 @@ constraint is stated explicitly in the terms of use.
     Samsung, Nothing, OnePlus, Oppo) close background apps on their own, so
     your PCs may not find the phone. Rymembra does not request the exemption
     itself, which Google Play reserves for other apps: the setting opens
-    Android’s page instead. Nothing restarts the service after a reboot yet,
-    and one that Android brings back by itself shows «Rymembra is resting» and
-    has no core until you open the app. Whether Google Play accepts this service
-    type for linking to PCs over the internet is not settled, and the battery
-    cost is not measured.
+    Android’s page instead. With the setting on the service restarts after a
+    reboot, as soon as the phone is unlocked for the first time, and starts the
+    core by itself — the library, the player, the car’s session, the link to
+    your PCs — without opening the app; when you open it, it joins that core.
+    The notification says «Rymembra is starting» until the core is up, and
+    «Rymembra is resting» only if it does not start. Only the core starts: the
+    backup, the sync, the enrichment, the analysis, the folder watch and the
+    update check wait for the app, and a file in a cloud folder plays only
+    after the app has been opened once. Whether Google Play accepts this
+    service type for linking to PCs over the internet is not settled, and the
+    battery cost is not measured.
   - **The screen** stays upright: the phone interface is locked to portrait
     in this version. The guided tour of the computer is not offered on the
     phone.
@@ -1238,11 +1245,13 @@ constraint is stated explicitly in the terms of use.
     limits come from Android, not from Rymembra. An app installed outside the
     Play Store appears in the car only after *Android Auto → developer
     settings → Unknown sources* is switched on. And Android does not let an
-    app open itself from the background: if Rymembra is not running at all,
-    the car says «Open Rymembra on your phone» with a button that opens it,
-    and the library appears as soon as it has started once — with «Stay active
-    in the background» on, Rymembra stays running and the car should find it
-    ready, which has not been tried with a real car. The car lists only what
+    app open itself from the background, so when the car asks and Rymembra is not
+    running it starts its core by itself — no screen needed — and the library
+    appears as soon as that core is up; the car shows «Open Rymembra on your
+    phone», with a button that opens the app, only if the core does not start.
+    With «Stay active in the background» on, Rymembra stays running, and starts
+    again by itself after a restart of the phone, so the car should find it
+    ready — which has not been tried with a real car. The car lists only what
     can be played now: tracks of a device that is off are left out, and a
     track stays if another device that answers has a copy. «Start with the
     car» is only as reliable as Android Auto’s own connection report: a loose

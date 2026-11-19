@@ -30,6 +30,13 @@ ndk-context = "0.1"
 # `unsafe` con `forbid`, e qui serve in un posto solo — il modulo `src/jvm.rs`,
 # che trasforma i due puntatori che `tao` ha consegnato a `ndk-context` (la
 # macchina virtuale Java e il contesto dell'applicazione) in oggetti di `jni`.
+# Sempre lì, e solo lì, stanno le funzioni che Kotlin chiama per entrare in Rust
+# (`Ponte.rilasciaIlContestoDelServizio`, `Ponte.contestoDiTaoPronto` e
+# `Ponte.avviaNucleo`, quest'ultima scritta dalla macro `esporta_il_nucleo!` che
+# il crate dell'applicazione invoca: `#[no_mangle]`, perché il loro nome lo cerca
+# la macchina virtuale) e le due chiamate a
+# `ndk_context::{initialize,release}_android_context` con cui un servizio, prima
+# di ogni attività, mette e toglie i due puntatori di `tao`.
 # Tutto il resto del crate, comprese le chiamate a Kotlin, passa dall'API sicura
 # di `jni`.
 [lints.rust]

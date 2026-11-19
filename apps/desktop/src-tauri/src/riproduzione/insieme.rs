@@ -53,6 +53,7 @@
 mod brani;
 mod regole;
 
+use crate::nucleo::Nucleo;
 use std::sync::atomic::Ordering;
 
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -60,7 +61,6 @@ use rymembra_domain::queue::{Queue, QueueSnapshot};
 use rymembra_insieme::messaggi::MASSIMO_VOCI;
 use rymembra_play::sincronia::regolatore::{DaMe, Mossa};
 use rymembra_play::{RifiutoAvvio, tempo};
-use tauri::{Manager as _, State};
 
 use crate::nota;
 use crate::stato::{adesso_ms, con_libreria};
@@ -210,7 +210,7 @@ pub(super) fn anticipo(lettore: &Lettore) -> u64 {
 /// un membro raggiunto via internet; chi segue, entrando da un host raggiunto
 /// così. Cambia l'anticipo degli avvii programmati che vengono dopo (decisione
 /// D-31): quello già annunciato resta com'è.
-pub fn anticipo_via_internet(app: &tauri::AppHandle, via_internet: bool) {
+pub fn anticipo_via_internet(app: &Nucleo, via_internet: bool) {
     let Ok(stato) = stato_lettore(app) else {
         return;
     };
@@ -265,7 +265,7 @@ struct PrimaDeiClic {
 // ── ingresso e uscita ───────────────────────────────────────────────────────
 
 /// Il lettore, o `internal.aborted`.
-fn stato_lettore(app: &tauri::AppHandle) -> Result<State<'_, StatoLettore>, AppError> {
+fn stato_lettore(app: &Nucleo) -> Result<StatoLettore, AppError> {
     app.try_state::<StatoLettore>().ok_or_else(|| {
         AppError::new(ErrorCode::InternalAborted {
             what: Some("lettore in sessione".to_owned()),
@@ -357,7 +357,7 @@ struct Fotografia {
 ///
 /// `internal.aborted` se il lettore non c'è, o se la coda ha continuato a
 /// cambiare; `insieme.giaInSessione` se ci si è già; quelli della libreria.
-pub fn entra_come_host(app: &tauri::AppHandle) -> Result<(), AppError> {
+pub fn entra_come_host(app: &Nucleo) -> Result<(), AppError> {
     let stato = stato_lettore(app)?;
     super::sveglia_fuori_dal_lucchetto(&stato);
     for _ in 0..2 {
@@ -515,11 +515,7 @@ pub fn entra_come_host(app: &tauri::AppHandle) -> Result<(), AppError> {
 /// Il punto da cui l'utente avrebbe ripreso la riga `riga`: il salto chiesto
 /// a motore vuoto se era di lei, altrimenti il segno di «riprendi dov'eri».
 /// `None` per l'inizio. Legge il database: a lettore lasciato.
-fn segno_dell_utente(
-    app: &tauri::AppHandle,
-    puntina: Option<(i64, u64)>,
-    riga: i64,
-) -> Option<u64> {
+fn segno_dell_utente(app: &Nucleo, puntina: Option<(i64, u64)>, riga: i64) -> Option<u64> {
     if let Some((di, ms)) = puntina
         && di == riga
     {
@@ -564,7 +560,7 @@ impl Fotografia {
 /// fuori dalla sessione o per chi segue; quelli dell'apertura se la coda era
 /// vuota e la voce parte.
 pub fn accoda_maniglie(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     maniglie: &[i64],
     dopo_la_corrente: bool,
 ) -> (usize, Result<(), AppError>) {
@@ -604,7 +600,7 @@ pub fn accoda_maniglie(
 /// gesti per posizione (`coda_vai`, `coda_togli`, `coda_riordina`), e la
 /// sessione li traduce in `uid` da qui prima di mandarli all'host.
 #[must_use]
-pub fn istantanea(app: &tauri::AppHandle) -> Option<Istantanea> {
+pub fn istantanea(app: &Nucleo) -> Option<Istantanea> {
     let stato = app.try_state::<StatoLettore>()?;
     con_lettore(&stato, |lettore| {
         if lettore.sessione.is_none() {
@@ -661,7 +657,7 @@ pub fn istantanea(app: &tauri::AppHandle) -> Option<Istantanea> {
 ///
 /// `internal.aborted` se il lettore non c'è o l'uscita è cambiata a metà;
 /// `insieme.gestoNonDisponibile` se non si ospita; quelli dell'apertura.
-pub fn calibra(app: &tauri::AppHandle, attiva: bool) -> Result<(), AppError> {
+pub fn calibra(app: &Nucleo, attiva: bool) -> Result<(), AppError> {
     let stato = stato_lettore(app)?;
     if attiva {
         accendi_la_calibrazione(app, &stato)
@@ -670,7 +666,7 @@ pub fn calibra(app: &tauri::AppHandle, attiva: bool) -> Result<(), AppError> {
     }
 }
 
-fn accendi_la_calibrazione(app: &tauri::AppHandle, stato: &StatoLettore) -> Result<(), AppError> {
+fn accendi_la_calibrazione(app: &Nucleo, stato: &StatoLettore) -> Result<(), AppError> {
     let formato = con_lettore(stato, |lettore| {
         if !ospita(lettore) {
             return Err(non_disponibile("calibra"));
@@ -721,7 +717,7 @@ fn accendi_la_calibrazione(app: &tauri::AppHandle, stato: &StatoLettore) -> Resu
     })
 }
 
-fn spegni_la_calibrazione(app: &tauri::AppHandle, stato: &StatoLettore) -> Result<(), AppError> {
+fn spegni_la_calibrazione(app: &Nucleo, stato: &StatoLettore) -> Result<(), AppError> {
     // Una copia, non un `take`: fra qui e la consegna qualcuno può scegliere
     // un'altra voce, e allora la calibrazione è già finita da sé (vedi
     // [`dopo_un_avvio`]) e non c'è niente da rimettere.
@@ -786,7 +782,7 @@ fn spegni_la_calibrazione(app: &tauri::AppHandle, stato: &StatoLettore) -> Resul
 /// coda finita). Non lo stesso di «nessuna ancora», che capita anche per un
 /// attimo fra due brani di fila.
 #[must_use]
-pub fn motore_senza_brano(app: &tauri::AppHandle) -> bool {
+pub fn motore_senza_brano(app: &Nucleo) -> bool {
     app.try_state::<StatoLettore>().is_some_and(|stato| {
         con_lettore(&stato, |lettore| {
             Ok(lettore.motore.posizione().track_id.is_none())
@@ -806,7 +802,7 @@ pub fn motore_senza_brano(app: &tauri::AppHandle) -> bool {
 /// arriva — la stessa voce, in corso, a quell'istante o dopo — o finché non è
 /// chiaro che non arriverà ([`SCADENZA_PROGRAMMATA_NS`]).
 #[must_use]
-pub fn ancora_di_questo(app: &tauri::AppHandle) -> Option<AncoraDiQuesto> {
+pub fn ancora_di_questo(app: &Nucleo) -> Option<AncoraDiQuesto> {
     let stato = app.try_state::<StatoLettore>()?;
     con_lettore(&stato, |lettore| Ok(ancora_del_motore(lettore)))
         .ok()
@@ -896,7 +892,7 @@ fn ancora_del_motore(lettore: &mut Lettore) -> Option<AncoraDiQuesto> {
 ///
 /// `internal.aborted` se il lettore non c'è; `insieme.giaInSessione` se ci si
 /// è già.
-pub fn entra_come_membro(app: &tauri::AppHandle) -> Result<(), AppError> {
+pub fn entra_come_membro(app: &Nucleo) -> Result<(), AppError> {
     let stato = stato_lettore(app)?;
     super::sveglia_fuori_dal_lucchetto(&stato);
     con_lettore(&stato, |lettore| {
@@ -926,7 +922,7 @@ pub fn entra_come_membro(app: &tauri::AppHandle) -> Result<(), AppError> {
 
 /// Aggiunge o aggiorna voci per `uid`, e restituisce le loro maniglie. La usa
 /// chi segue per lo specchio, e chi ospita (fase 2) per le voci dei membri.
-pub fn registra(app: &tauri::AppHandle, voci: Vec<Voce>) -> Vec<i64> {
+pub fn registra(app: &Nucleo, voci: Vec<Voce>) -> Vec<i64> {
     ospiti::con_registro(app, |registro| {
         voci.into_iter()
             .map(|voce| registro.registra(voce))
@@ -944,7 +940,7 @@ pub fn registra(app: &tauri::AppHandle, voci: Vec<Voce>) -> Vec<i64> {
 /// saprebbe aprire. Uno stato identico a quello che c'è già non cambia niente,
 /// nemmeno la finestra: l'host lo manda intero a ogni gesto.
 pub fn specchia(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     coda: &[u64],
     corrente: Option<u64>,
     in_pausa: bool,
@@ -1040,7 +1036,7 @@ pub(super) fn tenute_dal_lettore(stato: &StatoLettore, lettore: &Lettore) -> Vec
 /// che il motore suonava e il successivo in canna, tenute prima del gesto —
 /// ma non mille.
 pub(super) fn dimentica_le_uscite(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     lettore: &Lettore,
     prima: &[i64],
@@ -1088,7 +1084,7 @@ fn uscite_dalla_coda(prima: &[i64], dopo: &[i64], tenute: &[i64]) -> Vec<i64> {
 /// punto — un salto, una voce appena data — e la risposta giusta arriva al
 /// passo dopo.
 #[must_use]
-pub fn da_me(app: &tauri::AppHandle) -> Option<DaMe> {
+pub fn da_me(app: &Nucleo) -> Option<DaMe> {
     let stato = app.try_state::<StatoLettore>()?;
     con_lettore(&stato, |lettore| Ok(da_me_nel(lettore)))
         .ok()
@@ -1147,7 +1143,7 @@ fn da_me_nel(lettore: &Lettore) -> Option<DaMe> {
 ///
 /// Quelli dell'apertura della voce; `playback.sourceUnavailable` per una voce
 /// che il registro non ha.
-pub fn applica(app: &tauri::AppHandle, mossa: Mossa, frequenza: u32) -> Result<(), AppError> {
+pub fn applica(app: &Nucleo, mossa: Mossa, frequenza: u32) -> Result<(), AppError> {
     let stato = stato_lettore(app)?;
     match mossa {
         Mossa::Niente => Ok(()),
@@ -1223,7 +1219,7 @@ pub fn applica(app: &tauri::AppHandle, mossa: Mossa, frequenza: u32) -> Result<(
 /// Quelli dell'apertura della voce; `playback.sourceUnavailable` per una voce
 /// che il registro non ha.
 fn posiziona(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     etichetta: u64,
     posizione_us: u64,
@@ -1340,7 +1336,7 @@ fn avvia_a(
 /// un altro anticipo, e si riparte lì: un salto in un file aperto costa molto
 /// meno di un'apertura.
 fn riapri(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     etichetta: u64,
     posizione_us: u64,
@@ -1469,7 +1465,7 @@ fn riapri(
 
 /// La frequenza d'uscita del motore, per le mosse in fotogrammi.
 #[must_use]
-pub fn frequenza(app: &tauri::AppHandle) -> Option<u32> {
+pub fn frequenza(app: &Nucleo) -> Option<u32> {
     let stato = app.try_state::<StatoLettore>()?;
     con_lettore(&stato, |lettore| Ok(lettore.motore.formato().frequenza)).ok()
 }
@@ -1484,7 +1480,7 @@ pub fn frequenza(app: &tauri::AppHandle) -> Option<u32> {
 /// Le regole tornano quelle delle impostazioni senza rileggerle: non sono mai
 /// state toccate. Le voci si dimenticano **dopo** aver rimesso la coda, così
 /// nessuno vede mai una coda di maniglie sparite.
-pub fn esci(app: &tauri::AppHandle) {
+pub fn esci(app: &Nucleo) {
     let Some(stato) = app.try_state::<StatoLettore>() else {
         return;
     };
@@ -1559,7 +1555,7 @@ pub fn esci(app: &tauri::AppHandle) {
 ///
 /// `internal.aborted` se il lettore non c'è; quelli dell'apertura della voce
 /// dopo, se la corrente era fra quelle tolte.
-pub fn togli_voci(app: &tauri::AppHandle, uids: &[u64]) -> Result<(), AppError> {
+pub fn togli_voci(app: &Nucleo, uids: &[u64]) -> Result<(), AppError> {
     let stato = stato_lettore(app)?;
     let maniglie: Vec<i64> = ospiti::con_registro(app, |registro| {
         uids.iter()
@@ -1587,7 +1583,7 @@ pub fn togli_voci(app: &tauri::AppHandle, uids: &[u64]) -> Result<(), AppError> 
 /// e un avviso che le facesse ripubblicare lo stato la farebbe richiamare.
 /// Serve perché [`specchia`] con uno stato identico non ridisegna, giustamente,
 /// e una copertina arrivata dopo lo specchio non cambia la coda.
-pub fn aggiorna_finestra(app: &tauri::AppHandle) {
+pub fn aggiorna_finestra(app: &Nucleo) {
     let Some(stato) = app.try_state::<StatoLettore>() else {
         return;
     };
@@ -1606,7 +1602,7 @@ pub fn aggiorna_finestra(app: &tauri::AppHandle) {
 /// sa. Prende il lucchetto del lettore per leggere la voce, e il registro dopo
 /// averlo lasciato.
 #[must_use]
-pub fn voce_corrente_locale(app: &tauri::AppHandle) -> bool {
+pub fn voce_corrente_locale(app: &Nucleo) -> bool {
     let Some(stato) = app.try_state::<StatoLettore>() else {
         return false;
     };
@@ -1639,7 +1635,7 @@ pub fn voce_corrente_locale(app: &tauri::AppHandle) -> bool {
 ///
 /// `internal.aborted` se il lettore non c'è; `insieme.gestoNonDisponibile`
 /// se questo PC non ospita; quelli dell'apertura della voce.
-pub fn suona_voce(app: &tauri::AppHandle, uid: u64) -> Result<bool, AppError> {
+pub fn suona_voce(app: &Nucleo, uid: u64) -> Result<bool, AppError> {
     let stato = stato_lettore(app)?;
     let Some(maniglia) = ospiti::con_registro(app, |registro| registro.maniglia(uid)).flatten()
     else {
@@ -1675,7 +1671,7 @@ pub fn suona_voce(app: &tauri::AppHandle, uid: u64) -> Result<bool, AppError> {
 /// voce nuova data al motore la chiude (vedi [`dopo_un_avvio`]), e una copia
 /// tenuta altrove resterebbe accesa sui clic che non suonano più.
 #[must_use]
-pub fn calibrando(app: &tauri::AppHandle) -> bool {
+pub fn calibrando(app: &Nucleo) -> bool {
     let Some(stato) = app.try_state::<StatoLettore>() else {
         return false;
     };

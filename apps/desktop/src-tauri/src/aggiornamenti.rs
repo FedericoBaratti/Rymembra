@@ -1644,7 +1644,7 @@ fn fermare_la_musica(app: &AppHandle) {
     // aggiornamento che riguarda solo questo PC.
     crate::insieme::ferma(app);
     let lettore = app.state::<crate::riproduzione::StatoLettore>();
-    let _ = crate::riproduzione::pausa_ora(app.clone(), lettore);
+    let _ = crate::riproduzione::pausa_ora(crate::nucleo::Nucleo::di(app), lettore.inner().clone());
 }
 
 /// Manda alla finestra lo stato aggiornato.

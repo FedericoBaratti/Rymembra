@@ -1141,7 +1141,11 @@ minutes after; then its connection goes to sleep, and comes back by itself.
 With **«Stay active in the background»** on (*Settings › Devices*, off by
 default) it is reachable all the time: a foreground service keeps Rymembra, and
 the connection, alive after you swipe it away from recent apps, with a minimal
-notification that stays visible (and is hidden on the lock screen). That changes
+notification that stays visible (and is hidden on the lock screen). It also
+starts again by itself when the phone is switched on — after the first unlock,
+without opening the app — and starts the player, the library and the link to your
+devices; the permission `RECEIVE_BOOT_COMPLETED` is only for that, and the
+receiver does nothing unless the setting is on. That changes
 *when* the phone can be reached, not *who* can reach it: only the devices you
 linked, and only if «Reachable from the internet» is on — the setting does not
 turn it on, and the card says so. Nothing new is sent; the phone's public key and

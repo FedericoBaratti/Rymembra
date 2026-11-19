@@ -51,6 +51,7 @@
     <string name="presenza_titolo">Rymembra è attiva</string>
     <string name="presenza_titolo_uno">Rymembra è attiva · collegata a %1$s</string>
     <string name="presenza_titolo_piu">Rymembra è attiva · collegata a %1$d dispositivi</string>
+    <string name="presenza_titolo_avvio">Rymembra si sta avviando</string>
     <string name="presenza_titolo_riposo">Rymembra è a riposo</string>
     <string name="presenza_testo_riposo">Apri Rymembra perché i tuoi dispositivi raggiungano di nuovo questo telefono.</string>
     <string name="presenza_spegni">Spegni</string>

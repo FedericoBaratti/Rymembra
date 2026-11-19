@@ -48,18 +48,17 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::nucleo::Nucleo;
 use rymembra_app::dispositivi::{self, Dispositivo, Nuovo};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_lontano::protocollo::{CAPACITA_CATALOGO, CAPACITA_TESTI};
 use rymembra_lontano::{
     Evento, Impostazioni, Nodo, PariNoto, Presentazione, Presenza, Relay, Rete, Via,
 };
-use tauri::{AppHandle, Manager as _};
 
 use super::ipc::{DispositivoIpc, InvitoIpc, RichiestaIpc, StatoLontanoIpc};
 use super::{identita, ospite};
 use crate::nota;
-use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, adesso_ms};
 
 /// Ogni quanto il filo si guarda intorno da sé: le impostazioni cambiate da
@@ -394,7 +393,7 @@ fn chiave_di(chiave: &str) -> String {
 }
 
 /// Lo stato della libreria; senza, `internal.aborted`.
-fn lo_stato(app: &AppHandle) -> Result<tauri::State<'_, Stato>, AppError> {
+fn lo_stato(app: &Nucleo) -> Result<Stato, AppError> {
     app.try_state::<Stato>().ok_or_else(|| {
         AppError::new(ErrorCode::InternalAborted {
             what: Some("lontano".to_owned()),
@@ -408,11 +407,11 @@ fn lo_stato(app: &AppHandle) -> Result<tauri::State<'_, Stato>, AppError> {
 /// Le letture del filo passano da [`leggi_a_parte`], le scritture dei comandi
 /// da [`scrivi_in_libreria`]: vedi il `//!`.
 pub(super) fn in_libreria<T>(
-    app: &AppHandle,
+    app: &Nucleo,
     entro: Duration,
     azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
-    crate::stato::con_libreria_entro(&*lo_stato(app)?, entro, |l| azione(&l.connection))
+    crate::stato::con_libreria_entro(&lo_stato(app)?, entro, |l| azione(&l.connection))
         .unwrap_or_else(|| {
             Err(AppError::new(ErrorCode::DbLocked)
                 .with_cause("la libreria è occupata: il collegamento non l'aspetta"))
@@ -424,10 +423,10 @@ pub(super) fn in_libreria<T>(
 /// scrive e non ne è fermata (decisione D-25). Fuori dal WAL torna al
 /// lucchetto, con [`ATTESA_LIBRERIA`].
 pub(super) fn leggi_a_parte<T>(
-    app: &AppHandle,
+    app: &Nucleo,
     azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
-    leggi_da(&*lo_stato(app)?, azione)
+    leggi_da(&lo_stato(app)?, azione)
 }
 
 /// [`leggi_a_parte`], sullo stato: la cucitura delle prove.
@@ -446,10 +445,10 @@ fn leggi_da<T>(
 /// lavori di sottofondo in corso «Raggiungibile da internet», il relay, «Solo
 /// Wi-Fi» e «Rinomina» rispondevano «il database è occupato» (reperto R01-1).
 pub(super) fn scrivi_in_libreria<T>(
-    app: &AppHandle,
+    app: &Nucleo,
     azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
-    crate::stato::con_libreria(&*lo_stato(app)?, |l| azione(&l.connection))
+    crate::stato::con_libreria(&lo_stato(app)?, |l| azione(&l.connection))
 }
 
 /// L'identificativo di questo dispositivo nella sincronia, per accendere il
@@ -676,7 +675,7 @@ fn associa(
 /// aspettare, non rinunciare. Finito, sveglia il filo, la cui lettura toglie
 /// dal registro quel che vede scritto. Un guasto vero si dice nel diario, e si
 /// ritenta al giro dopo ([`Filo::riconcilia`]). Non aspetta.
-pub(super) fn scrivi_il_registro(app: &AppHandle, comune: &Arc<Comune>) {
+pub(super) fn scrivi_il_registro(app: &Nucleo, comune: &Arc<Comune>) {
     if comune.da_scrivere().is_empty() || comune.scrittore.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -692,7 +691,7 @@ pub(super) fn scrivi_il_registro(app: &AppHandle, comune: &Arc<Comune>) {
 }
 
 /// Il corpo dello scrittore di [`scrivi_il_registro`].
-fn scrivi_finche_ce_n_e(app: &AppHandle, comune: &Comune) {
+fn scrivi_finche_ce_n_e(app: &Nucleo, comune: &Comune) {
     loop {
         let da_scrivere = comune.da_scrivere();
         if da_scrivere.is_empty() {
@@ -738,7 +737,7 @@ fn scrivi_finche_ce_n_e(app: &AppHandle, comune: &Comune) {
 
 /// Il registro ancora da scrivere, uscendo: al più [`ATTESA_ULTIMA_SCRITTURA`],
 /// e se la libreria non arriva lo si dice nel diario.
-pub(super) fn scrivi_prima_di_uscire(app: &AppHandle, comune: &Comune) {
+pub(super) fn scrivi_prima_di_uscire(app: &Nucleo, comune: &Comune) {
     let da_scrivere = comune.da_scrivere();
     if da_scrivere.is_empty() {
         return;
@@ -771,7 +770,7 @@ pub(super) fn scrivi_prima_di_uscire(app: &AppHandle, comune: &Comune) {
 }
 
 /// Fa partire il filo.
-pub(super) fn avvia(app: AppHandle, comune: Arc<Comune>, cassetta: Receiver<Posta>) {
+pub(super) fn avvia(app: Nucleo, comune: Arc<Comune>, cassetta: Receiver<Posta>) {
     let girato = std::thread::Builder::new()
         .name("rymembra-lontano-filo".to_owned())
         .spawn(move || Filo::nuovo(app, comune).gira(&cassetta));
@@ -883,7 +882,7 @@ fn lascia_il_nodo(nodo: Arc<Nodo>) {
 }
 
 struct Filo {
-    app: AppHandle,
+    app: Nucleo,
     comune: Arc<Comune>,
     /// L'ultima lettura riuscita; `None` finché non ce n'è una.
     letto: Option<Letto>,
@@ -913,7 +912,7 @@ struct Filo {
 }
 
 impl Filo {
-    fn nuovo(app: AppHandle, comune: Arc<Comune>) -> Self {
+    fn nuovo(app: Nucleo, comune: Arc<Comune>) -> Self {
         Self {
             app,
             comune,
@@ -1205,7 +1204,7 @@ impl Filo {
     }
 
     fn accendi(&mut self, relay: Option<String>) -> Result<(), AppError> {
-        let dispositivo = dispositivo_di(&*lo_stato(&self.app)?)?;
+        let dispositivo = dispositivo_di(&lo_stato(&self.app)?)?;
         let identita = identita::identita(&rymembra_oauth::portachiavi::DiSistema, &dispositivo)?;
         let io = Presentazione {
             nome: self

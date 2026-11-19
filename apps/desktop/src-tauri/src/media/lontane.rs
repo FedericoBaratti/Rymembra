@@ -51,6 +51,7 @@
 //! disparte, una volta sola e a numero chiuso ([`IN_VOLO_PER_LA_FINESTRA`]); quando
 //! arriva, l'evento `lontano:copertina` dice alla pagina di richiederla.
 
+use crate::nucleo::{ComeNucleo, Nucleo};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -208,11 +209,10 @@ impl Richieste {
 
 /// L'applicazione vera: lo store e la rete di [`crate::lontano`].
 #[derive(Clone)]
-struct ViaApp(tauri::AppHandle);
+struct ViaApp(Nucleo);
 
 impl Ambiente for ViaApp {
     fn nello_store(&self, impronta: &str) -> bool {
-        use tauri::Manager as _;
         self.0
             .try_state::<crate::stato::Stato>()
             .and_then(|stato| stato.copertine().ok())
@@ -243,10 +243,11 @@ static RICHIESTE: LazyLock<Richieste> = LazyLock::new(|| Richieste::nuove(RIPROV
 /// volta sola, se non è già nello store; a copertina arrivata chiama `arrivata`.
 /// Vedi [`Richieste::richiedi`].
 pub(super) fn richiedi(
-    app: &tauri::AppHandle,
+    app: &impl ComeNucleo,
     impronta: &str,
-    arrivata: impl FnOnce(&tauri::AppHandle) + Send + 'static,
+    arrivata: impl FnOnce(&Nucleo) + Send + 'static,
 ) {
+    let app = &app.come_nucleo();
     let mano = app.clone();
     RICHIESTE.richiedi(&ViaApp(app.clone()), impronta, usize::MAX, move || {
         arrivata(&mano)
@@ -280,12 +281,12 @@ fn senza_aspettare<A: Ambiente>(
 /// [`senza_aspettare`] con l'applicazione vera: lo store, la rete, e l'evento
 /// `lontano:copertina` a copertina arrivata.
 pub(crate) fn servi(
-    app: &tauri::AppHandle,
+    app: &impl ComeNucleo,
     impronta: &str,
     letta: Option<Vec<u8>>,
     rispondi: impl FnOnce(Option<Vec<u8>>),
 ) {
-    use crate::spegnimento::Emette as _;
+    let app = &app.come_nucleo();
     let mano = app.clone();
     let chi = impronta.to_owned();
     senza_aspettare(

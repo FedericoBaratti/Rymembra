@@ -82,8 +82,8 @@ pub struct Libreria {
     pub istantanea: Option<rymembra_app::db::Istantanea>,
 }
 
-/// Lo stato condiviso fra i comandi.
-pub struct Stato {
+/// Il corpo dello stato condiviso fra i comandi: quel che [`Stato`] tiene dietro un `Arc`.
+pub struct CorpoStato {
     /// La libreria, o l'errore che ne ha impedito l'apertura.
     ///
     /// L'errore si conserva invece di far fallire l'avvio: una finestra che si
@@ -216,6 +216,12 @@ pub struct Stato {
     fine_scansione: OnceLock<Sender<()>>,
 }
 
+crate::nucleo::condiviso! {
+    /// Lo stato condiviso fra i comandi: un handle `Clone` sul [`CorpoStato`], perché il
+    /// nucleo e Tauri lo possiedono insieme (vedi `nucleo`).
+    pub struct Stato(CorpoStato);
+}
+
 impl Stato {
     /// Apre la libreria nella cartella dati data, adesso, su questo filo.
     ///
@@ -261,7 +267,7 @@ impl Stato {
         cartella: Option<PathBuf>,
         fase: FaseLibreria,
     ) -> Self {
-        let stato = Self {
+        let stato = Self::da_corpo(CorpoStato {
             store_copertine: OnceLock::new(),
             cartella_dati: OnceLock::new(),
             cartella_scelta: cartella,
@@ -274,7 +280,7 @@ impl Stato {
             scansione_da_fermare: AtomicBool::new(false),
             scansione_in_corso: AtomicBool::new(false),
             fine_scansione: OnceLock::new(),
-        };
+        });
         stato.completa(libreria);
         stato
     }

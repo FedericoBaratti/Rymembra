@@ -30,6 +30,7 @@ use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::time::{Duration, UNIX_EPOCH};
 
+use crate::nucleo::Nucleo;
 use rymembra_app::dispositivi;
 use rymembra_app::library::TrackOrder;
 use rymembra_app::library::condivisa::{self, FileCondiviso};
@@ -39,7 +40,6 @@ use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_domain::listen::{Listen, counts_as_play};
 use rymembra_lontano::protocollo::{MASSIMA_PAGINA, MASSIMO_PEZZO};
 use rymembra_lontano::{Domanda, Risposta};
-use tauri::{AppHandle, Manager as _};
 
 use crate::nota;
 use crate::stato::{Stato, adesso_ms};
@@ -58,7 +58,7 @@ const ATTESA_LETTURA: Duration = Duration::from_secs(5);
 /// `lontano.fileCambiato` per un brano che non c'è più o è cambiato durante
 /// la lettura; `lontano.irraggiungibile` con la libreria occupata;
 /// `lontano.protocollo` per una domanda che qui non si serve.
-pub fn rispondi(app: &AppHandle, da: &str, domanda: Domanda) -> Result<Risposta, AppError> {
+pub fn rispondi(app: &Nucleo, da: &str, domanda: Domanda) -> Result<Risposta, AppError> {
     let pagina = |quanti: u32| i64::from(quanti.clamp(1, MASSIMA_PAGINA));
     let esito = match domanda {
         Domanda::Album { da, quanti } => dati(&leggi_la_libreria(app, |c| {
@@ -153,7 +153,7 @@ fn dati<T: serde::Serialize>(valore: &T) -> Result<Risposta, AppError> {
 /// Una lettura della libreria: occupata oltre [`ATTESA_LETTURA`], l'altro
 /// sente che questo dispositivo non risponde, e riprova.
 fn leggi_la_libreria<T>(
-    app: &AppHandle,
+    app: &Nucleo,
     azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
     let stato = app.try_state::<Stato>().ok_or_else(|| {
@@ -212,7 +212,7 @@ fn occupata(err: &AppError) -> AppError {
 /// Una copertina, nella forma media (al più qualche centinaio di KB): quella
 /// piena può pesare megabyte, e su un telefono non serve. `Fatto` se non
 /// c'è.
-fn copertina(app: &AppHandle, impronta: &str) -> Result<Risposta, AppError> {
+fn copertina(app: &Nucleo, impronta: &str) -> Result<Risposta, AppError> {
     // È un nome di file nella cartella delle copertine: solo cifre.
     let buona = (16..=128).contains(&impronta.len())
         && impronta
@@ -255,7 +255,7 @@ fn cambiato(err: impl std::fmt::Display) -> AppError {
 /// Un pezzo di un brano. La dimensione e la data si guardano prima e dopo la
 /// lettura, come fa «Ascolta insieme» (`rymembra_insieme::servente`): un file
 /// riscritto a metà non deve arrivare cucito con quello di prima.
-fn leggi(app: &AppHandle, brano: i64, da: u64, quanti: u64) -> Result<Risposta, AppError> {
+fn leggi(app: &Nucleo, brano: i64, da: u64, quanti: u64) -> Result<Risposta, AppError> {
     let FileCondiviso { percorso, .. } =
         leggi_la_libreria(app, |c| condivisa::file_del_brano(c, brano))?
             .ok_or_else(|| cambiato("il brano non è più condiviso"))?;
@@ -291,7 +291,7 @@ fn leggi(app: &AppHandle, brano: i64, da: u64, quanti: u64) -> Result<Risposta, 
 /// proprietario, con la regola dell'orologio per campo
 /// ([`condivisa::valuta`]). Se qualcosa è cambiato, la sincronia lo sa.
 fn valuta(
-    app: &AppHandle,
+    app: &Nucleo,
     brano: i64,
     liked: Option<bool>,
     rating: Option<i64>,
@@ -327,7 +327,7 @@ fn valuta(
 /// intera di qui — il `.lrc` accanto al file, i tag, la tabella —, o `Fatto` se
 /// non c'è niente da dire. Non cerca in rete: chi risponde non ha nessun
 /// pannello aperto, e i testi che non ha li cerca chi li chiede.
-fn dai_il_testo(app: &AppHandle, brano: i64) -> Result<Risposta, AppError> {
+fn dai_il_testo(app: &Nucleo, brano: i64) -> Result<Risposta, AppError> {
     let stato = app.try_state::<Stato>().ok_or_else(|| {
         AppError::new(ErrorCode::InternalAborted {
             what: Some("lontano".to_owned()),
@@ -365,7 +365,7 @@ fn il_testo_di(stato: &Stato, brano: i64) -> Result<Risposta, AppError> {
 /// dispositivo: la scrive qui con la logica dei comandi di sempre. Solo la
 /// libreria, mai un file accanto al brano.
 fn scrivi_il_testo(
-    app: &AppHandle,
+    app: &Nucleo,
     brano: i64,
     cosa: rymembra_lontano::protocollo::ScritturaTesto,
 ) -> Result<Risposta, AppError> {
@@ -424,7 +424,7 @@ struct Arrivato<'a> {
 
 /// Un ascolto fatto altrove di un brano di qui: si conta qui, una volta.
 fn ascoltato(
-    app: &AppHandle,
+    app: &Nucleo,
     da: &str,
     brano: i64,
     quando_ms: i64,

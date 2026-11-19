@@ -84,12 +84,13 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::nucleo::Nucleo;
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_insieme::messaggi::{
     Azione, DescrittoreCopia, Diritti, Dove, MASSIMO_NOME, Messaggio, Persona, VoceSulFilo,
 };
 use rymembra_insieme::{ChiavePubblica, Gettone, IdConnessione, LettoreRemoto, Rete};
-use tauri::{AppHandle, Manager as _};
+use tauri::Manager as _;
 
 use self::ospita::{DaPreparare, DirittiVivi, Incarico, avvia_il_preparatore, avvia_l_esecutore};
 use super::fasi::{self, Comando, Connessione, Effetto, Evento, Fase, Situazione};
@@ -105,7 +106,6 @@ use super::{
 };
 use crate::nota;
 use crate::riproduzione::insieme as ponte;
-use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, adesso_ms, con_libreria};
 
 /// Ogni quanto chi ospita manda un'ancora: quattro volte al secondo.
@@ -625,7 +625,7 @@ impl DalFilo {
 
 /// Il filo. Vedi il `//!`.
 struct Filo {
-    app: AppHandle,
+    app: Nucleo,
     comune: Arc<Comune>,
     posta: Sender<Posta>,
     s: Situazione,
@@ -759,7 +759,7 @@ impl ImprontaStato {
 
 /// Fa partire il campanello e il filo. Vedi [`super::avvia_filo`].
 pub(super) fn avvia(
-    app: AppHandle,
+    app: Nucleo,
     comune: Arc<Comune>,
     posta: Sender<Posta>,
     cassetta: Receiver<Posta>,
@@ -1578,7 +1578,7 @@ impl Filo {
         );
     }
 
-    fn libreria(&self) -> Result<tauri::State<'_, Stato>, AppError> {
+    fn libreria(&self) -> Result<Stato, AppError> {
         self.app.try_state::<Stato>().ok_or_else(|| {
             AppError::new(ErrorCode::InternalAborted {
                 what: Some("insieme".to_owned()),
@@ -2062,7 +2062,7 @@ fn diversi(a: &Option<InsiemeNelLettore>, b: &Option<InsiemeNelLettore>) -> bool
 /// e data — per tutta la vita del processo: un brano ripreso in un'altra
 /// sessione non si rilegge. Uno per volta, nell'ordine chiesto.
 fn avvia_i_descrittori(
-    app: AppHandle,
+    app: Nucleo,
     posta: Sender<Posta>,
 ) -> Option<Sender<(voci::ChiaveFile, i64)>> {
     let (coda, orecchio) = channel::<(voci::ChiaveFile, i64)>();
@@ -2102,7 +2102,7 @@ fn avvia_i_descrittori(
 
 /// La chiave di contenuto di una riga, se ce n'è una: una finestra corta
 /// sulla libreria.
-fn chiave_di_contenuto(app: &AppHandle, track_id: i64) -> Option<String> {
+fn chiave_di_contenuto(app: &Nucleo, track_id: i64) -> Option<String> {
     let stato = app.try_state::<Stato>()?;
     con_libreria(&stato, |l| {
         use rusqlite::OptionalExtension as _;
@@ -2140,13 +2140,17 @@ fn chiave_per_la_finestra(err: &AppError, ripiego: Option<ErrorCodeKind>) -> Opt
 
 /// Porta la finestra davanti se è nascosta nel vassoio — o se non c'è, perché
 /// la X sul vassoio l'ha chiusa: allora nasce di nuovo (`comparsa`).
-fn mostra_finestra(app: &AppHandle) {
-    let nascosta = app
-        .get_webview_window("main")
-        .is_none_or(|f| !f.is_visible().unwrap_or(true));
-    if nascosta {
-        crate::vassoio::mostra(app);
-    }
+fn mostra_finestra(app: &Nucleo) {
+    // Senza la finestra â€” il nucleo che parte da solo â€” non c'Ã¨ niente da portare
+    // davanti.
+    app.con_finestra(|app| {
+        let nascosta = app
+            .get_webview_window("main")
+            .is_none_or(|f| !f.is_visible().unwrap_or(true));
+        if nascosta {
+            crate::vassoio::mostra(app);
+        }
+    });
 }
 
 /// La riga del diario per un evento della rete, se ne merita una. Pura: vedi

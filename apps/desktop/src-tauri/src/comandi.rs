@@ -1545,7 +1545,7 @@ impl Drop for ScansioneInCorso<'_> {
         // Anche alla finestra che la scansione l'ha chiesta, che però si regola
         // sulla risposta e questo lo lascia cadere: vedi `scansioneMia` in
         // `App.tsx`.
-        self.app.emetti("scansione:finita", ());
+        crate::nucleo::Nucleo::di(self.app).emetti("scansione:finita", ());
     }
 }
 
@@ -1834,7 +1834,13 @@ pub async fn preferito(app: tauri::AppHandle, id: i64, valore: bool) -> Esito<()
 
 /// [`preferito`], sul posto: lo chiama anche il gesto «Mi piace» dell'auto
 /// (`auto::esegui`), dal filo dei gesti.
-pub fn preferito_ora(app: &tauri::AppHandle, stato: &Stato, id: i64, valore: bool) -> Esito<()> {
+pub fn preferito_ora(
+    app: &impl crate::nucleo::ComeNucleo,
+    stato: &Stato,
+    id: i64,
+    valore: bool,
+) -> Esito<()> {
+    let app = &app.come_nucleo();
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let mut da_svegliare: Vec<String> = Vec::new();

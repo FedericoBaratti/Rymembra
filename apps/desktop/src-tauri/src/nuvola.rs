@@ -57,6 +57,7 @@ use tauri::{AppHandle, Manager as _, State};
 use crate::disparte::in_disparte;
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
+use crate::nucleo::ComeNucleo;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
 
 // ── le chiavi in `settings` ─────────────────────────────────────────────────
@@ -842,7 +843,14 @@ fn ripristina(app: &AppHandle) -> Result<EsitoRipristinoIpc, AppError> {
 /// Non fa niente e non fallisce se il backup non è configurato: chiamarla è
 /// gratis, e dimenticarla è la ragione per cui una modifica non verrebbe mai
 /// salvata.
-pub fn sporca(app: &AppHandle) {
+pub fn sporca(app: &impl ComeNucleo) {
+    // Senza la finestra il filo del backup non c'Ã¨: parte con l'attivitÃ , e la
+    // sua passata periodica mette a posto quel che Ã¨ cambiato nel frattempo
+    // (confronta l'impronta). Niente da svegliare, e niente da dire.
+    let nucleo = app.come_nucleo();
+    let Some(app) = nucleo.finestra() else {
+        return;
+    };
     if let Some(nuvola) = app.try_state::<StatoNuvola>() {
         // Un canale chiuso vuol dire che il filo non c'è più: non è un guasto
         // di cui il comando che ha appena messo un cuoricino debba occuparsi.
@@ -863,7 +871,7 @@ pub fn sporca(app: &AppHandle) {
 /// mano in diciassette punti, il diciottesimo lo scriverebbe qualcuno che
 /// segnala anche sui fallimenti, e il sintomo sarebbe un backup che riparte
 /// ogni volta che un comando dà errore.
-pub fn se_riuscito<T, E>(app: &AppHandle, esito: Result<T, E>) -> Result<T, E> {
+pub fn se_riuscito<T, E>(app: &impl ComeNucleo, esito: Result<T, E>) -> Result<T, E> {
     if esito.is_ok() {
         sporca(app);
     }

@@ -134,6 +134,7 @@
 use rymembra_domain::errors::{AppError, ErrorCode};
 
 use crate::errore::{Esito, errore};
+use crate::nucleo::ComeNucleo;
 
 /// Esegue `lavoro` sul pool bloccante e ne aspetta l'esito.
 ///
@@ -198,6 +199,19 @@ pub fn stato_di<T: Send + Sync + 'static>(app: &tauri::AppHandle) -> Esito<tauri
     crate::importa::gestito::<T>(app, nome.rsplit("::").next().unwrap_or(nome)).map_err(errore)
 }
 
+/// Lo stato `T` **del nucleo** (un handle `Clone`: la libreria, il lettore), con
+/// l'errore già nella forma della finestra: la gemella di [`stato_di`] per gli
+/// stati che il nucleo possiede e non solo Tauri.
+///
+/// # Errori
+///
+/// `internal.aborted` se lo stato non c'è.
+pub fn stato_del_nucleo<T: Clone + Send + Sync + 'static>(app: &impl ComeNucleo) -> Esito<T> {
+    let nome = std::any::type_name::<T>();
+    app.come_nucleo()
+        .gestito::<T>(nome.rsplit("::").next().unwrap_or(nome))
+        .map_err(errore)
+}
 /// Una lettura della libreria, in disparte: [`in_disparte`] più il lucchetto.
 ///
 /// È la forma di quasi tutti i comandi che leggono molto, scritta una volta:
@@ -211,12 +225,12 @@ pub fn stato_di<T: Send + Sync + 'static>(app: &tauri::AppHandle) -> Esito<tauri
 /// `internal.aborted` se lo stato non c'è più — la finestra si sta chiudendo —
 /// o se la lettura cade; altrimenti quello della lettura.
 pub async fn leggi_la_libreria<T: Send + 'static>(
-    app: tauri::AppHandle,
+    app: impl ComeNucleo + Send,
     nome: &'static str,
     lettura: impl FnOnce(&mut crate::stato::Libreria) -> Result<T, AppError> + Send + 'static,
 ) -> Result<T, AppError> {
+    let app = app.come_nucleo();
     in_disparte(nome, move || {
-        use tauri::Manager as _;
         // `try_state` e non `state`: questo corpo gira sul pool bloccante, che
         // può ritrovarsi vivo mentre gli stati gestiti vengono lasciati cadere.
         let stato = app.try_state::<crate::stato::Stato>().ok_or_else(|| {

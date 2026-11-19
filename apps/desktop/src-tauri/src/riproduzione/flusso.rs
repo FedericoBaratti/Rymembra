@@ -9,6 +9,7 @@
 //! che tocca proprio questo modulo: aprire una connessione è un'attesa, e le
 //! attese si aspettano a mani vuote.
 
+use crate::nucleo::Nucleo;
 use rymembra_app::playback::{Collocazione, SchedaSorgente};
 use rymembra_catalogo::Cataloghi;
 use rymembra_cloud::musica::ArchivioNuvola;
@@ -490,7 +491,7 @@ pub(crate) fn sorgente_dal_cloud(
 /// Quelli di [`apri_flusso`], `net.timeout` alla scadenza, e
 /// `internal.aborted` se il lettore non c'è più.
 pub(super) fn apri_da_catalogo(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     maniglia: i64,
     rif: &RiferimentoFlusso,
     scheda: &super::ospiti::SchedaVoce,

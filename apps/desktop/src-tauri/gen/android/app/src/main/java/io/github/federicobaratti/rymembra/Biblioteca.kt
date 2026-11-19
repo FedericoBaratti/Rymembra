@@ -100,9 +100,9 @@ class Biblioteca(private val contesto: Context) : MediaLibrarySession.Callback {
     // c'è nel manifesto, ma lo accende `Presenza` soltanto con «Resta attiva in
     // sottofondo» acceso. Il ricevitore fa nascere il servizio in primo piano
     // dal tasto play, e Android lo chiude se entro pochi secondi non suona
-    // niente: col sottofondo il processo c'è, e con lui il nucleo che suona;
-    // a sottofondo spento il nucleo non c'è, e Android non lascia aprire
-    // l'attività che lo accenderebbe (vedi `Nucleo`). Una scheda il cui play
+    // niente: col sottofondo il processo c'è, e con lui il nucleo che suona
+    // (dopo un riavvio lo rimette `AvvioAccensione`); a sottofondo spento il
+    // nucleo può non esserci (vedi `Nucleo`). Una scheda il cui play
     // fa cadere l'app è peggio di nessuna scheda: a sottofondo spento il
     // ricevitore resta spento, e questo ramo non lo chiede nessuno.
     if (params?.isRecent == true) {
@@ -400,10 +400,10 @@ class Biblioteca(private val contesto: Context) : MediaLibrarySession.Callback {
    * Il nucleo non ha risposto.
    *
    * Se c'è, è una lettura andata storta: un errore e basta. Se non c'è, è
-   * perché Android non ha lasciato partire l'app da sola — da Android 10 un'app
-   * sullo sfondo non può aprire la sua schermata — e allora l'auto mostra un
-   * pulsante che la apre: la promessa che l'auto manda al telefono quando lo
-   * si tocca la può aprire.
+   * perché non è partito in tempo: la domanda dell'auto lo sveglia da sé, senza
+   * attività (vedi [Nucleo.sveglia]), ma se non parte — o non entro l'attesa —
+   * l'auto mostra un pulsante che apre l'app: la promessa che l'auto manda al
+   * telefono quando lo si tocca la può aprire, e l'attività avvia il nucleo.
    *
    * Il codice è `ERROR_SESSION_AUTHENTICATION_EXPIRED` non perché ci sia un
    * accesso scaduto, ma perché è uno dei due che Media3 riporta anche ai

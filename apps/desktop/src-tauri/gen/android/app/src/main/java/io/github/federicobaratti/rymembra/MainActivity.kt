@@ -131,15 +131,27 @@ class MainActivity : TauriActivity() {
     // Prima di chiunque lo legga: `WryActivity` ne legge un extra già in
     // `super.onCreate`. Vedi [leggibile].
     intent?.let { setIntent(leggibile(it)) }
-    // Il ponte **prima** di `super.onCreate`: è lì che parte il nucleo Rust, e
-    // il nucleo può chiedere un segreto già nel suo `setup`.
+    // Se un servizio ha già avviato il nucleo senza attività e messo il suo
+    // `ndk-context`, lo si toglie ora: `tao`, in `super.onCreate`, asserisce che
+    // sia vuoto. **Prima** di ogni altra cosa, e una volta per processo: vedi
+    // `Ponte.preparaLAttivita`.
+    Ponte.preparaLAttivita()
+    // Il ponte **prima** di `super.onCreate`: è lì che parte il nucleo Rust (o
+    // che si aggancia a quello che c'è già), e il nucleo può chiedere un
+    // segreto già nel suo `setup`.
     Ponte.aggancia(this)
     enableEdgeToEdge()
     // Un'attività rinata — dopo uno scorrimento via dalle recenti, con la
     // musica che continua — riprende il fondo che la pagina aveva detto, invece
     // di quello del tema del telefono, finché la pagina nuova non lo ridice.
     Ponte.fondoChiaro?.let { coloraLeBarre(it) }
-    super.onCreate(savedInstanceState)
+    try {
+      super.onCreate(savedInstanceState)
+    } finally {
+      // `tao` ha messo il suo `ndk-context` (o `super.onCreate` è caduto: il
+      // cancello non resta chiuso per sempre).
+      Ponte.attivitaNata()
+    }
     controllore = MediaController.Builder(this, SessionToken(this, ComponentName(this, ServizioMusica::class.java)))
       .buildAsync()
     // L'intento con cui l'attività è nata si esegue una volta sola. Non quando
@@ -150,12 +162,6 @@ class MainActivity : TauriActivity() {
     // Altrimenti «metti i Queen» di giorni prima rimpiazzerebbe la coda, e un
     // invito a collegarsi già scaduto tornerebbe a chiedere.
     if (savedInstanceState == null && !dalleRecenti(intent)) {
-      // Aperta per svegliare il nucleo, perché l'ha chiesto l'auto con l'app
-      // chiusa (vedi `Nucleo`): il nucleo parte in `super.onCreate`, e la
-      // schermata torna dietro prima di farsi vedere.
-      if (intent?.getBooleanExtra(Nucleo.SFONDO, false) == true) {
-        moveTaskToBack(true)
-      }
       cercaDaIntento(intent)
       collegaDaIntento(intent)
     }

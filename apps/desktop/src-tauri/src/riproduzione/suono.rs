@@ -12,12 +12,10 @@
 //! Fa parte di [`crate::riproduzione`]: la regola dei due lucchetti — prima il
 //! lettore, poi la libreria — è scritta là e vale anche qui.
 
+use crate::nucleo::Nucleo;
 use rymembra_app::playback::{self, Equalizzazione, ModoLivello, Normalizzazione, Volume};
 use rymembra_play::PRESET_DI_SERIE;
 use serde::Serialize;
-
-use crate::spegnimento::Emette as _;
-use tauri::State;
 
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, adesso_ms, con_libreria};
@@ -130,7 +128,7 @@ struct StatoVolume {
 /// per ogni passo, e ridisegnare l'applicazione intera con quel che ne usciva.
 /// Parte `riproduzione:volume`, che sono due campi.
 #[tauri::command]
-pub async fn volume(app: tauri::AppHandle, volume: f32, muto: bool) -> Esito<()> {
+pub async fn volume(app: Nucleo, volume: f32, muto: bool) -> Esito<()> {
     super::col_lettore_in_fila(app, "volume", move |app, stato| {
         volume_ora(app, stato, volume, muto)
     })
@@ -139,12 +137,7 @@ pub async fn volume(app: tauri::AppHandle, volume: f32, muto: bool) -> Esito<()>
 
 /// [`volume`], sul posto: il lavoro sta qui, e il comando lo mette in fila
 /// sulla corsia del lettore.
-fn volume_ora(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    volume: f32,
-    muto: bool,
-) -> Esito<()> {
+fn volume_ora(app: Nucleo, stato: StatoLettore, volume: f32, muto: bool) -> Esito<()> {
     con_lettore(&stato, |lettore| {
         lettore.volume = Volume {
             volume: volume.clamp(0.0, 1.0),
@@ -181,7 +174,7 @@ fn volume_ora(
 /// e nessuna query — quanto basta perché il pannello nella barra e la pagina
 /// delle impostazioni restino d'accordo fra loro.
 #[tauri::command]
-pub async fn equalizzatore(app: tauri::AppHandle, guadagni: Vec<f32>, attivo: bool) -> Esito<()> {
+pub async fn equalizzatore(app: Nucleo, guadagni: Vec<f32>, attivo: bool) -> Esito<()> {
     super::col_lettore_in_fila(app, "equalizzatore", move |app, stato| {
         equalizzatore_ora(app, stato, &guadagni, attivo)
     })
@@ -190,8 +183,8 @@ pub async fn equalizzatore(app: tauri::AppHandle, guadagni: Vec<f32>, attivo: bo
 
 /// [`equalizzatore`], sul posto: vedi [`volume`].
 fn equalizzatore_ora(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
+    app: Nucleo,
+    stato: StatoLettore,
     guadagni: &[f32],
     attivo: bool,
 ) -> Esito<()> {
@@ -247,7 +240,7 @@ fn equalizzatore_ora(
 /// si prende solo per copiare il valore riletto — vedi
 /// `super::cambia_preferenza`.
 #[tauri::command]
-pub async fn normalizzazione(app: tauri::AppHandle, livello: String) -> Esito<()> {
+pub async fn normalizzazione(app: Nucleo, livello: String) -> Esito<()> {
     super::col_lettore_in_disparte(app, "normalizzazione", move |app, stato| {
         // Si rilegge quel che è stato scritto invece di fidarsi di quel che è
         // arrivato: è la disciplina dell'equalizzatore, e serve perché il bersaglio
@@ -293,7 +286,7 @@ pub async fn normalizzazione(app: tauri::AppHandle, livello: String) -> Esito<()
 /// a quattro secondi (R23-11). I tre che scrivono si mettono in fila sul
 /// lucchetto delle preferenze, come `normalizzazione`.
 #[tauri::command]
-pub async fn normalizzazione_modo(app: tauri::AppHandle) -> Esito<ModoLivello> {
+pub async fn normalizzazione_modo(app: Nucleo) -> Esito<ModoLivello> {
     crate::disparte::leggi_la_libreria(app, "modo della normalizzazione", |libreria| {
         playback::load_replaygain(&libreria.connection).map(|letta| letta.modo)
     })
@@ -314,10 +307,7 @@ pub async fn normalizzazione_modo(app: tauri::AppHandle) -> Esito<ModoLivello> {
 /// cambio a metà canzone sarebbe un salto di volume che nessuno ha chiesto
 /// adesso, e il prossimo brano è fra pochi minuti.
 #[tauri::command]
-pub async fn normalizzazione_modo_scegli(
-    app: tauri::AppHandle,
-    modo: ModoLivello,
-) -> Esito<ModoLivello> {
+pub async fn normalizzazione_modo_scegli(app: Nucleo, modo: ModoLivello) -> Esito<ModoLivello> {
     super::col_lettore_in_disparte(app, "modo della normalizzazione", move |app, stato| {
         let _in_fila = stato
             .preferenze
@@ -358,7 +348,7 @@ pub struct AvanzamentoVolume {
 /// qualche decina di millisecondi, e il selettore li chiede ogni tanto mentre
 /// è aperto.
 #[tauri::command]
-pub async fn normalizzazione_avanzamento(app: tauri::AppHandle) -> Esito<AvanzamentoVolume> {
+pub async fn normalizzazione_avanzamento(app: Nucleo) -> Esito<AvanzamentoVolume> {
     crate::disparte::leggi_la_libreria(app, "avanzamento della misura del volume", |libreria| {
         rymembra_app::intensita::avanzamento(&libreria.connection, adesso_ms())
     })
@@ -373,7 +363,7 @@ pub async fn normalizzazione_avanzamento(app: tauri::AppHandle) -> Esito<Avanzam
 /// prima volta non ha curve sue, e chi ne ha vuole trovarle in fondo, sempre
 /// nello stesso posto, invece che mescolate alfabeticamente alle altre.
 #[tauri::command]
-pub async fn eq_preset_elenco(app: tauri::AppHandle) -> Esito<Vec<VocePreset>> {
+pub async fn eq_preset_elenco(app: Nucleo) -> Esito<Vec<VocePreset>> {
     let mut elenco: Vec<VocePreset> = PRESET_DI_SERIE
         .iter()
         .map(|(nome, guadagni)| VocePreset {
@@ -400,10 +390,10 @@ pub async fn eq_preset_elenco(app: tauri::AppHandle) -> Esito<Vec<VocePreset>> {
 /// `false` se il nome era vuoto. Un nome che c'è già sostituisce quella curva:
 /// la regola sta in `rymembra_app::playback::salva_preset`, con la sua ragione.
 #[tauri::command]
-pub async fn eq_preset_salva(app: tauri::AppHandle, nome: String) -> Esito<bool> {
+pub async fn eq_preset_salva(app: Nucleo, nome: String) -> Esito<bool> {
     crate::disparte::comanda("curva salvata", move || {
-        let stato = crate::disparte::stato_di::<Stato>(&app)?;
-        let stato_lettore = crate::disparte::stato_di::<StatoLettore>(&app)?;
+        let stato = crate::disparte::stato_del_nucleo::<Stato>(&app)?;
+        let stato_lettore = crate::disparte::stato_del_nucleo::<StatoLettore>(&app)?;
         let _in_fila = stato_lettore
             .preferenze
             .lock()
@@ -423,10 +413,10 @@ pub async fn eq_preset_salva(app: tauri::AppHandle, nome: String) -> Esito<bool>
 /// Quelle di serie non passano di qui: non stanno nel database, quindi non c'è
 /// niente da togliere e la finestra non ne offre il comando.
 #[tauri::command]
-pub async fn eq_preset_cancella(app: tauri::AppHandle, nome: String) -> Esito<bool> {
+pub async fn eq_preset_cancella(app: Nucleo, nome: String) -> Esito<bool> {
     crate::disparte::comanda("curva cancellata", move || {
-        let stato = crate::disparte::stato_di::<Stato>(&app)?;
-        let stato_lettore = crate::disparte::stato_di::<StatoLettore>(&app)?;
+        let stato = crate::disparte::stato_del_nucleo::<Stato>(&app)?;
+        let stato_lettore = crate::disparte::stato_del_nucleo::<StatoLettore>(&app)?;
         let _in_fila = stato_lettore
             .preferenze
             .lock()

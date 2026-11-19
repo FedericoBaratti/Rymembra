@@ -19,6 +19,16 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# Le tre funzioni di Rust che il servizio chiama per avviare il nucleo senza
+# attività (`Ponte.avviaNucleo`, `rilasciaIlContestoDelServizio`,
+# `contestoDiTaoPronto`): JNI le cerca per nome (`Java_…_Ponte_…`), e R8 le
+# rinominerebbe — il file non include le regole di serie di Android, che tengono i
+# metodi `native`. Rinominate, la prima chiamata darebbe `UnsatisfiedLinkError`,
+# solo nella build di rilascio.
+-keepclasseswithmembernames class io.github.federicobaratti.rymembra.Ponte {
+    native <methods>;
+}
+
 # Il ponte con Rust: lo trova JNI per nome (`rymembra-android/src/jvm.rs`), da
 # un caricatore di classi che R8 non vede. Rinominato o tolto, la prima
 # chiamata da Rust fallirebbe con `ClassNotFoundException`.

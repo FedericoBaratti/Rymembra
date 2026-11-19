@@ -46,12 +46,12 @@
 //! l'`uid`: il motore annuncia la maniglia, che è quel che la coda contiene, e
 //! le ancore portano l'`uid`, che è quel che l'altro PC confronta.
 
+use crate::nucleo::Nucleo;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use rymembra_app::library::TrackSummary;
 use rymembra_domain::errors::{AppError, ErrorCode};
-use tauri::Manager as _;
 
 use super::StatoLettore;
 use super::insieme::UID_CALIBRAZIONE;
@@ -162,7 +162,7 @@ impl Voce {
 
 /// Che cosa c'è dietro un id: vedi il `//!`.
 #[must_use]
-pub fn chi(app: &tauri::AppHandle, id: i64) -> Chi {
+pub fn chi(app: &Nucleo, id: i64) -> Chi {
     // Una riga, o la calibrazione, si riconoscono senza il registro: niente
     // lucchetto per la domanda che si fa più spesso.
     if e_di_libreria(id) || id == MANIGLIA_CALIBRAZIONE {
@@ -412,10 +412,7 @@ impl Registro {
 /// Fa `azione` sul registro di questo PC, col suo lucchetto e nient'altro.
 /// `None` se il lettore non è più fra gli stati gestiti: l'applicazione si
 /// sta chiudendo, e ogni maniglia è sparita con lei.
-pub(super) fn con_registro<T>(
-    app: &tauri::AppHandle,
-    azione: impl FnOnce(&mut Registro) -> T,
-) -> Option<T> {
+pub(super) fn con_registro<T>(app: &Nucleo, azione: impl FnOnce(&mut Registro) -> T) -> Option<T> {
     let stato = app.try_state::<StatoLettore>()?;
     let mut registro = stato
         .ospiti
@@ -443,7 +440,7 @@ pub(super) fn registro_nuovo() -> Mutex<Registro> {
 /// In fase 3 una voce in rete conta anche quando suona da una copia identica
 /// trovata qui (vedi «La copia locale» su [`apri`]): è un file di questo PC,
 /// e l'ascolto è suo.
-pub fn da_contare(app: &tauri::AppHandle, id: i64) -> Option<i64> {
+pub fn da_contare(app: &Nucleo, id: i64) -> Option<i64> {
     match chi(app, id) {
         Chi::Libreria(riga) => Some(riga),
         Chi::Voce(voce) => {
@@ -470,7 +467,7 @@ fn conta_della_voce(voce: &Voce, copia: Option<i64>) -> Option<i64> {
 /// fase 3, dove una copia verificata conta come ascolto senza che la voce si
 /// apra da lì; oggi coincidono quasi sempre.
 #[must_use]
-pub fn riga_dietro(app: &tauri::AppHandle, id: i64) -> Option<i64> {
+pub fn riga_dietro(app: &Nucleo, id: i64) -> Option<i64> {
     match chi(app, id) {
         Chi::Libreria(riga) => Some(riga),
         Chi::Voce(voce) => match voce.apertura {
@@ -488,7 +485,7 @@ pub fn riga_dietro(app: &tauri::AppHandle, id: i64) -> Option<i64> {
 /// Quanto dura una voce, dalla sua scheda. `None` per una riga della
 /// libreria (la durata la sa il database) e per una maniglia sparita.
 #[must_use]
-pub fn durata_ms(app: &tauri::AppHandle, id: i64) -> Option<u64> {
+pub fn durata_ms(app: &Nucleo, id: i64) -> Option<u64> {
     match chi(app, id) {
         Chi::Voce(voce) => Some(voce.scheda.durata_ms),
         Chi::Libreria(_) | Chi::Sparita => None,
@@ -504,7 +501,7 @@ pub fn durata_ms(app: &tauri::AppHandle, id: i64) -> Option<u64> {
 /// cade, il guasto è la cartella da ricollegare, non «la connessione con il
 /// catalogo».
 #[must_use]
-pub fn e_un_flusso(app: &tauri::AppHandle, voce: &Voce) -> Option<bool> {
+pub fn e_un_flusso(app: &Nucleo, voce: &Voce) -> Option<bool> {
     con_registro(app, |registro| e_un_flusso_nel(Some(&*registro), voce))
         .unwrap_or_else(|| e_un_flusso_nel(None, voce))
 }
@@ -567,7 +564,7 @@ pub fn scheda(maniglia: i64, voce: &Voce) -> TrackSummary {
 /// Le maniglie delle voci che aprono queste righe della libreria. Vuoto
 /// fuori sessione. Vedi [`Registro::maniglie_di_righe`].
 #[must_use]
-pub fn maniglie_di_righe(app: &tauri::AppHandle, righe: &[i64]) -> Vec<i64> {
+pub fn maniglie_di_righe(app: &Nucleo, righe: &[i64]) -> Vec<i64> {
     con_registro(app, |registro| registro.maniglie_di_righe(righe)).unwrap_or_default()
 }
 
@@ -612,7 +609,7 @@ pub fn maniglie_di_righe(app: &tauri::AppHandle, righe: &[i64]) -> Vec<i64> {
 /// (`insieme.*`) e del flusso per una voce in rete, `net.timeout` quando la
 /// rete non risponde entro `APERTURA_FLUSSO`, e quelli dei cataloghi.
 pub(super) fn apri(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     maniglia: i64,
     voce: &Voce,
     formato: rymembra_play::FormatoUscita,
@@ -684,7 +681,7 @@ pub(super) fn apri(
 /// la maniglia della voce. `None` se qui non c'è, o se c'era e non si apre
 /// più: allora si dimentica, e la voce si apre dalla rete.
 fn apri_la_copia(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     maniglia: i64,
     voce: &Voce,
     descrittore: &rymembra_insieme::messaggi::DescrittoreCopia,
@@ -721,7 +718,7 @@ struct Trovata {
 
 /// La riga della copia locale di una voce, cercata una volta per `uid`.
 fn copia_locale(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     uid: u64,
     descrittore: &rymembra_insieme::messaggi::DescrittoreCopia,
     durata_ms: u64,
@@ -771,7 +768,7 @@ fn copia_ricordata(
 /// scadenza di un'apertura. Fuori `None` quando non è un esito — il database
 /// non ha risposto, il disco nemmeno — e allora non si ricorda niente.
 fn cerca_copia(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     descrittore: &rymembra_insieme::messaggi::DescrittoreCopia,
     durata_ms: u64,
 ) -> Option<Option<i64>> {
@@ -850,7 +847,7 @@ fn descrittore_da(
 /// La voce `id` si apre da un file di questo PC: una riga della libreria, una
 /// voce che ne apre una, o una voce in rete di cui si è trovata la copia.
 #[must_use]
-pub(super) fn si_apre_da_qui(app: &tauri::AppHandle, id: i64) -> bool {
+pub(super) fn si_apre_da_qui(app: &Nucleo, id: i64) -> bool {
     match chi(app, id) {
         Chi::Libreria(_) => true,
         Chi::Voce(voce) => match voce.apertura {

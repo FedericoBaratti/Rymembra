@@ -30,6 +30,7 @@
 //!   un avviso: la lettura la fa questo filo, lontano dallo stato che si sta
 //!   pubblicando.
 
+use crate::nucleo::{ComeNucleo, Nucleo};
 use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, Sender};
@@ -38,7 +39,6 @@ use std::time::Duration;
 use rymembra_android::auto::Richiesta;
 use rymembra_android::sessione::{self, Coda, Gesto as GestoAndroid, Scheda, VoceCoda};
 use rymembra_app::covers::CoverStore;
-use tauri::{Listener as _, Manager as _};
 
 use super::{Gesto, StatoMedia, avanti_entro, premi};
 use crate::auto::{self, GestoAuto, Nodo, RicercaVocale};
@@ -91,7 +91,8 @@ pub(super) struct Controlli {
 /// dice soltanto che il nucleo c'è ([`sessione::pronta`]), con una chiamata
 /// che non aspetta niente. Questa funzione gira nel `setup`, sul filo
 /// principale, e quel filo non deve aspettare.
-pub fn avvia(app: &tauri::AppHandle) {
+pub fn avvia(app: &impl ComeNucleo) {
+    let app = &app.come_nucleo();
     let stato_app = app.state::<Stato>();
     let Ok(copertine) = stato_app.copertine() else {
         nota!("[media] la libreria non è aperta: niente sessione multimediale");
@@ -143,7 +144,7 @@ pub fn avvia(app: &tauri::AppHandle) {
     // Una scansione finita è una libreria nuova anche per l'auto: le schede
     // che ha aperte si rileggono, invece di restare quelle di prima finché
     // qualcuno non torna indietro e rientra.
-    app.listen_any("scansione:finita", |_| {
+    app.ascolta("scansione:finita", || {
         if let Err(err) = sessione::libreria_cambiata() {
             nota!("[media] l'auto non sa che la libreria è cambiata: {err}");
         }
@@ -153,8 +154,8 @@ pub fn avvia(app: &tauri::AppHandle) {
 /// Fa partire un filo che lavora su un canale, e ne dà il lato che manda.
 fn parti<T: Send + 'static>(
     nome: &str,
-    app: &tauri::AppHandle,
-    lavoro: impl FnOnce(tauri::AppHandle, Receiver<T>) + Send + 'static,
+    app: &Nucleo,
+    lavoro: impl FnOnce(Nucleo, Receiver<T>) + Send + 'static,
 ) -> Option<Sender<T>> {
     let (manda, ricevi) = std::sync::mpsc::channel();
     let mano = app.clone();
@@ -175,7 +176,7 @@ fn parti<T: Send + 'static>(
 /// Un guasto del ponte non lo ferma — si scrive e si riprova dopo una pausa —
 /// perché un filo dei gesti morto vuol dire una notifica che mostra i tasti e
 /// non risponde, e quello non lo racconta nessuno.
-fn ascolta_i_gesti(app: &tauri::AppHandle) {
+fn ascolta_i_gesti(app: &Nucleo) {
     let mut ultimo_guasto: Option<String> = None;
     while !crate::spegnimento::in_uscita() {
         match sessione::aspetta_gesto(ATTESA) {
@@ -211,7 +212,7 @@ fn guasto(ultimo: &mut Option<String>, cosa: &str, err: &rymembra_android::Error
 /// I salti relativi passano dallo stesso tetto della scheda di Windows: un
 /// «avanti di dieci secondi» premuto a tre dalla fine non cambia brano. Vedi
 /// [`avanti_entro`].
-fn traduci(app: &tauri::AppHandle, gesto: GestoAndroid) -> Option<Gesto> {
+fn traduci(app: &Nucleo, gesto: GestoAndroid) -> Option<Gesto> {
     let media = app.try_state::<StatoMedia>()?;
     let adesso = media.posizione_ms.load(Ordering::Relaxed);
     let durata = media.durata_ms.load(Ordering::Relaxed);
@@ -262,7 +263,7 @@ fn traduci(app: &tauri::AppHandle, gesto: GestoAndroid) -> Option<Gesto> {
 }
 
 /// Il filo delle domande dell'auto: aspetta una domanda, legge, risponde.
-fn rispondi_all_auto(app: &tauri::AppHandle) {
+fn rispondi_all_auto(app: &Nucleo) {
     let mut ultimo_guasto: Option<String> = None;
     while !crate::spegnimento::in_uscita() {
         match rymembra_android::auto::aspetta_richiesta(ATTESA) {
@@ -305,7 +306,7 @@ fn rispondi_all_auto(app: &tauri::AppHandle) {
 
 /// La risposta a una domanda dell'auto: delle voci.
 fn risposta(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     domanda: Richiesta,
 ) -> Result<Vec<auto::Voce>, rymembra_domain::AppError> {
     match domanda {
@@ -356,7 +357,7 @@ fn sconosciuta(voce: &str) -> rymembra_domain::AppError {
 ///
 /// Se ne arrivano più d'uno mentre si legge, vale l'ultimo: quelli in mezzo
 /// non li vedrebbe nessuno.
-fn componi_la_coda(app: &tauri::AppHandle, ricevi: &Receiver<Tratto>) {
+fn componi_la_coda(app: &Nucleo, ricevi: &Receiver<Tratto>) {
     while let Ok(mut tratto) = ricevi.recv() {
         while let Ok(dopo) = ricevi.try_recv() {
             tratto = dopo;
@@ -368,7 +369,7 @@ fn componi_la_coda(app: &tauri::AppHandle, ricevi: &Receiver<Tratto>) {
 }
 
 /// Un tratto di coda per l'auto: le sue righe, alla sessione.
-fn componi(app: &tauri::AppHandle, tratto: Tratto) {
+fn componi(app: &Nucleo, tratto: Tratto) {
     let Tratto {
         inizio,
         brani: ids,
@@ -422,7 +423,8 @@ fn componi(app: &tauri::AppHandle, tratto: Tratto) {
 }
 
 /// Toglie la notifica e ferma il servizio, all'uscita.
-pub fn stacca(app: &tauri::AppHandle) {
+pub fn stacca(app: &impl ComeNucleo) {
+    let app = &app.come_nucleo();
     if let Some(stato) = app.try_state::<StatoMedia>() {
         drop(
             stato
@@ -454,7 +456,7 @@ pub(super) fn non_riuscito(codice: &str) {
 ///
 /// Se è cambiato il tratto di coda attorno al brano, lo si manda a comporre al
 /// filo della coda: qui si confrontano numeri e basta.
-pub(super) fn aggiorna(app: &tauri::AppHandle, media: &StatoMedia, stato: &StatoRiproduzione) {
+pub(super) fn aggiorna(app: &Nucleo, media: &StatoMedia, stato: &StatoRiproduzione) {
     let mut dentro = media
         .controlli
         .lock()
@@ -527,7 +529,7 @@ fn tratto_di(coda: &[i64], posto: Option<usize>) -> Tratto {
 /// `crate::insieme::su_file`): non c'è niente da chiedere alla rete, e la scheda
 /// si ripubblica da sé quando la copertina arriva.
 fn copertina_di(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     store: &CoverStore,
     hash: Option<&str>,
     percorso: Option<&str>,
@@ -554,7 +556,7 @@ fn copertina_di(
 /// ripubblica, e il tratto di coda si rifà (`tratto = None`, così `aggiorna` lo
 /// rimanda al filo della coda, che adesso la trova nello store). Si ripubblica lo
 /// stato, non solo la scheda: la scheda la compone `aggiorna`, da un posto solo.
-fn copertina_arrivata(app: &tauri::AppHandle) {
+fn copertina_arrivata(app: &Nucleo) {
     if let Some(media) = app.try_state::<StatoMedia>()
         && let Some(controlli) = media
             .controlli
@@ -568,7 +570,7 @@ fn copertina_arrivata(app: &tauri::AppHandle) {
 }
 
 /// Quel che la notifica deve mostrare per questo stato.
-fn scheda_di(app: &tauri::AppHandle, stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
+fn scheda_di(app: &Nucleo, stato: &StatoRiproduzione, copertine: &CoverStore) -> Scheda {
     let dopo = stato
         .posizione_coda
         .is_some_and(|dove| dove.saturating_add(1) < stato.coda.len())

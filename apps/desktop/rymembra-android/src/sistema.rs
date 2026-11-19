@@ -598,6 +598,17 @@ pub fn senza_risparmio_batteria() -> Result<bool, Errore> {
     chiama("sistema.senzaRisparmio", &())
 }
 
+/// Il nucleo avviato da un servizio non è partito (la libreria non si è aperta, o
+/// l'avvio è caduto): la notifica del sottofondo dice «a riposo» invece di «si sta
+/// avviando» per sempre. Non aspetta.
+///
+/// # Errori
+///
+/// Se il ponte non risponde.
+pub fn nucleo_non_parte() -> Result<(), Errore> {
+    chiama("nucleo.nonParte", &())
+}
+
 /// Apre la pagina di sistema in cui si toglie il risparmio batteria a
 /// Rymembra (`ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`, e se un telefono
 /// non l'ha la scheda dell'app). Non la richiesta diretta, che la policy di
@@ -821,6 +832,7 @@ mod prove {
             partenza_con_auto_offerta().err(),
             sottofondo_spento_dalla_notifica().err(),
             senza_risparmio_batteria().err(),
+            nucleo_non_parte().err(),
             apri_risparmio_batteria().err(),
         ] {
             assert!(
