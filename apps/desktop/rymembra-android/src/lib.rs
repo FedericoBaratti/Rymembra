@@ -37,8 +37,17 @@
 //! dalla radice lo costruisce su Windows: ogni funzione risponde con
 //! [`Errore`] «non su Android», e nessuno la chiama.
 
+/// La parte di Android che tocca la macchina virtuale: `pub` e nascosta perché la
+/// macro [`esporta_il_nucleo!`], che il crate dell'applicazione invoca, deve
+/// nominare i suoi tipi. Il resto del mondo non la usa.
 #[cfg(target_os = "android")]
-mod jvm;
+#[doc(hidden)]
+pub mod jvm;
+
+/// Aspetta, al più `attesa`, che il contesto di Android sia leggibile: vedi
+/// `jvm::aspetta_il_contesto`. Per chi apre lo stream audio.
+#[cfg(target_os = "android")]
+pub use jvm::aspetta_il_contesto;
 
 pub mod auto;
 pub mod segreti;

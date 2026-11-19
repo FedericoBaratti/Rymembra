@@ -89,6 +89,10 @@ pub struct CorpoInsieme {
     posta: Sender<Posta>,
     /// Il capo da cui il filo legge la cassetta, finché non parte.
     cassetta: Mutex<Option<Receiver<Posta>>>,
+    /// L'orecchio del campanello del lettore, finché il filo non parte. Lo stato
+    /// nasce nel nucleo e il filo con la finestra: qui aspetta chi lo avvia
+    /// ([`StatoInsieme::prendi_l_orecchio`]).
+    orecchio: Mutex<Option<Receiver<()>>>,
 }
 
 crate::nucleo::condiviso! {
@@ -98,20 +102,30 @@ crate::nucleo::condiviso! {
 }
 
 impl StatoInsieme {
-    /// Lo stato, e l'orecchio del suo filo.
+    /// Lo stato, inerte: il filo non parte finché qualcuno non ne prende l'orecchio
+    /// ([`StatoInsieme::prendi_l_orecchio`]) e lo passa a [`avvia_filo`].
     #[must_use]
-    pub fn nuovo() -> (Self, Receiver<()>) {
+    pub fn nuovo() -> Self {
         let (sveglia, orecchio) = channel();
         let (posta, cassetta) = channel();
-        (
-            Self::da_corpo(CorpoInsieme {
-                comune: Arc::new(Comune::nuovo()),
-                sveglia,
-                posta,
-                cassetta: Mutex::new(Some(cassetta)),
-            }),
-            orecchio,
-        )
+        Self::da_corpo(CorpoInsieme {
+            comune: Arc::new(Comune::nuovo()),
+            sveglia,
+            posta,
+            cassetta: Mutex::new(Some(cassetta)),
+            orecchio: Mutex::new(Some(orecchio)),
+        })
+    }
+
+    /// L'orecchio con cui far partire il filo, **una volta**: le chiamate dopo la
+    /// prima non trovano più niente. Così il filo lo avvia chi ha la finestra,
+    /// anche se lo stato lo ha creato il nucleo prima.
+    #[must_use]
+    pub fn prendi_l_orecchio(&self) -> Option<Receiver<()>> {
+        self.orecchio
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 }
 

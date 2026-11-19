@@ -1115,15 +1115,24 @@ crate::nucleo::condiviso! {
     pub struct StatoLettore(CorpoLettore);
 }
 
-/// Il filo della finestra, segnato quando il lettore si apre.
+/// Il filo della finestra, segnato dal `setup` di Tauri ([`segna_filo_della_finestra`]).
 ///
 /// Serve a [`prendi_il_lettore`] per la stessa domanda che `crate::stato` si
 /// fa per la libreria: chi aspetta è il filo che disegna la finestra? Lì
 /// un'attesa senza limite non è un comando lento, è una finestra che Windows
 /// dichiara «non risponde». Una copia sua e non quella di `crate::stato`
-/// perché quella è privata del suo modulo; la segna [`StatoLettore::avvia`],
-/// che gira nel `setup` di Tauri — sullo stesso filo.
+/// perché quella è privata del suo modulo.
+///
+/// La segnava [`StatoLettore::avvia`], che girava sul filo della finestra; ora
+/// il lettore lo avvia anche il servizio di Android, su un filo qualunque, e
+/// quel filo non è la finestra: la segna il `setup`, che lo è sempre.
 static FILO_DELLA_FINESTRA: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
+
+/// Segna il filo corrente come quello della finestra. Dal `setup` di Tauri, che
+/// gira su quel filo; le chiamate dopo la prima non fanno niente.
+pub fn segna_filo_della_finestra() {
+    let _ = FILO_DELLA_FINESTRA.set(std::thread::current().id());
+}
 
 /// Quanto il filo della finestra aspetta il lucchetto del lettore.
 ///
@@ -1241,7 +1250,40 @@ pub const FINE_DEL_BRANO: i64 = -1;
 /// il lucchetto del lettore, che è qui. Vedi [`su_evento`].
 fn apri_motore(app: &Nucleo, voluto: Option<String>) -> Result<Motore, AppError> {
     let manico = app.clone();
-    Motore::avvia_con_annunci(move |annuncio| su_evento(&manico, annuncio), voluto)
+    apri_senza_cadere(move || {
+        Motore::avvia_con_annunci(move |annuncio| su_evento(&manico, annuncio), voluto)
+    })
+}
+
+/// Su Android, l'apertura dello stream sotto il cancello del contesto e dentro un
+/// `catch_unwind`; altrove, l'apertura e basta.
+///
+/// `cpal` legge il contesto di Android (`ndk-context`) per aprire lo stream, e a
+/// contesto vuoto va in panico. Il contesto è vuoto per un attimo, una volta per
+/// processo, quando la prima attività nasce dopo un nucleo avviato da un servizio:
+/// il servizio lo toglie e `tao` lo rimette (vedi `rymembra_android::jvm`, «Il
+/// cancello»). Si aspetta il cancello — di norma è aperto — e, se il panico viene
+/// lo stesso, è un errore di apertura che il lettore sa già trattare e riprovare,
+/// non la fine del processo.
+#[cfg(target_os = "android")]
+fn apri_senza_cadere(apri: impl FnOnce() -> Result<Motore, AppError>) -> Result<Motore, AppError> {
+    if !rymembra_android::aspetta_il_contesto(std::time::Duration::from_secs(2)) {
+        nota!(
+            "[riproduzione] il contesto di Android non è tornato in due secondi: provo lo stesso"
+        );
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(apri)).unwrap_or_else(|_| {
+        Err(AppError::new(ErrorCode::InternalAborted {
+            what: Some("apertura del motore audio".to_owned()),
+        })
+        .with_cause("il motore audio è caduto aprendo lo stream: il contesto di Android mancava"))
+    })
+}
+
+/// Fuori da Android il contesto non c'è da aspettare: l'apertura e basta.
+#[cfg(not(target_os = "android"))]
+fn apri_senza_cadere(apri: impl FnOnce() -> Result<Motore, AppError>) -> Result<Motore, AppError> {
+    apri()
 }
 
 impl StatoLettore {
@@ -1263,9 +1305,6 @@ impl StatoLettore {
         // database su questa strada: da qui in poi vive nella copia in memoria
         // qui sotto. Un database che non risponde vale «predefinito di
         // sistema», che è il ripiego di tutto il resto del modulo.
-        // Si gira nel resto dell'avvio, sul filo della finestra: è il momento
-        // di segnarlo. Vedi [`FILO_DELLA_FINESTRA`].
-        let _ = FILO_DELLA_FINESTRA.set(std::thread::current().id());
         let voluta = uscita_scelta(app);
         // Il dispositivo **non** si apre qui (R23-9). Aprirlo parla col
         // sistema, e un driver piantato — le cuffie Bluetooth a metà

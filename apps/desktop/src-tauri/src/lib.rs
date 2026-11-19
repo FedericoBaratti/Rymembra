@@ -105,7 +105,7 @@ mod zoom;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use nucleo::Nucleo;
+use nucleo::{ChiAvvia, Nucleo};
 use rymembra_app::trasloco;
 use rymembra_domain::eredita;
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -345,7 +345,7 @@ fn apri_e_avvia(app: &tauri::AppHandle, data_dir: PathBuf) {
             let Some(stato) = mano.try_state::<stato::Stato>() else {
                 return;
             };
-            apri_la_libreria(&mano, &stato, cartella);
+            apri_la_libreria(&Nucleo::di(&mano), &stato, cartella);
             // Chi ha chiuso Rymembra mentre la libreria si apriva non vuole
             // il resto dell'avvio: vedi [`finisci_l_avvio`].
             if spegnimento::in_uscita() {
@@ -362,7 +362,7 @@ fn apri_e_avvia(app: &tauri::AppHandle, data_dir: PathBuf) {
     if let Err(err) = avviato {
         nota!("[avvio] il filo dell'apertura non parte, la libreria si apre qui: {err}");
         if let Some(stato) = app.try_state::<stato::Stato>() {
-            apri_la_libreria(app, &stato, data_dir);
+            apri_la_libreria(&Nucleo::di(app), &stato, data_dir);
         }
         finisci_l_avvio(app);
     }
@@ -370,7 +370,11 @@ fn apri_e_avvia(app: &tauri::AppHandle, data_dir: PathBuf) {
 
 /// L'apertura vera: la fase da dire alla finestra, la libreria, la riga di
 /// avvio. Un panico qui dentro diventa il guasto della libreria.
-fn apri_la_libreria(app: &tauri::AppHandle, stato: &stato::Stato, data_dir: PathBuf) {
+///
+/// Prende il nucleo e non la finestra: la apre anche il servizio che parte
+/// all'accensione ([`avvia_dal_servizio`]), dove una finestra non c'è, e
+/// l'evento `libreria:stato` senza finestra non ha chi lo ascolti.
+fn apri_la_libreria(app: &Nucleo, stato: &stato::Stato, data_dir: PathBuf) {
     let da = stato::versione_da_aggiornare(&data_dir.join(stato::NOME_DATABASE));
     if let Some(da) = da {
         stato.in_aggiornamento(da);
@@ -427,6 +431,16 @@ fn finisci_l_avvio(app: &tauri::AppHandle) {
 /// cartelle dal cloud, il lettore, i controlli multimediali, i fili di
 /// sottofondo, il vassoio, la sorveglianza. Gira sul filo della finestra, come
 /// quando stava nel `setup`: vedi [`apri_e_avvia`].
+///
+/// # Il nucleo e la finestra
+///
+/// Si divide in due: [`avvia_il_nucleo`], quel che non vuole una finestra e che
+/// su Android parte anche da un servizio, prima di ogni attività; e
+/// [`avvia_la_finestra`], quel che nasce con la finestra (il vassoio, il
+/// backup, l'analisi, gli aggiornamenti…). Il nucleo parte **una volta per
+/// processo**: se un servizio lo ha già avviato — l'attività è nata dopo — qui
+/// si salta, e la finestra si aggancia a quello che c'è
+/// (`Nucleo::e_gia_avviato`).
 fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     let nucleo = Nucleo::di(app);
     // Le cartelle dal cloud **subito dopo** la libreria: lo specchio si
@@ -437,6 +451,33 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // cambiata su OneDrive visibile all'avvio.
     nuvola_musica::avvia(app);
 
+    // Lo stesso per i pulsanti nell'anteprima, e per una ragione in
+    // più: il loro stato ricorda l'aspetto anche prima che i pulsanti
+    // ci siano, e il primo stato del lettore arriva quando il dispositivo
+    // si apre. Vedi `barra`.
+    app.manage(barra::StatoBarra::nuovo());
+
+    if !nucleo.e_gia_avviato() {
+        avvia_il_nucleo(&nucleo);
+        nucleo.avvio_finito();
+    }
+    avvia_la_finestra(app);
+}
+
+/// Il nucleo: la libreria è già aperta, e qui parte quel che serve a Rymembra
+/// per funzionare **senza una finestra** — il lettore con la coda di ieri e il
+/// motore audio, i controlli del sistema (su Android la sessione per l'auto e le
+/// cuffie), lo scrobbling, «Ascolta insieme» come stato inerte, il collegamento
+/// con gli altri dispositivi.
+///
+/// Su Android lo avvia anche un servizio, all'accensione del telefono
+/// (`avvia_dal_servizio`), prima che esista un'attività; sul computer parte dal
+/// filo della finestra, dentro [`avvia_dopo_la_libreria`], come sempre. Quel che
+/// non sta qui — il backup, la sincronia, l'arricchimento, la manutenzione,
+/// l'analisi, la sorveglianza, gli aggiornamenti, il vassoio — è dell'attività:
+/// accesi a ogni accensione del telefono sarebbero batteria e disco spesi senza
+/// nessuno.
+fn avvia_il_nucleo(nucleo: &Nucleo) {
     // Il lettore **dopo** la libreria. Il dispositivo audio non si apre qui
     // ma su un filo suo, [`riproduzione::apri_il_primo_motore`] più sotto,
     // che rimette anche la coda di ieri (R23-9).
@@ -447,13 +488,8 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // questa riga, cercherebbe uno stato non registrato. Registrarlo
     // vuoto costa un mutex e un intero.
     nucleo.manage(media::StatoMedia::nuovo());
-    // Lo stesso per i pulsanti nell'anteprima, e per una ragione in
-    // più: il loro stato ricorda l'aspetto anche prima che i pulsanti
-    // ci siano, e il primo stato del lettore arriva quando il dispositivo
-    // si apre. Vedi `barra`.
-    app.manage(barra::StatoBarra::nuovo());
 
-    let (lettore, orecchio, orecchio_dispositivi) = riproduzione::StatoLettore::avvia(&nucleo);
+    let (lettore, orecchio, orecchio_dispositivi) = riproduzione::StatoLettore::avvia(nucleo);
     riproduzione::riga_di_avvio_lettore(&lettore);
     nucleo.manage(lettore);
     // Il filo che apre il brano successivo, insieme agli altri del
@@ -488,7 +524,44 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // libreria aperta, per sapere dove stanno le copertine. Il primo
     // stato le riempirà da sé, perché passa dallo stesso `manda_stato`
     // di tutti gli altri.
-    media::avvia(app);
+    media::avvia(nucleo);
+
+    // Lo scrobbling **dopo** la libreria, perché la prima cosa che fa è
+    // guardare se è rimasto qualcosa in coda dalla sessione precedente.
+    // Il suo filo dorme finché non lo si chiama: a servizi scollegati
+    // non costa niente.
+    nucleo.manage(scrobble::StatoScrobble::nuovo());
+    scrobble::avvia(nucleo);
+
+    // «Ascolta insieme» **dopo** il lettore e la libreria: la sessione
+    // legge le impostazioni da lì e parla col lettore attraverso il
+    // ponte. Spento di serie, e da spento il suo filo dorme: nessun
+    // pacchetto in rete finché qualcuno non accende l'interruttore. Il
+    // nucleo ne ha lo stato e basta: il filo lo avvia la finestra
+    // ([`avvia_la_finestra`]), perché una sessione accesa non deve far
+    // entrare il telefono in una rete all'accensione.
+    nucleo.manage(insieme::StatoInsieme::nuovo());
+
+    // Il collegamento via internet **dopo** «Ascolta insieme»: dice
+    // agli altri dispositivi se la sessione è accesa. Spento di serie:
+    // da spento il filo legge le impostazioni e basta.
+    lontano::avvia_filo(nucleo);
+    // Una volta per avvio, **dopo** «Ascolta insieme» — che dice se c'è una
+    // sessione, e allora non si tocca niente —: via quel che le versioni di prima
+    // hanno lasciato in `copertine-lontane`. Su un filo suo.
+    lontano::ripulisci_le_copertine_di_prima(nucleo);
+
+    // Sul telefono la scheda del sistema riceve subito il brano della coda di
+    // ieri: a nucleo che parte da solo non arriverà nessuna finestra a
+    // chiederlo.
+    #[cfg(mobile)]
+    riproduzione::primo_stato_fuori(nucleo);
+}
+
+/// Quel che nasce con la finestra: i pulsanti nell'anteprima, i fili pesanti, gli
+/// aggiornamenti, il vassoio, la sorveglianza. Sul filo della finestra.
+fn avvia_la_finestra(app: &tauri::AppHandle) {
+    let nucleo = Nucleo::di(app);
     // I pulsanti nell'anteprima, accanto ai controlli multimediali e per
     // la stessa ragione: si appendono alla finestra, che qui esiste già.
     // Compaiono quando la finestra si mostra.
@@ -532,29 +605,14 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     app.manage(analisi);
     analisi::avvia_filo(app.clone(), orecchio);
 
-    // Lo scrobbling **dopo** la libreria, perché la prima cosa che fa è
-    // guardare se è rimasto qualcosa in coda dalla sessione precedente.
-    // Il suo filo dorme finché non lo si chiama: a servizi scollegati
-    // non costa niente.
-    nucleo.manage(scrobble::StatoScrobble::nuovo());
-    scrobble::avvia(&nucleo);
-
-    // «Ascolta insieme» **dopo** il lettore e la libreria: la sessione
-    // legge le impostazioni da lì e parla col lettore attraverso il
-    // ponte. Spento di serie, e da spento il suo filo dorme: nessun
-    // pacchetto in rete finché qualcuno non accende l'interruttore.
-    let (insieme, orecchio) = insieme::StatoInsieme::nuovo();
-    nucleo.manage(insieme);
-    insieme::avvia_filo(nucleo.clone(), orecchio);
-
-    // Il collegamento via internet **dopo** «Ascolta insieme»: dice
-    // agli altri dispositivi se la sessione è accesa. Spento di serie:
-    // da spento il filo legge le impostazioni e basta.
-    lontano::avvia_filo(&nucleo);
-    // Una volta per avvio, **dopo** «Ascolta insieme» — che dice se c'è una
-    // sessione, e allora non si tocca niente —: via quel che le versioni di prima
-    // hanno lasciato in `copertine-lontane`. Su un filo suo.
-    lontano::ripulisci_le_copertine_di_prima(&nucleo);
+    // «Ascolta insieme»: il filo della sessione. Lo stato lo ha già il nucleo;
+    // da spento il filo dorme.
+    if let Some(orecchio) = nucleo
+        .try_state::<insieme::StatoInsieme>()
+        .and_then(|stato| stato.prendi_l_orecchio())
+    {
+        insieme::avvia_filo(nucleo.clone(), orecchio);
+    }
 
     // I modelli di linguaggio: un lucchetto vuoto e un contatore, e
     // nessun filo. Qui non parte niente da solo — non c'e` niente da
@@ -580,6 +638,7 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // Adesso che ci sono tutti e tre — il riquadro multimediale, i
     // pulsanti della miniatura, il vassoio — il brano della coda di
     // ieri anche a loro. Vedi `riproduzione::primo_stato_fuori`.
+    #[cfg(desktop)]
     riproduzione::primo_stato_fuori(&nucleo);
 
     // Le cartelle sorvegliate **dopo** la libreria: legge la scelta e
@@ -587,6 +646,120 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // guardare il disco. Vedi `sorveglia`.
     sorveglia::avvia(app);
 }
+
+/// La finestra nasce a nucleo già partito (o che sta partendo): non lo avvia, si
+/// aggancia.
+///
+/// Succede su Android quando un servizio ha avviato il nucleo — all'accensione del
+/// telefono, o dopo un `kill` che il sistema ha riparato — prima che l'attività
+/// esistesse: la libreria è già in mano al nucleo, il lettore suona già, il
+/// collegamento con i PC è già in piedi. Qui si registrano gli stati che servono
+/// solo alla finestra e che non vogliono i dati, e quando il nucleo ha finito di
+/// partire — subito, se ha già finito — si fa il resto sul filo della finestra:
+/// gli stessi passi di [`finisci_l_avvio`], che salta il nucleo perché c'è.
+///
+/// Il `setup` ritorna subito, come sempre: la finestra compare e dice «Apro la
+/// libreria…» finché il cancello non si apre.
+fn aggancia_al_nucleo(app: &tauri::App, nucleo: &Nucleo) -> Result<(), Box<dyn std::error::Error>> {
+    // Gli stessi stati del `setup`, per la stessa ragione: inerti, e i comandi li
+    // cercano per tipo.
+    app.manage(importa::StatoImport::nuovo());
+    app.manage(esplora::StatoEsplora::nuovo());
+    app.manage(account::StatoAccount::nuovo());
+    app.manage(procura::StatoProcura::nuovo());
+    app.manage(testi::StatoTesti::nuovo());
+    let mano = app.handle().clone();
+    nucleo.dopo_l_avvio(move || {
+        let sul_filo = mano.clone();
+        if let Err(err) = mano.run_on_main_thread(move || finisci_l_aggancio(&sul_filo)) {
+            nota!("[avvio] il filo della finestra non risponde, l'aggancio si ferma: {err}");
+        }
+    });
+    rete_di_sicurezza(app.handle());
+    Ok(())
+}
+
+/// Il resto dell'aggancio, sul filo della finestra, a nucleo partito: l'indice delle
+/// cartelle, che vuole la cartella dei dati, e poi [`finisci_l_avvio`].
+fn finisci_l_aggancio(app: &tauri::AppHandle) {
+    let nucleo = Nucleo::di(app);
+    match nucleo.try_state::<stato::Stato>() {
+        // La cartella c'è solo se la libreria si è aperta: come nel `setup`, dopo
+        // un rifiuto o un guasto niente indice, e le sue domande rispondono
+        // `internal.aborted`.
+        Some(stato) => {
+            if let Some(dati) = stato.cartella_dati() {
+                app.manage(std::sync::Arc::new(cartelle::IndiceCartelle::nuovo(dati)));
+            }
+        }
+        // Il nucleo di prima è partito senza libreria (la cartella dei dati
+        // rifiutata): la finestra mostra l'errore, come quando lo stesso rifiuto
+        // arriva dal `setup`.
+        None => {
+            nota!("[avvio] il nucleo di prima non ha una libreria: la finestra mostra l'errore");
+            nucleo.manage(stato::Stato::rifiutato(
+                AppError::new(ErrorCode::InternalUnexpected {
+                    detail: Some("il nucleo è partito senza libreria".to_owned()),
+                })
+                .with_cause("la cartella dei dati non è stata presa"),
+            ));
+        }
+    }
+    finisci_l_avvio(app);
+}
+
+/// Il nucleo che parte da un servizio, senza attività: la funzione che
+/// `Ponte.avviaNucleo` chiama da un filo suo (vedi `rymembra_android::jvm`).
+///
+/// Quel che fa il `setup` fino alla libreria, senza Tauri: il gancio dei panici,
+/// il portachiavi e l'uscita audio ([`inizia_il_processo`]); le cartelle, dalla
+/// stessa funzione della finestra ([`cartella_dati_da`], col posto di serie che
+/// Kotlin dà); il diario e il trasloco dei dati di prima ([`prepara_i_dati`]); la
+/// libreria; e poi [`avvia_il_nucleo`]. Alla fine dice che l'avvio è finito, e
+/// l'attività che nasce dopo si aggancia ([`aggancia_al_nucleo`]).
+///
+/// Il nucleo si avvia una volta per processo: se il `setup` di Tauri ha già
+/// reclamato l'avvio — l'attività è nata mentre il servizio entrava in Rust —
+/// l'avvio è suo, e qui non c'è niente da fare.
+#[cfg(target_os = "android")]
+fn avvia_dal_servizio(dati: PathBuf) {
+    inizia_il_processo();
+    let nucleo = Nucleo::del_processo();
+    if nucleo.reclama_l_avvio() != ChiAvvia::Tu {
+        nota!("[avvio] il nucleo lo avvia già l'attività: il servizio non fa niente");
+        return;
+    }
+    let scelta = match cartella_dati_da(|| Ok::<_, std::convert::Infallible>(dati)) {
+        Ok(scelta) => scelta,
+        Err(mai) => match mai {},
+    };
+    let a_mano = fatta_a_mano(&scelta);
+    nucleo.manage(DatiAMano(a_mano));
+    // Il Microsoft Store è del computer: sul telefono non c'è la libreria di prima.
+    nucleo.manage(LibreriaDiPrima(None));
+    match scelta.and_then(|scelta| prepara_i_dati(&scelta).map(|()| scelta.cartella)) {
+        Ok(data_dir) => {
+            let stato = stato::Stato::in_apertura(data_dir.clone());
+            nucleo.manage(stato.clone());
+            apri_la_libreria(&nucleo, &stato, data_dir);
+            if stato.cartella_dati().is_some() {
+                avvia_il_nucleo(&nucleo);
+            } else {
+                // Senza libreria il nucleo non ha niente da servire: l'attività, se
+                // nasce, mostra l'errore.
+                nota!("[avvio] la libreria non si è aperta: il nucleo senza attività non parte");
+            }
+        }
+        Err(errore) => annota_il_rifiuto(&errore),
+    }
+    nucleo.avvio_finito();
+}
+
+// La porta da cui Kotlin entra in Rust per avviare il nucleo da un servizio: una
+// macro di `rymembra-android`, perché la funzione JNI e il suo `unsafe` stanno
+// in quel crate (`src/jvm.rs`), che questo non può nominare al contrario.
+#[cfg(target_os = "android")]
+rymembra_android::esporta_il_nucleo!(crate::avvia_dal_servizio);
 
 /// Mostra la finestra fra due secondi, qualunque cosa succeda di là.
 ///
@@ -613,6 +786,27 @@ pub(crate) fn rete_di_sicurezza(app: &tauri::AppHandle) {
     });
 }
 
+/// Quel che il processo vuole prima di ogni altra cosa, **una volta sola**: il
+/// gancio dei panici, il portachiavi e l'uscita audio.
+///
+/// La chiamano [`run`], quando parte l'applicazione, e — su Android — il servizio
+/// che avvia il nucleo all'accensione ([`avvia_dal_servizio`]), che può arrivare
+/// prima di ogni attività e dunque prima di `run`: la seconda chiamata non fa
+/// niente. Il gancio, in particolare, non si installa due volte: ogni giro si
+/// ricorderebbe di quello di prima e ogni panico finirebbe nel diario due volte.
+fn inizia_il_processo() {
+    static FATTO: std::sync::Once = std::sync::Once::new();
+    FATTO.call_once(|| {
+        diario::installa_gancio_dei_panici();
+        // Il portachiavi prima di tutto il resto, come il gancio: su Android è il
+        // Keystore, e `DiSistema` lo deve trovare già al suo posto quando il primo
+        // filo — il backup, lo scrobbling — chiede un segreto. Altrove non fa niente.
+        telefono::installa_il_portachiavi();
+        // E l'uscita audio, per la stessa ragione: il motore si apre dopo.
+        telefono::installa_l_uscita_audio();
+    });
+}
+
 /// Costruisce l'applicazione e la fa girare fino all'uscita.
 ///
 /// Su Windows la chiama `main.rs`; su Android la chiama il sistema, attraverso
@@ -628,13 +822,7 @@ pub fn run() {
     // gancio mostra anche un dialogo. Il gancio installato tardi non
     // coprirebbe proprio i panici dell'avvio, che sono quelli che nessuno
     // riesce a raccontare.
-    diario::installa_gancio_dei_panici();
-    // Il portachiavi prima di tutto il resto, come il gancio: su Android è il
-    // Keystore, e `DiSistema` lo deve trovare già al suo posto quando il primo
-    // filo — il backup, lo scrobbling — chiede un segreto. Altrove non fa niente.
-    telefono::installa_il_portachiavi();
-    // E l'uscita audio, per la stessa ragione: il motore si apre nel `setup`.
-    telefono::installa_l_uscita_audio();
+    inizia_il_processo();
     // Come si è partiti, subito: la riga di comando — l'avvio automatico di
     // Windows, un link `rymembra://collega/…` cliccato — e, per la copia del
     // Store, che non passa argomenti, l'attivazione dell'attività di avvio. Quest'ultima
@@ -692,6 +880,7 @@ pub fn run() {
             // solo punto in cui lo si può riconoscere. Vedi
             // `stato::con_libreria`.
             stato::segna_filo_della_finestra();
+            riproduzione::segna_filo_della_finestra();
             // Il nucleo del processo, agganciato alla finestra **prima** di ogni
             // altro stato: da qui gli stati che il nucleo possiede diventano anche
             // quelli di Tauri, e gli eventi partono verso la pagina. Vedi `nucleo`.
@@ -709,6 +898,13 @@ pub fn run() {
             // dove prima la creava Tauri, perché quel che segue la trovi.
             #[cfg(target_os = "android")]
             telefono::crea_la_finestra(app.handle())?;
+            // Il nucleo può essere già partito: su Android un servizio lo avvia
+            // all'accensione del telefono, prima di ogni attività, e questa
+            // nasce dopo. Un nucleo solo per processo: lo avvia chi lo reclama
+            // per primo, e chi arriva dopo si aggancia a quello che c'è.
+            if nucleo.reclama_l_avvio() != ChiAvvia::Tu {
+                return aggancia_al_nucleo(app, &nucleo);
+            }
             let scelta = cartella_dati(app.handle())?;
             // Se la cartella l'ha scelta una variabile, per chi tiene una
             // cache fuori dai dati: la risposta dell'unica lettura delle
@@ -1694,12 +1890,22 @@ fn dove_sta_la_cache(
 fn cartella_dati(
     app: &tauri::AppHandle,
 ) -> Result<Result<trasloco::Scelta, trasloco::Errore>, tauri::Error> {
+    cartella_dati_da(|| app.path().app_data_dir())
+}
+
+/// [`cartella_dati`] dato il posto di serie, da chi lo sa: **l'unica** funzione
+/// che calcola le cartelle, per tutti e due i modi in cui il nucleo parte — la
+/// finestra, che lo chiede a Tauri, e il servizio di Android, che non ha Tauri e
+/// lo riceve da Kotlin (`Context.getDataDir()`, lo stesso posto che Tauri dà su
+/// Android: `PathPlugin.getDataDir`). Le variabili, la copia del Store e il
+/// rifiuto sono quelli di sempre.
+fn cartella_dati_da<E>(
+    base: impl FnOnce() -> Result<PathBuf, E>,
+) -> Result<Result<trasloco::Scelta, trasloco::Errore>, E> {
     let (nuova, vecchia) = variabili_dei_dati();
     let store = dallo_store();
     scegli_la_cartella(nuova, vecchia, || {
-        app.path()
-            .app_data_dir()
-            .map(|base| cartella_di_serie(base, store))
+        base().map(|base| cartella_di_serie(base, store))
     })
 }
 
@@ -2249,7 +2455,7 @@ mod prove {
     #[test]
     fn il_resto_dell_avvio_apre_l_audio_in_disparte() {
         let resto = include_str!("lib.rs")
-            .split("fn avvia_dopo_la_libreria(")
+            .split("fn avvia_il_nucleo(")
             .nth(1)
             .and_then(|resto| {
                 resto
@@ -2425,5 +2631,190 @@ mod prove {
         let ramo = ramo.get(..fine).unwrap_or_default();
         assert!(ramo.contains("pagina::pagina_finita(mano)"));
         assert!(ramo.contains("!spegnimento::in_uscita()"));
+    }
+
+    /// Il corpo di una funzione di questo file, dal suo nome fino alla graffa che la
+    /// chiude in colonna zero.
+    fn corpo_di(firma: &str) -> &'static str {
+        include_str!("lib.rs")
+            .split(firma)
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default()
+    }
+
+    /// Un nucleo solo per processo: il `setup` reclama l'avvio **prima** di
+    /// toccare i dati, e chi lo trova già reclamato — un servizio che l'ha avviato
+    /// prima dell'attività — si aggancia invece di rifare la libreria e il lettore.
+    #[test]
+    fn il_setup_reclama_il_nucleo_prima_di_toccare_i_dati_e_si_aggancia_se_c_e() {
+        let setup = corpo_del_setup();
+        let reclama = setup
+            .find("nucleo.reclama_l_avvio() != ChiAvvia::Tu")
+            .expect("il setup non reclama l'avvio");
+        let aggancia = setup
+            .find("return aggancia_al_nucleo(app, &nucleo)")
+            .expect("il setup non si aggancia a un nucleo già partito");
+        let dati = setup
+            .find("cartella_dati(app.handle())")
+            .expect("il setup non calcola le cartelle");
+        assert!(
+            reclama < aggancia && aggancia < dati,
+            "il setup tocca i dati prima di sapere chi avvia il nucleo"
+        );
+        let aggancio = corpo_di("fn aggancia_al_nucleo(");
+        assert!(
+            aggancio.contains("nucleo.dopo_l_avvio(") && !aggancio.contains("Stato::in_apertura("),
+            "l'aggancio rifà la libreria invece di aspettare il nucleo"
+        );
+        assert!(
+            corpo_di("fn finisci_l_aggancio(").contains("finisci_l_avvio(app)"),
+            "l'aggancio non fa il resto dell'avvio"
+        );
+    }
+
+    /// Il calcolo delle cartelle è uno solo: la finestra e il servizio di Android
+    /// passano dalla stessa funzione, e `scegli_la_cartella` si chiama da lì e da
+    /// nessun altro posto.
+    #[test]
+    fn la_finestra_e_il_servizio_calcolano_le_cartelle_con_la_stessa_funzione() {
+        assert!(
+            corpo_di("fn cartella_dati(").contains("cartella_dati_da("),
+            "la finestra calcola le cartelle per conto suo"
+        );
+        let servizio = corpo_di("fn avvia_dal_servizio(");
+        assert!(
+            servizio.contains("cartella_dati_da("),
+            "il servizio calcola le cartelle per conto suo"
+        );
+        let sorgente = include_str!("lib.rs");
+        let prove = sorgente
+            .find("#[cfg(test)]\nmod prove")
+            .unwrap_or(sorgente.len());
+        let codice = sorgente.get(..prove).unwrap_or_default();
+        assert_eq!(
+            codice.matches("scegli_la_cartella(").count(),
+            1,
+            "`scegli_la_cartella` si chiama da `cartella_dati_da` e da nessun altro"
+        );
+    }
+
+    /// Il nucleo senza attività avvia solo quel che serve al traguardo: i fili
+    /// pesanti — backup, sincronia, arricchimento, manutenzione, analisi,
+    /// sorveglianza, aggiornamenti, vassoio — restano della finestra. A ogni
+    /// accensione del telefono sarebbero batteria e disco spesi senza nessuno.
+    #[test]
+    fn il_nucleo_non_avvia_i_fili_pesanti_e_la_finestra_si() {
+        let nucleo = corpo_di("fn avvia_il_nucleo(");
+        assert!(!nucleo.is_empty(), "il nucleo non si trova");
+        for pesante in [
+            "nuvola::",
+            "sincronia::",
+            "arricchimento::",
+            "manutenzione::",
+            "analisi::",
+            "sorveglia::",
+            "aggiornamenti::",
+            "vassoio::",
+            "ia::StatoIa",
+            "AppHandle",
+            "app.manage(",
+        ] {
+            assert!(
+                !nucleo.contains(pesante),
+                "il nucleo avvia {pesante}, che è della finestra"
+            );
+        }
+        for serve in [
+            "riproduzione::apri_il_primo_motore(",
+            "media::avvia(",
+            "scrobble::avvia(",
+            "lontano::avvia_filo(",
+            "insieme::StatoInsieme::nuovo()",
+        ] {
+            assert!(nucleo.contains(serve), "il nucleo non avvia {serve}");
+        }
+        assert!(
+            !nucleo.contains("insieme::avvia_filo("),
+            "il filo di «Ascolta insieme» non parte dal nucleo senza attività"
+        );
+        let finestra = corpo_di("fn avvia_la_finestra(");
+        for pesante in [
+            "nuvola::avvia_filo(",
+            "sincronia::avvia_filo(",
+            "arricchimento::avvia_filo(",
+            "manutenzione::avvia(",
+            "analisi::avvia_filo(",
+            "sorveglia::avvia(",
+            "aggiornamenti::avvia_filo(",
+            "vassoio::avvia(",
+            "insieme::avvia_filo(",
+        ] {
+            assert!(
+                finestra.contains(pesante),
+                "la finestra non avvia {pesante}"
+            );
+        }
+        // E il resto dell'avvio avvia il nucleo solo se nessuno l'ha già fatto.
+        let dopo = corpo_di("fn avvia_dopo_la_libreria(");
+        assert!(
+            dopo.contains("if !nucleo.e_gia_avviato()")
+                && dopo.contains("avvia_il_nucleo(&nucleo)")
+                && dopo.contains("avvia_la_finestra(app)"),
+            "il resto dell'avvio non salta il nucleo già partito"
+        );
+    }
+
+    /// Il servizio di Android parte da una funzione che prepara il processo prima di
+    /// tutto, reclama l'avvio e non apre il nucleo se c'è già; e la porta JNI è
+    /// esportata da `rymembra-android`, non scritta qui.
+    #[test]
+    fn il_servizio_avvia_il_nucleo_una_volta_e_dopo_aver_preparato_il_processo() {
+        let servizio = corpo_di("fn avvia_dal_servizio(");
+        let processo = servizio
+            .find("inizia_il_processo()")
+            .expect("il servizio non prepara il processo");
+        let reclama = servizio
+            .find("nucleo.reclama_l_avvio() != ChiAvvia::Tu")
+            .expect("il servizio non reclama l'avvio");
+        let nucleo = servizio
+            .find("avvia_il_nucleo(&nucleo)")
+            .expect("il servizio non avvia il nucleo");
+        let fine = servizio
+            .find("nucleo.avvio_finito()")
+            .expect("il servizio non dice di aver finito");
+        assert!(
+            processo < reclama && reclama < nucleo && nucleo < fine,
+            "l'ordine del servizio non è processo, reclamo, nucleo, fine"
+        );
+        assert!(
+            include_str!("lib.rs")
+                .contains("rymembra_android::esporta_il_nucleo!(crate::avvia_dal_servizio)"),
+            "la porta JNI non è esportata"
+        );
+        let processo = corpo_di("fn inizia_il_processo(");
+        assert!(
+            processo.contains("Once") && processo.contains("installa_gancio_dei_panici()"),
+            "il gancio dei panici si può installare due volte"
+        );
+    }
+
+    /// Il lettore non segna più il filo della finestra: lo avvia anche un servizio,
+    /// su un filo qualunque. Lo segna il `setup`.
+    #[test]
+    fn il_filo_della_finestra_lo_segna_il_setup_e_non_il_lettore() {
+        let setup = corpo_del_setup();
+        assert!(setup.contains("riproduzione::segna_filo_della_finestra()"));
+        let riproduzione = include_str!("riproduzione/mod.rs");
+        let avvia = riproduzione
+            .split("pub fn avvia(\n        app: &Nucleo,")
+            .nth(1)
+            .and_then(|resto| resto.split("\n    }\n").next())
+            .unwrap_or_default();
+        assert!(!avvia.is_empty(), "StatoLettore::avvia non si trova");
+        assert!(
+            !avvia.contains("FILO_DELLA_FINESTRA"),
+            "StatoLettore::avvia segna ancora il filo: dal servizio segnerebbe quello sbagliato"
+        );
     }
 }
