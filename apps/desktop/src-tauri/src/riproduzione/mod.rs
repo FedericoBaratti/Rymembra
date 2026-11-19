@@ -880,7 +880,7 @@ fn porta_avanti_il_ritirato(coda: &mut Queue, brano: i64) {
 /// far fallire l'avvio: senza scheda audio l'applicazione resta un catalogo
 /// consultabile, e un catalogo consultabile è meglio di una finestra che non si
 /// apre.
-pub struct StatoLettore {
+pub struct CorpoLettore {
     pub lettore: Mutex<Result<Lettore, AppError>>,
     /// La schermata dello spettro è aperta.
     ///
@@ -1110,6 +1110,12 @@ pub struct StatoLettore {
     ospiti: Mutex<ospiti::Registro>,
 }
 
+crate::nucleo::condiviso! {
+    /// Il lettore, o il motivo per cui non c'è: un handle `Clone` sul [`CorpoLettore`], perché il
+    /// nucleo e Tauri lo possiedono insieme (vedi `nucleo`).
+    pub struct StatoLettore(CorpoLettore);
+}
+
 /// Il filo della finestra, segnato quando il lettore si apre.
 ///
 /// Serve a [`prendi_il_lettore`] per la stessa domanda che `crate::stato` si
@@ -1277,7 +1283,7 @@ impl StatoLettore {
         let seguito = avvia_seguito(app);
         let scritture = avvia_scritture(app);
         (
-            Self {
+            Self::da_corpo(CorpoLettore {
                 lettore: Mutex::new(lettore),
                 spettro: std::sync::atomic::AtomicBool::new(false),
                 spettro_bande: std::sync::atomic::AtomicU16::new(
@@ -1303,7 +1309,7 @@ impl StatoLettore {
                 aprendo: std::sync::atomic::AtomicI64::new(NESSUN_BRANO),
                 preferenze: Mutex::new(()),
                 ospiti: ospiti::registro_nuovo(),
-            },
+            }),
             orecchio,
             orecchio_dispositivi,
         )

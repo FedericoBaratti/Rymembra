@@ -80,11 +80,17 @@ const ATTESA_FERMA: Duration = Duration::from_millis(1500);
 /// Quanto si aspetta l'altro per dirgli che lo si dimentica.
 const ATTESA_DIMENTICAMI: Duration = Duration::from_secs(5);
 
-/// Lo stato del collegamento, gestito da Tauri.
-pub struct StatoLontano {
+/// Il corpo dello stato del collegamento.
+pub struct CorpoLontano {
     comune: Arc<Comune>,
     /// La cassetta del filo, finché non parte.
     cassetta: Mutex<Option<Receiver<Posta>>>,
+}
+
+crate::nucleo::condiviso! {
+    /// Lo stato del collegamento: un handle `Clone` sul [`CorpoLontano`], perché il nucleo e
+    /// Tauri lo possiedono insieme (vedi `nucleo`).
+    pub struct StatoLontano(CorpoLontano);
 }
 
 impl StatoLontano {
@@ -92,10 +98,10 @@ impl StatoLontano {
     #[must_use]
     pub fn nuovo() -> Self {
         let (posta, cassetta) = channel();
-        Self {
+        Self::da_corpo(CorpoLontano {
             comune: Arc::new(Comune::nuovo(posta)),
             cassetta: Mutex::new(Some(cassetta)),
-        }
+        })
     }
 }
 

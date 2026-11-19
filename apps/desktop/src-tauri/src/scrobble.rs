@@ -95,8 +95,8 @@ const CHIAVE_LFM_SESSIONE: &str = "lastfm.sessione";
 /// e sotto quella soglia si spenderebbero richieste per niente.
 const RIPOSO: Duration = Duration::from_secs(300);
 
-/// Lo stato dello scrobbling.
-pub struct StatoScrobble {
+/// Il corpo dello stato dello scrobbling.
+pub struct CorpoScrobble {
     /// Il token Last.fm che aspetta il consenso dell'utente.
     ///
     /// In memoria e mai su disco: vale un'ora, si usa una volta sola, e da solo
@@ -115,17 +115,23 @@ pub struct StatoScrobble {
     filo_adesso: OnceLock<()>,
 }
 
+crate::nucleo::condiviso! {
+    /// Lo stato dello scrobbling: un handle `Clone` sul [`CorpoScrobble`], perché il nucleo e
+    /// Tauri lo possiedono insieme (vedi `nucleo`).
+    pub struct StatoScrobble(CorpoScrobble);
+}
+
 impl StatoScrobble {
     /// Lo stato, vuoto. Non tocca né rete né disco.
     #[must_use]
     pub fn nuovo() -> Self {
-        Self {
+        Self::da_corpo(CorpoScrobble {
             attesa_lastfm: Mutex::new(None),
             sveglia: (Mutex::new(false), Condvar::new()),
             in_corso: AtomicBool::new(false),
             adesso: Arc::new(Casella::default()),
             filo_adesso: OnceLock::new(),
-        }
+        })
     }
 }
 

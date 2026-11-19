@@ -69,6 +69,7 @@ mod manutenzione;
 mod media;
 mod metadati;
 mod novita;
+mod nucleo;
 mod nuvola;
 mod nuvola_app;
 mod nuvola_musica;
@@ -104,6 +105,7 @@ mod zoom;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use nucleo::Nucleo;
 use rymembra_app::trasloco;
 use rymembra_domain::eredita;
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -443,7 +445,7 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // dispositivo audio sparisce: se quel momento arrivasse prima di
     // questa riga, cercherebbe uno stato non registrato. Registrarlo
     // vuoto costa un mutex e un intero.
-    app.manage(media::StatoMedia::nuovo());
+    Nucleo::di(app).manage(media::StatoMedia::nuovo());
     // Lo stesso per i pulsanti nell'anteprima, e per una ragione in
     // più: il loro stato ricorda l'aspetto anche prima che i pulsanti
     // ci siano, e il primo stato del lettore arriva quando il dispositivo
@@ -452,7 +454,7 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
 
     let (lettore, orecchio, orecchio_dispositivi) = riproduzione::StatoLettore::avvia(app);
     riproduzione::riga_di_avvio_lettore(&lettore);
-    app.manage(lettore);
+    Nucleo::di(app).manage(lettore);
     // Il filo che apre il brano successivo, insieme agli altri del
     // lettore. L'ordine fra questi quattro non conta: il canale del
     // preparatore non ha limite, quindi una spinta che arrivasse prima
@@ -462,7 +464,7 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // di ieri può avere brani di un altro dispositivo, e le loro voci
     // si rifanno con lui. Il suo filo parte più sotto, dopo «Ascolta
     // insieme»; lo stato da solo non apre niente.
-    app.manage(lontano::StatoLontano::nuovo());
+    Nucleo::di(app).manage(lontano::StatoLontano::nuovo());
     riproduzione::avvia_orologio(app.clone());
     // Sul telefono lo spettro non c'è (`InRiproduzione.tsx`,
     // `CON_SPETTRO`), e un filo che si sveglia quattro volte al secondo
@@ -533,7 +535,7 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // guardare se è rimasto qualcosa in coda dalla sessione precedente.
     // Il suo filo dorme finché non lo si chiama: a servizi scollegati
     // non costa niente.
-    app.manage(scrobble::StatoScrobble::nuovo());
+    Nucleo::di(app).manage(scrobble::StatoScrobble::nuovo());
     scrobble::avvia(app);
 
     // «Ascolta insieme» **dopo** il lettore e la libreria: la sessione
@@ -541,7 +543,7 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // ponte. Spento di serie, e da spento il suo filo dorme: nessun
     // pacchetto in rete finché qualcuno non accende l'interruttore.
     let (insieme, orecchio) = insieme::StatoInsieme::nuovo();
-    app.manage(insieme);
+    Nucleo::di(app).manage(insieme);
     insieme::avvia_filo(app.clone(), orecchio);
 
     // Il collegamento via internet **dopo** «Ascolta insieme»: dice
@@ -689,6 +691,11 @@ pub fn run() {
             // solo punto in cui lo si può riconoscere. Vedi
             // `stato::con_libreria`.
             stato::segna_filo_della_finestra();
+            // Il nucleo del processo, agganciato alla finestra **prima** di ogni
+            // altro stato: da qui gli stati che il nucleo possiede diventano anche
+            // quelli di Tauri, e gli eventi partono verso la pagina. Vedi `nucleo`.
+            let nucleo = Nucleo::di(app.handle());
+            nucleo.aggancia(app.handle());
             // Un Alt da solo non deve mandare la finestra in un menu di sistema
             // invisibile (reperto 1 di FALT): la guardia si monta ora, e non con i
             // pulsanti della miniatura, che aspettano la libreria.
@@ -707,10 +714,10 @@ pub fn run() {
             // variabili, e non una seconda lettura con una regola sua. Vedi
             // [`cartella_di_cache`]. Prima di ogni stato che apre una cache.
             let a_mano = fatta_a_mano(&scelta);
-            app.manage(DatiAMano(a_mano));
+            nucleo.manage(DatiAMano(a_mano));
             // La copia del Store, la libreria che c'era prima: vedi
             // [`cartella_di_serie`].
-            app.manage(LibreriaDiPrima(libreria_di_prima(app.handle(), a_mano)));
+            nucleo.manage(LibreriaDiPrima(libreria_di_prima(app.handle(), a_mano)));
             // In una build di sviluppo, una cartella dati di prova ha anche un
             // portachiavi di prova: il servizio vero è fisso, e senza questo la
             // copia di prova userebbe gli account veri (e l'identità del
@@ -790,7 +797,7 @@ pub fn run() {
             // resto dell'avvio parte subito, com'era.
             match esito {
                 Ok(data_dir) => {
-                    app.manage(stato::Stato::in_apertura(data_dir.clone()));
+                    nucleo.manage(stato::Stato::in_apertura(data_dir.clone()));
                     apri_e_avvia(app.handle(), data_dir);
                 }
                 Err(errore) => {
@@ -799,7 +806,7 @@ pub fn run() {
                     // l'unica traccia che resta quando la finestra mostra solo
                     // l'errore.
                     stato::riga_di_avvio(&stato);
-                    app.manage(stato);
+                    nucleo.manage(stato);
                     avvia_dopo_la_libreria(app.handle());
                 }
             }

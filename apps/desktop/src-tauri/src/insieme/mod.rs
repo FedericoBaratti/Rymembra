@@ -77,8 +77,8 @@ pub const ATTESA_COMANDO: Duration = Duration::from_secs(20);
 /// Quanto [`ferma`] aspetta il filo, al più.
 const ATTESA_FERMA: Duration = Duration::from_millis(400);
 
-/// Lo stato di «Ascolta insieme», gestito da Tauri.
-pub struct StatoInsieme {
+/// Il corpo dello stato di «Ascolta insieme».
+pub struct CorpoInsieme {
     /// Quel che il filo condivide con chi legge senza passare dalla cassetta:
     /// il ruolo (vedi [`ruolo`]), il pannello, il campo del lettore, le
     /// copertine.
@@ -91,6 +91,12 @@ pub struct StatoInsieme {
     cassetta: Mutex<Option<Receiver<Posta>>>,
 }
 
+crate::nucleo::condiviso! {
+    /// Lo stato di «Ascolta insieme»: un handle `Clone` sul [`CorpoInsieme`], perché il nucleo
+    /// e Tauri lo possiedono insieme (vedi `nucleo`).
+    pub struct StatoInsieme(CorpoInsieme);
+}
+
 impl StatoInsieme {
     /// Lo stato, e l'orecchio del suo filo.
     #[must_use]
@@ -98,12 +104,12 @@ impl StatoInsieme {
         let (sveglia, orecchio) = channel();
         let (posta, cassetta) = channel();
         (
-            Self {
+            Self::da_corpo(CorpoInsieme {
                 comune: Arc::new(Comune::nuovo()),
                 sveglia,
                 posta,
                 cassetta: Mutex::new(Some(cassetta)),
-            },
+            }),
             orecchio,
         )
     }

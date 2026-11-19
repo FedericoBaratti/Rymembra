@@ -119,7 +119,7 @@ const PASSO_SALTO_MS: u64 = 5_000;
 /// stato solo per leggere una cartella che non cambia mai. Con l'ordine dei
 /// lucchetti che vige qui — prima il lettore, poi la libreria — sarebbe stata
 /// una presa in più dentro una sezione già critica, per un valore costante.
-pub struct StatoMedia {
+pub struct CorpoMedia {
     /// I controlli, se il sistema li ha concessi.
     ///
     /// `Option` e non `Result`: che i controlli non ci siano non è un guasto da
@@ -163,16 +163,22 @@ pub struct StatoMedia {
     tasti: OnceLock<Option<Corsie>>,
 }
 
+crate::nucleo::condiviso! {
+    /// I controlli del sistema: un handle `Clone` sul [`CorpoMedia`], perché il nucleo e Tauri
+    /// lo possiedono insieme (vedi `nucleo`).
+    pub struct StatoMedia(CorpoMedia);
+}
+
 impl StatoMedia {
     /// Uno stato spento, da riempire con [`avvia`].
     #[must_use]
-    pub const fn nuovo() -> Self {
-        Self {
+    pub fn nuovo() -> Self {
+        Self::da_corpo(CorpoMedia {
             controlli: Mutex::new(None),
             posizione_ms: AtomicU64::new(0),
             durata_ms: AtomicU64::new(0),
             tasti: OnceLock::new(),
-        }
+        })
     }
 }
 
