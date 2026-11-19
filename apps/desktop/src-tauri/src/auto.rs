@@ -1024,8 +1024,8 @@ pub fn esegui(app: &tauri::AppHandle, gesto: GestoAuto) -> Esito<()> {
         GestoAuto::Coda(indice) => {
             crate::riproduzione::coda_vai_ora(app.clone(), lettore, indice, None)
         }
-        GestoAuto::Mescola => crate::riproduzione::mescola(app.clone(), lettore),
-        GestoAuto::Ripeti => crate::riproduzione::ripeti(app.clone(), lettore),
+        GestoAuto::Mescola => crate::riproduzione::mescola_ora(app.clone(), lettore),
+        GestoAuto::Ripeti => crate::riproduzione::ripeti_ora(app.clone(), lettore),
         GestoAuto::Piace { id, valore } => {
             crate::comandi::preferito_ora(app, &app.state::<Stato>(), id, valore)?;
             // Il cuore va ridisegnato dappertutto — l'auto, la notifica, la

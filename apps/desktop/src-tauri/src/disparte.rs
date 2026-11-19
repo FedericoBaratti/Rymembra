@@ -122,12 +122,14 @@
 //! `riproduzione::prove::nessun_comando_che_apre_un_brano_gira_su_un_worker`
 //! cerca le attese lunghe nei comandi sincroni rimasti.
 //!
-//! Gli altri `#[tauri::command(async)]` restano dove sono: spostarli tutti
-//! insieme sarebbe un gesto che nessuna prova copre, e la maggior parte fa una
-//! query di microsecondi. Un elenco di quelli che toccano ancora il disco o la
-//! rete qui invecchierebbe come quello dei comandi spostati — ed era già
-//! falso: la fonte è `grep 'tauri::command(async)'` con il corpo sotto gli
-//! occhi.
+//! Fino a FC3 gli altri `#[tauri::command(async)]` su una `fn` non asincrona
+//! restavano dove erano, con la scusa che «la maggior parte fa una query di
+//! microsecondi»: una ottantina, di cui una cinquantina prendevano il lucchetto
+//! della libreria o del lettore su un *worker* del runtime, e abbastanza
+//! comandi fermi su un lucchetto fermano ogni risposta, anche quelle che non
+//! toccano niente. Oggi sono tutti `async fn` in disparte, tranne quelli
+//! dell'elenco `IMMEDIATI` della prova `nessun_comando_sincrono_puo_aspettare`,
+//! che li pretende — e il suo elenco, al posto di un commento, è la fonte.
 
 use rymembra_domain::errors::{AppError, ErrorCode};
 
@@ -521,6 +523,32 @@ mod prove {
             "studio_registro",
             "pura: costruisce il registro dalle costanti di `rymembra-skin`",
         ),
+        (
+            "mobile/vassoio.rs",
+            "vassoio_lingua",
+            "non fa niente: sul telefono non c'è un menù (`let _ = (…)`)",
+        ),
+        // Le tre del validatore dello Studio sono pure — analizzano e
+        // compilano un testo, senza disco né libreria — e ricordano l'ultimo
+        // risultato in una cache (`Ricordi::o_calcola`, validazione.rs) il cui
+        // `Mutex` si prende in due punti soli, per cercare e per inserire: il
+        // calcolo sta fuori dal lucchetto, come dice il commento della funzione.
+        (
+            "studio/validazione.rs",
+            "studio_valida",
+            "pura (CPU) con una cache a `Mutex` privato: vedi sopra",
+        ),
+        (
+            "studio/validazione.rs",
+            "studio_migra",
+            "pura (CPU) con una cache a `Mutex` privato: vedi sopra",
+        ),
+        (
+            "studio/validazione.rs",
+            "studio_compila_app",
+            "pura (CPU) con una cache a `Mutex` privato: compila il solo testo della bozza, \
+             senza leggere il disco (`compila_per_la_prova`)",
+        ),
         // ── un `Mutex` privato, con i punti di presa letti ──────────────────
         (
             "chiusura.rs",
@@ -666,12 +694,14 @@ mod prove {
     /// sono `async fn` e fanno il lavoro con [`in_disparte`](super::in_disparte)
     /// o con una delle corsie di [`crate::corsia`].
     ///
-    /// Restano fuori i `#[tauri::command(async)]` su una `fn` non asincrona: la
+    /// Vale anche per i `#[tauri::command(async)]` su una `fn` non asincrona: la
     /// macro ne manda il corpo a `tauri::async_runtime::spawn`
     /// (`tauri-macros/src/command/wrapper.rs`, `respond_async_serialized`), che
-    /// non è né il filo del ponte né quello della finestra. Occupano un worker
-    /// del runtime, e di quello si occupa
-    /// `nessun_comando_con_un_percorso_gira_su_un_worker`.
+    /// non è né il filo del ponte né quello della finestra, ma occupa un
+    /// *worker* del runtime — uno per processore, prestati a **tutti** i
+    /// comandi asincroni: abbastanza comandi fermi su un lucchetto e non parte
+    /// più nessuna risposta, nemmeno quelle che non toccano niente. Per questo
+    /// stanno nella stessa regola, e nello stesso elenco.
     #[test]
     fn nessun_comando_sincrono_puo_aspettare() {
         let tutti = sorgenti();
@@ -696,10 +726,6 @@ mod prove {
                 }
                 let firma = &resto[..resto.find('{').unwrap_or(resto.len())];
                 visti += 1;
-                // `command(async)` su una `fn`: vedi sopra.
-                if firma.starts_with(concat!("#[tauri::", "command(async)]")) {
-                    continue;
-                }
                 if firma.contains("async fn ") {
                     continue;
                 }

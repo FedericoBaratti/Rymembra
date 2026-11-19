@@ -42,9 +42,8 @@ use rymembra_app::settings::{CHIAVE_ACCENTO_DINAMICO, CHIAVE_SKIN};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_skin::package::limits::MAX_ARCHIVE_BYTES;
 use serde::Serialize;
-use tauri::State;
 
-use crate::disparte::leggi_la_libreria;
+use crate::disparte::{comanda, leggi_la_libreria, stato_di};
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
@@ -826,19 +825,23 @@ fn skin_scelta(connection: &rusqlite::Connection) -> String {
 /// passaggio del puntatore sulle schede delle skin ne chiedeva una a ogni
 /// scheda. Adesso il lucchetto serve alla sola domanda, e solo se nessuno ha
 /// detto per nome quale skin vuole.
-#[tauri::command(async)]
-pub fn skin(stato: State<'_, Stato>, id: Option<String>) -> Esito<SkinIpc> {
-    let (dati, scelta) = match id.as_deref() {
-        Some(chiesta) => (crate::studio::cartella_dati(&stato), chiesta.to_owned()),
-        None => {
-            let scelta = con_libreria(&stato, |libreria| {
-                Ok((libreria.data_dir.clone(), skin_scelta(&libreria.connection)))
-            });
-            return da_indossare(scelta).map_err(errore);
-        }
-    };
-    dati.and_then(|dati| compila_o_ripiega(&dati, id.as_deref(), &scelta))
-        .map_err(errore)
+#[tauri::command]
+pub async fn skin(app: tauri::AppHandle, id: Option<String>) -> Esito<SkinIpc> {
+    comanda("skin", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let (dati, scelta) = match id.as_deref() {
+            Some(chiesta) => (crate::studio::cartella_dati(&stato), chiesta.to_owned()),
+            None => {
+                let scelta = con_libreria(&stato, |libreria| {
+                    Ok((libreria.data_dir.clone(), skin_scelta(&libreria.connection)))
+                });
+                return da_indossare(scelta).map_err(errore);
+            }
+        };
+        dati.and_then(|dati| compila_o_ripiega(&dati, id.as_deref(), &scelta))
+            .map_err(errore)
+    })
+    .await
 }
 
 /// La skin da indossare quando nessuno l'ha chiesta per nome: quella scelta,
@@ -913,13 +916,17 @@ fn compila_o_ripiega(
 /// libreria: al database serve una riga sola, quale skin è scelta. Fino alla
 /// 3.0 ogni apertura delle Impostazioni decomprimeva ogni carattere e ogni
 /// immagine di ogni skin installata, col lucchetto in mano.
-#[tauri::command(async)]
-pub fn skin_elenco(stato: State<'_, Stato>) -> Esito<Vec<VoceSkin>> {
-    let (dati, scelta) = con_libreria(&stato, |libreria| {
-        Ok((libreria.data_dir.clone(), skin_scelta(&libreria.connection)))
+#[tauri::command]
+pub async fn skin_elenco(app: tauri::AppHandle) -> Esito<Vec<VoceSkin>> {
+    comanda("elenco delle skin", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let (dati, scelta) = con_libreria(&stato, |libreria| {
+            Ok((libreria.data_dir.clone(), skin_scelta(&libreria.connection)))
+        })
+        .map_err(errore)?;
+        elenco(&dati, &scelta).map_err(errore)
     })
-    .map_err(errore)?;
-    elenco(&dati, &scelta).map_err(errore)
+    .await
 }
 
 /// Quel che fa [`skin_elenco`], senza lo stato di Tauri attorno.
@@ -1354,17 +1361,20 @@ fn leggi_al_piu(lettore: impl std::io::Read, origine: &str) -> Result<Vec<u8>, A
 /// che si è appena scritto sembra uno spreco e non lo è: è la stessa porta da
 /// cui entra una skin arrivata dalla rete, e passarci vuol dire che il giro
 /// completo attraverso il formato è provato prima che il file esista.
-#[tauri::command(async)]
-pub fn skin_installa_sorgente(
+#[tauri::command]
+pub async fn skin_installa_sorgente(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     sorgente: String,
     bozza: Option<String>,
 ) -> Esito<VoceSkin> {
-    let esito = crate::studio::cartella_dati(&stato)
-        .and_then(|dati| installa_sorgente(&dati, &sorgente, bozza.as_deref()))
-        .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+    comanda("installazione di una skin", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let esito = crate::studio::cartella_dati(&stato)
+            .and_then(|dati| installa_sorgente(&dati, &sorgente, bozza.as_deref()))
+            .map_err(errore);
+        crate::nuvola::se_riuscito(&app, esito)
+    })
+    .await
 }
 
 /// Quel che fa [`skin_installa_sorgente`], senza lo stato di Tauri attorno.
@@ -1441,14 +1451,14 @@ fn installa_sorgente(
 /// un'operazione che ne ha uno; lasciare la scelta puntata su un file che non
 /// c'è più darebbe invece una finestra senza foglio al riavvio, che è il caso
 /// che `skin_scegli` sta attento a non produrre mai.
-#[tauri::command(async)]
-pub fn skin_disinstalla(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    id: String,
-) -> Esito<SkinIpc> {
-    let esito = disinstalla(&stato, &id).map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+#[tauri::command]
+pub async fn skin_disinstalla(app: tauri::AppHandle, id: String) -> Esito<SkinIpc> {
+    comanda("disinstallazione di una skin", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let esito = disinstalla(&stato, &id).map_err(errore);
+        crate::nuvola::se_riuscito(&app, esito)
+    })
+    .await
 }
 
 /// Toglie dal disco il pacchetto di una skin installata e le sue copie.
@@ -1524,20 +1534,24 @@ fn disinstalla(stato: &Stato, id: &str) -> Result<SkinIpc, AppError> {
 /// La scelta si scrive **dopo** che la compilazione è riuscita: salvare prima
 /// vorrebbe dire poter rendere l'applicazione illeggibile al riavvio scegliendo
 /// una skin rotta.
-#[tauri::command(async)]
-pub fn skin_scegli(app: tauri::AppHandle, stato: State<'_, Stato>, id: String) -> Esito<SkinIpc> {
-    // Compilare fuori dal lucchetto, scrivere dentro: il database serve solo
-    // alla riga che ricorda la scelta.
-    let esito = crate::studio::cartella_dati(&stato)
-        .and_then(|dati| compila(&dati, &id))
-        .and_then(|compilata| {
-            con_libreria(&stato, |libreria| {
-                rymembra_app::settings::write(&libreria.connection, CHIAVE_SKIN, &compilata.id)
-            })?;
-            Ok(compilata)
-        })
-        .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+#[tauri::command]
+pub async fn skin_scegli(app: tauri::AppHandle, id: String) -> Esito<SkinIpc> {
+    comanda("scelta di una skin", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        // Compilare fuori dal lucchetto, scrivere dentro: il database serve solo
+        // alla riga che ricorda la scelta.
+        let esito = crate::studio::cartella_dati(&stato)
+            .and_then(|dati| compila(&dati, &id))
+            .and_then(|compilata| {
+                con_libreria(&stato, |libreria| {
+                    rymembra_app::settings::write(&libreria.connection, CHIAVE_SKIN, &compilata.id)
+                })?;
+                Ok(compilata)
+            })
+            .map_err(errore);
+        crate::nuvola::se_riuscito(&app, esito)
+    })
+    .await
 }
 
 // ── L'accento che segue la copertina ────────────────────────────────────────
@@ -1583,13 +1597,23 @@ pub async fn accento_dinamico(app: tauri::AppHandle) -> Esito<bool> {
 }
 
 /// Accende o spegne l'accento dinamico. Riporta com'è rimasto.
-#[tauri::command(async)]
-pub fn accento_dinamico_attiva(stato: State<'_, Stato>, attivo: bool) -> Esito<bool> {
-    con_libreria(&stato, |libreria| {
-        rymembra_app::settings::write_json(&libreria.connection, CHIAVE_ACCENTO_DINAMICO, &attivo)?;
-        Ok(attivo)
-    })
-    .map_err(errore)
+#[tauri::command]
+pub async fn accento_dinamico_attiva(app: tauri::AppHandle, attivo: bool) -> Esito<bool> {
+    // Un interruttore dove l'ultimo vince: sulla corsia della libreria.
+    crate::corsia::LIBRERIA
+        .comanda("accento dinamico", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            con_libreria(&stato, |libreria| {
+                rymembra_app::settings::write_json(
+                    &libreria.connection,
+                    CHIAVE_ACCENTO_DINAMICO,
+                    &attivo,
+                )?;
+                Ok(attivo)
+            })
+            .map_err(errore)
+        })
+        .await
 }
 
 /// Le variabili da scrivere perché l'accento segua una copertina.
@@ -1632,55 +1656,59 @@ pub fn accento_dinamico_attiva(stato: State<'_, Stato>, attivo: bool) -> Esito<b
 ///
 /// `covers` e `data_dir` si copiano perché costano niente: il primo è un
 /// maniglione clonabile sulla cartella, il secondo un `PathBuf`.
-#[tauri::command(async)]
-pub fn accento_copertina(
-    stato: State<'_, Stato>,
+#[tauri::command]
+pub async fn accento_copertina(
+    app: tauri::AppHandle,
     copertina: Option<String>,
     chiaro: bool,
 ) -> Esito<Option<Vec<VariabileIpc>>> {
-    let Some(impronta) = copertina else {
-        return Ok(None);
-    };
-    if !crate::copertine::e_un_impronta(&impronta) {
-        return Ok(None);
-    }
+    comanda("accento della copertina", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let Some(impronta) = copertina else {
+            return Ok(None);
+        };
+        if !crate::copertine::e_un_impronta(&impronta) {
+            return Ok(None);
+        }
 
-    // ── col lucchetto: due domande e due copie. ─────────────────────────────
-    let chiesto = con_libreria(&stato, |libreria| {
-        Ok(accento_scelto(&libreria.connection).then(|| {
-            (
-                libreria.covers.clone(),
-                libreria.data_dir.clone(),
-                skin_scelta(&libreria.connection),
-            )
-        }))
+        // ── col lucchetto: due domande e due copie. ─────────────────────────────
+        let chiesto = con_libreria(&stato, |libreria| {
+            Ok(accento_scelto(&libreria.connection).then(|| {
+                (
+                    libreria.covers.clone(),
+                    libreria.data_dir.clone(),
+                    skin_scelta(&libreria.connection),
+                )
+            }))
+        })
+        .map_err(errore)?;
+        let Some((copertine, data_dir, skin)) = chiesto else {
+            return Ok(None);
+        };
+
+        // ── senza lucchetto: il disco e il processore. ──────────────────────────
+        let Some([r, g, b]) = copertine.tinta(&impronta) else {
+            return Ok(None);
+        };
+        // La skin si rilegge a ogni brano invece di tenerla in memoria: tenerne una
+        // copia vorrebbe dire tenerla allineata a `skin_scegli` — cioè aggiungere
+        // uno stato che può divergere. Si legge però il solo manifest, non le
+        // risorse: il pacchetto intero da disco resta, l'inflate di ogni carattere
+        // e ogni immagine no. Fuori dal lucchetto, quindi lo paga solo chi chiama.
+        // E con il ripiego di `compila_o_ripiega`: vedi `documento_per_accento`.
+        let documento = documento_per_accento(&data_dir, &skin).map_err(errore)?;
+
+        let tinta = rymembra_skin::values::Rgba { r, g, b, a: 1.0 };
+        Ok(
+            rymembra_skin::dinamico::accento_dinamico(&documento, tinta, chiaro).map(|variabili| {
+                variabili
+                    .into_iter()
+                    .map(|(nome, valore)| VariabileIpc { nome, valore })
+                    .collect()
+            }),
+        )
     })
-    .map_err(errore)?;
-    let Some((copertine, data_dir, skin)) = chiesto else {
-        return Ok(None);
-    };
-
-    // ── senza lucchetto: il disco e il processore. ──────────────────────────
-    let Some([r, g, b]) = copertine.tinta(&impronta) else {
-        return Ok(None);
-    };
-    // La skin si rilegge a ogni brano invece di tenerla in memoria: tenerne una
-    // copia vorrebbe dire tenerla allineata a `skin_scegli` — cioè aggiungere
-    // uno stato che può divergere. Si legge però il solo manifest, non le
-    // risorse: il pacchetto intero da disco resta, l'inflate di ogni carattere
-    // e ogni immagine no. Fuori dal lucchetto, quindi lo paga solo chi chiama.
-    // E con il ripiego di `compila_o_ripiega`: vedi `documento_per_accento`.
-    let documento = documento_per_accento(&data_dir, &skin).map_err(errore)?;
-
-    let tinta = rymembra_skin::values::Rgba { r, g, b, a: 1.0 };
-    Ok(
-        rymembra_skin::dinamico::accento_dinamico(&documento, tinta, chiaro).map(|variabili| {
-            variabili
-                .into_iter()
-                .map(|(nome, valore)| VariabileIpc { nome, valore })
-                .collect()
-        }),
-    )
+    .await
 }
 
 /// Il documento su cui calcolare l'accento: quello della skin scelta, o quello

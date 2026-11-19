@@ -43,8 +43,8 @@ use std::sync::{Mutex, PoisonError};
 use rymembra_app::scrittura::scrivi_atomico;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Serialize;
-use tauri::State;
 
+use crate::disparte::{comanda, stato_di};
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
@@ -87,6 +87,25 @@ fn con_le_bozze<T>(
     let dati = cartella_dati(stato)?;
     let _turno = BOZZE.lock().unwrap_or_else(PoisonError::into_inner);
     azione(&dati)
+}
+
+/// [`con_le_bozze`] per un comando: sul pool bloccante, con lo stato preso dal
+/// registro e l'errore già nella forma della finestra.
+///
+/// Tocca il disco — una cartella di bozze che può stare su una share — e due
+/// lucchetti, quello delle bozze e, per la cartella dati, quello della
+/// libreria: un comando sincrono, o `(async)` su un *worker* del runtime, li
+/// aspetterebbe sul filo che la pagina aspetta.
+async fn sulle_bozze<T: Send + 'static>(
+    app: tauri::AppHandle,
+    nome: &'static str,
+    azione: impl FnOnce(&Path) -> Result<T, AppError> + Send + 'static,
+) -> Esito<T> {
+    comanda(nome, move || {
+        let stato = stato_di::<Stato>(&app)?;
+        con_le_bozze(&stato, azione).map_err(errore)
+    })
+    .await
 }
 
 /// L'identificatore è anche un nome di cartella: non deve poter uscire.
@@ -426,9 +445,9 @@ pub async fn studio_risorsa_aggiungi(
 }
 
 /// Toglie una risorsa dalla bozza.
-#[tauri::command(async)]
-pub fn studio_risorsa_togli(stato: State<'_, Stato>, id: String, nome: String) -> Esito<()> {
-    con_le_bozze(&stato, |dati| {
+#[tauri::command]
+pub async fn studio_risorsa_togli(app: tauri::AppHandle, id: String, nome: String) -> Esito<()> {
+    sulle_bozze(app, "risorsa tolta dalla bozza", move |dati| {
         if !id_sicuro(&id) || rymembra_skin::tipo_risorsa(&nome).is_none() {
             return Err(non_trovata(&id));
         }
@@ -444,7 +463,7 @@ pub fn studio_risorsa_togli(stato: State<'_, Stato>, id: String, nome: String) -
             )),
         }
     })
-    .map_err(errore)
+    .await
 }
 
 /// Quel che serve per mettere la bozza in un pacchetto: la miniatura del
@@ -477,9 +496,12 @@ fn corredo(
 /// così alla prossima apertura non si rifà, e non si fotografa due volte. Il
 /// testo di prima resta in un'istantanea di causa `migrata`, che è da dove si
 /// riparte se la migrazione ha tradito qualcosa.
-#[tauri::command(async)]
-pub fn studio_documento(stato: State<'_, Stato>, id: String) -> Esito<String> {
-    con_le_bozze(&stato, |dati| apri_documento(dati, &id, true)).map_err(errore)
+#[tauri::command]
+pub async fn studio_documento(app: tauri::AppHandle, id: String) -> Esito<String> {
+    sulle_bozze(app, "documento dello Studio", move |dati| {
+        apri_documento(dati, &id, true)
+    })
+    .await
 }
 
 /// Quel che fa [`studio_documento`], senza lo stato di Tauri attorno.
@@ -528,9 +550,9 @@ pub struct VoceFileIpc {
 /// ammette, cioè esattamente quel che `studio_esporta` rimetterà nell'archivio.
 /// Mostrare un file che l'esportazione butterebbe via sarebbe peggio che non
 /// mostrare niente.
-#[tauri::command(async)]
-pub fn studio_pacchetto(stato: State<'_, Stato>, id: String) -> Esito<Vec<VoceFileIpc>> {
-    con_le_bozze(&stato, |dati| {
+#[tauri::command]
+pub async fn studio_pacchetto(app: tauri::AppHandle, id: String) -> Esito<Vec<VoceFileIpc>> {
+    sulle_bozze(app, "pacchetto dello Studio", move |dati| {
         let da = da_lavorare(dati, &id)?;
         let quanto = |byte: usize| u64::try_from(byte).unwrap_or(u64::MAX);
         let mut voci = vec![VoceFileIpc {
@@ -552,7 +574,7 @@ pub fn studio_pacchetto(stato: State<'_, Stato>, id: String) -> Esito<Vec<VoceFi
         }));
         Ok(voci)
     })
-    .map_err(errore)
+    .await
 }
 
 /// Com'è andato un salvataggio della bozza.
@@ -635,20 +657,20 @@ fn salva_bozza(
 ///
 /// Se il documento ha cambiato `id` la bozza lo segue: vedi [`salva_bozza`].
 /// `origine` è l'id con cui lo Studio è stato aperto.
-#[tauri::command(async)]
-pub fn studio_salva(
+#[tauri::command]
+pub async fn studio_salva(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     id: String,
     sorgente: String,
     origine: Option<String>,
 ) -> Esito<SalvataggioIpc> {
-    let esito = con_le_bozze(&stato, |dati| {
+    let esito = sulle_bozze(app.clone(), "salvataggio della bozza", move |dati| {
         salva_bozza(dati, &id, &sorgente, origine.as_deref())
     })
-    .map_err(errore);
+    .await;
     // Una bozza è lavoro non ancora salvato da nessuna parte: è precisamente la
-    // cosa che un backup deve portare via per prima.
+    // cosa che un backup deve portare via per prima. `se_riuscito` manda solo un
+    // messaggio al filo del backup: non aspetta.
     crate::nuvola::se_riuscito(&app, esito)
 }
 
@@ -678,9 +700,12 @@ pub fn studio_salva(
 /// `sorgente` è il testo che l'editor mostra: diventa l'istantanea «scartata»,
 /// presa qui e non dalla finestra, perché i file e la conversazione messi da
 /// parte stanno accanto a **lei** e il ripristino li ritrova da lì.
-#[tauri::command(async)]
-pub fn studio_scarta(stato: State<'_, Stato>, id: String, sorgente: String) -> Esito<String> {
-    con_le_bozze(&stato, |dati| scarta_bozza(dati, &id, &sorgente)).map_err(errore)
+#[tauri::command]
+pub async fn studio_scarta(app: tauri::AppHandle, id: String, sorgente: String) -> Esito<String> {
+    sulle_bozze(app, "bozza scartata", move |dati| {
+        scarta_bozza(dati, &id, &sorgente)
+    })
+    .await
 }
 
 /// Quel che fa [`studio_scarta`], senza lo stato di Tauri attorno.
@@ -999,9 +1024,9 @@ fn occupati(data_dir: &Path) -> Vec<String> {
 
 /// Gli id che un tema nuovo non può prendere, oltre a quelli delle skin
 /// elencate: vedi [`occupati`].
-#[tauri::command(async)]
-pub fn studio_occupati(stato: State<'_, Stato>) -> Esito<Vec<String>> {
-    con_le_bozze(&stato, |dati| Ok(occupati(dati))).map_err(errore)
+#[tauri::command]
+pub async fn studio_occupati(app: tauri::AppHandle) -> Esito<Vec<String>> {
+    sulle_bozze(app, "id occupati", |dati| Ok(occupati(dati))).await
 }
 
 /// Un tema nuovo: il pacchetto con le risorse della base, installato, e la
@@ -1064,14 +1089,16 @@ fn crea_tema(
 ///
 /// `skin.idConflict` se l'id è già preso; quelli della validazione, del
 /// pacchetto e della scrittura per il resto.
-#[tauri::command(async)]
-pub fn studio_crea(
+#[tauri::command]
+pub async fn studio_crea(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     base: String,
     sorgente: String,
 ) -> Esito<crate::skin::VoceSkin> {
-    let esito = con_le_bozze(&stato, |dati| crea_tema(dati, &base, &sorgente)).map_err(errore);
+    let esito = sulle_bozze(app.clone(), "tema nuovo", move |dati| {
+        crea_tema(dati, &base, &sorgente)
+    })
+    .await;
     crate::nuvola::se_riuscito(&app, esito)
 }
 
@@ -1091,18 +1118,28 @@ fn lettere_accese(connessione: &rusqlite::Connection) -> Result<bool, AppError> 
 }
 
 /// Le scorciatoie di una lettera dello Studio: accese o spente.
-#[tauri::command(async)]
-pub fn studio_lettere(stato: State<'_, Stato>) -> Esito<bool> {
-    con_libreria(&stato, |libreria| lettere_accese(&libreria.connection)).map_err(errore)
+#[tauri::command]
+pub async fn studio_lettere(app: tauri::AppHandle) -> Esito<bool> {
+    crate::disparte::leggi_la_libreria(app, "scorciatoie dello Studio", |libreria| {
+        lettere_accese(&libreria.connection)
+    })
+    .await
+    .map_err(errore)
 }
 
 /// Accende o spegne le scorciatoie di una lettera dello Studio.
-#[tauri::command(async)]
-pub fn studio_lettere_imposta(stato: State<'_, Stato>, attive: bool) -> Esito<()> {
-    con_libreria(&stato, |libreria| {
-        rymembra_app::settings::write_json(&libreria.connection, CHIAVE_LETTERE, &attive)
-    })
-    .map_err(errore)
+#[tauri::command]
+pub async fn studio_lettere_imposta(app: tauri::AppHandle, attive: bool) -> Esito<()> {
+    // Un interruttore dove l'ultimo vince: sulla corsia della libreria.
+    crate::corsia::LIBRERIA
+        .comanda("scorciatoie dello Studio", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            con_libreria(&stato, |libreria| {
+                rymembra_app::settings::write_json(&libreria.connection, CHIAVE_LETTERE, &attive)
+            })
+            .map_err(errore)
+        })
+        .await
 }
 
 // ── La conversazione con la chat ────────────────────────────────────────────
@@ -1185,15 +1222,21 @@ fn scrivi_chat(data_dir: &Path, id: &str, testo: &str) -> Result<(), AppError> {
 }
 
 /// La conversazione salvata della bozza `id`, o `null`.
-#[tauri::command(async)]
-pub fn studio_chat_leggi(stato: State<'_, Stato>, id: String) -> Esito<Option<String>> {
-    con_le_bozze(&stato, |dati| leggi_chat(dati, &id)).map_err(errore)
+#[tauri::command]
+pub async fn studio_chat_leggi(app: tauri::AppHandle, id: String) -> Esito<Option<String>> {
+    sulle_bozze(app, "conversazione letta", move |dati| {
+        leggi_chat(dati, &id)
+    })
+    .await
 }
 
 /// Salva la conversazione della bozza `id`; un testo vuoto la cancella.
-#[tauri::command(async)]
-pub fn studio_chat_scrivi(stato: State<'_, Stato>, id: String, testo: String) -> Esito<()> {
-    con_le_bozze(&stato, |dati| scrivi_chat(dati, &id, &testo)).map_err(errore)
+#[tauri::command]
+pub async fn studio_chat_scrivi(app: tauri::AppHandle, id: String, testo: String) -> Esito<()> {
+    sulle_bozze(app, "conversazione scritta", move |dati| {
+        scrivi_chat(dati, &id, &testo)
+    })
+    .await
 }
 
 // ── Il generatore di tavolozze ──────────────────────────────────────────────
@@ -1213,33 +1256,39 @@ pub struct VoceTavolozzaIpc {
 /// La copertina è quella di un brano della libreria, per impronta: la tinta
 /// la sa già il magazzino delle copertine, che la calcola per l'accento che
 /// segue la musica. Niente si decodifica qui.
-#[tauri::command(async)]
-pub fn studio_tavolozza_da(
-    stato: State<'_, Stato>,
+#[tauri::command]
+pub async fn studio_tavolozza_da(
+    app: tauri::AppHandle,
     colore: Option<String>,
     copertina: Option<String>,
     scura: bool,
 ) -> Esito<Vec<VoceTavolozzaIpc>> {
-    let tinta = match (colore, copertina) {
-        (Some(scritto), _) => rymembra_skin::values::parse_color(&scritto)
-            .ok_or_else(|| errore(rifiutata("colore", "non è un colore")))?,
-        (None, Some(impronta)) => {
-            if !crate::copertine::e_un_impronta(&impronta) {
-                return Err(errore(rifiutata("copertina", "non è un'impronta")));
+    // La tinta di una copertina chiede il lucchetto della libreria e legge un
+    // file: sul pool bloccante.
+    comanda("tavolozza da una tinta", move || {
+        let tinta = match (colore, copertina) {
+            (Some(scritto), _) => rymembra_skin::values::parse_color(&scritto)
+                .ok_or_else(|| errore(rifiutata("colore", "non è un colore")))?,
+            (None, Some(impronta)) => {
+                if !crate::copertine::e_un_impronta(&impronta) {
+                    return Err(errore(rifiutata("copertina", "non è un'impronta")));
+                }
+                let stato = stato_di::<Stato>(&app)?;
+                let copertine =
+                    con_libreria(&stato, |libreria| Ok(libreria.covers.clone())).map_err(errore)?;
+                let [r, g, b] = copertine.tinta(&impronta).ok_or_else(|| {
+                    errore(rifiutata("copertina", "la copertina non ha una tinta"))
+                })?;
+                rymembra_skin::values::Rgba { r, g, b, a: 1.0 }
             }
-            let copertine =
-                con_libreria(&stato, |libreria| Ok(libreria.covers.clone())).map_err(errore)?;
-            let [r, g, b] = copertine
-                .tinta(&impronta)
-                .ok_or_else(|| errore(rifiutata("copertina", "la copertina non ha una tinta")))?;
-            rymembra_skin::values::Rgba { r, g, b, a: 1.0 }
-        }
-        (None, None) => return Err(errore(rifiutata("tinta", "manca da dove partire"))),
-    };
-    Ok(rymembra_skin::dinamico::tavolozza_da(tinta, scura)
-        .into_iter()
-        .map(|(token, valore)| VoceTavolozzaIpc { token, valore })
-        .collect())
+            (None, None) => return Err(errore(rifiutata("tinta", "manca da dove partire"))),
+        };
+        Ok(rymembra_skin::dinamico::tavolozza_da(tinta, scura)
+            .into_iter()
+            .map(|(token, valore)| VoceTavolozzaIpc { token, valore })
+            .collect())
+    })
+    .await
 }
 
 // ── Le istantanee ───────────────────────────────────────────────────────────
@@ -1371,15 +1420,15 @@ fn elenco_istantanee(cartella: &Path) -> Vec<IstantaneaIpc> {
 }
 
 /// Le istantanee di una bozza.
-#[tauri::command(async)]
-pub fn studio_istantanee(stato: State<'_, Stato>, id: String) -> Esito<Vec<IstantaneaIpc>> {
-    con_le_bozze(&stato, |dati| {
+#[tauri::command]
+pub async fn studio_istantanee(app: tauri::AppHandle, id: String) -> Esito<Vec<IstantaneaIpc>> {
+    sulle_bozze(app, "istantanee della bozza", move |dati| {
         if !id_sicuro(&id) {
             return Err(non_trovata(&id));
         }
         Ok(elenco_istantanee(&istantanee_di(dati, &id)))
     })
-    .map_err(errore)
+    .await
 }
 
 /// Prende un'istantanea, e pota le più vecchie.
@@ -1514,20 +1563,20 @@ fn rimetti_da_parte(
 }
 
 /// Prende un'istantanea del documento com'è adesso.
-#[tauri::command(async)]
-pub fn studio_istantanea(
-    stato: State<'_, Stato>,
+#[tauri::command]
+pub async fn studio_istantanea(
+    app: tauri::AppHandle,
     id: String,
     sorgente: String,
     causa: Causa,
 ) -> Esito<()> {
-    con_le_bozze(&stato, |dati| {
+    sulle_bozze(app, "istantanea della bozza", move |dati| {
         if !id_sicuro(&id) {
             return Err(non_trovata(&id));
         }
         prendi_istantanea(&istantanee_di(dati, &id), &sorgente, causa).map(|_| ())
     })
-    .map_err(errore)
+    .await
 }
 
 /// Il testo di un'istantanea.
@@ -1568,9 +1617,12 @@ fn ripristina(data_dir: &Path, id: &str, quando: u64) -> Result<String, AppError
 ///
 /// Dopo, la finestra rilegge l'elenco dei file e la conversazione: un'istantanea
 /// presa da «Butta la bozza» li rimette nella bozza (vedi [`rimetti_da_parte`]).
-#[tauri::command(async)]
-pub fn studio_ripristina(stato: State<'_, Stato>, id: String, quando: u64) -> Esito<String> {
-    con_le_bozze(&stato, |dati| ripristina(dati, &id, quando)).map_err(errore)
+#[tauri::command]
+pub async fn studio_ripristina(app: tauri::AppHandle, id: String, quando: u64) -> Esito<String> {
+    sulle_bozze(app, "istantanea ripristinata", move |dati| {
+        ripristina(dati, &id, quando)
+    })
+    .await
 }
 
 #[cfg(test)]

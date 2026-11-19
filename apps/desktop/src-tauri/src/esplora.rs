@@ -42,7 +42,7 @@ use rymembra_domain::scelta::Candidato;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::disparte::in_disparte;
+use crate::disparte::{comanda, in_disparte, stato_di};
 use crate::errore::{Esito, errore};
 use crate::importa::gestito;
 use crate::stato::{Stato, con_libreria};
@@ -337,25 +337,31 @@ fn candidato_di(esplora: &StatoEsplora, url: &str) -> Result<Candidato, AppError
 /// libreria. Fino alla 2.4.0 non lo facevano: un brano aggiunto da Esplora
 /// entrava nel backup solo se dopo si cambiava qualcos'altro, e sull'altro
 /// dispositivo non arrivava affatto.
-#[tauri::command(async)]
-pub fn esplora_aggiungi(
+#[tauri::command]
+pub async fn esplora_aggiungi(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    esplora: State<'_, StatoEsplora>,
     url: String,
 ) -> Esito<rymembra_app::catalogo::Aggiunti> {
-    let candidato = candidato_di(&esplora, &url).map_err(errore)?;
-    let esito = con_libreria(&stato, |libreria| {
-        rymembra_app::catalogo::aggiungi(&mut libreria.connection, std::slice::from_ref(&candidato))
+    comanda("aggiunta dall'esplorazione", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let esplora = stato_di::<StatoEsplora>(&app)?;
+        let candidato = candidato_di(&esplora, &url).map_err(errore)?;
+        let esito = con_libreria(&stato, |libreria| {
+            rymembra_app::catalogo::aggiungi(
+                &mut libreria.connection,
+                std::slice::from_ref(&candidato),
+            )
+        })
+        .map_err(errore)?;
+        if esito.senza_byte > 0 {
+            return Err(errore(rymembra_app::catalogo::nessuno_lo_consegna()));
+        }
+        if esito.scartati > 0 {
+            return Err(errore(rymembra_app::catalogo::riga_illeggibile()));
+        }
+        crate::nuvola::se_riuscito(&app, Ok(esito))
     })
-    .map_err(errore)?;
-    if esito.senza_byte > 0 {
-        return Err(errore(rymembra_app::catalogo::nessuno_lo_consegna()));
-    }
-    if esito.scartati > 0 {
-        return Err(errore(rymembra_app::catalogo::riga_illeggibile()));
-    }
-    crate::nuvola::se_riuscito(&app, Ok(esito))
+    .await
 }
 
 /// Mette nella lista della spesa un risultato che nessun catalogo libero dà.
@@ -373,24 +379,23 @@ pub fn esplora_aggiungi(
 ///
 /// `catalogo.resolveFailed` se quell'indirizzo non è fra i risultati
 /// dell'ultima ricerca; `db.*` se la scrittura fallisce.
-#[tauri::command(async)]
-pub fn esplora_nella_lista(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    esplora: State<'_, StatoEsplora>,
-    url: String,
-    frase: String,
-) -> Esito<bool> {
-    let candidato = candidato_di(&esplora, &url).map_err(errore)?;
-    let scritte = con_libreria(&stato, |libreria| {
-        rymembra_app::catalogo::nella_lista_della_spesa(
-            &mut libreria.connection,
-            std::slice::from_ref(&candidato),
-            &frase,
-        )
+#[tauri::command]
+pub async fn esplora_nella_lista(app: tauri::AppHandle, url: String, frase: String) -> Esito<bool> {
+    comanda("lista della spesa dall'esplorazione", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let esplora = stato_di::<StatoEsplora>(&app)?;
+        let candidato = candidato_di(&esplora, &url).map_err(errore)?;
+        let scritte = con_libreria(&stato, |libreria| {
+            rymembra_app::catalogo::nella_lista_della_spesa(
+                &mut libreria.connection,
+                std::slice::from_ref(&candidato),
+                &frase,
+            )
+        })
+        .map_err(errore)?;
+        crate::nuvola::se_riuscito(&app, Ok(scritte > 0))
     })
-    .map_err(errore)?;
-    crate::nuvola::se_riuscito(&app, Ok(scritte > 0))
+    .await
 }
 
 /// Mette in coda di prelievo un risultato che la licenza permette di tenere.
@@ -487,36 +492,38 @@ pub struct EsitoAggiuntaTutti {
 ///
 /// `db.*` se la scrittura fallisce. Un risultato che nessuno consegna non è un
 /// errore: si conta, e gli altri entrano lo stesso.
-#[tauri::command(async)]
-pub fn esplora_aggiungi_tutti(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    esplora: State<'_, StatoEsplora>,
-) -> Esito<EsitoAggiuntaTutti> {
-    let candidati = {
-        let Ok(ultima) = esplora.ultima.lock() else {
-            return Err(errore(avvelenato()));
+#[tauri::command]
+pub async fn esplora_aggiungi_tutti(app: tauri::AppHandle) -> Esito<EsitoAggiuntaTutti> {
+    comanda("aggiunta di tutti i risultati", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let esplora = stato_di::<StatoEsplora>(&app)?;
+        let candidati = {
+            let Ok(ultima) = esplora.ultima.lock() else {
+                return Err(errore(avvelenato()));
+            };
+            ultima.clone()
         };
-        ultima.clone()
-    };
-    let riferimenti: Vec<(String, String)> = candidati
-        .iter()
-        .map(|c| (c.fonte.nome().to_owned(), c.url.clone()))
-        .collect();
+        let riferimenti: Vec<(String, String)> = candidati
+            .iter()
+            .map(|c| (c.fonte.nome().to_owned(), c.url.clone()))
+            .collect();
 
-    // Scrittura e rilettura sotto lo stesso lucchetto: due prese separate
-    // lascerebbero in mezzo una finestra in cui un'altra scrittura cambia
-    // la risposta, e la risposta serve a disegnare i tasti.
-    let esito = con_libreria(&stato, |libreria| {
-        let conteggi = rymembra_app::catalogo::aggiungi(&mut libreria.connection, &candidati)?;
-        let presenti = rymembra_app::catalogo::gia_in_libreria(&libreria.connection, &riferimenti)?;
-        Ok(EsitoAggiuntaTutti {
-            conteggi,
-            in_libreria: presenti.into_iter().collect(),
+        // Scrittura e rilettura sotto lo stesso lucchetto: due prese separate
+        // lascerebbero in mezzo una finestra in cui un'altra scrittura cambia
+        // la risposta, e la risposta serve a disegnare i tasti.
+        let esito = con_libreria(&stato, |libreria| {
+            let conteggi = rymembra_app::catalogo::aggiungi(&mut libreria.connection, &candidati)?;
+            let presenti =
+                rymembra_app::catalogo::gia_in_libreria(&libreria.connection, &riferimenti)?;
+            Ok(EsitoAggiuntaTutti {
+                conteggi,
+                in_libreria: presenti.into_iter().collect(),
+            })
         })
+        .map_err(errore);
+        crate::nuvola::se_riuscito(&app, esito)
     })
-    .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+    .await
 }
 
 /// Toglie dalla libreria un brano di catalogo, per indirizzo.
@@ -534,30 +541,30 @@ pub fn esplora_aggiungi_tutti(
 ///
 /// `catalogo.resolveFailed` se quell'indirizzo non è fra i risultati
 /// dell'ultima ricerca; `db.*` se la scrittura fallisce.
-#[tauri::command(async)]
-pub fn esplora_togli(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    esplora: State<'_, StatoEsplora>,
-    url: String,
-) -> Esito<bool> {
-    let candidato = candidato_di(&esplora, &url).map_err(errore)?;
-    let fonte = candidato.fonte.nome();
-    // L'identificativo si legge prima e sotto lo stesso lucchetto: dopo la
-    // cancellazione non c'è più niente da cui leggerlo, ed è quello che la
-    // coda conosce.
-    let (id, tolto) = con_libreria(&stato, |libreria| {
-        let id = rymembra_app::catalogo::id_di(&libreria.connection, fonte, &url)?;
-        let tolto = rymembra_app::catalogo::togli(&mut libreria.connection, fonte, &url)?;
-        Ok((id, tolto))
+#[tauri::command]
+pub async fn esplora_togli(app: tauri::AppHandle, url: String) -> Esito<bool> {
+    comanda("rimozione dall'esplorazione", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let esplora = stato_di::<StatoEsplora>(&app)?;
+        let candidato = candidato_di(&esplora, &url).map_err(errore)?;
+        let fonte = candidato.fonte.nome();
+        // L'identificativo si legge prima e sotto lo stesso lucchetto: dopo la
+        // cancellazione non c'è più niente da cui leggerlo, ed è quello che la
+        // coda conosce.
+        let (id, tolto) = con_libreria(&stato, |libreria| {
+            let id = rymembra_app::catalogo::id_di(&libreria.connection, fonte, &url)?;
+            let tolto = rymembra_app::catalogo::togli(&mut libreria.connection, fonte, &url)?;
+            Ok((id, tolto))
+        })
+        .map_err(errore)?;
+        // Dopo il database e fuori dal suo lucchetto: prima il lettore, poi la
+        // libreria, e qui la libreria è già stata lasciata.
+        if tolto && let Some(id) = id {
+            crate::cancellazione::sgombera(&app, &[id], false);
+        }
+        crate::nuvola::se_riuscito(&app, Ok(tolto))
     })
-    .map_err(errore)?;
-    // Dopo il database e fuori dal suo lucchetto: prima il lettore, poi la
-    // libreria, e qui la libreria è già stata lasciata.
-    if tolto && let Some(id) = id {
-        crate::cancellazione::sgombera(&app, &[id], false);
-    }
-    crate::nuvola::se_riuscito(&app, Ok(tolto))
+    .await
 }
 
 /// Il brano di libreria che corrisponde a un risultato, per poterlo suonare.
@@ -566,17 +573,18 @@ pub fn esplora_togli(
 ///
 /// `catalogo.resolveFailed` se quell'indirizzo non è fra i risultati
 /// dell'ultima ricerca; `db.*` se la lettura fallisce.
-#[tauri::command(async)]
-pub fn esplora_identificativo(
-    stato: State<'_, Stato>,
-    esplora: State<'_, StatoEsplora>,
-    url: String,
-) -> Esito<Option<i64>> {
-    let candidato = candidato_di(&esplora, &url).map_err(errore)?;
-    con_libreria(&stato, |libreria| {
-        rymembra_app::catalogo::id_di(&libreria.connection, candidato.fonte.nome(), &url)
+#[tauri::command]
+pub async fn esplora_identificativo(app: tauri::AppHandle, url: String) -> Esito<Option<i64>> {
+    comanda("identificativo di un risultato", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let esplora = stato_di::<StatoEsplora>(&app)?;
+        let candidato = candidato_di(&esplora, &url).map_err(errore)?;
+        con_libreria(&stato, |libreria| {
+            rymembra_app::catalogo::id_di(&libreria.connection, candidato.fonte.nome(), &url)
+        })
+        .map_err(errore)
     })
-    .map_err(errore)
+    .await
 }
 
 /// Apre nel browser la pagina pubblica di un risultato.
@@ -597,30 +605,35 @@ pub fn esplora_identificativo(
 /// dell'ultima ricerca; `download.unrecognizedUrl` se quel risultato non ha una
 /// pagina pubblica, o se la pagina non è in un posto dove Rymembra sia invitato;
 /// `internal.aborted` se il browser non si apre.
-#[tauri::command(async)]
-pub fn esplora_apri_pagina(esplora: State<'_, StatoEsplora>, url: String) -> Esito<()> {
-    let candidato = candidato_di(&esplora, &url).map_err(errore)?;
-    let pagina = candidato.pagina.ok_or_else(|| {
-        errore(
-            AppError::new(ErrorCode::DownloadUnrecognizedUrl)
-                .with_cause("questo brano non dichiara una pagina pubblica".to_owned()),
-        )
-    })?;
-    if rymembra_catalogo::riconosci(&pagina).is_none() {
-        return Err(errore(
-            AppError::new(ErrorCode::DownloadUnrecognizedUrl).with_cause(
-                "questa pagina non è in un posto dove Rymembra sia invitato".to_owned(),
-            ),
-        ));
-    }
-    crate::browser::apri(&pagina).map_err(|err| {
-        errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura del browser".to_owned()),
-            })
-            .with_cause(err.to_string()),
-        )
+#[tauri::command]
+pub async fn esplora_apri_pagina(app: tauri::AppHandle, url: String) -> Esito<()> {
+    // `browser::apri` chiede al sistema, e sul telefono a chi guarda: aspetta.
+    comanda("pagina di un risultato", move || {
+        let esplora = stato_di::<StatoEsplora>(&app)?;
+        let candidato = candidato_di(&esplora, &url).map_err(errore)?;
+        let pagina = candidato.pagina.ok_or_else(|| {
+            errore(
+                AppError::new(ErrorCode::DownloadUnrecognizedUrl)
+                    .with_cause("questo brano non dichiara una pagina pubblica".to_owned()),
+            )
+        })?;
+        if rymembra_catalogo::riconosci(&pagina).is_none() {
+            return Err(errore(
+                AppError::new(ErrorCode::DownloadUnrecognizedUrl).with_cause(
+                    "questa pagina non è in un posto dove Rymembra sia invitato".to_owned(),
+                ),
+            ));
+        }
+        crate::browser::apri(&pagina).map_err(|err| {
+            errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("apertura del browser".to_owned()),
+                })
+                .with_cause(err.to_string()),
+            )
+        })
     })
+    .await
 }
 
 #[cfg(test)]

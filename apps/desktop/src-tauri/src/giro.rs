@@ -41,11 +41,8 @@
 //! è già finito quando questo comando parte, e riaprirlo perché la scrittura
 //! non è passata sarebbe il rimedio peggiore del male.
 
-use tauri::State;
-
 use crate::disparte::leggi_la_libreria;
 use crate::errore::{Esito, errore};
-use crate::stato::{Stato, con_libreria};
 
 /// La versione del copione del giro guidato.
 ///
@@ -99,11 +96,12 @@ pub async fn giro_da_fare(app: tauri::AppHandle) -> Esito<bool> {
 /// # Errori
 ///
 /// `db.queryFailed`.
-#[tauri::command(async)]
-pub fn giro_fatto(stato: State<'_, Stato>) -> Esito<()> {
-    con_libreria(&stato, |libreria| {
+#[tauri::command]
+pub async fn giro_fatto(app: tauri::AppHandle) -> Esito<()> {
+    leggi_la_libreria(app, "giro fatto", |libreria| {
         rymembra_app::preferenze::imposta_giro_visto(&libreria.connection, VERSIONE_COPIONE)
     })
+    .await
     .map_err(errore)
 }
 

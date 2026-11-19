@@ -11,7 +11,7 @@
 //!
 //! Le firme sono quelle di `crate::vassoio` sul computer: vedi `lib.rs`.
 
-use tauri::{Manager as _, State};
+use tauri::Manager as _;
 
 use crate::errore::{Esito, errore};
 use crate::riproduzione::StatoRiproduzione;
@@ -61,18 +61,19 @@ pub async fn secondo_piano(app: tauri::AppHandle) -> Esito<bool> {
 }
 
 /// Accende o spegne il secondo piano. Riporta com'è rimasto, riletto.
-#[tauri::command(async)]
-pub fn secondo_piano_attiva(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    attivo: bool,
-) -> Esito<bool> {
-    let _ = app;
-    con_libreria(&stato, |libreria| {
-        rymembra_app::preferenze::imposta_secondo_piano(&libreria.connection, attivo)?;
-        rymembra_app::preferenze::secondo_piano(&libreria.connection)
-    })
-    .map_err(errore)
+#[tauri::command]
+pub async fn secondo_piano_attiva(app: tauri::AppHandle, attivo: bool) -> Esito<bool> {
+    // Un interruttore dove l'ultimo vince: sulla corsia della libreria.
+    crate::corsia::LIBRERIA
+        .comanda("secondo piano", move || {
+            let stato = crate::disparte::stato_di::<Stato>(&app)?;
+            con_libreria(&stato, |libreria| {
+                rymembra_app::preferenze::imposta_secondo_piano(&libreria.connection, attivo)?;
+                rymembra_app::preferenze::secondo_piano(&libreria.connection)
+            })
+            .map_err(errore)
+        })
+        .await
 }
 
 /// Le etichette del menù del vassoio. Non c'è menù.

@@ -43,7 +43,7 @@ use rymembra_app::import_account::{self, AccountImportReport};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::spotify_account::{AccountSnapshot, Scelte};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::AppHandle;
 
 use crate::disparte::{comanda, in_disparte, stato_di};
 use crate::errore::{Esito, errore};
@@ -313,13 +313,17 @@ pub async fn account_importa(app: AppHandle, scelte: ScelteIpc) -> Esito<Account
 ///
 /// L'operazione che `play_history.source` esiste per rendere possibile.
 /// Restituisce quante righe se ne sono andate.
-#[tauri::command(async)]
-pub fn cronologia_dimentica_importati(app: AppHandle, stato: State<'_, Stato>) -> Esito<usize> {
-    let esito = con_libreria(&stato, |libreria| {
-        import_account::dimentica_importati(&mut libreria.connection)
+#[tauri::command]
+pub async fn cronologia_dimentica_importati(app: AppHandle) -> Esito<usize> {
+    comanda("cronologia dimenticata", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let esito = con_libreria(&stato, |libreria| {
+            import_account::dimentica_importati(&mut libreria.connection)
+        })
+        .map_err(errore);
+        crate::nuvola::se_riuscito(&app, esito)
     })
-    .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+    .await
 }
 
 // ── il lavoro sotto ─────────────────────────────────────────────────────────

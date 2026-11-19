@@ -1988,34 +1988,39 @@ pub(crate) fn file_da_mostrare(
 /// `download.unrecognizedUrl` se non dichiara una pagina pubblica, o se quella
 /// pagina non è in un posto dove Rymembra sia invitato; `internal.aborted` se il
 /// browser non si apre.
-#[tauri::command(async)]
-pub fn brano_apri_pagina(stato: State<'_, Stato>, id: i64) -> Esito<()> {
+#[tauri::command]
+pub async fn brano_apri_pagina(app: tauri::AppHandle, id: i64) -> Esito<()> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
-    let pagina = con_libreria(&stato, |libreria| {
-        let brano = rymembra_app::library::read_summary(&libreria.connection, id)?
-            .ok_or_else(|| AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }))?;
-        brano.fonte_pagina.ok_or_else(|| {
-            AppError::new(ErrorCode::DownloadUnrecognizedUrl)
-                .with_cause("questo brano non dichiara una pagina pubblica".to_owned())
+    comanda("pagina di un brano", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let pagina = con_libreria(&stato, |libreria| {
+            let brano = rymembra_app::library::read_summary(&libreria.connection, id)?.ok_or_else(
+                || AppError::new(ErrorCode::LibraryTrackNotFound { track_id: Some(id) }),
+            )?;
+            brano.fonte_pagina.ok_or_else(|| {
+                AppError::new(ErrorCode::DownloadUnrecognizedUrl)
+                    .with_cause("questo brano non dichiara una pagina pubblica".to_owned())
+            })
+        })
+        .map_err(errore)?;
+        if rymembra_catalogo::riconosci(&pagina).is_none() {
+            return Err(errore(
+                AppError::new(ErrorCode::DownloadUnrecognizedUrl).with_cause(
+                    "questa pagina non è in un posto dove Rymembra sia invitato".to_owned(),
+                ),
+            ));
+        }
+        crate::browser::apri(&pagina).map_err(|err| {
+            errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("apertura del browser".to_owned()),
+                })
+                .with_cause(err.to_string()),
+            )
         })
     })
-    .map_err(errore)?;
-    if rymembra_catalogo::riconosci(&pagina).is_none() {
-        return Err(errore(
-            AppError::new(ErrorCode::DownloadUnrecognizedUrl).with_cause(
-                "questa pagina non è in un posto dove Rymembra sia invitato".to_owned(),
-            ),
-        ));
-    }
-    crate::browser::apri(&pagina).map_err(|err| {
-        errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura del browser".to_owned()),
-            })
-            .with_cause(err.to_string()),
-        )
-    })
+    .await
 }
 
 /// Cambia la valutazione di un brano.
@@ -2448,16 +2453,16 @@ pub struct RaccoltaSettimana {
 /// aspettarlo non ferma più il disegno.
 ///
 /// Il filo in più che questo commento diceva di non volere non c'è comunque:
-/// il pool esiste già, ed è dove girano di già tutti i comandi `(async)`.
-#[tauri::command(async)]
-pub fn settimana(
-    stato: State<'_, Stato>,
+/// il pool esiste già, ed è dove girano tutti i comandi che aspettano.
+#[tauri::command]
+pub async fn settimana(
+    app: tauri::AppHandle,
     scostamento_minuti: i32,
 ) -> Esito<Vec<RaccoltaSettimana>> {
     let adesso = adesso_ms();
     let lunedi = rymembra_domain::settimana::lunedi(adesso, scostamento_minuti);
 
-    con_libreria(&stato, |libreria| {
+    leggi_la_libreria(app, "settimana", move |libreria| {
         let raccolte = rymembra_app::settimana::aggiorna(&mut libreria.connection, lunedi, adesso)?;
         let mut fuori = Vec::with_capacity(raccolte.len());
         for raccolta in raccolte {
@@ -2473,6 +2478,7 @@ pub fn settimana(
         }
         Ok(fuori)
     })
+    .await
     .map_err(errore)
 }
 
@@ -2711,41 +2717,45 @@ fn testo_locale(cartella: &std::path::Path, nome: &str) -> Result<Option<String>
 ///
 /// `internal.aborted` per un nome fuori elenco; `fs.readFailed` se la copia
 /// c'è e non si legge.
-#[tauri::command(async)]
-pub fn documento_locale(app: tauri::AppHandle, quale: String) -> Esito<Option<String>> {
-    let Some(documento) = Documento::da_nome(&quale) else {
-        return Err(errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("lettura di un documento".to_owned()),
-            })
-            .with_cause(format!("«{quale}» non è uno dei documenti pubblici")),
-        ));
-    };
-    let Some(nome) = documento.copia_locale() else {
-        return Ok(None);
-    };
-    #[cfg(target_os = "android")]
-    {
-        let _ = &app;
-        rymembra_android::sistema::avviso_legale(nome).map_err(|err| {
-            errore(
-                AppError::new(ErrorCode::FsReadFailed {
-                    path: format!("assets/legale/{nome}"),
-                    detail: Some(err.to_string()),
+#[tauri::command]
+pub async fn documento_locale(app: tauri::AppHandle, quale: String) -> Esito<Option<String>> {
+    // Legge un file delle risorse, o sul telefono lo chiede al ponte Java.
+    comanda("lettura di un documento", move || {
+        let Some(documento) = Documento::da_nome(&quale) else {
+            return Err(errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("lettura di un documento".to_owned()),
                 })
-                .with_cause(err.to_string()),
-            )
-        })
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        // Senza la cartella delle risorse non c'è una copia da leggere: si
-        // apre il sito, come prima.
-        let Ok(cartella) = app.path().resource_dir() else {
+                .with_cause(format!("«{quale}» non è uno dei documenti pubblici")),
+            ));
+        };
+        let Some(nome) = documento.copia_locale() else {
             return Ok(None);
         };
-        testo_locale(&cartella, nome).map_err(errore)
-    }
+        #[cfg(target_os = "android")]
+        {
+            let _ = &app;
+            rymembra_android::sistema::avviso_legale(nome).map_err(|err| {
+                errore(
+                    AppError::new(ErrorCode::FsReadFailed {
+                        path: format!("assets/legale/{nome}"),
+                        detail: Some(err.to_string()),
+                    })
+                    .with_cause(err.to_string()),
+                )
+            })
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            // Senza la cartella delle risorse non c'è una copia da leggere: si
+            // apre il sito, come prima.
+            let Ok(cartella) = app.path().resource_dir() else {
+                return Ok(None);
+            };
+            testo_locale(&cartella, nome).map_err(errore)
+        }
+    })
+    .await
 }
 
 /// Le voci della documentazione tecnica a cui le Impostazioni rimandano.

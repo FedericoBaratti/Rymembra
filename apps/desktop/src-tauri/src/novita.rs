@@ -32,11 +32,11 @@
 //! come per il giro.
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::AppHandle;
 
 use crate::disparte::leggi_la_libreria;
 use crate::errore::{Esito, errore};
-use crate::stato::{Stato, con_libreria};
+
 use rymembra_app::preferenze::{self, EsitoNovita};
 
 /// La risposta alla domanda «c'è una finestra delle Novità da mostrare?».
@@ -105,11 +105,12 @@ fn decidi(
 /// # Errori
 ///
 /// `db.queryFailed`.
-#[tauri::command(async)]
-pub fn novita_viste(stato: State<'_, Stato>, versione: String) -> Esito<()> {
-    con_libreria(&stato, |libreria| {
+#[tauri::command]
+pub async fn novita_viste(app: AppHandle, versione: String) -> Esito<()> {
+    leggi_la_libreria(app, "novità viste", move |libreria| {
         preferenze::imposta_novita_viste(&libreria.connection, &versione)
     })
+    .await
     .map_err(errore)
 }
 

@@ -978,15 +978,12 @@ pub(crate) fn sgombra_dalla_coda(
 /// [`coda_riordina_ora`], dalla finestra.
 ///
 /// `brano` è quello che la finestra vedeva in `da`: vedi [`al_suo_posto`].
-#[tauri::command(async)]
-pub fn coda_riordina(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    da: usize,
-    a: usize,
-    brano: i64,
-) -> Esito<()> {
-    coda_riordina_ora(app, stato, da, a, Some(brano))
+#[tauri::command]
+pub async fn coda_riordina(app: tauri::AppHandle, da: usize, a: usize, brano: i64) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "riordino della coda", move |app, stato| {
+        coda_riordina_ora(app, stato, da, a, Some(brano))
+    })
+    .await
 }
 
 /// Sposta un brano dentro la coda.
@@ -1064,27 +1061,26 @@ pub fn coda_svuota_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) ->
 /// deve toccare quel che qualcuno ha messo in coda. La musica non parte — un
 /// giro che comincia a suonare da solo fa saltare sulla sedia chi lo sta
 /// leggendo — e «riproduci» da lì funziona come per la coda ripresa all'avvio.
-#[tauri::command(async)]
-pub fn coda_prepara(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    brani: Vec<i64>,
-) -> Esito<bool> {
-    con_lettore(&stato, |lettore| {
-        // In sessione no: la coda è di voci, e i brani del giro sono righe
-        // della libreria che gli altri non hanno. Il giro trova la coda «già
-        // piena», come quando qualcuno ci ha messo qualcosa.
-        if !lettore.coda.is_empty() || brani.is_empty() || lettore.sessione.is_some() {
-            return Ok(false);
-        }
-        lettore.coda.play_tracks(brani, 0, seme());
-        lettore.coda_curata = false;
-        lettore.coda_del_giro = Some(lettore.coda.snapshot().tracks);
-        salva_coda(&app, lettore);
-        manda_stato(&app, lettore);
-        Ok(true)
+#[tauri::command]
+pub async fn coda_prepara(app: tauri::AppHandle, brani: Vec<i64>) -> Esito<bool> {
+    super::col_lettore_in_disparte(app, "coda del giro", move |app, stato| {
+        con_lettore(&stato, |lettore| {
+            // In sessione no: la coda è di voci, e i brani del giro sono righe
+            // della libreria che gli altri non hanno. Il giro trova la coda «già
+            // piena», come quando qualcuno ci ha messo qualcosa.
+            if !lettore.coda.is_empty() || brani.is_empty() || lettore.sessione.is_some() {
+                return Ok(false);
+            }
+            lettore.coda.play_tracks(brani, 0, seme());
+            lettore.coda_curata = false;
+            lettore.coda_del_giro = Some(lettore.coda.snapshot().tracks);
+            salva_coda(&app, lettore);
+            manda_stato(&app, lettore);
+            Ok(true)
+        })
+        .map_err(errore)
     })
-    .map_err(errore)
+    .await
 }
 
 /// [`coda_ripristina_ora`], sul pool bloccante: vedi
@@ -1211,8 +1207,14 @@ pub fn coda_ripristina_ora(
 }
 
 /// Passa al modo di ripetizione successivo.
-#[tauri::command(async)]
-pub fn ripeti(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+#[tauri::command]
+pub async fn ripeti(app: tauri::AppHandle) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "ripeti", ripeti_ora).await
+}
+
+/// [`ripeti`], sul posto: lo chiama anche il gesto dell'auto (`auto::esegui`),
+/// dal filo dei gesti.
+pub fn ripeti_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Ripeti).map_err(errore)? {
         return Ok(());
     }
@@ -1262,8 +1264,13 @@ pub fn imposta_ripeti(app: &tauri::AppHandle, modo: RepeatMode) -> Result<(), Ap
 }
 
 /// Accende o spegne lo shuffle.
-#[tauri::command(async)]
-pub fn mescola(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+#[tauri::command]
+pub async fn mescola(app: tauri::AppHandle) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "mescola", mescola_ora).await
+}
+
+/// [`mescola`], sul posto: vedi [`ripeti_ora`].
+pub fn mescola_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Shuffle).map_err(errore)? {
         return Ok(());
     }
