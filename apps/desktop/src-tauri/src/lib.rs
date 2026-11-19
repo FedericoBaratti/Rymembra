@@ -1861,8 +1861,8 @@ pub(crate) fn cartella_di_cache(app: &impl nucleo::ComeNucleo, nome: &str) -> Op
     // Della copia del Microsoft Store, per la copia del Store: vedi
     // [`cartella_di_serie`].
     //
-    // Senza la finestra â€” il nucleo che parte da un servizio, su Android â€” non c'Ã¨
-    // chi risolva il percorso locale, e non serve: lÃ¬ la cartella locale e quella
+    // Senza la finestra — il nucleo che parte da un servizio, su Android — non c'è
+    // chi risolva il percorso locale, e non serve: lì la cartella locale e quella
     // dei dati sono la stessa (`Context.getDataDir()`, per tutte e due:
     // `tauri-2.12.0/mobile/android/.../PathPlugin.kt`), e `dove_sta_la_cache`
     // risponde `dati/nome` come risponderebbe `locale/nome`.
