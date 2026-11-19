@@ -68,14 +68,17 @@ import java.util.concurrent.TimeUnit
  * (vedi [apriRisparmio]): non si chiede l'esenzione diretta, che la policy di
  * Google Play riserva alle app il cui compito si rompe senza.
  *
- * # Senza il nucleo
+ * # Il nucleo parte da qui
  *
- * `START_STICKY`: se il sistema chiude il processo, riporta il servizio. Ma il
- * nucleo Rust parte con l'attività (vedi [Nucleo]), e da Android 10 un'app
- * dietro non può aprirla: il servizio risorto da solo non ha nessuno dietro
- * di sé. Dirlo è il minimo — la notifica diventa «a riposo», e toccarla apre
- * l'app, che rimette il nucleo e la notifica com'era (vedi [titolo]). Un
- * nucleo che parte senza attività è la fase dell'avvio all'accensione.
+ * `START_STICKY`: se il sistema chiude il processo, riporta il servizio, e il
+ * servizio **avvia il nucleo Rust** ([Ponte.avviaIlNucleo]) senza aspettare
+ * un'attività, che da Android 10 un'app dietro non può aprire. Vale a ogni
+ * partenza del servizio: dopo un `kill`, dopo un riavvio del telefono
+ * ([AvvioAccensione]), dopo che la persona ha acceso il sottofondo con l'app
+ * chiusa. Quando poi l'attività nasce, Tauri si aggancia al nucleo che c'è
+ * già. Finché il nucleo non ha detto di esserci la notifica dice che si sta
+ * avviando; «a riposo», con l'invito ad aprire l'app, resta solo per il caso
+ * in cui il nucleo proprio non parte (vedi [titolo]).
  *
  * # Chi lo accende e lo spegne
  *
@@ -154,6 +157,10 @@ class Presenza : Service() {
       return START_NOT_STICKY
     }
     guardaLAuto()
+    // Il nucleo, se nessuna attività è mai nata in questo processo: dopo un
+    // riavvio, o un servizio risorto da un `kill`, non c'è nessuno davanti. Con
+    // un'attività già nata non fa niente (lo avvia Tauri).
+    Ponte.avviaIlNucleo(applicationContext)
     return START_STICKY
   }
 
@@ -243,8 +250,9 @@ class Presenza : Service() {
    * la musica la fa Rust, e il fuoco già preso lo trova la sessione quando
    * arriva la scheda che dice «suona».
    *
-   * Senza il nucleo non c'è niente da riprendere, e dallo sfondo non si può
-   * aprire l'attività che lo accenderebbe: si scrive nel logcat e basta.
+   * Senza il nucleo — ancora in avvio, o non partito — non c'è niente da
+   * riprendere: si scrive nel logcat e basta. Il servizio lo avvia già da sé
+   * (vedi [onStartCommand]), quindi dopo qualche secondo c'è.
    */
   private fun riprendiConLAuto() {
     val perche = when {
@@ -428,12 +436,14 @@ class Presenza : Service() {
     }
 
     /**
-     * La frase della notifica. Senza il nucleo (`Ponte.agganciato` è falso: il
-     * servizio è risorto da solo, e l'attività non c'è mai stata in questo
-     * processo) dice la verità, che è «a riposo».
+     * La frase della notifica, che dice la verità sul nucleo: finché non ha detto
+     * di esserci («sessione.pronta», vedi [Nucleo.pronta]) si sta avviando; se
+     * l'avvio da qui è fallito ([Ponte.nucleoNonParte]) è «a riposo», e toccare la
+     * notifica apre l'app, che il nucleo lo avvia da sé.
      */
     private fun titolo(contesto: Context): String {
-      if (!Ponte.agganciato) return contesto.getString(R.string.presenza_titolo_riposo)
+      if (Ponte.nucleoNonParte) return contesto.getString(R.string.presenza_titolo_riposo)
+      if (!Nucleo.pronto) return contesto.getString(R.string.presenza_titolo_avvio)
       val nomi = collegati
       return when (nomi.size) {
         0 -> contesto.getString(R.string.presenza_titolo)
@@ -449,6 +459,15 @@ class Presenza : Service() {
       } catch (e: Exception) {
         Log.w(ETICHETTA, "la notifica di presenza non si aggiorna", e)
       }
+    }
+
+    /**
+     * Il nucleo ha cambiato stato — è partito — e la frase della notifica con lui:
+     * si rifà solo se il servizio c'è e la frase è cambiata. Dal filo principale.
+     */
+    fun rinfresca(contesto: Context) {
+      if (vivo == null) return
+      aggiornaLaNotifica(contesto.applicationContext)
     }
 
     /**
@@ -514,7 +533,7 @@ class Presenza : Service() {
             spegni,
           ).build(),
         )
-      if (!Ponte.agganciato) {
+      if (Ponte.nucleoNonParte) {
         costruttore.setContentText(contesto.getString(R.string.presenza_testo_riposo))
       }
       return costruttore.build()

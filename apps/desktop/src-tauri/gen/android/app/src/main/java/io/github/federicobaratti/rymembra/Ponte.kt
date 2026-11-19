@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.view.HapticFeedbackConstants
 import org.json.JSONObject
 import java.lang.ref.WeakReference
@@ -70,12 +71,83 @@ object Ponte {
     if (this.attivita.get() === attivita) this.attivita = WeakReference(null)
   }
 
+  // ── Il nucleo che parte da un servizio, prima di ogni attività ───────────────
+  //
+  // Le tre funzioni sono di Rust (`rymembra-android/src/jvm.rs`, esportate dal
+  // crate dell'app con `esporta_il_nucleo!`). Il perché di ogni regola sta nel
+  // `diario-f8.md` della prova di fattibilità, e in `jvm.rs`: qui basta dire
+  // che **a decidere** se `ndk-context` lo mette il servizio è Kotlin, perché
+  // quello di `tao` non si può mettere due volte e `catch_unwind` non salva.
+
+  /** Il servizio avvia il nucleo: carica la libreria ed entra in Rust. Vedi [avviaIlNucleo]. */
+  @JvmStatic private external fun avviaNucleo(contesto: Context, dati: String, inizializzaContesto: Boolean)
+
+  /** Prima della prima attività: Rust toglie da `ndk-context` il contesto del servizio, se c'è. */
+  @JvmStatic private external fun rilasciaIlContestoDelServizio()
+
+  /** Dopo `super.onCreate` della prima attività: `tao` ha messo il suo contesto, Rust lo può leggere. */
+  @JvmStatic private external fun contestoDiTaoPronto()
+
   /**
-   * Il nucleo è partito, in questo processo: l'attività si è aperta almeno una
-   * volta, e con lei Tauri. Resta vero anche quando l'attività se ne va — il
-   * nucleo no. Vedi [Nucleo].
+   * Un'attività è già nata in questo processo: `tao` ha già messo `ndk-context`
+   * (per sempre: il suo `OnceLock`), il servizio non deve toccarlo, e il nucleo
+   * lo avvierà il `setup` di Tauri. Si legge e si scrive solo sul filo
+   * principale, dove girano `MainActivity.onCreate` e `Presenza.onStartCommand`.
    */
-  val agganciato: Boolean get() = contesto != null
+  private var attivitaGiaNata = false
+
+  /** Il servizio ha già fatto entrare Rust: una volta sola per processo. Filo principale. */
+  private var nucleoAvviatoDalServizio = false
+
+  /** L'avvio dal servizio è fallito: il nucleo non c'è, e lo dice la notifica. */
+  @Volatile var nucleoNonParte = false
+    private set
+
+  /**
+   * Avvia il nucleo Rust da un servizio, senza attività: la libreria nativa, il
+   * contesto, la libreria dei brani, il lettore, la sessione e il collegamento
+   * con gli altri dispositivi (`lib.rs`, `avvia_il_nucleo`).
+   *
+   * Solo dal filo principale, e solo se **nessuna attività è mai nata** in
+   * questo processo: se è nata, il nucleo lo avvia o l'ha già avviato Tauri.
+   * Non lancia mai: un guasto si scrive nel registro e nella notifica.
+   */
+  fun avviaIlNucleo(applicazione: Context) {
+    check(Looper.myLooper() == Looper.getMainLooper()) { "solo dal filo principale: il flag è suo" }
+    if (attivitaGiaNata || nucleoAvviatoDalServizio) return
+    try {
+      System.loadLibrary("rymembra_lib")
+      // Come farebbe l'attività, ma col contesto dell'applicazione: i comandi che
+      // non vogliono un'attività (`sistema.cartellaCache`, la sessione, i segreti)
+      // rispondono già.
+      if (contesto == null) contesto = applicazione
+      Rete.osserva(applicazione)
+      avviaNucleo(applicazione, applicazione.dataDir.absolutePath, true)
+      nucleoAvviatoDalServizio = true
+      nucleoNonParte = false
+    } catch (e: Throwable) {
+      nucleoNonParte = true
+      Log.e("Rymembra", "il nucleo non parte dal servizio", e)
+    }
+  }
+
+  /**
+   * Dall'attività, prima di `super.onCreate`: se è la prima del processo e un
+   * servizio ha messo il suo `ndk-context`, lo si toglie, perché `tao` in
+   * `super.onCreate` asserisce che sia vuoto. Da qui `tao` ha il contesto, per
+   * sempre.
+   */
+  fun preparaLAttivita() {
+    if (attivitaGiaNata) return
+    attivitaGiaNata = true
+    if (!nucleoAvviatoDalServizio) return
+    rilasciaIlContestoDelServizio()
+  }
+
+  /** Dall'attività, dopo `super.onCreate`: se il contesto era stato rilasciato, `tao` lo ha rimesso. */
+  fun attivitaNata() {
+    if (nucleoAvviatoDalServizio) contestoDiTaoPronto()
+  }
 
   private fun contesto(): Context = contesto ?: error("il ponte non è ancora agganciato")
 

@@ -1,11 +1,9 @@
 package io.github.federicobaratti.rymembra
 
 import android.content.Context
-import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -14,26 +12,32 @@ import androidx.media3.common.util.UnstableApi
 /**
  * Il nucleo Rust: se è partito, e come svegliarlo quando non c'è.
  *
- * # Perché può non esserci
+ * # Chi lo avvia
  *
- * Il nucleo parte con l'attività: è `TauriActivity` che carica la libreria
- * nativa e fa girare il ciclo di Tauri, e Tauri senza un'attività non sa
- * partire (registra i suoi plugin Android sull'attività, e senza va in panico).
- * Il servizio della musica invece può nascere da solo: lo sveglia l'auto, o il
- * sistema per la scheda di ripresa, con l'app chiusa da ore.
+ * Il nucleo — la libreria, il lettore, la sessione, il collegamento con gli
+ * altri dispositivi — non dipende da una finestra, e parte in uno di due modi,
+ * sempre **una volta per processo**:
  *
- * # Come lo si sveglia
+ * - dall'attività: `TauriActivity` carica la libreria nativa e fa girare il
+ *   ciclo di Tauri, che nel `setup` avvia il nucleo;
+ * - da un servizio, senza attività ([Ponte.avviaIlNucleo]): `Presenza` quando il
+ *   sottofondo è acceso — anche dopo un riavvio del telefono, dal ricevitore
+ *   [AvvioAccensione] — e [sveglia], quando a chiamare è l'auto o il sistema
+ *   con l'app chiusa da ore.
  *
- * Aprendo l'attività sullo sfondo: si apre, il nucleo parte, e lei si
- * rimette subito dietro (`MainActivity`, con [SFONDO]). Da Android 10 un'app
- * che non si vede non può aprire la sua schermata, salvo eccezioni che non
- * dipendono da lei; quando Android dice di no, la domanda dell'auto scade e
- * l'auto mostra «Apri Rymembra» — vedi `Biblioteca.senzaNucleo`.
+ * Tauri invece senza un'attività non sa partire (registra i suoi plugin Android
+ * sull'attività, e senza va in panico): quando l'attività nasce dopo, il suo
+ * `setup` si aggancia al nucleo che c'è già, e non ne fa un secondo.
  *
- * Mai alla sola nascita del servizio: il sistema lo sveglia anche dopo un
- * riavvio, per sapere l'ultimo brano, e aprire l'app per quello non lo ha
- * chiesto nessuno. Si sveglia quando serve davvero: una domanda sulla libreria,
- * un gesto.
+ * # Quando lo si sveglia
+ *
+ * Mai alla sola nascita del servizio della musica: il sistema lo sveglia anche
+ * dopo un riavvio, per sapere l'ultimo brano, e avviare il nucleo per quello non
+ * lo ha chiesto nessuno. Si sveglia quando serve davvero: una domanda sulla
+ * libreria, un gesto. È un gesto dell'utente nell'auto, e vale anche con
+ * «Resta attiva in sottofondo» spento: il nucleo parte, l'auto trova Rymembra, e
+ * al resto pensa Android — senza il servizio di sottofondo il processo può
+ * essere chiuso quando nessuno suona.
  */
 object Nucleo {
   private val principale = Handler(Looper.getMainLooper())
@@ -54,30 +58,26 @@ object Nucleo {
     principale.post {
       pronto = true
       Sessione.nucleoPronto()
+      // La notifica del sottofondo passa da «si sta avviando» a «è attiva».
+      Presenza.rinfresca(contesto)
     }
   }
 
-  /** Sveglia il nucleo se non c'è, una volta ogni tanto. */
+  /**
+   * Sveglia il nucleo se non c'è, una volta ogni tanto: lo avvia da qui, senza
+   * attività. Se un'attività è già nata, il nucleo lo avvia Tauri (o l'ha già
+   * fatto), e non c'è niente da fare.
+   */
   fun sveglia(contesto: Context) {
-    if (pronto || Ponte.agganciato) return
+    if (pronto) return
     val adesso = SystemClock.elapsedRealtime()
     if (svegliatoAlle != 0L && adesso - svegliatoAlle < RIPROVA_MS) return
     svegliatoAlle = adesso
-    try {
-      contesto.startActivity(
-        Intent(contesto, MainActivity::class.java)
-          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-          .putExtra(SFONDO, true)
-      )
-    } catch (e: Exception) {
-      Log.w("Rymembra", "il nucleo non si sveglia: ${e.message}")
-    }
+    val applicazione = contesto.applicationContext
+    principale.post { Ponte.avviaIlNucleo(applicazione) }
   }
 
-  /** L'attività aperta per svegliare il nucleo, non per farsi vedere. */
-  const val SFONDO = "io.github.federicobaratti.rymembra.SFONDO"
-
-  /** Fra un tentativo e l'altro: Android, se dice di no, dice di no a tutti. */
+  /** Fra un tentativo e l'altro. */
   private const val RIPROVA_MS = 20_000L
 }
 
