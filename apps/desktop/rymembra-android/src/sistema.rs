@@ -598,15 +598,26 @@ pub fn senza_risparmio_batteria() -> Result<bool, Errore> {
     chiama("sistema.senzaRisparmio", &())
 }
 
-/// Il nucleo avviato da un servizio non è partito (la libreria non si è aperta, o
-/// l'avvio è caduto): la notifica del sottofondo dice «a riposo» invece di «si sta
-/// avviando» per sempre. Non aspetta.
+#[derive(Serialize)]
+struct NonParte {
+    riprovabile: bool,
+}
+
+/// Il nucleo avviato da un servizio non è partito: la notifica del sottofondo non dice
+/// «si sta avviando» per sempre. Non aspetta.
+///
+/// `riprovabile` dice se riprovare ha senso: **sì** se la libreria non si è aperta e
+/// l'avvio non ha lasciato niente di vivo (l'attività che nasce dopo, o una nuova
+/// sveglia, lo rifà); **no** se è caduto a metà, e il nucleo — a pezzi — non si rifà
+/// senza chiudere il processo. Nel primo caso la notifica è «a riposo» e invita ad
+/// aprire l'app, e Kotlin lascia che una sveglia rilanci l'avvio; nel secondo dice di
+/// chiudere l'app dalle impostazioni e riaprirla.
 ///
 /// # Errori
 ///
 /// Se il ponte non risponde.
-pub fn nucleo_non_parte() -> Result<(), Errore> {
-    chiama("nucleo.nonParte", &())
+pub fn nucleo_non_parte(riprovabile: bool) -> Result<(), Errore> {
+    chiama("nucleo.nonParte", &NonParte { riprovabile })
 }
 
 /// Apre la pagina di sistema in cui si toglie il risparmio batteria a
@@ -825,6 +836,18 @@ mod prove {
         );
     }
 
+    /// Kotlin legge `riprovabile` da questo oggetto (`Ponte.kt`, `nucleo.nonParte`): il
+    /// nome del campo è un contratto.
+    #[test]
+    fn il_nucleo_che_non_parte_dice_se_riprovare_ha_senso() {
+        for riprovabile in [true, false] {
+            assert_eq!(
+                serde_json::to_value(NonParte { riprovabile }).unwrap(),
+                serde_json::json!({ "riprovabile": riprovabile })
+            );
+        }
+    }
+
     #[test]
     fn fuori_da_android_il_ponte_dice_che_non_c_e() {
         for esito in [
@@ -832,7 +855,7 @@ mod prove {
             partenza_con_auto_offerta().err(),
             sottofondo_spento_dalla_notifica().err(),
             senza_risparmio_batteria().err(),
-            nucleo_non_parte().err(),
+            nucleo_non_parte(true).err(),
             apri_risparmio_batteria().err(),
         ] {
             assert!(

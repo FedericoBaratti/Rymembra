@@ -118,8 +118,9 @@ impl StatoInsieme {
     }
 
     /// L'orecchio con cui far partire il filo, **una volta**: le chiamate dopo la
-    /// prima non trovano più niente. Così il filo lo avvia chi ha la finestra,
-    /// anche se lo stato lo ha creato il nucleo prima.
+    /// prima non trovano più niente. Così il filo lo avvia il nucleo sul computer e
+    /// la finestra sul telefono, con la stessa funzione (`avvia_il_filo_di_insieme`
+    /// in `lib.rs`), anche se lo stato lo ha creato il nucleo prima.
     #[must_use]
     pub fn prendi_l_orecchio(&self) -> Option<Receiver<()>> {
         self.orecchio

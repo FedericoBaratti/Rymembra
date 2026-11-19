@@ -27,7 +27,10 @@ function corpo(testo: string, firma: string): string {
 
 test("la cartella delle copertine lontane si ripulisce una volta all'avvio, dopo «Ascolta insieme», e solo lei", () => {
   const avvio = LIB.slice(LIB.indexOf("fn avvia_la_finestra("));
-  const insieme = avvio.indexOf("insieme::avvia_filo(");
+  // Il filo della sessione parte dal nucleo sul computer e dalla finestra sul telefono, con la
+  // stessa funzione: la finestra la chiama (non trova più niente da avviare sul computer), e la
+  // pulizia viene dopo.
+  const insieme = avvio.indexOf("avvia_il_filo_di_insieme(&nucleo)");
   const pulizia = avvio.indexOf("lontano::ripulisci_le_copertine_di_prima(&nucleo)");
   assert.ok(insieme > 0 && pulizia > insieme, "la pulizia viene dopo che la sessione c'è, per poterne chiedere");
   const fn = corpo(SFOGLIA, "pub(crate) fn ripulisci_le_copertine_di_prima(");

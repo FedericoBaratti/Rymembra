@@ -1974,6 +1974,8 @@
   "startup.updating": "Rymembra aggiorna la libreria…",
   "startup.updating.detail": "Rymembra prova prima a farne una copia, {copia}, accanto al database; se non c'è abbastanza spazio libero la salta e aggiorna lo stesso. Su una libreria grande può volerci qualche minuto.",
   "startup.updating.detail.telefono": "Rymembra prova prima a farne una copia; se non c'è abbastanza spazio libero la salta e aggiorna lo stesso. Su una libreria grande può volerci qualche minuto.",
+  "startup.failed": "Rymembra non è partita bene",
+  "startup.failed.detail": "Qualcosa è andato storto mentre partiva in sottofondo. Chiudila dalle impostazioni del telefono (Termina o Arresta) e riaprila: il diario ha i dettagli.",
   "settings.data.devices": "Dispositivi",
   "settings.update.title": "Aggiornamenti",
   "settings.update.toggle": "Controlla se ci sono aggiornamenti",

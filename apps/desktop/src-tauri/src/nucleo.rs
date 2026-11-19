@@ -103,8 +103,34 @@ struct Voce {
 /// Un ascoltatore del nucleo.
 type Ascoltatore = Arc<dyn Fn() + Send + Sync>;
 
-/// Un lavoro che aspetta la fine dell'avvio del nucleo.
-type Dopo = Box<dyn FnOnce() + Send>;
+/// Un lavoro che aspetta la fine dell'avvio del nucleo, e sa come è finito.
+type Dopo = Box<dyn FnOnce(Esito) + Send>;
+
+/// Come è finito un avvio del nucleo: lo dice chi lo ha fatto ([`Nucleo::avvio_chiuso`])
+/// e lo sa chi lo aspetta ([`Nucleo::dopo_l_avvio`]).
+///
+/// # Perché non basta «finito»
+///
+/// Un avvio che non riesce non è un avvio finito: se lo fosse, chi arriva dopo —
+/// l'attività che nasce dopo un servizio che non ha potuto aprire la libreria —
+/// troverebbe un nucleo «c'è già», lo prenderebbe per buono e non lo riproverebbe
+/// mai; e `Nucleo::manage` tiene il primo valore per tipo, quindi il guasto di
+/// prima resterebbe lì per tutta la vita del processo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Esito {
+    /// Il nucleo c'è, intero.
+    Riuscito,
+    /// Non è partito, e **non ha lasciato niente di vivo**: la libreria non si è
+    /// aperta, e prima di quel punto l'avvio non ha fatto nascere un filo. Chi
+    /// arriva dopo può rifarlo da zero ([`Nucleo::reclama_l_avvio`] dà di nuovo
+    /// [`ChiAvvia::Tu`]).
+    Fallito,
+    /// È caduto a metà, dopo aver fatto nascere dei fili e registrato degli stati:
+    /// il nucleo c'è in parte, e **non** si rifà (un secondo lettore, un secondo
+    /// motore audio, un secondo filo di rete sullo stesso processo sono peggio del
+    /// guasto). Chi arriva dopo non lo monta: lo dice, e il processo va chiuso.
+    Rotto,
+}
 
 /// A che punto è l'avvio del nucleo: vedi [`Nucleo::reclama_l_avvio`].
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -113,8 +139,24 @@ enum Fase {
     DaFare,
     /// Qualcuno ha cominciato.
     InCorso,
-    /// Finito.
+    /// Finito, e il nucleo c'è ([`Esito::Riuscito`]).
     Finito,
+    /// Non è partito e non ha lasciato niente ([`Esito::Fallito`]): si può rifare.
+    Fallito,
+    /// Caduto a metà ([`Esito::Rotto`]): non si rifà.
+    Rotto,
+}
+
+impl Fase {
+    /// L'esito di un avvio chiuso, se questa fase lo è.
+    fn esito(self) -> Option<Esito> {
+        match self {
+            Self::DaFare | Self::InCorso => None,
+            Self::Finito => Some(Esito::Riuscito),
+            Self::Fallito => Some(Esito::Fallito),
+            Self::Rotto => Some(Esito::Rotto),
+        }
+    }
 }
 
 /// L'avvio, e quel che aspetta che finisca.
@@ -133,6 +175,8 @@ pub enum ChiAvvia {
     GiaInCorso,
     /// È già partito.
     GiaFinito,
+    /// È caduto a metà ([`Esito::Rotto`]) e non si rifà.
+    Rotto,
 }
 
 struct Dentro {
@@ -378,36 +422,51 @@ impl Nucleo {
     }
 
     /// Chi avvia il nucleo di questo processo? Il primo che lo chiede: lui lo avvia
-    /// e alla fine dice [`Nucleo::avvio_finito`]; gli altri aspettano.
+    /// e alla fine dice [`Nucleo::avvio_chiuso`]; gli altri aspettano.
     ///
     /// È il modo in cui il servizio che parte all'accensione e l'attività che
     /// nasce dopo non avviano due volte la libreria e il lettore.
+    ///
+    /// Dopo un avvio [`Esito::Fallito`] l'avvio torna a chi lo chiede: nessuno ha
+    /// niente di vivo da proteggere, e il guasto di prima — la libreria che non si
+    /// apriva, magari per un disco pieno che adesso non lo è più — si riprova.
     pub fn reclama_l_avvio(&self) -> ChiAvvia {
         let mut avvio = self.0.avvio.lock().unwrap_or_else(PoisonError::into_inner);
         match avvio.fase {
-            Fase::DaFare => {
+            Fase::DaFare | Fase::Fallito => {
                 avvio.fase = Fase::InCorso;
                 ChiAvvia::Tu
             }
             Fase::InCorso => ChiAvvia::GiaInCorso,
             Fase::Finito => ChiAvvia::GiaFinito,
+            Fase::Rotto => ChiAvvia::Rotto,
         }
     }
 
-    /// L'avvio è finito: parte il lavoro di chi aspettava.
+    /// L'avvio è finito, e il nucleo c'è: parte il lavoro di chi aspettava.
     pub fn avvio_finito(&self) {
+        self.avvio_chiuso(Esito::Riuscito);
+    }
+
+    /// L'avvio è chiuso, comunque sia andata: la fase dice come, e parte il lavoro
+    /// di chi aspettava, che lo sa ([`Nucleo::dopo_l_avvio`]).
+    pub fn avvio_chiuso(&self, esito: Esito) {
         let da_fare = {
             let mut avvio = self.0.avvio.lock().unwrap_or_else(PoisonError::into_inner);
-            avvio.fase = Fase::Finito;
+            avvio.fase = match esito {
+                Esito::Riuscito => Fase::Finito,
+                Esito::Fallito => Fase::Fallito,
+                Esito::Rotto => Fase::Rotto,
+            };
             std::mem::take(&mut avvio.dopo)
         };
         for lavoro in da_fare {
-            lavoro();
+            lavoro(esito);
         }
     }
 
-    /// L'avvio è già finito, di chi che sia: il nucleo c'è, e chi arriva dopo — la
-    /// finestra che nasce dopo un servizio — non lo avvia, si aggancia.
+    /// L'avvio è già finito **e il nucleo c'è**: chi arriva dopo — la finestra che
+    /// nasce dopo un servizio — non lo avvia, si aggancia.
     #[must_use]
     pub fn e_gia_avviato(&self) -> bool {
         self.0
@@ -418,19 +477,96 @@ impl Nucleo {
             == Fase::Finito
     }
 
-    /// Fa `lavoro` quando l'avvio è finito: subito, se lo è già, sul filo che
-    /// chiama; altrimenti sul filo che lo finisce.
+    /// Fa `lavoro` quando l'avvio è chiuso, dicendogli come è andata: subito, se lo
+    /// è già, sul filo che chiama; altrimenti sul filo che lo chiude.
     ///
     /// Se nessuno ha ancora cominciato l'avvio, il lavoro si accoda lo stesso e
     /// parte quando qualcuno lo avrà fatto: accodarsi non è cominciare.
-    pub fn dopo_l_avvio(&self, lavoro: impl FnOnce() + Send + 'static) {
+    pub fn dopo_l_avvio(&self, lavoro: impl FnOnce(Esito) + Send + 'static) {
         let mut avvio = self.0.avvio.lock().unwrap_or_else(PoisonError::into_inner);
-        if avvio.fase == Fase::Finito {
+        if let Some(esito) = avvio.fase.esito() {
             drop(avvio);
-            lavoro();
+            lavoro(esito);
         } else {
             avvio.dopo.push(Box::new(lavoro));
         }
+    }
+}
+
+/// Chiude l'avvio del nucleo che parte da un servizio **comunque finisca** la
+/// funzione che lo fa, anche con un panico: la creano subito dopo aver reclamato
+/// l'avvio, e il `Drop` dice a [`Nucleo::avvio_chiuso`] come è andata.
+///
+/// Senza, un panico a metà lascerebbe l'avvio «in corso» per sempre, e la
+/// finestra che nasce dopo e lo aspetta resterebbe su «Apro la libreria…».
+///
+/// # Come decide l'esito
+///
+/// - [`GuardiaDellAvvio::riuscito`] chiamata, e nessun panico: [`Esito::Riuscito`].
+/// - Altrimenti, se [`GuardiaDellAvvio::la_libreria_c_e`] era già stata chiamata —
+///   da lì in poi l'avvio fa nascere fili e registra stati —: [`Esito::Rotto`].
+/// - Altrimenti: [`Esito::Fallito`]. La libreria non si è aperta, e fin lì non è
+///   nato niente che un secondo tentativo possa raddoppiare.
+///
+/// Se l'esito non è `Riuscito` lo dice anche a chi ha messo `avvisa` (su Android,
+/// Kotlin, che altrimenti lascerebbe la notifica su «si sta avviando» per sempre).
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(
+        dead_code,
+        reason = "la usa solo il servizio di Android, che avvia il nucleo senza finestra; le prove la provano"
+    )
+)]
+pub struct GuardiaDellAvvio {
+    nucleo: Nucleo,
+    avvisa: Box<dyn Fn(Esito) + Send>,
+    libreria: bool,
+    riuscito: bool,
+}
+
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(
+        dead_code,
+        reason = "la usa solo il servizio di Android, che avvia il nucleo senza finestra; le prove la provano"
+    )
+)]
+impl GuardiaDellAvvio {
+    /// La guardia di un avvio appena reclamato.
+    pub fn nuova(nucleo: Nucleo, avvisa: impl Fn(Esito) + Send + 'static) -> Self {
+        Self {
+            nucleo,
+            avvisa: Box::new(avvisa),
+            libreria: false,
+            riuscito: false,
+        }
+    }
+
+    /// La libreria è aperta e il nucleo sta per cominciare a farsi: da qui un
+    /// avvio che cade lascia un nucleo a metà, e non si rifà.
+    pub fn la_libreria_c_e(&mut self) {
+        self.libreria = true;
+    }
+
+    /// L'avvio è arrivato in fondo.
+    pub fn riuscito(&mut self) {
+        self.riuscito = true;
+    }
+}
+
+impl Drop for GuardiaDellAvvio {
+    fn drop(&mut self) {
+        let esito = if self.riuscito && !std::thread::panicking() {
+            Esito::Riuscito
+        } else if self.libreria {
+            Esito::Rotto
+        } else {
+            Esito::Fallito
+        };
+        if esito != Esito::Riuscito {
+            (self.avvisa)(esito);
+        }
+        self.nucleo.avvio_chiuso(esito);
     }
 }
 
@@ -634,7 +770,8 @@ mod prove {
         assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::GiaInCorso);
         let fatto = Arc::new(AtomicUsize::new(0));
         let dentro = Arc::clone(&fatto);
-        nucleo.dopo_l_avvio(move || {
+        nucleo.dopo_l_avvio(move |esito| {
+            assert_eq!(esito, Esito::Riuscito);
             dentro.fetch_add(1, Ordering::SeqCst);
         });
         assert_eq!(fatto.load(Ordering::SeqCst), 0, "aspetta la fine");
@@ -642,7 +779,7 @@ mod prove {
         assert_eq!(fatto.load(Ordering::SeqCst), 1, "parte alla fine");
         assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::GiaFinito);
         let dentro = Arc::clone(&fatto);
-        nucleo.dopo_l_avvio(move || {
+        nucleo.dopo_l_avvio(move |_| {
             dentro.fetch_add(10, Ordering::SeqCst);
         });
         assert_eq!(
@@ -657,7 +794,7 @@ mod prove {
         let nucleo = Nucleo::nuovo();
         let fatto = Arc::new(AtomicUsize::new(0));
         let dentro = Arc::clone(&fatto);
-        nucleo.dopo_l_avvio(move || {
+        nucleo.dopo_l_avvio(move |_| {
             dentro.fetch_add(1, Ordering::SeqCst);
         });
         assert_eq!(fatto.load(Ordering::SeqCst), 0);
@@ -668,5 +805,165 @@ mod prove {
         );
         nucleo.avvio_finito();
         assert_eq!(fatto.load(Ordering::SeqCst), 1);
+    }
+
+    /// R1, il caso A: la libreria non si apre al boot. L'avvio che non è riuscito
+    /// **non** è finito: `e_gia_avviato` dice no, e l'attività che nasce dopo — o
+    /// un secondo tentativo del servizio — riceve di nuovo l'avvio, invece di
+    /// agganciarsi a un nucleo che non c'è e di mostrare per sempre lo stesso guasto.
+    #[test]
+    fn un_avvio_fallito_non_resta_finito_e_chi_arriva_dopo_lo_rifa() {
+        let nucleo = Nucleo::nuovo();
+        assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::Tu);
+        nucleo.avvio_chiuso(Esito::Fallito);
+        assert!(
+            !nucleo.e_gia_avviato(),
+            "un avvio fallito si dà per avviato: l'attività si aggancia a un nucleo che non c'è"
+        );
+        assert_eq!(
+            nucleo.reclama_l_avvio(),
+            ChiAvvia::Tu,
+            "dopo un avvio fallito l'avvio non torna a nessuno"
+        );
+        assert_eq!(
+            nucleo.reclama_l_avvio(),
+            ChiAvvia::GiaInCorso,
+            "e il secondo tentativo ha il suo reclamo, una volta sola"
+        );
+        nucleo.avvio_finito();
+        assert!(nucleo.e_gia_avviato());
+        assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::GiaFinito);
+    }
+
+    /// R1, il caso B: un nucleo caduto a metà non si rifà (nascerebbero due lettori
+    /// e due motori audio) e non si dà per buono: chi arriva dopo lo sa.
+    #[test]
+    fn un_avvio_caduto_a_meta_non_si_rifa_e_non_si_da_per_buono() {
+        let nucleo = Nucleo::nuovo();
+        assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::Tu);
+        nucleo.avvio_chiuso(Esito::Rotto);
+        assert!(
+            !nucleo.e_gia_avviato(),
+            "un nucleo a metà si dà per avviato"
+        );
+        assert_eq!(
+            nucleo.reclama_l_avvio(),
+            ChiAvvia::Rotto,
+            "un nucleo a metà si rifà da capo, con fili doppi"
+        );
+        assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::Rotto, "e resta così");
+    }
+
+    /// Chi aspetta la fine dell'avvio ne riceve l'esito, che sia già finito o no: è
+    /// su quello che l'attività sceglie se agganciarsi, rifare l'avvio o dire che
+    /// il nucleo non è partito.
+    #[test]
+    fn chi_aspetta_la_fine_dell_avvio_ne_riceve_l_esito() {
+        for (chiuso, atteso) in [
+            (Esito::Riuscito, Esito::Riuscito),
+            (Esito::Fallito, Esito::Fallito),
+            (Esito::Rotto, Esito::Rotto),
+        ] {
+            // Accodato prima.
+            let nucleo = Nucleo::nuovo();
+            nucleo.reclama_l_avvio();
+            let ricevuto = Arc::new(Mutex::new(None));
+            let dentro = Arc::clone(&ricevuto);
+            nucleo.dopo_l_avvio(move |esito| *dentro.lock().unwrap() = Some(esito));
+            assert_eq!(*ricevuto.lock().unwrap(), None, "parte prima della fine");
+            nucleo.avvio_chiuso(chiuso);
+            assert_eq!(
+                *ricevuto.lock().unwrap(),
+                Some(atteso),
+                "accodato: {chiuso:?}"
+            );
+            // Arrivato dopo.
+            let dentro = Arc::new(Mutex::new(None));
+            let la_stessa = Arc::clone(&dentro);
+            nucleo.dopo_l_avvio(move |esito| *la_stessa.lock().unwrap() = Some(esito));
+            assert_eq!(*dentro.lock().unwrap(), Some(atteso), "dopo: {chiuso:?}");
+        }
+    }
+
+    /// Una guardia che registra a Kotlin (o a chi per lui) come è finito l'avvio.
+    fn guardia_con_registro(nucleo: &Nucleo) -> (GuardiaDellAvvio, Arc<Mutex<Vec<Esito>>>) {
+        let dette = Arc::new(Mutex::new(Vec::new()));
+        let dentro = Arc::clone(&dette);
+        let guardia = GuardiaDellAvvio::nuova(nucleo.clone(), move |esito| {
+            dentro.lock().unwrap().push(esito);
+        });
+        (guardia, dette)
+    }
+
+    /// La guardia chiude l'avvio comunque finisca la funzione, e dice l'esito vero.
+    #[test]
+    fn la_guardia_chiude_l_avvio_e_dice_come_e_andata() {
+        // Arrivato in fondo: riuscito, e a Kotlin non si dice niente.
+        let nucleo = Nucleo::nuovo();
+        nucleo.reclama_l_avvio();
+        {
+            let (mut guardia, dette) = guardia_con_registro(&nucleo);
+            guardia.la_libreria_c_e();
+            guardia.riuscito();
+            drop(guardia);
+            assert!(dette.lock().unwrap().is_empty());
+        }
+        assert!(nucleo.e_gia_avviato());
+
+        // La libreria non si è aperta: fallito, e Kotlin lo sa. Si può rifare.
+        let nucleo = Nucleo::nuovo();
+        nucleo.reclama_l_avvio();
+        let (guardia, dette) = guardia_con_registro(&nucleo);
+        drop(guardia);
+        assert_eq!(*dette.lock().unwrap(), vec![Esito::Fallito]);
+        assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::Tu);
+
+        // Finito senza dire «riuscito» dopo che la libreria c'era: a metà.
+        let nucleo = Nucleo::nuovo();
+        nucleo.reclama_l_avvio();
+        let (mut guardia, dette) = guardia_con_registro(&nucleo);
+        guardia.la_libreria_c_e();
+        drop(guardia);
+        assert_eq!(*dette.lock().unwrap(), vec![Esito::Rotto]);
+        assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::Rotto);
+    }
+
+    /// Un panico dentro l'avvio — dopo che la libreria c'era, cioè con dei fili già
+    /// nati — non porta il nucleo a «finito»: è `Rotto`, e la pagina non monta.
+    #[test]
+    fn un_panico_a_meta_dell_avvio_lascia_un_nucleo_rotto_e_non_finito() {
+        let nucleo = Nucleo::nuovo();
+        nucleo.reclama_l_avvio();
+        let (guardia, dette) = guardia_con_registro(&nucleo);
+        let esito = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let mut guardia = guardia;
+            guardia.la_libreria_c_e();
+            // Anche una guardia che ha già detto «riuscito» non salva un panico.
+            guardia.riuscito();
+            panic!("un panico dentro avvia_il_nucleo");
+        }));
+        assert!(esito.is_err());
+        assert!(
+            !nucleo.e_gia_avviato(),
+            "dopo un panico a metà il nucleo risulta avviato: la pagina monta su un nucleo a metà"
+        );
+        assert_eq!(*dette.lock().unwrap(), vec![Esito::Rotto]);
+        assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::Rotto);
+    }
+
+    /// Un panico prima che la libreria ci sia non lascia niente di vivo: fallito, si
+    /// può rifare.
+    #[test]
+    fn un_panico_prima_della_libreria_lascia_un_avvio_da_rifare() {
+        let nucleo = Nucleo::nuovo();
+        nucleo.reclama_l_avvio();
+        let (guardia, dette) = guardia_con_registro(&nucleo);
+        let esito = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guardia = guardia;
+            panic!("un panico prima della libreria");
+        }));
+        assert!(esito.is_err());
+        assert_eq!(*dette.lock().unwrap(), vec![Esito::Fallito]);
+        assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::Tu);
     }
 }

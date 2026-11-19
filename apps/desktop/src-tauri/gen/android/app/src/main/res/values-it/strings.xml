@@ -54,6 +54,8 @@
     <string name="presenza_titolo_avvio">Rymembra si sta avviando</string>
     <string name="presenza_titolo_riposo">Rymembra è a riposo</string>
     <string name="presenza_testo_riposo">Apri Rymembra perché i tuoi dispositivi raggiungano di nuovo questo telefono.</string>
+    <string name="presenza_titolo_rotto">Rymembra non è partita bene</string>
+    <string name="presenza_testo_rotto">Chiudi Rymembra dalle impostazioni del telefono (Termina o Arresta) e riaprila.</string>
     <string name="presenza_spegni">Spegni</string>
 
     <string name="aggiornamento_canale">Aggiornamenti dell\'app</string>

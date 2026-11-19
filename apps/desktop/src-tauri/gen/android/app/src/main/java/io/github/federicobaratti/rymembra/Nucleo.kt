@@ -58,7 +58,7 @@ object Nucleo {
     principale.post {
       pronto = true
       // Se un tentativo di prima era fallito, adesso il nucleo c'è: via «a riposo».
-      Ponte.segnaNucleoNonParte(false)
+      Ponte.segnaNucleoParte()
       Sessione.nucleoPronto()
       // La notifica del sottofondo passa da «si sta avviando» a «è attiva».
       Presenza.rinfresca(contesto)

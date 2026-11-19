@@ -3,6 +3,7 @@ package io.github.federicobaratti.rymembra
 import android.content.Context
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
@@ -45,6 +46,7 @@ object Ponte {
 
   @Volatile private var contesto: Context? = null
   @Volatile private var attivita = WeakReference<MainActivity>(null)
+  private val principale = Handler(Looper.getMainLooper())
 
   /**
    * L'attività è in vista: fra `onStart` e `onStop`. Con la musica che suona
@@ -96,7 +98,10 @@ object Ponte {
    */
   private var attivitaGiaNata = false
 
-  /** Il servizio ha già fatto entrare Rust, e l'avvio è riuscito: una volta sola per processo. Filo principale. */
+  /**
+   * Il servizio ha già fatto entrare Rust per questo tentativo: finché non dice «non parte» e
+   * riprovabile ([segnaNucleoNonParte]) non si rientra. Filo principale.
+   */
   private var nucleoAvviatoDalServizio = false
 
   /**
@@ -115,9 +120,40 @@ object Ponte {
   @Volatile var nucleoNonParte = false
     private set
 
-  /** Rust dice che il nucleo non è partito (`nucleo.nonParte`), o che adesso c'è ([Nucleo.pronta]). */
-  fun segnaNucleoNonParte(valore: Boolean) {
-    nucleoNonParte = valore
+  /**
+   * Il nucleo è caduto **a metà** (un panico dopo che la libreria era aperta): ha fili
+   * vivi e stati registrati, riprovare lo raddoppierebbe, e non si rifà senza chiudere il
+   * processo. La notifica lo dice, e dice cosa fare; la pagina non monta (`nonParte` in
+   * `libreria_fase`). Se è falso e [nucleoNonParte] è vero, l'avvio non ha lasciato niente
+   * e si può rifare.
+   */
+  @Volatile var nucleoRotto = false
+    private set
+
+  /**
+   * Rust dice che il nucleo non è partito (`nucleo.nonParte`).
+   *
+   * `riprovabile`: la libreria non si è aperta e l'avvio non ha lasciato niente di vivo.
+   * Allora il segno «già avviato dal servizio» si toglie, perché il tentativo seguente
+   * — una sveglia ([Nucleo.sveglia]), che non è più di una ogni venti secondi — lo
+   * rilanci davvero: senza, il guasto di un avvio durava quanto il processo. Il
+   * segno è del filo principale, e sul filo principale si toglie: dopo che
+   * [avviaIlNucleo], che lo ha appena alzato, è tornata.
+   *
+   * Niente si riprova da solo: l'avvio si rifà quando qualcuno lo chiede (l'attività che
+   * nasce, o una sveglia), e un avvio che fallisce sempre — un disco pieno — non tiene
+   * il processo in un ciclo.
+   */
+  fun segnaNucleoNonParte(riprovabile: Boolean) {
+    nucleoRotto = !riprovabile
+    nucleoNonParte = true
+    if (riprovabile) principale.post { nucleoAvviatoDalServizio = false }
+  }
+
+  /** Il nucleo c'è ([Nucleo.pronta]): niente più «non parte», né «rotto». */
+  fun segnaNucleoParte() {
+    nucleoNonParte = false
+    nucleoRotto = false
   }
 
   /**
@@ -140,9 +176,13 @@ object Ponte {
       // rispondono già.
       if (contesto == null) contesto = applicazione
       Rete.osserva(applicazione)
+      // Un tentativo nuovo: il segno di quello di prima si toglie **prima** di entrare in
+      // Rust, che può dire di nuovo «non parte» da un filo suo prima che la chiamata torni
+      // (e un segno tolto dopo cancellerebbe quel «non parte»).
+      nucleoNonParte = false
+      nucleoRotto = false
       avviaNucleo(applicazione, applicazione.dataDir.absolutePath, true)
       nucleoAvviatoDalServizio = true
-      nucleoNonParte = false
     } catch (e: Throwable) {
       nucleoNonParte = true
       Log.e("Rymembra", "il nucleo non parte dal servizio", e)
@@ -250,8 +290,9 @@ object Ponte {
       // Il nucleo avviato dal servizio non è partito (la libreria non si apre, o è
       // caduto): la notifica del sottofondo non dice «si sta avviando» per sempre.
       "nucleo.nonParte" -> {
-        segnaNucleoNonParte(true)
-        Presenza.rinfresca(contesto())
+        segnaNucleoNonParte(a.optBoolean("riprovabile", true))
+        val app = contesto()
+        principale.post { Presenza.rinfresca(app) }
         null
       }
 
