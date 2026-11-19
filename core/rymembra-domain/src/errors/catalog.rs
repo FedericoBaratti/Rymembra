@@ -795,6 +795,14 @@ catalogo! {
     /// Un gesto che in sessione non si può fare: la radio, lo shuffle, il
     /// timer, o svuotare la coda da chi segue.
     InsiemeGestoNonDisponibile = "insieme.gestoNonDisponibile", Insieme, Info, Never, None, { gesto: String };
+    /// Un brano di un altro dispositivo collegato — una riga della libreria unica
+    /// che sta solo là — in una sessione di «Ascolta insieme».
+    ///
+    /// Una sessione si fa coi brani di questo dispositivo: chi ospita offrirebbe
+    /// agli altri un file che raggiunge solo attraverso un terzo dispositivo
+    /// (§4.7). Separato da `insieme.gestoNonDisponibile`, che dice solo «questo
+    /// non si può fare»: qui la frase dice perché, e cosa fare.
+    InsiemeBraniAltrui = "insieme.braniAltrui", Insieme, Info, Never, None;
     /// Un gesto di chi segue che chi ospita non gli ha concesso: chi è entrato
     /// per ascoltare non comanda, e chi comanda non tocca la coda.
     ///

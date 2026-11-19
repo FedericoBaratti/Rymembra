@@ -138,16 +138,15 @@ pub(super) fn voci_allineate(
 ///
 /// # Errori
 ///
-/// `insieme.gestoNonDisponibile` se una delle righe è una riga specchio; quelli
-/// della libreria.
+/// `insieme.braniAltrui` se una delle righe è una riga specchio — la frase dice che
+/// i brani di un altro dispositivo non entrano in una sessione —; quelli della
+/// libreria.
 pub(super) fn rifiuta_le_righe_lontane(
     connection: &rusqlite::Connection,
     righe: &[i64],
 ) -> Result<(), AppError> {
     if rymembra_app::specchio::archivio::tra_le_righe_specchio(connection, righe)? {
-        return Err(AppError::new(ErrorCode::InsiemeGestoNonDisponibile {
-            gesto: "lontano".to_owned(),
-        }));
+        return Err(AppError::new(ErrorCode::InsiemeBraniAltrui));
     }
     Ok(())
 }
