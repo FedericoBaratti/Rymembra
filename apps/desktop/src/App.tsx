@@ -208,6 +208,7 @@ import {
   ugualiOrigini,
   perIlNucleo,
   primoSpento,
+  rigaSuonabile,
   statoDellaRiga,
   suonabili,
   vistaPerIlFiltro,
@@ -2037,14 +2038,24 @@ export function App() {
    * della lista salta le righe di un dispositivo spento (`suonabili`), e una lista
    * senza niente di suonabile dice la stessa cosa invece di mandare al lettore un
    * elenco vuoto.
+   *
+   * «Grigia» vuol dire che non si suona: una riga di un dispositivo spento che ha
+   * una copia di qui (`copiaQui`) si suona lo stesso, con la copia, e non è
+   * grigia — il nucleo sceglie la copia quando il dispositivo tace (D1 del
+   * collaudo del 18/11).
    */
   const suonaDa = useCallback(
     async (elenco: Brano[], indice: number, daUnaRiga = true) => {
       const pannello = archivioLontano.leggi();
       const toccata = elenco[indice];
       if (daUnaRiga && toccata !== undefined) {
-        const riga = statoDellaRiga(toccata.path, pannello, toccata.inGrazia === true);
-        if (riga?.spenta === true) {
+        const riga = statoDellaRiga(
+          toccata.path,
+          pannello,
+          toccata.inGrazia === true,
+          toccata.copiaQui === true,
+        );
+        if (!rigaSuonabile(riga)) {
           avvisaNonRaggiungibile(riga);
           return;
         }
@@ -2931,8 +2942,9 @@ export function App() {
         premuto?.path,
         archivioLontano.leggi(),
         premuto?.inGrazia === true,
+        premuto?.copiaQui === true,
       );
-      if (grigia?.spenta === true) {
+      if (!rigaSuonabile(grigia)) {
         avvisaNonRaggiungibile(grigia);
         return;
       }

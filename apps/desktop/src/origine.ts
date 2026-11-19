@@ -135,10 +135,31 @@ export interface StatoDellaRiga {
   /** Non si può suonare adesso: il dispositivo non risponde, o non è più collegato. */
   spenta: boolean;
   /**
+   * Di questo brano c'è una copia anche **qui**, nascosta dietro questa riga:
+   * se il dispositivo non risponde il nucleo suona quella (`copia_da_suonare`).
+   * `spenta` resta vera — il dispositivo non risponde, e «Scarica qui» non può
+   * chiedergli niente — ma la riga non è da dire irraggiungibile: vedi
+   * [`rigaSuonabile`]. Presente — e `true` — solo allora.
+   */
+  copiaQui?: true;
+  /**
    * Il dispositivo risponde, ma non manda più questo brano: la riga resta per la
    * grazia, e la sua voce di playlist con lei. Presente — e `true` — solo allora.
    */
   inGrazia?: true;
+}
+
+/**
+ * La riga si suona adesso: il suo dispositivo risponde, o di quel brano c'è una
+ * copia di qui che il nucleo suona al suo posto. Una riga di qui lo è sempre.
+ *
+ * È **questa** la domanda di chi decide se un tocco suona, se una lista salta
+ * una riga e se una riga si disegna in grigio. `spenta` è un'altra — il
+ * dispositivo non risponde — e serve a chi deve chiedergli qualcosa, come
+ * «Scarica qui».
+ */
+export function rigaSuonabile(riga: StatoDellaRiga | null): boolean {
+  return riga === null || !riga.spenta || riga.copiaQui === true;
 }
 
 /**
@@ -148,11 +169,16 @@ export interface StatoDellaRiga {
  * mentre la finestra aveva ancora la lista — è spenta, e di nome non ne ha.
  * Con il pannello che non è ancora arrivato la riga non si dice spenta: finché
  * non si sa, un grigio sarebbe un'invenzione.
+ *
+ * `copiaQui`: la riga ha una copia di qui nascosta dietro (`Brano.copiaQui`, che
+ * il nucleo calcola). Una riga in grazia non l'ha mai: non si suona in nessun
+ * caso.
  */
 export function statoDellaRiga(
   percorso: string | null | undefined,
   stato: StatoLontano | null,
   inGrazia = false,
+  copiaQui = false,
 ): StatoDellaRiga | null {
   const chiave = dispositivoDellaRiga(percorso);
   if (chiave === null) return null;
@@ -169,14 +195,16 @@ export function statoDellaRiga(
       inGrazia: true,
     };
   }
-  if (stato === null) return { chiave, nome: "", telefono: false, spenta: false };
+  const conCopia = copiaQui ? ({ copiaQui: true } as const) : {};
+  if (stato === null) return { chiave, nome: "", telefono: false, spenta: false, ...conCopia };
   const suo = stato.dispositivi.find((d) => d.chiave === chiave && !d.revocato);
-  if (suo === undefined) return { chiave, nome: "", telefono: false, spenta: true };
+  if (suo === undefined) return { chiave, nome: "", telefono: false, spenta: true, ...conCopia };
   return {
     chiave,
     nome: suo.nome,
     telefono: suo.piattaforma === "android",
     spenta: !suo.online,
+    ...conCopia,
   };
 }
 
@@ -186,18 +214,24 @@ export function statoDellaRiga(
  * intera; l'indice che si ritorna è il posto, nella lista che resta, della
  * prima riga suonabile da lì in poi.
  *
- * Una lista senza niente di suonabile torna vuota: chi chiama lo dice — con
- * l'avviso, non con un errore — e non manda niente al lettore.
+ * Una riga il cui dispositivo non risponde ma che ha una copia di qui resta: il
+ * nucleo suona la copia ([`rigaSuonabile`]). Una lista senza niente di suonabile
+ * torna vuota: chi chiama lo dice — con l'avviso, non con un errore — e non manda
+ * niente al lettore.
  */
-export function suonabili<T extends { path: string | null; inGrazia?: boolean }>(
-  brani: readonly T[],
-  da: number,
-  stato: StatoLontano | null,
-): { brani: T[]; indice: number } {
+export function suonabili<
+  T extends { path: string | null; inGrazia?: boolean; copiaQui?: boolean },
+>(brani: readonly T[], da: number, stato: StatoLontano | null): { brani: T[]; indice: number } {
   const tenuti: T[] = [];
   let indice = 0;
   brani.forEach((brano, posto) => {
-    if (statoDellaRiga(brano.path, stato, brano.inGrazia === true)?.spenta === true) return;
+    const riga = statoDellaRiga(
+      brano.path,
+      stato,
+      brano.inGrazia === true,
+      brano.copiaQui === true,
+    );
+    if (!rigaSuonabile(riga)) return;
     if (posto < da) indice += 1;
     tenuti.push(brano);
   });

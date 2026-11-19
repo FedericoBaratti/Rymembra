@@ -7698,12 +7698,21 @@ fn tutti_mostra_una_voce_per_brano_e_locale_e_dispositivo_le_righe_di_ognuno() {
             |r| r.get(0),
         )
         .expect("album del pc");
+    // Il disco di qui e quello del PC hanno la stessa chiave d'album (D4 del collaudo
+    // del 18/11: lo stesso disco su due dispositivi è una scheda sola), e «Tutti»
+    // ne mostra i brani che i doppioni scelgono: quelli di qui, che stanno davanti.
     assert_eq!(
         album_tracks(c, &tutti, &chiave_del_pc)
             .expect("album")
             .len(),
-        0,
-        "in «Tutti» il disco del PC sta dietro il nostro"
+        2,
+        "in «Tutti» il disco del PC è il nostro, coi brani di qui davanti"
+    );
+    assert_eq!(
+        album_tracks(c, &locale, &chiave_del_pc)
+            .expect("album")
+            .len(),
+        2
     );
     assert_eq!(
         album_tracks(c, &del_pc, &chiave_del_pc)

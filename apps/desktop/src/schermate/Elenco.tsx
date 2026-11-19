@@ -26,6 +26,7 @@ import { Stelle } from "../Stelle";
 import { eLaLettera } from "../tasti";
 import { useVirtuale } from "../virtuale";
 import { MOBILE } from "../piattaforma";
+import { rigaSuonabile } from "../origine";
 
 /** Quel che dentro una riga ha un mestiere suo, e un tocco non deve scavalcare. */
 const TASTI_DELLA_RIGA = "button, input, a, [role='slider'], [role='radio']";
@@ -200,7 +201,7 @@ const RigaBrano = memo(function RigaBrano({
 
   // Di un altro dispositivo, e se risponde: l'icona accanto al titolo e, se non
   // risponde, la riga in grigio. Una riga di qui non iscrive niente a niente.
-  const lontana = useStatoDellaRiga(brano.path, brano.inGrazia === true);
+  const lontana = useStatoDellaRiga(brano.path, brano.inGrazia === true, brano.copiaQui === true);
 
   /**
    * `Alt+↑↓` sposta la riga.
@@ -265,8 +266,8 @@ const RigaBrano = memo(function RigaBrano({
       /* Un dispositivo che non risponde: la riga resta, in grigio. Sta nell'albero
          come «non disponibile» ma tiene il fuoco e il menù: i preferiti e le stelle
          partono lo stesso, e il tocco dice chi non risponde invece di suonare. */
-      aria-disabled={lontana?.spenta === true ? true : undefined}
-      data-spenta={lontana?.spenta === true ? true : undefined}
+      aria-disabled={rigaSuonabile(lontana) ? undefined : true}
+      data-spenta={rigaSuonabile(lontana) ? undefined : true}
       data-active={attivo || undefined}
       data-scelta={selezionato || undefined}
       data-sopra={sopra || undefined}

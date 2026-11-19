@@ -32,6 +32,9 @@ pub(crate) mod comuni;
 pub mod convalida;
 pub mod doppioni;
 #[cfg(test)]
+#[path = "specchio/prove_fc1.rs"]
+mod fc1;
+#[cfg(test)]
 #[path = "specchio/prove_gesti.rs"]
 mod gesti;
 #[cfg(test)]
