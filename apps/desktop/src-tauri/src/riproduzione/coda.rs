@@ -1024,7 +1024,13 @@ pub fn coda_riordina_ora(
 /// svuota l'anello, e svuotarlo vuole il flusso sveglio. Vedi
 /// `super::sveglia_fuori_dal_lucchetto`.
 #[tauri::command]
-pub fn coda_svuota(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+pub async fn coda_svuota(app: tauri::AppHandle) -> Esito<()> {
+    super::col_lettore_in_fila(app, "svuota la coda", coda_svuota_ora).await
+}
+
+/// [`coda_svuota`], sul posto: il lavoro sta qui, e il comando lo mette in
+/// fila sulla corsia del lettore (`crate::corsia`).
+pub fn coda_svuota_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::CodaSvuota).map_err(errore)? {
         return Ok(());
     }

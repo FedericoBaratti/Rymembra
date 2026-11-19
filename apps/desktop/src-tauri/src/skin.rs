@@ -44,6 +44,7 @@ use rymembra_skin::package::limits::MAX_ARCHIVE_BYTES;
 use serde::Serialize;
 use tauri::State;
 
+use crate::disparte::leggi_la_libreria;
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
@@ -1573,8 +1574,12 @@ fn accento_scelto(connection: &rusqlite::Connection) -> bool {
 
 /// Se l'accento debba seguire la copertina.
 #[tauri::command]
-pub fn accento_dinamico(stato: State<'_, Stato>) -> Esito<bool> {
-    con_libreria(&stato, |libreria| Ok(accento_scelto(&libreria.connection))).map_err(errore)
+pub async fn accento_dinamico(app: tauri::AppHandle) -> Esito<bool> {
+    leggi_la_libreria(app, "accento dinamico", |libreria| {
+        Ok(accento_scelto(&libreria.connection))
+    })
+    .await
+    .map_err(errore)
 }
 
 /// Accende o spegne l'accento dinamico. Riporta com'è rimasto.

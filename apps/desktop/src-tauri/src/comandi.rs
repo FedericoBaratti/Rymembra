@@ -21,7 +21,8 @@ use rymembra_domain::paths::PathRules;
 use serde::Serialize;
 use tauri::{Manager as _, State};
 
-use crate::disparte::{in_disparte, leggi_a_parte, leggi_la_libreria};
+use crate::corsia::LIBRERIA;
+use crate::disparte::{comanda, in_disparte, leggi_a_parte, leggi_la_libreria, stato_di};
 use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{DepositoStato, Stato, adesso_ms, con_libreria};
@@ -491,34 +492,35 @@ fn trasloca_ora(
 /// Una scelta non vuota passa le regole di forma di
 /// `procura::cartella_download_ammessa`, senza toccare il disco: vedi lì.
 #[tauri::command]
-pub fn imposta_cartella_download(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    percorso: String,
-) -> Esito<()> {
-    if !percorso.trim().is_empty() {
-        crate::procura::cartella_download_ammessa(&percorso).map_err(errore)?;
-    }
-    crate::nuvola::se_riuscito(
-        &app,
-        con_libreria(&stato, |libreria| {
-            let scelta = percorso.trim();
-            if scelta.is_empty() {
-                rymembra_app::settings::forget(
-                    &libreria.connection,
-                    rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
-                )
-                .map(|_| ())
-            } else {
-                rymembra_app::settings::write(
-                    &libreria.connection,
-                    rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
-                    scelta,
-                )
+pub async fn imposta_cartella_download(app: tauri::AppHandle, percorso: String) -> Esito<()> {
+    LIBRERIA
+        .comanda("cartella dei download", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            if !percorso.trim().is_empty() {
+                crate::procura::cartella_download_ammessa(&percorso).map_err(errore)?;
             }
+            crate::nuvola::se_riuscito(
+                &app,
+                con_libreria(&stato, |libreria| {
+                    let scelta = percorso.trim();
+                    if scelta.is_empty() {
+                        rymembra_app::settings::forget(
+                            &libreria.connection,
+                            rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
+                        )
+                        .map(|_| ())
+                    } else {
+                        rymembra_app::settings::write(
+                            &libreria.connection,
+                            rymembra_app::settings::CHIAVE_CARTELLA_DOWNLOAD,
+                            scelta,
+                        )
+                    }
+                })
+                .map_err(errore),
+            )
         })
-        .map_err(errore),
-    )
+        .await
 }
 
 /// I due numeri di una pagina, resi innocui.
@@ -1821,16 +1823,22 @@ pub async fn brani_album(
 /// quando due dispositivi si allineano. Senza, il cuoricino tolto qui
 /// tornerebbe indietro dal telefono.
 #[tauri::command]
-pub fn preferito(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    id: i64,
-    valore: bool,
-) -> Esito<()> {
+pub async fn preferito(app: tauri::AppHandle, id: i64, valore: bool) -> Esito<()> {
+    LIBRERIA
+        .comanda("preferito", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            preferito_ora(&app, &stato, id, valore)
+        })
+        .await
+}
+
+/// [`preferito`], sul posto: lo chiama anche il gesto «Mi piace» dell'auto
+/// (`auto::esegui`), dal filo dei gesti.
+pub fn preferito_ora(app: &tauri::AppHandle, stato: &Stato, id: i64, valore: bool) -> Esito<()> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     let mut da_svegliare: Vec<String> = Vec::new();
-    let esito = con_libreria(&stato, |libreria| {
+    let esito = con_libreria(stato, |libreria| {
         let now = adesso_ms();
         libreria
             .connection
@@ -1855,8 +1863,8 @@ pub fn preferito(
         Ok(())
     })
     .map_err(errore);
-    crate::lontano::posta_nuova(&app, &da_svegliare);
-    crate::nuvola::se_riuscito(&app, esito)
+    crate::lontano::posta_nuova(app, &da_svegliare);
+    crate::nuvola::se_riuscito(app, esito)
 }
 
 /// Apre la cartella di un brano in Esplora risorse, con il file selezionato.
@@ -2018,12 +2026,17 @@ pub fn brano_apri_pagina(stato: State<'_, Stato>, id: i64) -> Esito<()> {
 /// bisogno — `merge` confronta l'istante delle statistiche, non quello del
 /// singolo campo.
 #[tauri::command]
-pub fn valutazione(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    id: i64,
-    stelle: i64,
-) -> Esito<()> {
+pub async fn valutazione(app: tauri::AppHandle, id: i64, stelle: i64) -> Esito<()> {
+    LIBRERIA
+        .comanda("valutazione", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            valutazione_ora(&app, &stato, id, stelle)
+        })
+        .await
+}
+
+/// [`valutazione`], sul posto: vedi [`preferito_ora`].
+pub fn valutazione_ora(app: &tauri::AppHandle, stato: &Stato, id: i64, stelle: i64) -> Esito<()> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
     // Tagliato qui, non lasciato arrivare al database. Lo schema dichiara
@@ -2032,7 +2045,7 @@ pub fn valutazione(
     // solo un valore da riportare in scala.
     let stelle = stelle.clamp(0, 5);
     let mut da_svegliare: Vec<String> = Vec::new();
-    let esito = con_libreria(&stato, |libreria| {
+    let esito = con_libreria(stato, |libreria| {
         let now = adesso_ms();
         libreria
             .connection
@@ -2059,8 +2072,8 @@ pub fn valutazione(
         Ok(())
     })
     .map_err(errore);
-    crate::lontano::posta_nuova(&app, &da_svegliare);
-    crate::nuvola::se_riuscito(&app, esito)
+    crate::lontano::posta_nuova(app, &da_svegliare);
+    crate::nuvola::se_riuscito(app, esito)
 }
 
 /// Cosa porterebbe l'importazione dal vecchio database.
@@ -2125,7 +2138,9 @@ fn importa_interno(
 /// tema adesso sta nel database, quindi finisce nel backup — che è metà della
 /// ragione per cui ci è tornato.
 #[tauri::command]
-pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String) -> Esito<()> {
+pub async fn imposta_tema(app: tauri::AppHandle, tema: String) -> Esito<()> {
+    // La forma del valore si controlla subito, senza scomodare nessuna corsia:
+    // un tema che non esiste non aspetta niente e non scrive niente.
     let Some(scelto) = rymembra_app::preferenze::Tema::dal_nome(&tema) else {
         return Err(errore(AppError::new(
             rymembra_domain::errors::ErrorCode::IpcPayloadInvalid {
@@ -2134,13 +2149,18 @@ pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String
             },
         )));
     };
-    crate::nuvola::se_riuscito(
-        &app,
-        con_libreria(&stato, |libreria| {
-            rymembra_app::preferenze::imposta_tema(&libreria.connection, scelto)
+    LIBRERIA
+        .comanda("tema", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            crate::nuvola::se_riuscito(
+                &app,
+                con_libreria(&stato, |libreria| {
+                    rymembra_app::preferenze::imposta_tema(&libreria.connection, scelto)
+                })
+                .map_err(errore),
+            )
         })
-        .map_err(errore),
-    )
+        .await
 }
 
 /// Se chi guarda ha chiesto meno movimento di quanto la skin ne dichiari.
@@ -2160,10 +2180,11 @@ pub fn imposta_tema(app: tauri::AppHandle, stato: State<'_, Stato>, tema: String
 /// `stile/movimento.css`, accanto a quello di `prefers-reduced-motion`, e non
 /// se ne scrive un secondo.
 #[tauri::command]
-pub fn movimento_ridotto(stato: State<'_, Stato>) -> Esito<bool> {
-    con_libreria(&stato, |libreria| {
+pub async fn movimento_ridotto(app: tauri::AppHandle) -> Esito<bool> {
+    leggi_la_libreria(app, "movimento ridotto", |libreria| {
         rymembra_app::preferenze::movimento_ridotto(&libreria.connection)
     })
+    .await
     .map_err(errore)
 }
 
@@ -2174,18 +2195,22 @@ pub fn movimento_ridotto(stato: State<'_, Stato>) -> Esito<bool> {
 /// identica su un altro computer, e l'unico meccanismo che la porta là è il
 /// backup — più la riga nel catalogo del profilo.
 #[tauri::command]
-pub fn imposta_movimento_ridotto(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    ridotto: bool,
-) -> Esito<()> {
-    crate::nuvola::se_riuscito(
-        &app,
-        con_libreria(&stato, |libreria| {
-            rymembra_app::preferenze::imposta_movimento_ridotto(&libreria.connection, ridotto)
+pub async fn imposta_movimento_ridotto(app: tauri::AppHandle, ridotto: bool) -> Esito<()> {
+    LIBRERIA
+        .comanda("movimento ridotto", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            crate::nuvola::se_riuscito(
+                &app,
+                con_libreria(&stato, |libreria| {
+                    rymembra_app::preferenze::imposta_movimento_ridotto(
+                        &libreria.connection,
+                        ridotto,
+                    )
+                })
+                .map_err(errore),
+            )
         })
-        .map_err(errore),
-    )
+        .await
 }
 
 /// Scrive la lingua. Una stringa vuota rimette il rilevamento dal sistema.
@@ -2196,30 +2221,39 @@ pub fn imposta_movimento_ridotto(
 /// esiste per evitare. Qui si controlla soltanto che sia un codice di lingua, e
 /// lo fa `preferenze::imposta_lingua`.
 #[tauri::command]
-pub fn imposta_lingua(app: tauri::AppHandle, stato: State<'_, Stato>, lingua: String) -> Esito<()> {
-    crate::nuvola::se_riuscito(
-        &app,
-        con_libreria(&stato, |libreria| {
-            rymembra_app::preferenze::imposta_lingua(&libreria.connection, &lingua)
+pub async fn imposta_lingua(app: tauri::AppHandle, lingua: String) -> Esito<()> {
+    LIBRERIA
+        .comanda("lingua", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            crate::nuvola::se_riuscito(
+                &app,
+                con_libreria(&stato, |libreria| {
+                    rymembra_app::preferenze::imposta_lingua(&libreria.connection, &lingua)
+                })
+                .map_err(errore),
+            )
         })
-        .map_err(errore),
-    )
+        .await
 }
 
 /// Scrive le scorciatoie. Una stringa vuota rimette quelle di serie.
 #[tauri::command]
-pub fn imposta_scorciatoie(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    scorciatoie: String,
-) -> Esito<()> {
-    crate::nuvola::se_riuscito(
-        &app,
-        con_libreria(&stato, |libreria| {
-            rymembra_app::preferenze::imposta_scorciatoie(&libreria.connection, &scorciatoie)
+pub async fn imposta_scorciatoie(app: tauri::AppHandle, scorciatoie: String) -> Esito<()> {
+    LIBRERIA
+        .comanda("scorciatoie", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            crate::nuvola::se_riuscito(
+                &app,
+                con_libreria(&stato, |libreria| {
+                    rymembra_app::preferenze::imposta_scorciatoie(
+                        &libreria.connection,
+                        &scorciatoie,
+                    )
+                })
+                .map_err(errore),
+            )
         })
-        .map_err(errore),
-    )
+        .await
 }
 
 /// Com'era rimasto il pannello «Cartelle».
@@ -2243,13 +2277,14 @@ pub struct StatoUiCartelle {
 /// smette di essere facoltativo, e il modo di tenerla parsimoniosa è non
 /// mettercelo.
 #[tauri::command]
-pub fn cartelle_ui(stato: State<'_, Stato>) -> Esito<StatoUiCartelle> {
-    con_libreria(&stato, |libreria| {
+pub async fn cartelle_ui(app: tauri::AppHandle) -> Esito<StatoUiCartelle> {
+    leggi_la_libreria(app, "pannello delle cartelle", |libreria| {
         Ok(StatoUiCartelle {
             aperte: rymembra_app::preferenze::cartelle_aperte(&libreria.connection)?,
             scelta: rymembra_app::preferenze::cartella_scelta(&libreria.connection)?,
         })
     })
+    .await
     .map_err(errore)
 }
 
@@ -2262,16 +2297,21 @@ pub fn cartelle_ui(stato: State<'_, Stato>) -> Esito<StatoUiCartelle> {
 /// altrove. Farla partire a ogni nodo aperto vorrebbe dire svegliare la rete
 /// per un dato che sull'altro computer non si può nemmeno usare.
 #[tauri::command]
-pub fn imposta_cartelle_ui(
-    stato: State<'_, Stato>,
+pub async fn imposta_cartelle_ui(
+    app: tauri::AppHandle,
     aperte: Vec<String>,
     scelta: String,
 ) -> Esito<()> {
-    con_libreria(&stato, |libreria| {
-        rymembra_app::preferenze::imposta_cartelle_aperte(&libreria.connection, &aperte)?;
-        rymembra_app::preferenze::imposta_cartella_scelta(&libreria.connection, &scelta)
-    })
-    .map_err(errore)
+    LIBRERIA
+        .comanda("pannello delle cartelle", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            con_libreria(&stato, |libreria| {
+                rymembra_app::preferenze::imposta_cartelle_aperte(&libreria.connection, &aperte)?;
+                rymembra_app::preferenze::imposta_cartella_scelta(&libreria.connection, &scelta)
+            })
+            .map_err(errore)
+        })
+        .await
 }
 
 /// Quanti brani sta in un ripiano della Home.
@@ -2438,10 +2478,11 @@ pub fn settimana(
 
 /// Segna una raccolta come aperta, così l'annuncio smette di annunciarla.
 #[tauri::command]
-pub fn settimana_apri(stato: State<'_, Stato>, raccolta: i64) -> Esito<()> {
-    con_libreria(&stato, |libreria| {
+pub async fn settimana_apri(app: tauri::AppHandle, raccolta: i64) -> Esito<()> {
+    leggi_la_libreria(app, "apertura di una raccolta", move |libreria| {
         rymembra_app::settimana::apri(&libreria.connection, raccolta, adesso_ms())
     })
+    .await
     .map_err(errore)
 }
 
@@ -2584,24 +2625,29 @@ impl Documento {
 /// aggiunge uno di là e si dimentica di qua — o se il browser rifiuta di
 /// aprirsi.
 #[tauri::command]
-pub fn apri_documento(quale: String) -> Esito<()> {
-    let Some(documento) = Documento::da_nome(&quale) else {
-        return Err(errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura di un documento".to_owned()),
-            })
-            .with_cause(format!("«{quale}» non è uno dei documenti pubblici")),
-        ));
-    };
-    let indirizzo = documento.indirizzo();
-    crate::browser::apri(&indirizzo).map_err(|err| {
-        errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura del browser".to_owned()),
-            })
-            .with_cause(err.to_string()),
-        )
+pub async fn apri_documento(quale: String) -> Esito<()> {
+    // `browser::apri` chiede al sistema di aprire un indirizzo: su Windows un
+    // processo, sul telefono il ponte Java e il consenso di chi guarda. Aspetta.
+    comanda("apertura di un documento", move || {
+        let Some(documento) = Documento::da_nome(&quale) else {
+            return Err(errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("apertura di un documento".to_owned()),
+                })
+                .with_cause(format!("«{quale}» non è uno dei documenti pubblici")),
+            ));
+        };
+        let indirizzo = documento.indirizzo();
+        crate::browser::apri(&indirizzo).map_err(|err| {
+            errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("apertura del browser".to_owned()),
+                })
+                .with_cause(err.to_string()),
+            )
+        })
     })
+    .await
 }
 
 /// Quanto può pesare la copia locale di un documento per leggerla in memoria.
@@ -2785,23 +2831,27 @@ fn indirizzo_guida(ancora: &str) -> Option<String> {
 /// `internal.aborted` per un'ancora fuori elenco, o se il browser rifiuta di
 /// aprirsi.
 #[tauri::command]
-pub fn apri_guida(ancora: String) -> Esito<()> {
-    let Some(indirizzo) = indirizzo_guida(&ancora) else {
-        return Err(errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura della guida".to_owned()),
-            })
-            .with_cause(format!("«{ancora}» non è una pagina della guida")),
-        ));
-    };
-    crate::browser::apri(&indirizzo).map_err(|err| {
-        errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura del browser".to_owned()),
-            })
-            .with_cause(err.to_string()),
-        )
+pub async fn apri_guida(ancora: String) -> Esito<()> {
+    // Come `apri_documento`: aprire il browser aspetta il sistema.
+    comanda("apertura della guida", move || {
+        let Some(indirizzo) = indirizzo_guida(&ancora) else {
+            return Err(errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("apertura della guida".to_owned()),
+                })
+                .with_cause(format!("«{ancora}» non è una pagina della guida")),
+            ));
+        };
+        crate::browser::apri(&indirizzo).map_err(|err| {
+            errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("apertura del browser".to_owned()),
+                })
+                .with_cause(err.to_string()),
+            )
+        })
     })
+    .await
 }
 
 #[cfg(test)]

@@ -158,7 +158,7 @@ pub(crate) fn pagina_finita(app: &AppHandle) {
     if let Some(lettore) = app.try_state::<crate::riproduzione::StatoLettore>() {
         // Un motore che non c'è non ha prese da chiudere: l'errore non dice
         // niente di più.
-        let _ = crate::riproduzione::spettro(lettore, false);
+        let _ = crate::riproduzione::spettro_ora(lettore, false);
     }
     crate::lontano::finestra_nascosta(app);
     // Lo Studio della pagina di prima non c'è più: una chiusura non deve
@@ -381,7 +381,7 @@ mod prove {
         let nuova = corpo("pub(crate) fn pagina_finita(");
         for pulizia in [
             "testi.pagina_nuova()",
-            "riproduzione::spettro(lettore, false)",
+            "riproduzione::spettro_ora(lettore, false)",
             "lontano::finestra_nascosta(app)",
             "chiusura::CHIUSURA.da_scrivere(false)",
         ] {

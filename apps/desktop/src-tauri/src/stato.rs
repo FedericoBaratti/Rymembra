@@ -1355,8 +1355,10 @@ fn prendi_la_libreria(stato: &Stato) -> MutexGuard<'_, Result<Libreria, AppError
 /// I posti che non possono aspettare sono due. L'**uscita**, che usa
 /// [`con_libreria_entro`]: lì un'attesa lunga non è un comando lento, è un
 /// processo che non si chiude. E il **filo della finestra**, dove girano i
-/// comandi sincroni: lì questa funzione rinuncia da sé dopo qualche secondo,
-/// vedi [`con_libreria_dalla_finestra`].
+/// gestori degli eventi (la chiusura, il vassoio, le SMTC) e il `setup`: lì
+/// questa funzione rinuncia da sé dopo qualche secondo, vedi
+/// [`con_libreria_dalla_finestra`]. I comandi Tauri non ci girano più: quelli
+/// che prendono la libreria sono `async fn` in disparte (`crate::disparte`).
 ///
 /// Il mutex avvelenato — un panico dentro un altro comando mentre teneva il
 /// lucchetto — si recupera invece di propagare: i dati dietro sono una
@@ -1449,14 +1451,17 @@ fn racconta_la_tenuta(tenuta: Duration, presa: Option<u32>) {
 /// Il filo che disegna la finestra, segnato all'avvio.
 ///
 /// Serve a [`con_libreria`] per una domanda sola: chi sta aspettando la
-/// libreria è il filo della finestra? Un comando Tauri scritto senza `(async)`
-/// gira **lì**, e lì un'attesa senza limite non è un comando lento: è la
-/// finestra intera che non ridisegna, non risponde ai clic e che Windows dopo
-/// cinque secondi dichiara «non risponde».
+/// libreria è il filo della finestra? Lì girano i gestori degli eventi della
+/// finestra — la chiusura, il vassoio, le SMTC — e, fino a FC3, ogni comando
+/// Tauri scritto senza `(async)`: un'attesa senza limite non è un comando
+/// lento, è la finestra intera che non ridisegna, non risponde ai clic e che
+/// Windows dopo cinque secondi dichiara «non risponde».
 ///
-/// Vale per Windows. Su Android un comando sincrono gira sul filo del ponte
+/// Vale per Windows. Su Android un comando sincrono girava sul filo del ponte
 /// Java, non su questo, e il tetto di [`ATTESA_DELLA_FINESTRA`] non lo
-/// raggiunge: vedi il `//!` di [`crate::disparte`].
+/// raggiungeva: vedi il `//!` di [`crate::disparte`]. Oggi i comandi che
+/// prendono la libreria sono tutti `async fn` in disparte, e questo tetto
+/// protegge solo i gestori degli eventi.
 static FILO_DELLA_FINESTRA: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
 
 /// Segna il filo corrente come quello della finestra. Va chiamata dal `setup`
@@ -1488,13 +1493,15 @@ const ATTESA_DELLA_FINESTRA: Duration = Duration::from_secs(4);
 /// ha già la sua frase: «il database è occupato da un'altra operazione». È
 /// meglio di una finestra ferma, ed è la verità.
 ///
-/// Il prezzo va detto: un comando sincrono che scrive — un cuoricino, un voto —
-/// premuto mentre qualcuno tiene il lucchetto per più di quattro secondi adesso
-/// risponde «occupato» invece di riuscire in ritardo. Succede solo quando chi
-/// tiene il lucchetto aspetta un disco, perché la scansione lo prende e lo lascia
-/// lotto per lotto; e un gesto da ripetere costa meno di una finestra che
-/// Windows dichiara morta. Sugli altri fili — i comandi `(async)`, le passate —
-/// l'attesa resta quella di sempre.
+/// Il prezzo va detto: un gestore di eventi che scrive, premuto mentre qualcuno
+/// tiene il lucchetto per più di quattro secondi, risponde «occupato» invece di
+/// riuscire in ritardo. Succede solo quando chi tiene il lucchetto aspetta un
+/// disco, perché la scansione lo prende e lo lascia lotto per lotto; e un gesto
+/// da ripetere costa meno di una finestra che Windows dichiara morta. Sugli
+/// altri fili — i comandi, che dopo FC3 girano in disparte o su una corsia, e
+/// le passate — l'attesa resta quella di sempre: un cuoricino o un voto dati
+/// mentre una scansione tiene il lucchetto riescono in ritardo invece di
+/// rispondere «occupato», e senza fermare la pagina.
 ///
 /// # Le attese sono due
 ///
@@ -1512,9 +1519,9 @@ const ATTESA_DELLA_FINESTRA: Duration = Duration::from_secs(4);
 ///
 /// Cosa non promette: SQLite fa ripartire l'attesa a ogni lucchetto che
 /// chiede, quindi un'azione con due scritture separate può aspettare `resta`
-/// due volte. I comandi sincroni che scrivono — un cuoricino, un voto — sono
-/// una scrittura sola; uno che ne facesse di più dovrebbe chiedersi se è giusto
-/// che stia sul filo della finestra.
+/// due volte. Chi gira sul filo della finestra e scrive deve farlo con una
+/// scrittura sola; uno che ne facesse di più dovrebbe chiedersi se è giusto che
+/// stia lì.
 fn con_libreria_dalla_finestra<T>(
     stato: &Stato,
     azione: impl FnOnce(&mut Libreria) -> Result<T, AppError>,

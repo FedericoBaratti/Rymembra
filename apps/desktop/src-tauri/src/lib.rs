@@ -51,6 +51,7 @@ mod comandi;
 #[cfg(desktop)]
 mod comparsa;
 mod copertine;
+mod corsia;
 mod destinazioni;
 mod diario;
 mod disparte;

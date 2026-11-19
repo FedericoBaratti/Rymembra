@@ -21,12 +21,12 @@ use rymembra_domain::regole::{
     Campo, Combinazione, Insieme, Operatore, Ordinamento, Regola, Valore,
 };
 
+use crate::corsia::LIBRERIA;
 use crate::destinazioni;
-use crate::disparte::{in_disparte, leggi_la_libreria};
+use crate::disparte::{in_disparte, leggi_la_libreria, stato_di};
 use crate::errore::{Esito, errore};
 use crate::importa::gestito;
 use crate::stato::{Stato, adesso_ms, con_libreria};
-use tauri::State;
 
 /// Tutte le playlist, con i loro numeri.
 ///
@@ -61,31 +61,38 @@ pub async fn playlist_brani(app: tauri::AppHandle, id: i64) -> Esito<Vec<TrackSu
 
 /// Crea una playlist vuota.
 #[tauri::command]
-pub fn playlist_crea(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    nome: String,
-) -> Esito<PlaylistSummary> {
-    let esito = con_libreria(&stato, |libreria| {
-        playlists::create(&libreria.connection, &nome)
-    })
-    .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+pub async fn playlist_crea(app: tauri::AppHandle, nome: String) -> Esito<PlaylistSummary> {
+    // Le scritture sulle playlist stanno sulla corsia della libreria, nell'ordine
+    // in cui la finestra le ha mandate: vedi [`crate::corsia`].
+    LIBRERIA
+        .comanda("nuova playlist", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            let esito = con_libreria(&stato, |libreria| {
+                playlists::create(&libreria.connection, &nome)
+            })
+            .map_err(errore);
+            crate::nuvola::se_riuscito(&app, esito)
+        })
+        .await
 }
 
 /// Rinomina una playlist.
 #[tauri::command]
-pub fn playlist_rinomina(
+pub async fn playlist_rinomina(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     id: i64,
     nome: String,
 ) -> Esito<PlaylistSummary> {
-    let esito = con_libreria(&stato, |libreria| {
-        playlists::rename(&libreria.connection, id, &nome)
-    })
-    .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+    LIBRERIA
+        .comanda("rinomina di una playlist", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            let esito = con_libreria(&stato, |libreria| {
+                playlists::rename(&libreria.connection, id, &nome)
+            })
+            .map_err(errore);
+            crate::nuvola::se_riuscito(&app, esito)
+        })
+        .await
 }
 
 /// Le playlist appena cancellate, finché un «Annulla» le può ancora rimettere.
@@ -286,18 +293,22 @@ pub async fn playlist_crea_e_aggiungi(
 /// toglie niente, e torna la playlist com'è. Vedi
 /// `rymembra_app::playlists::remove_at`.
 #[tauri::command]
-pub fn playlist_togli(
+pub async fn playlist_togli(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     id: i64,
     posizione: i64,
     brano: i64,
 ) -> Esito<PlaylistSummary> {
-    let esito = con_libreria(&stato, |libreria| {
-        playlists::remove_at(&mut libreria.connection, id, posizione, brano)
-    })
-    .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+    LIBRERIA
+        .comanda("brano tolto da una playlist", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            let esito = con_libreria(&stato, |libreria| {
+                playlists::remove_at(&mut libreria.connection, id, posizione, brano)
+            })
+            .map_err(errore);
+            crate::nuvola::se_riuscito(&app, esito)
+        })
+        .await
 }
 
 /// Sposta un brano dentro una playlist.
@@ -305,19 +316,23 @@ pub fn playlist_togli(
 /// `brano` è quello che la finestra vedeva in `da`, con la stessa regola di
 /// [`playlist_togli`].
 #[tauri::command]
-pub fn playlist_riordina(
+pub async fn playlist_riordina(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     id: i64,
     da: i64,
     a: i64,
     brano: i64,
 ) -> Esito<PlaylistSummary> {
-    let esito = con_libreria(&stato, |libreria| {
-        playlists::reorder(&mut libreria.connection, id, da, a, brano)
-    })
-    .map_err(errore);
-    crate::nuvola::se_riuscito(&app, esito)
+    LIBRERIA
+        .comanda("brano spostato in una playlist", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            let esito = con_libreria(&stato, |libreria| {
+                playlists::reorder(&mut libreria.connection, id, da, a, brano)
+            })
+            .map_err(errore);
+            crate::nuvola::se_riuscito(&app, esito)
+        })
+        .await
 }
 
 // ── le regole, dal lato della finestra ──────────────────────────────────────
@@ -469,12 +484,13 @@ pub async fn playlist_regole_scrivi(
 ///
 /// `None` se la playlist non è intelligente.
 #[tauri::command]
-pub fn playlist_regole(stato: State<'_, Stato>, id: i64) -> Esito<Option<InsiemeIpc>> {
-    con_libreria(&stato, |libreria| {
+pub async fn playlist_regole(app: tauri::AppHandle, id: i64) -> Esito<Option<InsiemeIpc>> {
+    leggi_la_libreria(app, "regole di una playlist", move |libreria| {
         Ok(playlists::regole_di(&libreria.connection, id)?
             .as_ref()
             .map(InsiemeIpc::dal_dominio))
     })
+    .await
     .map_err(errore)
 }
 

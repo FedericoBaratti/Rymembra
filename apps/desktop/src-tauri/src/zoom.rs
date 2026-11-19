@@ -79,8 +79,10 @@
 //! adesso — zoom. È lo stesso rimedio del fotogramma scuro e del fotogramma in
 //! italiano, e non ne serve un terzo.
 
-use tauri::State;
+use tauri::Manager as _;
 
+use crate::corsia::LIBRERIA;
+use crate::disparte::stato_di;
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
@@ -113,12 +115,21 @@ fn applica(finestra: &tauri::WebviewWindow, fattore: f64) -> f64 {
 ///
 /// `db.queryFailed`.
 #[tauri::command]
-pub fn zoom_avvio(finestra: tauri::WebviewWindow, stato: State<'_, Stato>) -> Esito<f64> {
-    let fattore = con_libreria(&stato, |libreria| {
-        rymembra_app::preferenze::zoom(&libreria.connection)
-    })
-    .map_err(errore)?;
-    Ok(applica(&finestra, fattore))
+pub async fn zoom_avvio(finestra: tauri::WebviewWindow) -> Esito<f64> {
+    // I tre comandi dello zoom stanno sulla corsia della libreria: `Ctrl++`
+    // si preme a raffica, e ogni gradino legge, scrive e applica — se due si
+    // scambiassero, la finestra resterebbe a una misura e il database a
+    // un'altra. Vedi [`crate::corsia`].
+    LIBRERIA
+        .comanda("zoom all'avvio", move || {
+            let stato = stato_di::<Stato>(finestra.app_handle())?;
+            let fattore = con_libreria(&stato, |libreria| {
+                rymembra_app::preferenze::zoom(&libreria.connection)
+            })
+            .map_err(errore)?;
+            Ok(applica(&finestra, fattore))
+        })
+        .await
 }
 
 /// Un gradino in su o in giù, applicato e ricordato.
@@ -136,16 +147,21 @@ pub fn zoom_avvio(finestra: tauri::WebviewWindow, stato: State<'_, Stato>) -> Es
 ///
 /// `db.queryFailed`.
 #[tauri::command]
-pub fn zoom_passo(finestra: tauri::WebviewWindow, stato: State<'_, Stato>, su: bool) -> Esito<f64> {
-    let fattore = con_libreria(&stato, |libreria| {
-        let adesso = rymembra_app::preferenze::zoom(&libreria.connection)?;
-        rymembra_app::preferenze::imposta_zoom(
-            &libreria.connection,
-            rymembra_app::preferenze::zoom_al_gradino(adesso, su),
-        )
-    })
-    .map_err(errore)?;
-    Ok(applica(&finestra, fattore))
+pub async fn zoom_passo(finestra: tauri::WebviewWindow, su: bool) -> Esito<f64> {
+    LIBRERIA
+        .comanda("gradino di zoom", move || {
+            let stato = stato_di::<Stato>(finestra.app_handle())?;
+            let fattore = con_libreria(&stato, |libreria| {
+                let adesso = rymembra_app::preferenze::zoom(&libreria.connection)?;
+                rymembra_app::preferenze::imposta_zoom(
+                    &libreria.connection,
+                    rymembra_app::preferenze::zoom_al_gradino(adesso, su),
+                )
+            })
+            .map_err(errore)?;
+            Ok(applica(&finestra, fattore))
+        })
+        .await
 }
 
 /// La misura di serie, applicata e ricordata: `Ctrl+0`.
@@ -169,13 +185,18 @@ pub fn zoom_passo(finestra: tauri::WebviewWindow, stato: State<'_, Stato>, su: b
 ///
 /// `db.queryFailed`.
 #[tauri::command]
-pub fn zoom_normale(finestra: tauri::WebviewWindow, stato: State<'_, Stato>) -> Esito<f64> {
-    let scritto = con_libreria(&stato, |libreria| {
-        rymembra_app::preferenze::imposta_zoom(
-            &libreria.connection,
-            rymembra_app::preferenze::ZOOM_NEUTRO,
-        )
-    })
-    .map_err(errore)?;
-    Ok(applica(&finestra, scritto))
+pub async fn zoom_normale(finestra: tauri::WebviewWindow) -> Esito<f64> {
+    LIBRERIA
+        .comanda("zoom normale", move || {
+            let stato = stato_di::<Stato>(finestra.app_handle())?;
+            let scritto = con_libreria(&stato, |libreria| {
+                rymembra_app::preferenze::imposta_zoom(
+                    &libreria.connection,
+                    rymembra_app::preferenze::ZOOM_NEUTRO,
+                )
+            })
+            .map_err(errore)?;
+            Ok(applica(&finestra, scritto))
+        })
+        .await
 }

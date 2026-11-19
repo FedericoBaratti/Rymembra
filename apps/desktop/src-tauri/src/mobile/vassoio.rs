@@ -52,10 +52,11 @@ pub const fn avvia(_app: &tauri::AppHandle) {}
 
 /// Se il tasto di chiusura manda in secondo piano.
 #[tauri::command]
-pub fn secondo_piano(stato: State<'_, Stato>) -> Esito<bool> {
-    con_libreria(&stato, |libreria| {
+pub async fn secondo_piano(app: tauri::AppHandle) -> Esito<bool> {
+    crate::disparte::leggi_la_libreria(app, "secondo piano", |libreria| {
         rymembra_app::preferenze::secondo_piano(&libreria.connection)
     })
+    .await
     .map_err(errore)
 }
 

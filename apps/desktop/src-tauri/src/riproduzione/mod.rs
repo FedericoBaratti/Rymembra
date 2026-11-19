@@ -1487,19 +1487,24 @@ fn con_lettore<T>(
 /// # Perché una scadenza, e solo lì
 ///
 /// Perché i comandi scritti senza `(async)` — `pausa`, `vai_a`, `volume`,
-/// l'equalizzatore — girano sul filo che disegna la finestra, e restano
+/// l'equalizzatore — giravano sul filo che disegna la finestra, e restavano
 /// sincroni apposta: arrivano a raffica da un cursore sotto il dito, e sul
 /// filo della finestra si eseguono nell'ordine in cui sono partiti, cosa che
 /// su un gruppo di fili nessuno garantisce. Il prezzo era che il lucchetto lo
 /// aspettavano **senza limite**, e chi lo teneva poteva star aspettando il
 /// database: la finestra si fermava con lui, e dopo cinque secondi Windows la
-/// dichiarava morta.
+/// dichiarava morta. Su Android era peggio: il filo del ponte non ha nemmeno
+/// questo tetto, e la pagina restava ferma finché il lucchetto non si apriva.
 ///
-/// Adesso lì si rinuncia con `db.locked`, che è ritentabile e dice la verità —
-/// quando il lettore resta chiuso per secondi, è quasi sempre perché qualcuno
-/// lo tiene aspettando il database. Sugli altri fili — gli eventi, il
-/// preparatore, l'orologio, i comandi asincroni — l'attesa resta quella di
-/// sempre: lì aspettare non ferma niente che si veda.
+/// Oggi quei comandi sono `async fn` sulla corsia del lettore
+/// ([`crate::corsia::LETTORE`]): l'ordine di arrivo lo tiene la coda, e nessuno
+/// aspetta il lucchetto sul filo della pagina. La scadenza resta per chi gira
+/// ancora sul filo della finestra — i gestori degli eventi del vassoio, della
+/// chiusura, delle SMTC — e lì rinuncia con `db.locked`, che è ritentabile e
+/// dice la verità: quando il lettore resta chiuso per secondi, è quasi sempre
+/// perché qualcuno lo tiene aspettando il database. Sugli altri fili — gli
+/// eventi, il preparatore, l'orologio, i comandi asincroni, la corsia —
+/// l'attesa resta quella di sempre: lì aspettare non ferma niente che si veda.
 ///
 /// Il veleno si recupera, come ovunque in questo modulo.
 fn prendi_il_lettore(
@@ -3034,7 +3039,13 @@ pub fn latenza(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: i64) -
 /// dimenticata — farebbe lavorare la callback audio per un anello che nessuno
 /// legge.
 #[tauri::command]
-pub fn spettro(stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
+pub async fn spettro(app: tauri::AppHandle, attivo: bool) -> Esito<()> {
+    col_lettore_in_fila(app, "spettro", move |_, stato| spettro_ora(stato, attivo)).await
+}
+
+/// [`spettro`], sul posto: lo chiama anche la pagina che si ricarica
+/// (`pagina.rs`), dal suo filo.
+pub fn spettro_ora(stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
     if cfg!(mobile) {
         return Ok(());
     }
@@ -3347,19 +3358,57 @@ async fn col_lettore_in_disparte<T: Send + 'static>(
     nome: &'static str,
     nucleo: impl for<'a> FnOnce(tauri::AppHandle, State<'a, StatoLettore>) -> Esito<T> + Send + 'static,
 ) -> Esito<T> {
-    crate::disparte::in_disparte(nome, move || {
-        let Some(stato) = app.try_state::<StatoLettore>() else {
-            return Err(errore(
-                AppError::new(ErrorCode::InternalAborted {
-                    what: Some(nome.to_owned()),
-                })
-                .with_cause("il lettore non è più fra gli stati gestiti"),
-            ));
-        };
-        nucleo(app.clone(), stato)
-    })
-    .await
-    .map_err(errore)?
+    crate::disparte::comanda(nome, move || col_lettore(app, nome, nucleo)).await
+}
+
+/// [`col_lettore_in_disparte`], ma sulla corsia del lettore
+/// ([`crate::corsia::LETTORE`]): i comandi che arrivano a raffica da un
+/// cursore, o che scrivono uno stato dove l'ultimo vince — `volume`,
+/// `equalizzatore`, `pausa`, `vai_a`, `spettro`, `coda_svuota` — si eseguono
+/// **uno alla volta, nell'ordine in cui sono arrivati**.
+///
+/// # Perché una corsia e non il pool
+///
+/// Perché finché erano sincroni giravano sul filo della finestra, e lì
+/// l'ordine di arrivo era gratis: lo dice il commento di [`prendi_il_lettore`].
+/// Sul pool due `volume` in fila sul lucchetto del lettore si risvegliano
+/// nell'ordine che sceglie il sistema operativo, e l'ultimo valore scritto può
+/// essere quello mandato prima: il cursore tornerebbe indietro da solo
+/// (`volume.ts`, `Equalizzatore.tsx`). Vedi [`crate::corsia`].
+///
+/// # Errori
+///
+/// Come [`col_lettore_in_disparte`].
+async fn col_lettore_in_fila<T: Send + 'static>(
+    app: tauri::AppHandle,
+    nome: &'static str,
+    nucleo: impl for<'a> FnOnce(tauri::AppHandle, State<'a, StatoLettore>) -> Esito<T> + Send + 'static,
+) -> Esito<T> {
+    crate::corsia::LETTORE
+        .comanda(nome, move || col_lettore(app, nome, nucleo))
+        .await
+}
+
+/// Il nucleo di un comando del lettore, con lo stato preso dal registro.
+///
+/// Sincrona: la chiamano la chiusura sul pool ([`col_lettore_in_disparte`]) e
+/// quella sulla corsia ([`col_lettore_in_fila`]), che girano entrambe fuori dal
+/// filo della pagina. Lo stato si prende con `try_state`: lì dentro il lettore
+/// può essere già stato lasciato cadere, e la risposta giusta è un errore.
+fn col_lettore<T>(
+    app: tauri::AppHandle,
+    nome: &'static str,
+    nucleo: impl for<'a> FnOnce(tauri::AppHandle, State<'a, StatoLettore>) -> Esito<T>,
+) -> Esito<T> {
+    let Some(stato) = app.try_state::<StatoLettore>() else {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some(nome.to_owned()),
+            })
+            .with_cause("il lettore non è più fra gli stati gestiti"),
+        ));
+    };
+    nucleo(app.clone(), stato)
 }
 
 // ── i comandi ───────────────────────────────────────────────────────────────
@@ -3969,7 +4018,13 @@ pub(super) fn avvio_fallito(
 /// che invece è programmata. Un avvio programmato e non ancora partito si
 /// butta: vedi `insieme::dopo_una_pausa`.
 #[tauri::command]
-pub fn pausa(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+pub async fn pausa(app: tauri::AppHandle) -> Esito<()> {
+    col_lettore_in_fila(app, "pausa", pausa_ora).await
+}
+
+/// [`pausa`], sul posto: lo chiamano i tasti multimediali, la sessione e gli
+/// altri fili, ciascuno dal suo — vedi [`col_lettore_in_disparte`].
+pub fn pausa_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Pausa).map_err(errore)? {
         return Ok(());
     }
@@ -4153,7 +4208,7 @@ pub fn alterna_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esi
     if in_pausa {
         riprendi_ora(app, stato)
     } else {
-        pausa(app, stato)
+        pausa_ora(app, stato)
     }
 }
 
@@ -4262,16 +4317,17 @@ const fn dove_per_il_precedente(
 /// Perché i comandi del motore che svuotano l'anello — il salto, lo stop —
 /// svegliano prima il flusso, e un flusso a riposo ci mette fino a mezzo
 /// secondo a rispondere: lo dice `rymembra_play::uscita::Uscita::sveglia`. Due
-/// di quei comandi, [`vai_a`] e `coda::coda_svuota`, girano sul filo della
-/// finestra e chiedevano il risveglio **con il lucchetto del lettore in mano**:
+/// di quei comandi, [`vai_a`] e `coda::coda_svuota`, chiedevano il risveglio
+/// **con il lucchetto del lettore in mano**:
 /// per quel mezzo secondo restavano in fila gli annunci del motore, l'orologio,
 /// il preparatore. Adesso il risveglio si paga qui, a lucchetto lasciato, e il
 /// comando vero lo trova già fatto.
 ///
-/// L'ordine dei comandi non cambia: tutti e due restano sincroni, sul filo
-/// della finestra, e il secondo non parte prima che il primo abbia finito. Il
-/// filo della finestra aspetta lo stesso il risveglio — è lui a chiederlo — ma
-/// adesso aspetta da solo.
+/// L'ordine dei comandi non cambia: tutti e due stanno sulla corsia del
+/// lettore ([`crate::corsia::LETTORE`]), e il secondo non parte prima che il
+/// primo abbia finito. A aspettare il risveglio è il filo della corsia — è lui a
+/// chiederlo — e non più quello della finestra né quello del ponte di Android:
+/// la pagina non aspetta niente.
 ///
 /// Se nel frattempo il motore è stato sostituito il campanello suona a vuoto,
 /// e il comando sveglierà il motore nuovo da sé: è un caso raro, ed è il
@@ -4327,7 +4383,12 @@ const ATTESA_DEL_CAMPANELLO: Duration = Duration::from_millis(100);
 /// salto e ripresa fra un quarto di secondo, annunciata. Vedi
 /// `insieme::salta`.
 #[tauri::command]
-pub fn vai_a(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: u64) -> Esito<()> {
+pub async fn vai_a(app: tauri::AppHandle, ms: u64) -> Esito<()> {
+    col_lettore_in_fila(app, "vai a", move |app, stato| vai_a_ora(app, stato, ms)).await
+}
+
+/// [`vai_a`], sul posto: vedi [`pausa_ora`].
+pub fn vai_a_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: u64) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::VaiA { ms }).map_err(errore)? {
         return Ok(());
     }

@@ -953,7 +953,7 @@ fn pausa_al_risveglio(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
     let Some(stato) = app.try_state::<StatoLettore>() else {
         return;
     };
-    if let Err(err) = super::pausa(app.clone(), stato) {
+    if let Err(err) = super::pausa_ora(app.clone(), stato) {
         nota!(
             "[riproduzione] pausa al risveglio non riuscita codice={} causa={}",
             err.code,

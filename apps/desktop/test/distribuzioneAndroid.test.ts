@@ -121,7 +121,7 @@ test("Rust spegne l'aggiornatore del telefono sul Play: il controllo, il comando
   const passata = mobile.slice(mobile.indexOf("fn passata("), mobile.indexOf("fn passata(") + 400);
   assert.match(passata, /if senza_aggiornatore\(\) \{\s*return Giro::Saltato;/);
   // «Aggiorna» e «Installa» rifiutano.
-  const installa = mobile.slice(mobile.indexOf("pub fn aggiornamenti_installa("));
+  const installa = mobile.slice(mobile.indexOf("fn installa_ora("));
   assert.match(installa.slice(0, 1200), /senza_aggiornatore\(\)/);
   // E la finestra lo sa: non configurato, e «ci pensa il negozio».
   assert.match(mobile, /configurato: !senza_aggiornatore\(\)/);

@@ -43,6 +43,7 @@
 
 use tauri::State;
 
+use crate::disparte::leggi_la_libreria;
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
@@ -78,10 +79,11 @@ fn da_fare(visto: Option<&str>) -> bool {
 ///
 /// `db.queryFailed`.
 #[tauri::command]
-pub fn giro_da_fare(stato: State<'_, Stato>) -> Esito<bool> {
-    let visto = con_libreria(&stato, |libreria| {
+pub async fn giro_da_fare(app: tauri::AppHandle) -> Esito<bool> {
+    let visto = leggi_la_libreria(app, "giro guidato", |libreria| {
         rymembra_app::preferenze::giro_visto(&libreria.connection)
     })
+    .await
     .map_err(errore)?;
     Ok(da_fare(visto.as_deref()))
 }

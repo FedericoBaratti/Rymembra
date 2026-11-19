@@ -49,7 +49,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager as _};
 
 use crate::arricchimento::StatoArricchimento;
-use crate::disparte::in_disparte;
+use crate::disparte::{comanda, in_disparte};
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::spegnimento::Emette as _;
@@ -581,37 +581,43 @@ pub fn manutenzione_salute(app: AppHandle) -> Salute {
 /// `internal.aborted` se la cartella non c'è da aprire — dopo un rifiuto del
 /// trasloco, o sul telefono — o se il gestore file rifiuta di aprirsi.
 #[tauri::command]
-pub fn manutenzione_apri_cartella_dati(app: AppHandle) -> Esito<()> {
-    let guasto = |causa: String| {
-        errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura della cartella dei dati".to_owned()),
-            })
-            .with_cause(causa),
-        )
-    };
-    let Some(dove) = app.try_state::<Stato>().and_then(|stato| {
-        stato
-            .cartella_della_libreria()
-            .map(std::path::Path::to_path_buf)
-    }) else {
-        return Err(guasto("nessuna cartella dei dati scelta".to_owned()));
-    };
-    #[cfg(target_os = "android")]
-    {
-        let _ = dove;
-        Err(guasto(
-            "sul telefono la cartella dei dati è privata".to_owned(),
-        ))
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        // Esplora risorse gira fuori dal pacchetto: nella copia del Store la
-        // cartella dei dati sta nella cartella privata del pacchetto, e il
-        // percorso visto da dentro lì non c'è (R20-4). Vedi `pacchetto`.
-        let dove = crate::pacchetto::per_esplora(&dove);
-        tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| guasto(err.to_string()))
-    }
+pub async fn manutenzione_apri_cartella_dati(app: AppHandle) -> Esito<()> {
+    // Chiede al sistema di aprire una cartella — un processo — e la traduce se
+    // sta dentro il pacchetto del Store: aspetta.
+    comanda("apertura della cartella dei dati", move || {
+        let guasto = |causa: String| {
+            errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("apertura della cartella dei dati".to_owned()),
+                })
+                .with_cause(causa),
+            )
+        };
+        let Some(dove) = app.try_state::<Stato>().and_then(|stato| {
+            stato
+                .cartella_della_libreria()
+                .map(std::path::Path::to_path_buf)
+        }) else {
+            return Err(guasto("nessuna cartella dei dati scelta".to_owned()));
+        };
+        #[cfg(target_os = "android")]
+        {
+            let _ = dove;
+            Err(guasto(
+                "sul telefono la cartella dei dati è privata".to_owned(),
+            ))
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            // Esplora risorse gira fuori dal pacchetto: nella copia del Store la
+            // cartella dei dati sta nella cartella privata del pacchetto, e il
+            // percorso visto da dentro lì non c'è (R20-4). Vedi `pacchetto`.
+            let dove = crate::pacchetto::per_esplora(&dove);
+            tauri_plugin_opener::open_path(&dove, None::<&str>)
+                .map_err(|err| guasto(err.to_string()))
+        }
+    })
+    .await
 }
 
 /// La copia di prima dell'aggiornamento che «Torna alla copia» rimetterebbe.
@@ -648,20 +654,28 @@ fn nome_del_file(percorso: &std::path::Path) -> String {
 /// Sul telefono niente: Android non installa una versione più vecchia senza
 /// disinstallare, e disinstallare porta via libreria e copia insieme.
 #[tauri::command]
-pub fn manutenzione_copia_di_prima(app: AppHandle) -> Option<CopiaDiPrimaIpc> {
+pub async fn manutenzione_copia_di_prima(app: AppHandle) -> Option<CopiaDiPrimaIpc> {
     if cfg!(mobile) {
         return None;
     }
-    let stato = app.try_state::<Stato>()?;
-    let percorso = stato.cartella_della_libreria()?.join(NOME_DATABASE);
-    let copia = db::copia_di_prima(&percorso)?;
-    Some(CopiaDiPrimaIpc {
-        nome: nome_del_file(&copia.percorso),
-        versione: copia.versione,
-        quando_ms: copia.quando_ms,
-        versione_di_questa: db::LATEST_VERSION,
-        messa_da_parte: nome_del_file(&db::nome_messa_da_parte(&percorso)),
+    // Legge la cartella dei dati, che può stare su una share: sul pool
+    // bloccante. Se il lavoro cade, la risposta è quella di «non c'è»: la
+    // scheda non offre il ritorno, e il panico l'ha già scritto il diario.
+    in_disparte("copia di prima dell'aggiornamento", move || {
+        let stato = app.try_state::<Stato>()?;
+        let percorso = stato.cartella_della_libreria()?.join(NOME_DATABASE);
+        let copia = db::copia_di_prima(&percorso)?;
+        Some(CopiaDiPrimaIpc {
+            nome: nome_del_file(&copia.percorso),
+            versione: copia.versione,
+            quando_ms: copia.quando_ms,
+            versione_di_questa: db::LATEST_VERSION,
+            messa_da_parte: nome_del_file(&db::nome_messa_da_parte(&percorso)),
+        })
     })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// «Torna alla copia di prima dell'aggiornamento» (D-55): rimette la copia,

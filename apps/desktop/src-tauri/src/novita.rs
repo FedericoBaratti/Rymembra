@@ -34,6 +34,7 @@
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
+use crate::disparte::leggi_la_libreria;
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 use rymembra_app::preferenze::{self, EsitoNovita};
@@ -60,16 +61,19 @@ pub struct NovitaDaMostrare {
 /// `db.queryFailed`: se non si riesce a leggere, o a registrare dove serve, non
 /// si mostra niente.
 #[tauri::command]
-pub fn novita_da_mostrare(
+pub async fn novita_da_mostrare(
     app: AppHandle,
-    stato: State<'_, Stato>,
     con_novita: Vec<String>,
 ) -> Esito<NovitaDaMostrare> {
     let versione = app.package_info().version.to_string();
     let ci_sono = con_novita.contains(&versione);
-    let mostra = con_libreria(&stato, |libreria| {
-        decidi(&libreria.connection, &versione, ci_sono)
+    // Legge e, in un'installazione nuova, scrive: sul pool bloccante, come ogni
+    // comando che chiede il lucchetto della libreria.
+    let mostra = leggi_la_libreria(app, "novità da mostrare", {
+        let versione = versione.clone();
+        move |libreria| decidi(&libreria.connection, &versione, ci_sono)
     })
+    .await
     .map_err(errore)?;
     Ok(NovitaDaMostrare { versione, mostra })
 }

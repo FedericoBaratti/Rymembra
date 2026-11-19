@@ -47,7 +47,7 @@ use rymembra_oauth::portachiavi::{DiSistema, Portachiavi as _};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager as _, State};
 
-use crate::disparte::in_disparte;
+use crate::disparte::{comanda, in_disparte, stato_di};
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::spegnimento::{self, Emette as _};
@@ -379,8 +379,13 @@ pub struct OperazioniIpc {
 
 /// I profili configurati. Istantaneo: non tocca la rete.
 #[tauri::command]
-pub fn ia_profili(stato: State<'_, Stato>, ia: State<'_, StatoIa>) -> Esito<StatoIaIpc> {
-    stato_ipc(&stato, &ia).map_err(errore)
+pub async fn ia_profili(app: tauri::AppHandle) -> Esito<StatoIaIpc> {
+    // Non tocca la rete, ma legge la libreria e il portachiavi: in disparte.
+    comanda("profili IA", move || {
+        let (stato, ia) = (stato_di::<Stato>(&app)?, stato_di::<StatoIa>(&app)?);
+        stato_ipc(&stato, &ia).map_err(errore)
+    })
+    .await
 }
 
 /// Salva un profilo, nuovo o esistente, e lo sceglie.
@@ -411,12 +416,15 @@ pub fn ia_profili(stato: State<'_, Stato>, ia: State<'_, StatoIa>) -> Esito<Stat
 /// salvato: la scoperta arriverebbe dopo aver scritto la prima richiesta, in
 /// una schermata diversa da quella in cui è stato commesso l'errore.
 #[tauri::command]
-pub fn ia_salva_profilo(
-    stato: State<'_, Stato>,
-    ia: State<'_, StatoIa>,
+pub async fn ia_salva_profilo(
+    app: tauri::AppHandle,
     profilo: ProfiloIn,
     chiave: Option<String>,
 ) -> Esito<StatoIaIpc> {
+    // Parla col portachiavi: in disparte e non su una corsia, perché un
+    // Credential Manager che non risponde non deve tenere ferme le stelle.
+    comanda("salvataggio di un profilo IA", move || {
+    let (stato, ia) = (stato_di::<Stato>(&app)?, stato_di::<StatoIa>(&app)?);
     let esito = (|| -> Result<Option<String>, AppError> {
         let nome = profilo.nome.trim();
         let url_base = profilo.url_base.trim().to_owned();
@@ -510,6 +518,8 @@ pub fn ia_salva_profilo(
     let mut risposta = stato_ipc(&stato, &ia).map_err(errore)?;
     risposta.chiave_dimenticata = dimenticata;
     Ok(risposta)
+    })
+    .await
 }
 
 /// Elimina un profilo e la sua chiave.
@@ -522,51 +532,52 @@ pub fn ia_salva_profilo(
 /// credenziale che nessuno saprà più a cosa apparteneva. Il profilo resta, e la
 /// schermata dice perché.
 #[tauri::command]
-pub fn ia_elimina_profilo(
-    stato: State<'_, Stato>,
-    ia: State<'_, StatoIa>,
-    id: String,
-) -> Esito<StatoIaIpc> {
-    let esito = (|| {
-        portachiavi().cancella(&rymembra_ia::voce_portachiavi(&id))?;
-        let mut profili = leggi_profili(&stato)?;
-        profili.retain(|p| p.id != id);
-        scrivi_profili(&stato, &profili)?;
-        con_libreria(&stato, |libreria| {
-            // L'id scelto si dimentica solo se era questo: un `forget` cieco
-            // scollegherebbe il profilo attivo eliminandone un altro.
-            if settings::read(&libreria.connection, CHIAVE_ATTIVO)?.as_deref() == Some(id.as_str())
-            {
-                settings::forget(&libreria.connection, CHIAVE_ATTIVO)?;
-            }
+pub async fn ia_elimina_profilo(app: tauri::AppHandle, id: String) -> Esito<StatoIaIpc> {
+    comanda("eliminazione di un profilo IA", move || {
+        let (stato, ia) = (stato_di::<Stato>(&app)?, stato_di::<StatoIa>(&app)?);
+        let esito = (|| {
+            portachiavi().cancella(&rymembra_ia::voce_portachiavi(&id))?;
+            let mut profili = leggi_profili(&stato)?;
+            profili.retain(|p| p.id != id);
+            scrivi_profili(&stato, &profili)?;
+            con_libreria(&stato, |libreria| {
+                // L'id scelto si dimentica solo se era questo: un `forget` cieco
+                // scollegherebbe il profilo attivo eliminandone un altro.
+                if settings::read(&libreria.connection, CHIAVE_ATTIVO)?.as_deref()
+                    == Some(id.as_str())
+                {
+                    settings::forget(&libreria.connection, CHIAVE_ATTIVO)?;
+                }
+                Ok(())
+            })?;
+            nota!("[ia] profilo eliminato: {id}");
             Ok(())
-        })?;
-        nota!("[ia] profilo eliminato: {id}");
-        Ok(())
-    })();
-    esito.map_err(errore)?;
-    stato_ipc(&stato, &ia).map_err(errore)
+        })();
+        esito.map_err(errore)?;
+        stato_ipc(&stato, &ia).map_err(errore)
+    })
+    .await
 }
 
 /// Sceglie quale profilo usa la chat.
 #[tauri::command]
-pub fn ia_scegli_profilo(
-    stato: State<'_, Stato>,
-    ia: State<'_, StatoIa>,
-    id: String,
-) -> Esito<StatoIaIpc> {
-    let esito = (|| {
-        let profili = leggi_profili(&stato)?;
-        if !profili.iter().any(|p| p.id == id) {
-            return Err(AppError::new(ErrorCode::IaNotConfigured)
-                .with_cause(format!("nessun profilo si chiama «{id}»")));
-        }
-        con_libreria(&stato, |libreria| {
-            settings::write(&libreria.connection, CHIAVE_ATTIVO, &id)
-        })
-    })();
-    esito.map_err(errore)?;
-    stato_ipc(&stato, &ia).map_err(errore)
+pub async fn ia_scegli_profilo(app: tauri::AppHandle, id: String) -> Esito<StatoIaIpc> {
+    comanda("scelta di un profilo IA", move || {
+        let (stato, ia) = (stato_di::<Stato>(&app)?, stato_di::<StatoIa>(&app)?);
+        let esito = (|| {
+            let profili = leggi_profili(&stato)?;
+            if !profili.iter().any(|p| p.id == id) {
+                return Err(AppError::new(ErrorCode::IaNotConfigured)
+                    .with_cause(format!("nessun profilo si chiama «{id}»")));
+            }
+            con_libreria(&stato, |libreria| {
+                settings::write(&libreria.connection, CHIAVE_ATTIVO, &id)
+            })
+        })();
+        esito.map_err(errore)?;
+        stato_ipc(&stato, &ia).map_err(errore)
+    })
+    .await
 }
 
 /// I modelli che quel profilo può usare.

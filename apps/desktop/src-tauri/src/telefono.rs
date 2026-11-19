@@ -19,6 +19,7 @@
 use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Serialize;
 
+use crate::disparte::comanda;
 use crate::errore::{Esito, errore};
 
 /// Quel che l'app può leggere sul telefono, per la finestra.
@@ -89,11 +90,15 @@ async fn in_attesa<T: Send + 'static>(
 /// `internal.unexpected` se il ponte non risponde; `internal.aborted` fuori da
 /// Android.
 #[tauri::command]
-pub fn telefono_permessi() -> Esito<PermessiIpc> {
+pub async fn telefono_permessi() -> Esito<PermessiIpc> {
+    // Ogni comando del ponte chiama Java (`rymembra_android::jvm::chiama`, che
+    // si aggancia alla macchina virtuale dal filo che chiama) e ne aspetta la
+    // risposta: sul filo del ponte JavascriptInterface, che è uno solo, la
+    // pagina aspetterebbe con lui.
     #[cfg(target_os = "android")]
-    return rymembra_android::sistema::permessi()
-        .map(PermessiIpc::from)
-        .map_err(|err| guasto("permessi", &err));
+    return in_attesa("permessi", rymembra_android::sistema::permessi)
+        .await
+        .map(PermessiIpc::from);
     #[cfg(not(target_os = "android"))]
     solo_su_android()
 }
@@ -121,10 +126,13 @@ pub async fn telefono_chiedi_permessi() -> Esito<PermessiIpc> {
 ///
 /// Come [`telefono_permessi`].
 #[tauri::command]
-pub fn telefono_chiedi_tutti_i_file() -> Esito<()> {
+pub async fn telefono_chiedi_tutti_i_file() -> Esito<()> {
     #[cfg(target_os = "android")]
-    return rymembra_android::sistema::chiedi_tutti_i_file()
-        .map_err(|err| guasto("accesso a tutti i file", &err));
+    return in_attesa(
+        "accesso a tutti i file",
+        rymembra_android::sistema::chiedi_tutti_i_file,
+    )
+    .await;
     #[cfg(not(target_os = "android"))]
     solo_su_android()
 }
@@ -136,11 +144,14 @@ pub fn telefono_chiedi_tutti_i_file() -> Esito<()> {
 ///
 /// Come [`telefono_permessi`].
 #[tauri::command]
-pub fn telefono_cartella_musica() -> Esito<String> {
+pub async fn telefono_cartella_musica() -> Esito<String> {
     #[cfg(target_os = "android")]
-    return rymembra_android::sistema::cartella_musica()
-        .map(|cartella| cartella.to_string_lossy().into_owned())
-        .map_err(|err| guasto("cartella della musica", &err));
+    return in_attesa(
+        "cartella della musica",
+        rymembra_android::sistema::cartella_musica,
+    )
+    .await
+    .map(|cartella| cartella.to_string_lossy().into_owned());
     #[cfg(not(target_os = "android"))]
     solo_su_android()
 }
@@ -303,31 +314,35 @@ fn cartella_da_salvare(app: &tauri::AppHandle) -> Esito<std::path::PathBuf> {
 /// `internal.unexpected` se la cache non si trova o non si crea;
 /// `internal.aborted` fuori da Android.
 #[tauri::command]
-pub fn telefono_file_temporaneo(app: tauri::AppHandle, nome: String) -> Esito<String> {
-    #[cfg(target_os = "android")]
-    {
-        let cartella = cartella_da_salvare(&app)?;
-        std::fs::create_dir_all(&cartella).map_err(|err| {
-            errore(
-                AppError::new(ErrorCode::InternalUnexpected {
-                    detail: Some("cache dell'app".to_owned()),
-                })
-                .with_cause(err.to_string()),
-            )
-        })?;
-        // Solo il nome, senza cartelle: arriva dalla finestra, e una barra
-        // dentro porterebbe il file fuori dalla cache.
-        let nome = std::path::Path::new(&nome).file_name().map_or_else(
-            || "documento".into(),
-            |nome| nome.to_string_lossy().into_owned(),
-        );
-        Ok(cartella.join(nome).to_string_lossy().into_owned())
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = (app, nome);
-        solo_su_android()
-    }
+pub async fn telefono_file_temporaneo(app: tauri::AppHandle, nome: String) -> Esito<String> {
+    // Crea una cartella: il disco, e sul telefono quello condiviso, aspetta.
+    comanda("file temporaneo", move || {
+        #[cfg(target_os = "android")]
+        {
+            let cartella = cartella_da_salvare(&app)?;
+            std::fs::create_dir_all(&cartella).map_err(|err| {
+                errore(
+                    AppError::new(ErrorCode::InternalUnexpected {
+                        detail: Some("cache dell'app".to_owned()),
+                    })
+                    .with_cause(err.to_string()),
+                )
+            })?;
+            // Solo il nome, senza cartelle: arriva dalla finestra, e una barra
+            // dentro porterebbe il file fuori dalla cache.
+            let nome = std::path::Path::new(&nome).file_name().map_or_else(
+                || "documento".into(),
+                |nome| nome.to_string_lossy().into_owned(),
+            );
+            Ok(cartella.join(nome).to_string_lossy().into_owned())
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = (app, nome);
+            solo_su_android()
+        }
+    })
+    .await
 }
 
 /// Quanto la pagina deve stare lontana dai bordi: vedi `riquadri.ts`.
@@ -351,17 +366,17 @@ pub struct RiquadriIpc {
 ///
 /// Come [`telefono_permessi`].
 #[tauri::command]
-pub fn telefono_riquadri() -> Esito<RiquadriIpc> {
+pub async fn telefono_riquadri() -> Esito<RiquadriIpc> {
     #[cfg(target_os = "android")]
-    return rymembra_android::sistema::riquadri()
+    return in_attesa("riquadri", rymembra_android::sistema::riquadri)
+        .await
         .map(|r| RiquadriIpc {
             alto: r.alto,
             destra: r.destra,
             basso: r.basso,
             sinistra: r.sinistra,
             tastiera: r.tastiera,
-        })
-        .map_err(|err| guasto("riquadri", &err));
+        });
     #[cfg(not(target_os = "android"))]
     solo_su_android()
 }
@@ -406,9 +421,12 @@ pub async fn telefono_scansiona_qr() -> Esito<ScansioneIpc> {
 ///
 /// Come [`telefono_permessi`].
 #[tauri::command]
-pub fn telefono_vibra(tipo: String) -> Esito<()> {
+pub async fn telefono_vibra(tipo: String) -> Esito<()> {
     #[cfg(target_os = "android")]
-    return rymembra_android::sistema::vibra(&tipo).map_err(|err| guasto("vibrazione", &err));
+    return in_attesa("vibrazione", move || {
+        rymembra_android::sistema::vibra(&tipo)
+    })
+    .await;
     #[cfg(not(target_os = "android"))]
     {
         let _ = tipo;
@@ -423,10 +441,12 @@ pub fn telefono_vibra(tipo: String) -> Esito<()> {
 ///
 /// Come [`telefono_permessi`].
 #[tauri::command]
-pub fn telefono_barre(chiaro: bool) -> Esito<()> {
+pub async fn telefono_barre(chiaro: bool) -> Esito<()> {
     #[cfg(target_os = "android")]
-    return rymembra_android::sistema::barre(chiaro)
-        .map_err(|err| guasto("barre di sistema", &err));
+    return in_attesa("barre di sistema", move || {
+        rymembra_android::sistema::barre(chiaro)
+    })
+    .await;
     #[cfg(not(target_os = "android"))]
     {
         let _ = chiaro;
@@ -440,10 +460,9 @@ pub fn telefono_barre(chiaro: bool) -> Esito<()> {
 ///
 /// Come [`telefono_permessi`].
 #[tauri::command]
-pub fn telefono_secondo_piano() -> Esito<()> {
+pub async fn telefono_secondo_piano() -> Esito<()> {
     #[cfg(target_os = "android")]
-    return rymembra_android::sistema::in_secondo_piano()
-        .map_err(|err| guasto("secondo piano", &err));
+    return in_attesa("secondo piano", rymembra_android::sistema::in_secondo_piano).await;
     #[cfg(not(target_os = "android"))]
     solo_su_android()
 }
@@ -457,10 +476,13 @@ pub fn telefono_secondo_piano() -> Esito<()> {
 ///
 /// Come [`telefono_permessi`].
 #[tauri::command]
-pub fn telefono_senza_risparmio_batteria() -> Esito<bool> {
+pub async fn telefono_senza_risparmio_batteria() -> Esito<bool> {
     #[cfg(target_os = "android")]
-    return rymembra_android::sistema::senza_risparmio_batteria()
-        .map_err(|err| guasto("risparmio batteria", &err));
+    return in_attesa(
+        "risparmio batteria",
+        rymembra_android::sistema::senza_risparmio_batteria,
+    )
+    .await;
     #[cfg(not(target_os = "android"))]
     solo_su_android()
 }

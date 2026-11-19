@@ -45,7 +45,7 @@ use rymembra_domain::spotify_account::{AccountSnapshot, Scelte};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
-use crate::disparte::in_disparte;
+use crate::disparte::{comanda, in_disparte, stato_di};
 use crate::errore::{Esito, errore};
 use crate::importa::gestito;
 use crate::stato::{Stato, Turno, con_libreria};
@@ -189,13 +189,15 @@ pub struct StatoAccountIpc {
 
 // ── i comandi ───────────────────────────────────────────────────────────────
 
-/// Lo stato dell'account. Istantaneo: non tocca né rete né portachiavi.
+/// Lo stato dell'account. Non tocca né rete né portachiavi, ma legge la
+/// libreria: sul pool bloccante, perché il lucchetto può aspettare.
 #[tauri::command]
-pub fn account_stato(
-    stato: State<'_, Stato>,
-    account: State<'_, StatoAccount>,
-) -> Esito<StatoAccountIpc> {
-    stato_ipc(&stato, &account).map_err(errore)
+pub async fn account_stato(app: AppHandle) -> Esito<StatoAccountIpc> {
+    comanda("stato dell'account", move || {
+        let (stato, account) = (stato_di::<Stato>(&app)?, stato_di::<StatoAccount>(&app)?);
+        stato_ipc(&stato, &account).map_err(errore)
+    })
+    .await
 }
 
 /// Apre un archivio di Spotify e lo mette in cella.
@@ -256,12 +258,13 @@ fn apri_archivio(account: &StatoAccount, percorso: &str) -> Esito<Anteprima> {
 /// Ma in memoria ci resta, e un archivio di dieci anni sono centinaia di
 /// megabyte: quando si è finito, questo è il tasto che li restituisce.
 #[tauri::command]
-pub fn archivio_dimentica(
-    stato: State<'_, Stato>,
-    account: State<'_, StatoAccount>,
-) -> Esito<StatoAccountIpc> {
-    svuota_cella(&account);
-    stato_ipc(&stato, &account).map_err(errore)
+pub async fn archivio_dimentica(app: AppHandle) -> Esito<StatoAccountIpc> {
+    comanda("archivio dimenticato", move || {
+        let (stato, account) = (stato_di::<Stato>(&app)?, stato_di::<StatoAccount>(&app)?);
+        svuota_cella(&account);
+        stato_ipc(&stato, &account).map_err(errore)
+    })
+    .await
 }
 
 /// Cosa porterebbe l'importazione di quel che è in cella, senza scrivere niente.

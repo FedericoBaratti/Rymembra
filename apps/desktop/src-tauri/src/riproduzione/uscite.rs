@@ -313,7 +313,7 @@ fn pausa_se_l_uscita_e_sparita(
     let Some(stato) = app.try_state::<StatoLettore>() else {
         return;
     };
-    if let Err(err) = super::pausa(app.clone(), stato) {
+    if let Err(err) = super::pausa_ora(app.clone(), stato) {
         nota!(
             "[riproduzione] pausa per l'uscita sparita non riuscita codice={} causa={}",
             err.code,

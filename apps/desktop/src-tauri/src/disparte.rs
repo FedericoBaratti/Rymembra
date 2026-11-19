@@ -40,11 +40,28 @@
 //!
 //! Il tetto dei quattro secondi di [`crate::stato::con_libreria`] vale per il
 //! filo della finestra di Windows e **non** per quello del ponte: su Android una
-//! lettura del lucchetto da un comando sincrono è senza limite. Per questo i
-//! comandi di `lontano/` sono tutti `async` — la prova
-//! `nessun_comando_di_lontano_e_sincrono` — e gli altri comandi sincroni che
-//! prendono la libreria restano il rischio che resta, limitato alla durata di
-//! ogni presa.
+//! lettura del lucchetto da un comando sincrono è senza limite. Per questo
+//! **nessun comando che può aspettare è sincrono**, su nessuna piattaforma: ogni
+//! `#[tauri::command]` su una `fn` non asincrona sta nell'elenco `IMMEDIATI`
+//! della prova `nessun_comando_sincrono_puo_aspettare` — puro, atomico, un
+//! `send` su un canale senza limite, una chiamata alla finestra, o un `Mutex`
+//! privato letto punto per punto — con il suo motivo; tutti gli altri sono
+//! `async fn` che fanno il lavoro con [`in_disparte`] (o [`comanda`]). La
+//! pagina non aspetta nessun lucchetto, di nessun filo.
+//!
+//! # E l'ordine di arrivo?
+//!
+//! Un comando sincrono girava sul filo della finestra o del ponte, e due
+//! comandi si eseguivano uno dopo l'altro **nell'ordine in cui la pagina li
+//! aveva mandati**. Sul pool bloccante due comandi in fila su un lucchetto
+//! occupato si risvegliano nell'ordine che sceglie il sistema operativo: un
+//! volume, una stella, un fattore di zoom possono arrivare scambiati, e resta il
+//! valore sbagliato. I comandi che scrivono uno stato dove l'ultimo vince
+//! passano quindi da una **corsia** ([`crate::corsia`]), un filo con una coda
+//! per risorsa — il lettore, la libreria — invece che da [`in_disparte`]. La
+//! prova non lo pretende: lo dice il motivo scritto accanto a ogni comando, e
+//! `corsia::prove` prova che la corsia tiene l'ordine anche sotto un
+//! lucchetto occupato.
 //!
 //! # Perché non basta `rymembra_app::scadenza::con_scadenza`
 //!
@@ -114,6 +131,8 @@
 
 use rymembra_domain::errors::{AppError, ErrorCode};
 
+use crate::errore::{Esito, errore};
+
 /// Esegue `lavoro` sul pool bloccante e ne aspetta l'esito.
 ///
 /// `nome` è quel che finisce nella causa dell'errore se il lavoro non arriva mai
@@ -138,6 +157,43 @@ pub async fn in_disparte<T: Send + 'static>(
             })
             .with_cause(err.to_string())
         })
+}
+
+/// [`in_disparte`] per un comando: il lavoro restituisce un [`Esito`] e quello
+/// che torna alla finestra è lo stesso `Esito`, con la caduta del lavoro
+/// diventata `internal.aborted`.
+///
+/// È la forma di quasi ogni comando che prima era sincrono: il corpo di
+/// sempre, dentro una chiusura che possiede l'`AppHandle` e prende da lì gli
+/// stati ([`stato_di`]), e questa funzione che la manda sul pool bloccante.
+/// Per i comandi dove conta l'ordine di arrivo c'è
+/// [`crate::corsia::Corsia::comanda`].
+///
+/// # Errori
+///
+/// Quelli del lavoro; `internal.aborted` se il lavoro cade.
+pub async fn comanda<T: Send + 'static>(
+    nome: &'static str,
+    lavoro: impl FnOnce() -> Esito<T> + Send + 'static,
+) -> Esito<T> {
+    in_disparte(nome, lavoro).await.map_err(errore)?
+}
+
+/// Lo stato gestito `T`, preso dall'`AppHandle` dentro un lavoro che gira in
+/// disparte, con l'errore già nella forma della finestra.
+///
+/// È [`crate::importa::gestito`] — `try_state` e non `state`, per la ragione
+/// scritta su [`leggi_la_libreria`]: il pool bloccante può ritrovarsi vivo
+/// mentre gli stati gestiti vengono lasciati cadere, e lì un panico non è la
+/// risposta — con il nome dello stato al posto della causa a mano, e `Esito` al
+/// posto di `AppError`, così nel corpo di un comando basta un `?`.
+///
+/// # Errori
+///
+/// `internal.aborted` se lo stato non c'è più: la finestra si sta chiudendo.
+pub fn stato_di<T: Send + Sync + 'static>(app: &tauri::AppHandle) -> Esito<tauri::State<'_, T>> {
+    let nome = std::any::type_name::<T>();
+    crate::importa::gestito::<T>(app, nome.rsplit("::").next().unwrap_or(nome)).map_err(errore)
 }
 
 /// Una lettura della libreria, in disparte: [`in_disparte`] più il lucchetto.
@@ -385,6 +441,322 @@ mod prove {
                 "{nome} chiede ancora il lucchetto"
             );
         }
+    }
+
+    /// I comandi che restano sincroni, ciascuno col suo motivo: (file sotto
+    /// `src`, comando, perché è immediato).
+    ///
+    /// Un comando è qui solo se **non aspetta mai niente**: è puro, tocca solo
+    /// bandiere atomiche, fa un `send` su un canale senza limite, è una chiamata
+    /// alla finestra, oppure legge un `Mutex` privato i cui punti di presa sono
+    /// stati letti uno per uno e non lo tengono attraverso I/O, un altro
+    /// lucchetto o un'attesa. «Legge un `Mutex`» da solo non basta: era un
+    /// comando di quella forma, `lontano_specchio_stato`, a fermare la pagina
+    /// del telefono tre volte (collaudo del 18/11, vedi il `//!` di questo
+    /// modulo).
+    ///
+    /// Va tenuto a mano, e la prova qui sotto lo pretende: un comando sincrono
+    /// che non c'è nell'elenco la fa fallire, e una voce dell'elenco che non
+    /// corrisponde più a un comando sincrono pure.
+    const IMMEDIATI: &[(&str, &str, &str)] = &[
+        // ── bandiere atomiche e canali senza limite ─────────────────────────
+        (
+            "avvio_con_windows.rs",
+            "proposta_sottofondo_rimanda",
+            "alza una bandiera atomica (`Rimando::imposta`)",
+        ),
+        (
+            "esplora.rs",
+            "esplora_annulla",
+            "alza una bandiera atomica (`annullata`)",
+        ),
+        (
+            "nuvola.rs",
+            "nuvola_annulla",
+            "alza una bandiera atomica (`annulla_collegamento`)",
+        ),
+        (
+            "nuvola.rs",
+            "nuvola_salva",
+            "un `send` su un `mpsc::channel` senza limite: non aspetta",
+        ),
+        (
+            "nuvola_musica.rs",
+            "nuvola_conto_annulla",
+            "alza una bandiera atomica (`annulla`)",
+        ),
+        (
+            "procura.rs",
+            "annulla_scarico",
+            "alza una bandiera atomica (`StatoProcura::ferma`)",
+        ),
+        (
+            "testi.rs",
+            "testi_pannello",
+            "un contatore atomico (`pannelli_aperti`)",
+        ),
+        (
+            "testi.rs",
+            "testi_ferma",
+            "alza una bandiera atomica (`StatoTesti::ferma`)",
+        ),
+        (
+            "maiusc.rs",
+            "maiusc_all_avvio",
+            "un `compare_exchange` su un atomico (`leggi_e_consuma`)",
+        ),
+        (
+            "insieme/mod.rs",
+            "insieme_cerca",
+            "un `send` su un `mpsc::channel` senza limite: non aspetta",
+        ),
+        // ── puri ────────────────────────────────────────────────────────────
+        (
+            "ia.rs",
+            "ia_operazioni",
+            "pura: ricava le operazioni da un testo, senza stato, disco né rete",
+        ),
+        (
+            "studio/registro.rs",
+            "studio_registro",
+            "pura: costruisce il registro dalle costanti di `rymembra-skin`",
+        ),
+        // ── un `Mutex` privato, con i punti di presa letti ──────────────────
+        (
+            "chiusura.rs",
+            "chiusura_da_scrivere",
+            "scrive un bit nel `Mutex` privato di `CHIUSURA`: i cinque punti che \
+             lo prendono (`Chiusura::stato`) leggono o scrivono un campo e basta, \
+             nessuno attraversa I/O o un altro lucchetto. Resta sincrono anche per \
+             l'ordine: un «sì» e un «no» di fila non devono scambiarsi, o la \
+             chiusura salterebbe l'avviso di quel che non è stato scritto",
+        ),
+        (
+            "chiusura.rs",
+            "chiusura_scritto",
+            "lo stesso `Mutex` di `chiusura_da_scrivere`, poi `finestra.close()` o \
+             `app.exit`, che sono messaggi al ciclo degli eventi",
+        ),
+        (
+            "ia.rs",
+            "ia_ferma",
+            "alza la bandiera atomica del turno sotto il `Mutex` privato `corrente`, \
+             preso in quattro punti (`prendi_posto`, `ferma`, `occupato`, `lascia`) \
+             per confrontare un numero: nessuno attraversa I/O",
+        ),
+        (
+            "comandi.rs",
+            "annulla_scansione",
+            "legge `IN_CORSO` e alza una bandiera atomica: `IN_CORSO` si prende in \
+             otto punti (`in_corso()`), tutti una lettura o un'assegnazione, e l'unico \
+             in cui accanto c'è altro (`aspetta_il_turno_a_mano`) chiama due bandiere",
+        ),
+        (
+            "comandi.rs",
+            "scansione_avanzamento",
+            "copia il valore di `IN_CORSO` (`Option` di `Copy`): vedi `annulla_scansione`",
+        ),
+        (
+            "comandi.rs",
+            "rimozioni_scarta",
+            "azzera `IN_ATTESA`, preso solo per assegnare o per `take_if` \
+             (`rimozioni_conferma`) e lasciato prima della scrittura",
+        ),
+        (
+            "sorveglia.rs",
+            "sorveglianza_stato",
+            "clona il `quadro` della sorveglianza: i cinque punti che lo prendono \
+             (`sorveglia.rs` e `sorveglia/filo.rs`) assegnano campi o clonano",
+        ),
+        (
+            "manutenzione.rs",
+            "manutenzione_salute",
+            "clona la `Salute` sotto un `Mutex` privato preso in due punti \
+             (`salute`, `scrivi_salute`) che clonano o assegnano",
+        ),
+        (
+            "stato.rs",
+            "fili_salute",
+            "clona il registro dei fili (`salute()`), preso in `sorvegliato` solo \
+             dopo il giro e in `salute_dei_fili`",
+        ),
+        (
+            "stato.rs",
+            "libreria_fase",
+            "copia la fase di apertura (`Stato::fase`): chi aspetta l'apertura \
+             (`aspetta_l_apertura_se`) la lascia dentro `Condvar::wait_timeout`, e \
+             gli altri punti la assegnano. Serve proprio alla finestra appena nata, \
+             mentre la libreria si apre: non deve aspettarla",
+        ),
+        // ── la finestra ─────────────────────────────────────────────────────
+        // Le API della finestra: sul filo principale `send_user_message`
+        // esegue sul posto (`tauri-runtime-wry/src/lib.rs`, `send_user_message`),
+        // fuori da lì manda un messaggio al ciclo degli eventi. I comandi della
+        // finestra di Tauri stessi sono `async fn` (`tauri/src/window/plugin.rs`,
+        // `getter!`/`setter!`), quindi chiamarle da un worker funziona; qui
+        // restano sincroni perché sul desktop `comparsa::mostra` e compagne
+        // devono vedere gli effetti nell'ordine in cui li chiedono, e sul
+        // telefono sono vuote o mandano un `show()` che non aspetta.
+        (
+            "lib.rs",
+            "pronto",
+            "la finestra, più una bandiera e un `send` senza limite (`aggiornamenti::finestra_pronta`)",
+        ),
+        ("lib.rs", "finestra_mostra", "la finestra"),
+        (
+            "lib.rs",
+            "finestra_trascina",
+            "la finestra (sul telefono: vuota)",
+        ),
+        (
+            "lib.rs",
+            "finestra_riduci",
+            "la finestra (sul telefono: vuota)",
+        ),
+        (
+            "lib.rs",
+            "finestra_ingrandisci",
+            "la finestra (sul telefono: vale `false`)",
+        ),
+        ("lib.rs", "finestra_ingrandita", "la finestra"),
+        (
+            "lib.rs",
+            "finestra_schermo_intero",
+            "la finestra (sul telefono: vale `false`)",
+        ),
+        (
+            "lib.rs",
+            "finestra_chiudi",
+            "la finestra, più un bit sotto il `Mutex` privato di `CHIUSURA`",
+        ),
+    ];
+
+    /// Quel che un comando immediato non può contenere: qualunque cosa che
+    /// aspetti. Non è una prova che non aspetti — quella la fa chi ha scritto il
+    /// motivo — ma impedisce che una voce dell'elenco resti lì dopo che il corpo
+    /// ha preso un lucchetto o un disco.
+    const ATTESE: &[&str] = &[
+        "con_libreria",
+        "con_lettore",
+        "leggi_o_aspetta",
+        "leggi_la_libreria",
+        "leggi_a_parte",
+        "in_disparte",
+        ".lock(",
+        ".recv(",
+        "recv_timeout",
+        "sleep(",
+        ".join(",
+        "block_on",
+        "std::fs",
+        "spawn",
+    ];
+
+    /// Nessun `#[tauri::command]` gira sul filo del ponte di Android o su quello
+    /// della finestra se può aspettare (collaudo del 18/11, causa 1 e FC3).
+    ///
+    /// Un `#[tauri::command]` su una `fn` non asincrona gira **sul posto**: sul
+    /// filo principale di Windows, sul filo del ponte JavascriptInterface di
+    /// Android (vedi il `//!` di questo modulo). Se aspetta un lucchetto, il
+    /// disco, la rete o un processo, tutta la pagina aspetta con lui. Quindi ogni
+    /// comando sincrono sta in [`IMMEDIATI`], col suo motivo; tutti gli altri
+    /// sono `async fn` e fanno il lavoro con [`in_disparte`](super::in_disparte)
+    /// o con una delle corsie di [`crate::corsia`].
+    ///
+    /// Restano fuori i `#[tauri::command(async)]` su una `fn` non asincrona: la
+    /// macro ne manda il corpo a `tauri::async_runtime::spawn`
+    /// (`tauri-macros/src/command/wrapper.rs`, `respond_async_serialized`), che
+    /// non è né il filo del ponte né quello della finestra. Occupano un worker
+    /// del runtime, e di quello si occupa
+    /// `nessun_comando_con_un_percorso_gira_su_un_worker`.
+    #[test]
+    fn nessun_comando_sincrono_puo_aspettare() {
+        let tutti = sorgenti();
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut visti = 0_usize;
+        let mut sincroni: Vec<(String, String, String)> = Vec::new();
+        for (file, testo) in &tutti {
+            let relativo = file
+                .strip_prefix(&src)
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            for (dove, _) in testo.match_indices(concat!("\n#[tauri::", "command")) {
+                let resto = &testo[dove + 1..];
+                // Un attributo vero finisce con `]` o con `(`: una riga di una
+                // stringa di un'altra prova che comincia con l'attributo, no.
+                let dopo = resto[concat!("#[tauri::", "command").len()..]
+                    .chars()
+                    .next();
+                if !matches!(dopo, Some(']' | '(')) {
+                    continue;
+                }
+                let firma = &resto[..resto.find('{').unwrap_or(resto.len())];
+                visti += 1;
+                // `command(async)` su una `fn`: vedi sopra.
+                if firma.starts_with(concat!("#[tauri::", "command(async)]")) {
+                    continue;
+                }
+                if firma.contains("async fn ") {
+                    continue;
+                }
+                let nome: String = firma
+                    .find("fn ")
+                    .map(|i| &firma[i + 3..])
+                    .unwrap_or_default()
+                    .chars()
+                    .take_while(|c| *c == '_' || c.is_alphanumeric())
+                    .collect();
+                let corpo = &resto[..resto.find("\n}\n").unwrap_or(resto.len())];
+                sincroni.push((relativo.clone(), nome, corpo.to_owned()));
+            }
+        }
+        assert!(visti >= 300, "i comandi non si sono trovati ({visti})");
+
+        let mut da_convertire = Vec::new();
+        for (file, nome, _) in &sincroni {
+            if !IMMEDIATI.iter().any(|(f, n, _)| f == file && n == nome) {
+                da_convertire.push(format!("{file}: {nome}"));
+            }
+        }
+        da_convertire.sort();
+        da_convertire.dedup();
+        assert!(
+            da_convertire.is_empty(),
+            "comandi sincroni che non sono nell'elenco degli immediati, da rendere \
+             `async fn` con `in_disparte` ({}): {da_convertire:#?}",
+            da_convertire.len()
+        );
+
+        let mut vecchie = Vec::new();
+        let mut con_attese = Vec::new();
+        for (file, nome, motivo) in IMMEDIATI {
+            assert!(!motivo.is_empty(), "{file}: {nome} non dice il perché");
+            let corpi: Vec<&String> = sincroni
+                .iter()
+                .filter(|(f, n, _)| f == file && n == nome)
+                .map(|(_, _, corpo)| corpo)
+                .collect();
+            if corpi.is_empty() {
+                vecchie.push(format!("{file}: {nome}"));
+                continue;
+            }
+            for corpo in corpi {
+                for ago in ATTESE {
+                    if corpo.contains(ago) {
+                        con_attese.push(format!("{file}: {nome} contiene `{ago}`"));
+                    }
+                }
+            }
+        }
+        assert!(
+            vecchie.is_empty(),
+            "voci degli immediati che non sono più comandi sincroni: {vecchie:#?}"
+        );
+        assert!(
+            con_attese.is_empty(),
+            "comandi «immediati» che aspettano: {con_attese:#?}"
+        );
     }
 
     /// Nessun comando di `lontano/` è sincrono (collaudo del 18/11: la WebView

@@ -130,7 +130,16 @@ struct StatoVolume {
 /// per ogni passo, e ridisegnare l'applicazione intera con quel che ne usciva.
 /// Parte `riproduzione:volume`, che sono due campi.
 #[tauri::command]
-pub fn volume(
+pub async fn volume(app: tauri::AppHandle, volume: f32, muto: bool) -> Esito<()> {
+    super::col_lettore_in_fila(app, "volume", move |app, stato| {
+        volume_ora(app, stato, volume, muto)
+    })
+    .await
+}
+
+/// [`volume`], sul posto: il lavoro sta qui, e il comando lo mette in fila
+/// sulla corsia del lettore.
+fn volume_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     volume: f32,
@@ -172,14 +181,22 @@ pub fn volume(
 /// e nessuna query — quanto basta perché il pannello nella barra e la pagina
 /// delle impostazioni restino d'accordo fra loro.
 #[tauri::command]
-pub fn equalizzatore(
+pub async fn equalizzatore(app: tauri::AppHandle, guadagni: Vec<f32>, attivo: bool) -> Esito<()> {
+    super::col_lettore_in_fila(app, "equalizzatore", move |app, stato| {
+        equalizzatore_ora(app, stato, &guadagni, attivo)
+    })
+    .await
+}
+
+/// [`equalizzatore`], sul posto: vedi [`volume`].
+fn equalizzatore_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
-    guadagni: Vec<f32>,
+    guadagni: &[f32],
     attivo: bool,
 ) -> Esito<()> {
     con_lettore(&stato, |lettore| {
-        lettore.motore.equalizzatore(&guadagni, attivo);
+        lettore.motore.equalizzatore(guadagni, attivo);
         // `playback::normalizza` fa qui il taglio che prima si andava a
         // rileggere dal database: è **la stessa** funzione che usa `save_eq`,
         // chiamata dove il valore nasce invece che dopo un giro su SQLite. La
@@ -187,7 +204,7 @@ pub fn equalizzatore(
         // c'è più una scrittura più una rilettura per ogni pixel di cursore.
         lettore.eq = Equalizzazione {
             attivo,
-            guadagni: playback::normalizza(&guadagni),
+            guadagni: playback::normalizza(guadagni),
         };
         stato
             .eq_da_salvare

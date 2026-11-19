@@ -73,6 +73,8 @@ use rymembra_domain::scelta::{Candidato, affidabilita, scarto_durata, scegli_can
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
+use crate::corsia::LIBRERIA;
+use crate::disparte::{comanda, leggi_la_libreria, stato_di};
 use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{DepositoStato, Stato, con_libreria};
@@ -317,9 +319,19 @@ struct EventoBrano {
 /// Torna subito: la coda gira su un filo suo. Chi la mostra segue gli eventi
 /// `scarico:avanzamento` e `scarico:brano`.
 #[tauri::command]
-pub fn scarica_desiderati(app: AppHandle) -> Esito<StatoCoda> {
-    avvia(&app);
-    scarico_stato(app.state(), app.state())
+pub async fn scarica_desiderati(app: AppHandle) -> Esito<StatoCoda> {
+    comanda("avvio della coda", move || {
+        avvia(&app);
+        scarico_stato_da(&app)
+    })
+    .await
+}
+
+/// [`scarico_stato_ora`], con gli stati presi dal registro.
+fn scarico_stato_da(app: &AppHandle) -> Esito<StatoCoda> {
+    let stato = stato_di::<Stato>(app)?;
+    let procura = stato_di::<StatoProcura>(app)?;
+    scarico_stato_ora(&stato, &procura)
 }
 
 /// Chiede alla coda in corso di fermarsi.
@@ -341,14 +353,17 @@ pub fn annulla_scarico(procura: State<'_, StatoProcura>) -> Esito<()> {
 /// `archive.org` per disegnare un pannello. Chi vuole sapere chi risponde chiama
 /// `import_diagnostica`, che è fatto apposta e lo dichiara.
 #[tauri::command]
-pub fn scarico_stato(
-    stato: State<'_, Stato>,
-    procura: State<'_, StatoProcura>,
-) -> Esito<StatoCoda> {
+pub async fn scarico_stato(app: AppHandle) -> Esito<StatoCoda> {
+    comanda("stato della coda", move || scarico_stato_da(&app)).await
+}
+
+/// Il corpo di [`scarico_stato`], sul posto: lo chiamano anche gli altri
+/// comandi della coda, dal pool, per restituire lo stato dopo il loro gesto.
+fn scarico_stato_ora(stato: &Stato, procura: &StatoProcura) -> Esito<StatoCoda> {
     // Le tre letture sotto lo **stesso** lucchetto: prenderlo due volte
     // lascerebbe passare in mezzo un brano che si conclude, e i totali
     // direbbero una cosa mentre le righe per importazione ne dicono un'altra.
-    let (conteggi, sorgenti, alternative) = con_libreria(&stato, |libreria| {
+    let (conteggi, sorgenti, alternative) = con_libreria(stato, |libreria| {
         // Una volta per libreria, e qui perché è la prima cosa che ogni
         // finestra chiede: le copie che la 3.2.0 chiudeva come prese senza un
         // file tornano in attesa prima di essere contate, e la pagina delle
@@ -391,20 +406,24 @@ pub fn scarico_stato(
 /// che cancellasse dei file sarebbe un interruttore che nessuno oserebbe
 /// toccare.
 #[tauri::command]
-pub fn alternative_ammettile(
-    stato: State<'_, Stato>,
-    procura: State<'_, StatoProcura>,
-    ammesse: bool,
-) -> Esito<StatoCoda> {
-    con_libreria(&stato, |libreria| {
-        settings::write(
-            &libreria.connection,
-            settings::CHIAVE_ALTERNATIVE,
-            if ammesse { "1" } else { "0" },
-        )
-    })
-    .map_err(errore)?;
-    scarico_stato(stato, procura)
+pub async fn alternative_ammettile(app: AppHandle, ammesse: bool) -> Esito<StatoCoda> {
+    // Un interruttore dove l'ultimo vince: sulla corsia della libreria. Lo stato
+    // che restituisce è il nucleo, non il comando: da una corsia non si chiama
+    // un comando che passa per una corsia.
+    LIBRERIA
+        .comanda("alternative ammesse", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            con_libreria(&stato, |libreria| {
+                settings::write(
+                    &libreria.connection,
+                    settings::CHIAVE_ALTERNATIVE,
+                    if ammesse { "1" } else { "0" },
+                )
+            })
+            .map_err(errore)?;
+            scarico_stato_da(&app)
+        })
+        .await
 }
 
 /// Quel che resta da comprare.
@@ -422,10 +441,11 @@ pub fn alternative_ammettile(
 /// elenco cresce per sempre, e chiedere solo quel che si mostra è l'unica
 /// disciplina che regge nel tempo.
 #[tauri::command]
-pub fn da_comprare(stato: State<'_, Stato>, limite: u32) -> Esito<Vec<desiderati::DaComprare>> {
-    con_libreria(&stato, |libreria| {
+pub async fn da_comprare(app: AppHandle, limite: u32) -> Esito<Vec<desiderati::DaComprare>> {
+    leggi_la_libreria(app, "elenco da comprare", move |libreria| {
         desiderati::da_comprare(&libreria.connection, limite)
     })
+    .await
     .map_err(errore)
 }
 
@@ -469,7 +489,9 @@ const fn sicuro(byte: u8) -> bool {
 /// Il negozio si nomina, non si indirizza: un nome che non è nell'elenco è un
 /// rifiuto, non un indirizzo aperto per caso.
 #[tauri::command]
-pub fn cerca_dove_comprare(negozio: String, cosa: String) -> Esito<()> {
+pub async fn cerca_dove_comprare(negozio: String, cosa: String) -> Esito<()> {
+    // L'indirizzo si costruisce subito, senza aspettare niente; aprirlo, sì:
+    // `browser::apri` chiede al sistema, e sul telefono a chi guarda.
     let Some((_, base)) = NEGOZI.iter().find(|(nome, _)| *nome == negozio) else {
         return Err(errore(
             AppError::new(ErrorCode::DownloadUnrecognizedUrl)
@@ -491,27 +513,34 @@ pub fn cerca_dove_comprare(negozio: String, cosa: String) -> Esito<()> {
         }
     }
 
-    crate::browser::apri(&url).map_err(|err| {
-        errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura del browser".to_owned()),
-            })
-            .with_cause(err.to_string()),
-        )
+    comanda("apertura di un negozio", move || {
+        crate::browser::apri(&url).map_err(|err| {
+            errore(
+                AppError::new(ErrorCode::InternalAborted {
+                    what: Some("apertura del browser".to_owned()),
+                })
+                .with_cause(err.to_string()),
+            )
+        })
     })
+    .await
 }
 
 /// Rimette in coda i falliti e riavvia.
 #[tauri::command]
-pub fn riprova_falliti(app: AppHandle, stato: State<'_, Stato>) -> Esito<u32> {
-    let quanti = con_libreria(&stato, |libreria| {
-        desiderati::riprova_falliti(&libreria.connection)
+pub async fn riprova_falliti(app: AppHandle) -> Esito<u32> {
+    comanda("riprova dei falliti", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let quanti = con_libreria(&stato, |libreria| {
+            desiderati::riprova_falliti(&libreria.connection)
+        })
+        .map_err(errore)?;
+        if quanti > 0 {
+            avvia(&app);
+        }
+        Ok(quanti)
     })
-    .map_err(errore)?;
-    if quanti > 0 {
-        avvia(&app);
-    }
-    Ok(quanti)
+    .await
 }
 
 /// Rimette in coda anche i non trovati, e riavvia.
@@ -519,15 +548,19 @@ pub fn riprova_falliti(app: AppHandle, stato: State<'_, Stato>) -> Esito<u32> {
 /// Il gesto «Riprova anche i non trovati»: vedi
 /// [`desiderati::riprova_introvabili`] per perché è un gesto a parte.
 #[tauri::command]
-pub fn riprova_introvabili(app: AppHandle, stato: State<'_, Stato>) -> Esito<u32> {
-    let quanti = con_libreria(&stato, |libreria| {
-        desiderati::riprova_introvabili(&libreria.connection)
+pub async fn riprova_introvabili(app: AppHandle) -> Esito<u32> {
+    comanda("riprova dei non trovati", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let quanti = con_libreria(&stato, |libreria| {
+            desiderati::riprova_introvabili(&libreria.connection)
+        })
+        .map_err(errore)?;
+        if quanti > 0 {
+            avvia(&app);
+        }
+        Ok(quanti)
     })
-    .map_err(errore)?;
-    if quanti > 0 {
-        avvia(&app);
-    }
-    Ok(quanti)
+    .await
 }
 
 /// I cataloghi compilati in questa build.

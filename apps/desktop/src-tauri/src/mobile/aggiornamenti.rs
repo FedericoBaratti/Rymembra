@@ -95,6 +95,8 @@ use rymembra_net::{Cancello, Corpo, Metodo, Rete, Richiesta, Rimandi};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager as _, State};
 
+use crate::corsia::LIBRERIA;
+use crate::disparte::{comanda, stato_di};
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::rilasci::{
@@ -389,12 +391,13 @@ struct AvanzamentoIpc {
 ///
 /// `db.queryFailed` se il database non risponde.
 #[tauri::command]
-pub fn aggiornamenti_stato(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-) -> Esito<StatoAggiornamentiIpc> {
-    stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+pub async fn aggiornamenti_stato(app: AppHandle) -> Esito<StatoAggiornamentiIpc> {
+    comanda("stato degli aggiornamenti", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+        stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+    })
+    .await
 }
 
 /// Accende o spegne il controllo periodico. Accendendolo si controlla subito;
@@ -404,38 +407,40 @@ pub fn aggiornamenti_stato(
 ///
 /// `db.queryFailed` se la scrittura fallisce.
 #[tauri::command]
-pub fn aggiornamenti_attivo(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-    attivo: bool,
-) -> Esito<StatoAggiornamentiIpc> {
-    con_libreria(&stato, |libreria| {
-        settings::write(
-            &libreria.connection,
-            CHIAVE_ATTIVO,
-            if attivo { "1" } else { "0" },
-        )
-    })
-    .map_err(errore)?;
-    if attivo {
-        let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
-    } else {
-        aggiornamenti.generazione.fetch_add(1, Ordering::AcqRel);
-        *aggiornamenti
-            .trovato
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
-        // Anche l'APK già verificato: chi ha detto di non voler essere avvisato
-        // non vuole nemmeno un «Installa» che aspetta.
-        scarta_pronto(&aggiornamenti);
-        *aggiornamenti
-            .ultimo_errore
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
-    }
-    riferisci(&app);
-    stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+pub async fn aggiornamenti_attivo(app: AppHandle, attivo: bool) -> Esito<StatoAggiornamentiIpc> {
+    // Sulla corsia della libreria: un interruttore dove l'ultimo vince.
+    LIBRERIA
+        .comanda("aggiornamenti attivi", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+            con_libreria(&stato, |libreria| {
+                settings::write(
+                    &libreria.connection,
+                    CHIAVE_ATTIVO,
+                    if attivo { "1" } else { "0" },
+                )
+            })
+            .map_err(errore)?;
+            if attivo {
+                let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
+            } else {
+                aggiornamenti.generazione.fetch_add(1, Ordering::AcqRel);
+                *aggiornamenti
+                    .trovato
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = None;
+                // Anche l'APK già verificato: chi ha detto di non voler essere avvisato
+                // non vuole nemmeno un «Installa» che aspetta.
+                scarta_pronto(&aggiornamenti);
+                *aggiornamenti
+                    .ultimo_errore
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = None;
+            }
+            riferisci(&app);
+            stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+        })
+        .await
 }
 
 /// Controlla adesso: sveglia il filo, e l'esito arriva con
@@ -445,13 +450,14 @@ pub fn aggiornamenti_attivo(
 ///
 /// `db.queryFailed` se il database non risponde.
 #[tauri::command]
-pub fn aggiornamenti_adesso(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-) -> Esito<StatoAggiornamentiIpc> {
-    let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
-    stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+pub async fn aggiornamenti_adesso(app: AppHandle) -> Esito<StatoAggiornamentiIpc> {
+    comanda("controllo degli aggiornamenti", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+        let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
+        stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+    })
+    .await
 }
 
 /// Dimentica questa versione finché non ne esce un'altra.
@@ -460,29 +466,30 @@ pub fn aggiornamenti_adesso(
 ///
 /// `db.queryFailed` se la scrittura fallisce.
 #[tauri::command]
-pub fn aggiornamenti_salta(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-    versione: String,
-) -> Esito<StatoAggiornamentiIpc> {
-    con_libreria(&stato, |libreria| {
-        settings::write(&libreria.connection, CHIAVE_SALTATA, &versione)
-    })
-    .map_err(errore)?;
-    // Saltare una versione è non volerla: se il suo APK aspettava «Installa», se
-    // ne va.
-    let aspetta_questa = aggiornamenti
-        .pronto
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .is_some_and(|pronto| pronto.versione == versione);
-    if aspetta_questa {
-        scarta_pronto(&aggiornamenti);
-    }
-    riferisci(&app);
-    stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+pub async fn aggiornamenti_salta(app: AppHandle, versione: String) -> Esito<StatoAggiornamentiIpc> {
+    LIBRERIA
+        .comanda("versione saltata", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+            con_libreria(&stato, |libreria| {
+                settings::write(&libreria.connection, CHIAVE_SALTATA, &versione)
+            })
+            .map_err(errore)?;
+            // Saltare una versione è non volerla: se il suo APK aspettava «Installa», se
+            // ne va.
+            let aspetta_questa = aggiornamenti
+                .pronto
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|pronto| pronto.versione == versione);
+            if aspetta_questa {
+                scarta_pronto(&aggiornamenti);
+            }
+            riferisci(&app);
+            stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+        })
+        .await
 }
 
 /// Scarica l'APK trovato e lo verifica; con l'APK già verificato in attesa, lo
@@ -504,11 +511,16 @@ pub fn aggiornamenti_salta(
 /// già in corso, se l'APK di questa versione è firmato con un'altra chiave, o
 /// se si chiede `AllaChiusura`, che sul telefono non esiste.
 #[tauri::command]
-pub fn aggiornamenti_installa(
-    app: AppHandle,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-    quando: Quando,
-) -> Esito<()> {
+pub async fn aggiornamenti_installa(app: AppHandle, quando: Quando) -> Esito<()> {
+    comanda("installazione dell'aggiornamento", move || {
+        installa_ora(&app, quando)
+    })
+    .await
+}
+
+/// Il corpo di [`aggiornamenti_installa`], sul pool bloccante.
+fn installa_ora(app: &AppHandle, quando: Quando) -> Esito<()> {
+    let aggiornamenti = stato_di::<StatoAggiornamenti>(app)?;
     if quando == Quando::AllaChiusura {
         return Err(errore(AppError::new(ErrorCode::InternalAborted {
             what: Some("sul telefono non c'è l'installazione alla chiusura".to_owned()),
@@ -531,7 +543,7 @@ pub fn aggiornamenti_installa(
     };
     if non_installabile(
         aggiornamenti.copia_di_prova(),
-        versione_rifiutata(&app).as_deref(),
+        versione_rifiutata(app).as_deref(),
         &trovato.versione,
     ) {
         return Err(errore(AppError::new(ErrorCode::InternalAborted {
@@ -560,14 +572,14 @@ pub fn aggiornamenti_installa(
         .as_ref()
         .filter(|pronto| pronto.versione == trovato.versione)
         .map(|pronto| pronto.apk.clone());
-    riferisci(&app);
+    riferisci(app);
     let suo = app.clone();
     if let Err(err) = std::thread::Builder::new()
         .name("rymembra-aggiornamento".to_owned())
         .spawn(move || lavora(&suo, &trovato, pronto))
     {
         aggiornamenti.installazione.store(false, Ordering::Release);
-        riferisci(&app);
+        riferisci(app);
         return Err(errore(
             AppError::new(ErrorCode::InternalUnexpected {
                 detail: Some("il filo dell'aggiornamento non è partito".to_owned()),
@@ -585,16 +597,17 @@ pub fn aggiornamenti_installa(
 /// «Installa» se ne va, e l'avviso torna com'era. Il file resta nella cache, e
 /// il prossimo «Aggiorna» lo riusa senza riscaricarlo ([`scarica`]).
 #[tauri::command]
-pub fn aggiornamenti_annulla(
-    app: AppHandle,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-) -> Esito<()> {
-    if aggiornamenti.installazione.load(Ordering::Acquire) {
-        aggiornamenti.annulla.store(true, Ordering::Release);
-    } else if scarta_pronto(&aggiornamenti) {
-        riferisci(&app);
-    }
-    Ok(())
+pub async fn aggiornamenti_annulla(app: AppHandle) -> Esito<()> {
+    comanda("annullo dell'aggiornamento", move || {
+        let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+        if aggiornamenti.installazione.load(Ordering::Acquire) {
+            aggiornamenti.annulla.store(true, Ordering::Release);
+        } else if scarta_pronto(&aggiornamenti) {
+            riferisci(&app);
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// Butta l'APK in attesa, se c'è. `true` se c'era.
