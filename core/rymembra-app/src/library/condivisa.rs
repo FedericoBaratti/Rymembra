@@ -64,6 +64,21 @@ const CONDIVISO_SENZA_ALIAS: &str = "path IS NOT NULL AND source_service IS NULL
      AND NOT (path >= 'nuvola://' AND path < 'nuvola:/0') \
      AND NOT (path >= 'lontano://' AND path < 'lontano:/0')";
 
+/// Le colonne di un album come le vede un altro dispositivo: `total_tracks` conta
+/// i brani **condivisi**, non tutte le righe dell'album.
+///
+/// Una riga specchio può avere la chiave d'album di un disco di qui (D4 del
+/// collaudo del 18/11: lo stesso disco su due dispositivi è una scheda sola), e
+/// `albums.total_tracks` le conta: il conto di un disco di qui, mandato a chi lo
+/// chiede, includerebbe brani di un terzo dispositivo — e dire a un pari quanti
+/// brani ha un disco, contandoli anche da un altro, è ricondividere.
+fn colonne_album_condivise() -> String {
+    COLONNE_ALBUM.replace(
+        "a.total_tracks",
+        &format!("(SELECT COUNT(*) FROM tracks t WHERE t.album_key = a.album_key AND {CONDIVISO})"),
+    )
+}
+
 /// Il pezzo di un'immagine CD da suonare, in fotogrammi da 1/75 di secondo
 /// dall'inizio del file. Vedi la migrazione 034.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -496,10 +511,11 @@ pub fn album(connection: &Connection, da: i64, quanti: i64) -> Result<Vec<AlbumS
     super::interrogazioni::assicura_ordine(connection)?;
     let ordine = super::interrogazioni::ORDINE_DEGLI_ALBUM;
     let sql = format!(
-        "SELECT {COLONNE_ALBUM} FROM albums a
+        "SELECT {} FROM albums a
          WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_key = a.album_key AND {CONDIVISO})
          ORDER BY {ordine}
-         LIMIT ?1 OFFSET ?2"
+         LIMIT ?1 OFFSET ?2",
+        colonne_album_condivise()
     );
     righe_di_album(
         connection,
@@ -521,11 +537,12 @@ pub fn album_artista(
     quanti: i64,
 ) -> Result<Vec<AlbumSummary>, AppError> {
     let sql = format!(
-        "SELECT {COLONNE_ALBUM} FROM albums a
+        "SELECT {} FROM albums a
          WHERE a.album_key IN (SELECT album_key FROM tracks
                                WHERE {ARTISTA_EFFETTIVO} = ?1 AND {CONDIVISO_SENZA_ALIAS})
          ORDER BY a.year, a.title COLLATE NOCASE
-         LIMIT ?2"
+         LIMIT ?2",
+        colonne_album_condivise()
     );
     righe_di_album(
         connection,

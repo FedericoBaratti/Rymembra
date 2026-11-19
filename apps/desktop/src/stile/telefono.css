@@ -160,6 +160,14 @@
 :root[data-forma="telefono"] .pila-toast .toast {
   width: auto;
 }
+/* Le fasce di notizia, d'avviso e d'errore stanno nella pila anche sul telefono
+   (D7 del collaudo del 18/11): sul computer sono larghe 360 px, qui riempiono la
+   pila, che è larga quanto lo schermo meno i suoi margini. */
+:root[data-forma="telefono"] .pila-toast > .notizia,
+:root[data-forma="telefono"] .pila-toast > .errore {
+  width: auto;
+  max-width: none;
+}
 
 /* Le barre di scorrimento: sul telefono si scorre col dito, e la sua barra la
    disegna il sistema solo mentre si scorre. Quella del computer, sempre

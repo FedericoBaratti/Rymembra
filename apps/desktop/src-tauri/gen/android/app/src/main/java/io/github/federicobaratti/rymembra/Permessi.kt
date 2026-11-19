@@ -116,8 +116,12 @@ object Permessi {
     }
   }
 
-  /** Il codice della richiesta delle notifiche che non aspetta la risposta. */
-  private const val CODICE_NOTIFICHE = 4_213
+  /**
+   * Il codice della richiesta delle notifiche che non aspetta la risposta: la
+   * risposta arriva a [MainActivity.onRequestPermissionsResult], che rifà la
+   * notifica di [Presenza] se il sottofondo era già acceso.
+   */
+  const val CODICE_NOTIFICHE = 4_213
 
   /**
    * La rete di casa. Da Android 17 un'app che si dichiara per Android 17 non

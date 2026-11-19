@@ -55,7 +55,7 @@ use rymembra_app::dispositivi::{self, DatiMobili};
 use rymembra_domain::errors::{AppError, Domain, ErrorCode, ErrorCodeKind};
 use rymembra_lontano::nodo::VALIDITA_INVITO;
 use rymembra_lontano::{Domanda, Nodo};
-use tauri::{AppHandle, Manager as _, State};
+use tauri::{AppHandle, Manager as _};
 
 use crate::errore::{Esito, errore};
 use crate::stato::adesso_ms;
@@ -224,11 +224,14 @@ pub fn link_arrivato(app: &AppHandle, link: &str) {
 /// Il link aperto da fuori e non ancora preso: vedi [`LINK_IN_ATTESA`]. Una
 /// volta sola.
 #[tauri::command]
-pub fn lontano_link_in_attesa() -> Esito<Option<String>> {
-    Ok(LINK_IN_ATTESA
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take())
+pub async fn lontano_link_in_attesa() -> Esito<Option<String>> {
+    in_disparte(|| {
+        Ok(LINK_IN_ATTESA
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take())
+    })
+    .await
 }
 
 /// Con chi si collegherebbe questo link: il nome che dichiara, ripulito, e
@@ -252,8 +255,8 @@ fn esamina(link: &str) -> Result<LinkIpc, AppError> {
 
 /// Vedi [`esamina`].
 #[tauri::command]
-pub fn lontano_link_esamina(link: String) -> Esito<LinkIpc> {
-    esamina(&link).map_err(|err| errore(senza_causa_di_rete(err)))
+pub async fn lontano_link_esamina(link: String) -> Esito<LinkIpc> {
+    in_disparte(move || esamina(&link)).await
 }
 
 /// Un errore senza la sua causa, se è del collegamento: vedi il `//!`.
@@ -354,8 +357,8 @@ async fn in_disparte<T: Send + 'static>(
 
 /// Il pannello, adesso.
 #[tauri::command]
-pub fn lontano_stato(stato: State<'_, StatoLontano>) -> Esito<StatoLontanoIpc> {
-    Ok(prendi(&stato.comune.vetrina).clone())
+pub async fn lontano_stato(app: AppHandle) -> Esito<StatoLontanoIpc> {
+    in_disparte(move || Ok(prendi(&comune(&app)?.vetrina).clone())).await
 }
 
 /// Accende o spegne «Raggiungibile da internet».
@@ -533,32 +536,43 @@ pub async fn lontano_collega(app: AppHandle, link: String) -> Esito<StatoLontano
 /// Smette di aspettare la conferma dell'altro dispositivo: [`lontano_collega`]
 /// torna con `internal.aborted`, e dall'altra parte la domanda sparisce.
 #[tauri::command]
-pub fn lontano_collega_annulla(stato: State<'_, StatoLontano>) -> Esito<()> {
-    stato.comune.annulli.fetch_add(1, Ordering::AcqRel);
-    if let Some(nodo) = stato.comune.nodo() {
-        nodo.annulla_collegamento();
-    }
-    Ok(())
+pub async fn lontano_collega_annulla(app: AppHandle) -> Esito<()> {
+    in_disparte(move || {
+        let comune = comune(&app)?;
+        comune.annulli.fetch_add(1, Ordering::AcqRel);
+        if let Some(nodo) = comune.nodo() {
+            nodo.annulla_collegamento();
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// I dispositivi che non rispondevano si riprovano adesso: la persona ha
 /// aperto la loro pagina, o quella dei dispositivi. Non aspetta.
 #[tauri::command]
-pub fn lontano_cerca_ora(stato: State<'_, StatoLontano>) -> Esito<()> {
-    if let Some(nodo) = stato.comune.nodo() {
-        nodo.riprova_adesso();
-    }
-    Ok(())
+pub async fn lontano_cerca_ora(app: AppHandle) -> Esito<()> {
+    in_disparte(move || {
+        if let Some(nodo) = comune(&app)?.nodo() {
+            nodo.riprova_adesso();
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// La risposta di chi mostra il QR a chi l'ha letto.
 #[tauri::command]
-pub fn lontano_rispondi(stato: State<'_, StatoLontano>, id: u64, accetta: bool) -> Esito<()> {
-    let richieste = prendi(&stato.comune.richieste);
-    if let Some((_, risposta)) = richieste.iter().find(|(r, _)| r.id == id) {
-        let _ = risposta.send(accetta);
-    }
-    Ok(())
+pub async fn lontano_rispondi(app: AppHandle, id: u64, accetta: bool) -> Esito<()> {
+    in_disparte(move || {
+        let comune = comune(&app)?;
+        let richieste = prendi(&comune.richieste);
+        if let Some((_, risposta)) = richieste.iter().find(|(r, _)| r.id == id) {
+            let _ = risposta.send(accetta);
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// Un nome nuovo per un dispositivo collegato, solo qui.

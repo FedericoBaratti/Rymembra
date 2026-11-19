@@ -28,18 +28,19 @@ import { statoDellaRiga, type StatoDellaRiga } from "./origine";
 export function useStatoDellaRiga(
   percorso: string | null | undefined,
   inGrazia = false,
+  copiaQui = false,
 ): StatoDellaRiga | null {
   const chiave = dispositivoDellaRiga(percorso);
   const scegli = useMemo(
     () =>
       sceltaRicordata(
         (stato: Parameters<typeof statoDellaRiga>[1]) =>
-          chiave === null ? null : statoDellaRiga(percorso, stato, inGrazia),
+          chiave === null ? null : statoDellaRiga(percorso, stato, inGrazia, copiaQui),
         (a, b) => a === b || (a !== null && b !== null && ugualiInSuperficie(a, b)),
       ),
     // La scelta guarda solo la sorgente: si rifà quando cambia la riga.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chiave, percorso, inGrazia],
+    [chiave, percorso, inGrazia, copiaQui],
   );
   const leggi = useCallback(() => scegli(archivioLontano.leggi()), [scegli]);
   return useSyncExternalStore(archivioLontano.iscrivi, leggi, leggi);

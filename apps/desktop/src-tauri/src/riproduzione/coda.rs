@@ -287,8 +287,106 @@ pub fn riprendi_coda(app: &tauri::AppHandle) {
         return;
     };
     let salvato = leggi_il_salvato(app);
+    // Prima di consegnare il salvato al lettore: se la coda di «Sfoglia» aspetta
+    // il catalogo di un dispositivo, serve la coda com'è stata ripresa per
+    // riconoscere, dopo, che nessuno l'ha toccata.
+    let in_attesa = salvato.coda_lontana_in_attesa;
+    let ripresa = salvato.coda.as_ref().map(Queue::snapshot);
     let _ = con_lettore(&stato_lettore, |lettore| {
         rimetti_il_salvato(&stato_lettore, lettore, salvato);
+        Ok(())
+    });
+    if in_attesa && let Some(ripresa) = ripresa {
+        aspetta_la_coda_lontana(app.clone(), ripresa);
+    }
+}
+
+/// Ogni quanto si riguarda se il catalogo di un dispositivo è arrivato.
+const OGNI_QUANTO_SI_RIGUARDA: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Quanto si aspettano i cataloghi, al più, per portare la coda di «Sfoglia»:
+/// due minuti coprono il primo giro di un catalogo grande via relay (il collaudo
+/// del 18/11: da dieci a trenta secondi per diecimila righe). Poi si porta quel
+/// che c'è, e la voce di un dispositivo che non ha risposto si scarta.
+const ATTESA_DELLA_CODA_LONTANA: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// La coda con le voci lontane rimesse prende il posto della coda ripresa solo se
+/// nessuno l'ha toccata: il motore non ha un brano in mano, non si è in
+/// sessione, e la coda di adesso è quella di quando si è ripresa. Pura apposta,
+/// perché la scelta si prova senza un lettore.
+fn la_coda_si_puo_sostituire(
+    adesso: &QueueSnapshot,
+    ripresa: &QueueSnapshot,
+    brano_in_motore: bool,
+    in_sessione: bool,
+) -> bool {
+    !in_sessione && !brano_in_motore && adesso == ripresa
+}
+
+/// La coda di «Sfoglia» che all'avvio ha trovato il catalogo di un dispositivo
+/// ancora da leggere (D6 del collaudo del 18/11): si riprova ogni pochi secondi
+/// su un filo suo, finché il catalogo c'è o il tempo scade
+/// ([`ATTESA_DELLA_CODA_LONTANA`]). Quando si porta, la coda nuova prende il
+/// posto di quella ripresa **solo se nessuno l'ha toccata**
+/// ([`la_coda_si_puo_sostituire`]); se la persona ha già fatto qualcosa la coda
+/// intera «rimane indietro», e la chiave si toglie da sola senza scrivere niente.
+fn aspetta_la_coda_lontana(app: tauri::AppHandle, ripresa: QueueSnapshot) {
+    let partito = std::thread::Builder::new()
+        .name("rymembra-coda-lontana".to_owned())
+        .spawn(move || {
+            let inizio = std::time::Instant::now();
+            loop {
+                std::thread::sleep(OGNI_QUANTO_SI_RIGUARDA);
+                if crate::spegnimento::in_uscita() {
+                    return;
+                }
+                let Some(stato) = app.try_state::<Stato>() else {
+                    return;
+                };
+                let aspetta = inizio.elapsed() < ATTESA_DELLA_CODA_LONTANA;
+                let esito = con_libreria(&stato, |libreria| {
+                    let righe = playback::load_queue(&libreria.connection)?;
+                    playback::porta_la_coda_lontana(&libreria.connection, righe, aspetta)
+                });
+                match esito {
+                    Ok(playback::CodaLontana::Rimandata) => {}
+                    Ok(playback::CodaLontana::Fatta(migrata)) => {
+                        metti_la_coda_lontana(&app, &ripresa, migrata);
+                        return;
+                    }
+                    Ok(playback::CodaLontana::Niente(_)) => return,
+                    Err(err) => {
+                        nota!(
+                            "[riproduzione] la coda di «Sfoglia» non passa alla libreria unica codice={}",
+                            err.code().kind().code()
+                        );
+                        return;
+                    }
+                }
+            }
+        });
+    if let Err(err) = partito {
+        nota!("[riproduzione] il filo della coda di «Sfoglia» non parte: {err}");
+    }
+}
+
+/// Mette nel lettore la coda con le voci lontane, se si può: vedi
+/// [`la_coda_si_puo_sostituire`].
+fn metti_la_coda_lontana(app: &tauri::AppHandle, ripresa: &QueueSnapshot, migrata: QueueSnapshot) {
+    let Some(stato_lettore) = app.try_state::<StatoLettore>() else {
+        return;
+    };
+    let _ = con_lettore(&stato_lettore, |lettore| {
+        if la_coda_si_puo_sostituire(
+            &lettore.coda.snapshot(),
+            ripresa,
+            lettore.motore.posizione().track_id.is_some(),
+            lettore.sessione.is_some(),
+        ) {
+            lettore.coda = Queue::restore(migrata);
+            salva_coda(app, lettore);
+            manda_stato(app, lettore);
+        }
         Ok(())
     });
 }
@@ -311,6 +409,10 @@ pub(super) struct Salvato {
     /// `playback::CHIAVE_LATENZA_PER_USCITA`.
     latenze: playback::LatenzePerUscita,
     bande: u16,
+    /// Nella coda di «Sfoglia» c'è una voce di un dispositivo il cui catalogo
+    /// non è ancora arrivato: la coda con le voci lontane si porta dopo
+    /// ([`aspetta_la_coda_lontana`]).
+    coda_lontana_in_attesa: bool,
 }
 
 /// Legge tutto quel che [`riprendi_coda`] rimette, con una presa sola della
@@ -337,14 +439,27 @@ pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
             // stesso (dispositivo, id), quelle che non ci sono si scartano
             // senza errore, e la chiave vecchia se ne va (`migra_coda_lontana`).
             // Un guasto della migrazione lascia la coda di righe com'era.
+            // Il catalogo di un dispositivo arriva dopo l'avvio: una voce lontana
+            // che lo aspetta lascia la coda di righe com'è, e la porta
+            // `aspetta_la_coda_lontana` quando c'è.
+            let mut coda_lontana_in_attesa = false;
             let righe = playback::load_queue(c).map(|righe| {
-                playback::migra_coda_lontana(c, righe.clone()).unwrap_or_else(|err| {
-                    nota!(
-                        "[riproduzione] la coda di «Sfoglia» non passa alla libreria unica codice={}",
-                        err.code().kind().code()
-                    );
-                    righe
-                })
+                match playback::porta_la_coda_lontana(c, righe.clone(), true) {
+                    Ok(playback::CodaLontana::Niente(coda) | playback::CodaLontana::Fatta(coda)) => {
+                        coda
+                    }
+                    Ok(playback::CodaLontana::Rimandata) => {
+                        coda_lontana_in_attesa = true;
+                        righe
+                    }
+                    Err(err) => {
+                        nota!(
+                            "[riproduzione] la coda di «Sfoglia» non passa alla libreria unica codice={}",
+                            err.code().kind().code()
+                        );
+                        righe
+                    }
+                }
             });
             Ok((
                 righe,
@@ -359,6 +474,7 @@ pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
                     latenze: latenze.voci,
                     bande: playback::load_spettro_bande(c)
                         .unwrap_or(rymembra_play::RISOLUZIONE_DI_SERIE),
+                    coda_lontana_in_attesa,
                 },
                 guasto_latenze,
             ))
@@ -377,6 +493,7 @@ pub(super) fn leggi_il_salvato(app: &tauri::AppHandle) -> Salvato {
                 latenza_ms: 0,
                 latenze: playback::LatenzePerUscita::new(),
                 bande: rymembra_play::RISOLUZIONE_DI_SERIE,
+                coda_lontana_in_attesa: false,
             },
             None,
         )
@@ -1259,6 +1376,39 @@ pub fn righe_della_coda(
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    // ── la coda di «Sfoglia» che arriva dopo il catalogo (D6) ──
+
+    fn coda_di(tracks: Vec<i64>) -> QueueSnapshot {
+        let order = (0..tracks.len()).collect();
+        QueueSnapshot {
+            order,
+            tracks,
+            order_pos: Some(0),
+            shuffle: false,
+            repeat: RepeatMode::Off,
+        }
+    }
+
+    /// La coda con le voci lontane rimesse prende il posto di quella di
+    /// all'avvio solo se nessuno l'ha toccata: nessun brano in mano al motore,
+    /// nessuna sessione, e la coda uguale a quella che si era ripresa.
+    #[test]
+    fn la_coda_con_le_voci_lontane_sostituisce_solo_una_coda_che_nessuno_ha_toccato() {
+        let ripresa = coda_di(vec![1, 2]);
+        assert!(la_coda_si_puo_sostituire(&ripresa, &ripresa, false, false));
+        // La persona ha già fatto partire un brano: la coda è sua.
+        assert!(!la_coda_si_puo_sostituire(&ripresa, &ripresa, true, false));
+        // Ha accodato qualcosa, o ha cambiato lista.
+        assert!(!la_coda_si_puo_sostituire(
+            &coda_di(vec![1, 2, 3]),
+            &ripresa,
+            false,
+            false
+        ));
+        // In sessione la coda è fatta di maniglie e non si tocca.
+        assert!(!la_coda_si_puo_sostituire(&ripresa, &ripresa, false, true));
+    }
 
     // ── la coda di prima: vedi `ricorda_coda_di_prima` ──
 

@@ -451,6 +451,30 @@ class Presenza : Service() {
       }
     }
 
+    /**
+     * Le notifiche sono state concesse mentre il servizio era già in primo piano:
+     * la notifica si rifà adesso.
+     *
+     * Chi accende il sottofondo su un telefono nuovo vede la domanda delle
+     * notifiche **dopo** che `startForeground` è già partito (`Permessi.
+     * notificheAlBisogno` non aspetta la risposta): Android tiene il servizio in
+     * primo piano senza mostrare niente, e dopo il sì la notifica già postata non
+     * compare da sé. [aggiornaLaNotifica] non la rifà, perché la frase è la
+     * stessa — è quel confronto che la teneva nascosta fino al primo cambio di
+     * collegamento. Qui si salta il confronto; senza servizio vivo o senza il
+     * permesso non c'è niente da rifare. Non lancia mai.
+     */
+    fun ripubblica(contesto: Context) {
+      if (vivo == null) return
+      try {
+        val gestore = contesto.applicationContext.getSystemService(NotificationManager::class.java)
+        if (!gestore.areNotificationsEnabled()) return
+        gestore.notify(ID, notifica(contesto.applicationContext))
+      } catch (e: Exception) {
+        Log.w(ETICHETTA, "la notifica di presenza non si rifà", e)
+      }
+    }
+
     private fun notifica(contesto: Context): Notification {
       val gestore = contesto.getSystemService(NotificationManager::class.java)
       gestore.createNotificationChannel(

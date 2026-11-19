@@ -816,7 +816,7 @@ impl Giro {
         let nascoste = nascondi_le_sparite(&tx, &self.dispositivo, BLOCCO_RIMOZIONI)?;
         chiusura.spostate = nascoste.spostate;
         chiusura.da_nascondere = nascoste.restano;
-        chiusura.copie_cambiate = ricalcola_doppioni_in(&tx)?;
+        chiusura.copie_cambiate = rifai_doppioni_e_album(&tx, &mut self.toccati)?;
         ricostruisci_aggregati(&tx, &self.toccati)?;
         tx.execute(
             "INSERT INTO lontano_cataloghi (dispositivo, generazione, completo, ultimo_ms)
@@ -1428,7 +1428,7 @@ pub fn togli_un_blocco_di(
     blocco.da_nascondere = nascoste.restano;
     if blocco.tolte > 0 {
         if blocco.doppioni_da_rifare {
-            ricalcola_doppioni_in(&tx)?;
+            rifai_doppioni_e_album(&tx, &mut toccati)?;
         }
         ricostruisci_aggregati(&tx, &toccati)?;
     }
@@ -1491,7 +1491,7 @@ pub fn conferma_un_blocco_di(
         // fuori dalla scelta dei doppioni: se lo sono tutte, non c'è niente da
         // rifare (vedi `Blocco::doppioni_da_rifare`).
         if non_nascoste {
-            ricalcola_doppioni_in(&tx)?;
+            rifai_doppioni_e_album(&tx, &mut toccati)?;
         }
         ricostruisci_aggregati(&tx, &toccati)?;
     }
@@ -1538,10 +1538,178 @@ pub fn ricalcola_doppioni(connection: &Connection) -> Result<usize, AppError> {
         return Ok(0);
     }
     let tx = transazione(connection)?;
-    let cambiate = ricalcola_doppioni_in(&tx)?;
+    let mut toccati = Toccati::nessuno();
+    let cambiate = rifai_doppioni_e_album(&tx, &mut toccati)?;
+    // Allineare le chiavi d'album cambia gli album: dopo una scansione gli
+    // aggregati sono già fatti, e queste chiavi no.
+    ricostruisci_aggregati(&tx, &toccati)?;
     tx.commit()
         .map_err(|err| db_error("chiusura della transazione dello specchio", &err))?;
     Ok(cambiate)
+}
+
+/// La scelta dei doppioni e, subito dopo, la chiave d'album delle righe specchio
+/// allineata a quella delle righe di qui. Chi chiama poi ricostruisce gli
+/// aggregati con `toccati`. Quante righe hanno cambiato `copia_di`.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub(crate) fn rifai_doppioni_e_album(
+    tx: &Connection,
+    toccati: &mut Toccati,
+) -> Result<usize, AppError> {
+    let cambiate = ricalcola_doppioni_in(tx)?;
+    riallinea_le_chiavi_d_album(tx, toccati)?;
+    Ok(cambiate)
+}
+
+/// Le righe di un album che sta su più dispositivi, con la stessa chiave
+/// d'album: l'album è **una scheda sola** in «Tutti» (D4 del collaudo del 18/11).
+///
+/// # Il difetto
+///
+/// La chiave d'album di una riga specchio è del suo dispositivo
+/// (`lontano:/<dispositivo>/album-…`), quella di una riga di qui è della sua
+/// cartella (`storage/…`): lo stesso disco su due dispositivi dava due schede, una
+/// con i brani di là e una con quelli di qui, con i conteggi di ognuna. Nel
+/// collaudo, «Album Formati» da 6 e da 2 brani, e la pagina dell'artista con
+/// «4 album» per due dischi.
+///
+/// # La regola
+///
+/// Le righe che hanno la stessa [`identita_album`] — titolo e artista
+/// normalizzati — si guardano insieme. Se fra loro c'è una riga specchio:
+///
+/// - con righe di qui, le righe specchio prendono la chiave d'album di qui (la
+///   chiave di qui con più righe, a parità la minore): il disco di qui è quello
+///   che l'utente ha, e le copie degli altri gli si uniscono;
+/// - senza righe di qui, ma con righe di **più** dispositivi, le righe di tutti
+///   gli altri dispositivi prendono la chiave minore.
+///
+/// Due dischi di qui con lo stesso nome restano due dischi — lo dice la cartella,
+/// e il resto della libreria li tiene separati —, e due dischi dello stesso
+/// dispositivo anche (la chiave d'album del proprietario). Una riga che il
+/// proprietario non manda più, in grazia, non partecipa.
+///
+/// Idempotente: una seconda chiamata non cambia niente. Le chiavi vecchie e le
+/// nuove vanno in `toccati`, perché gli aggregati le rifacciano.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub(crate) fn riallinea_le_chiavi_d_album(
+    tx: &Connection,
+    toccati: &mut Toccati,
+) -> Result<usize, AppError> {
+    let cosa = "chiavi d'album";
+    let ci_sono_righe_specchio: bool = tx
+        .query_row("SELECT EXISTS (SELECT 1 FROM lontano_brani)", [], |r| {
+            r.get(0)
+        })
+        .map_err(|err| db_error(cosa, &err))?;
+    if !ci_sono_righe_specchio {
+        return Ok(0);
+    }
+    /// Una riga, per l'allineamento.
+    struct Riga {
+        id: i64,
+        chiave: String,
+        dispositivo: Option<String>,
+    }
+    let mut per_identita: HashMap<String, Vec<Riga>> = HashMap::new();
+    {
+        let mut st = tx
+            .prepare(
+                "SELECT t.id, t.album_key, t.album, t.album_artist, t.artist, l.dispositivo
+                   FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
+                  WHERE t.path IS NOT NULL AND t.album_key IS NOT NULL AND t.album_key <> ''
+                    AND l.sparito_ms IS NULL",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let lette = st
+            .query_map([], |r| {
+                Ok((
+                    Riga {
+                        id: r.get(0)?,
+                        chiave: r.get(1)?,
+                        dispositivo: r.get(5)?,
+                    },
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|err| db_error(cosa, &err))?;
+        for letta in lette {
+            let (riga, album, album_artist, artist) = letta.map_err(|err| db_error(cosa, &err))?;
+            if let Some(identita) = identita_album(&album, album_artist.as_deref(), &artist) {
+                per_identita.entry(identita).or_default().push(riga);
+            }
+        }
+    }
+    let mut da_cambiare: Vec<(i64, String)> = Vec::new();
+    for righe in per_identita.values() {
+        if !righe.iter().any(|r| r.dispositivo.is_some()) {
+            // Solo righe di qui: due cartelle con lo stesso disco restano due
+            // dischi, come in ogni libreria.
+            continue;
+        }
+        // La chiave a cui tutti si allineano, e il dispositivo che già ce l'ha
+        // (`None` per una chiave di qui: tutte le righe specchio la prendono).
+        let (canonica, di_chi): (&str, Option<&str>) = {
+            let mut di_qui: BTreeMap<&str, usize> = BTreeMap::new();
+            for r in righe.iter().filter(|r| r.dispositivo.is_none()) {
+                *di_qui.entry(r.chiave.as_str()).or_insert(0) += 1;
+            }
+            if let Some((chiave, _)) = di_qui
+                .iter()
+                .max_by_key(|(chiave, quante)| (**quante, std::cmp::Reverse(**chiave)))
+            {
+                (*chiave, None)
+            } else {
+                let dispositivi: BTreeSet<&str> = righe
+                    .iter()
+                    .filter_map(|r| r.dispositivo.as_deref())
+                    .collect();
+                if dispositivi.len() < 2 {
+                    continue;
+                }
+                let Some(minore) = righe.iter().min_by_key(|r| r.chiave.as_str()) else {
+                    continue;
+                };
+                (minore.chiave.as_str(), minore.dispositivo.as_deref())
+            }
+        };
+        for r in righe {
+            let Some(suo) = r.dispositivo.as_deref() else {
+                continue;
+            };
+            // Le righe del dispositivo che ha già la chiave canonica sono dello
+            // stesso proprietario: i suoi dischi non si fondono fra loro.
+            if r.chiave != canonica && di_chi != Some(suo) {
+                da_cambiare.push((r.id, canonica.to_owned()));
+            }
+        }
+    }
+    if da_cambiare.is_empty() {
+        return Ok(0);
+    }
+    let ids: Vec<i64> = da_cambiare.iter().map(|(id, _)| *id).collect();
+    // Le chiavi di prima, e poi quelle di dopo: gli aggregati rifanno entrambe.
+    toccati.segna_brani(tx, &ids)?;
+    {
+        let mut scrivi = tx
+            .prepare_cached("UPDATE tracks SET album_key = ?2 WHERE id = ?1")
+            .map_err(|err| db_error(cosa, &err))?;
+        for (id, chiave) in &da_cambiare {
+            scrivi
+                .execute(params![id, chiave])
+                .map_err(|err| db_error(cosa, &err))?;
+        }
+    }
+    toccati.segna_brani(tx, &ids)?;
+    Ok(da_cambiare.len())
 }
 
 /// C'è qualcosa da scegliere: righe specchio, o righe con una copia di una
@@ -1570,17 +1738,13 @@ pub(crate) fn ricalcola_doppioni_in(tx: &Connection) -> Result<usize, AppError> 
         let mut st = tx
             .prepare(
                 "SELECT t.id, COALESCE(t.content_key, l.content_key, t.track_key), l.dispositivo,
-                        t.codec, t.sample_rate, t.bitrate, t.album, t.album_artist, t.artist,
-                        t.copia_di, t.file_size, t.duration_ms
+                        t.codec, t.sample_rate, t.bitrate, t.copia_di, t.file_size, t.duration_ms
                    FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
                   WHERE t.path IS NOT NULL AND l.sparito_ms IS NULL",
             )
             .map_err(|err| db_error(cosa, &err))?;
         let lette = st
             .query_map([], |r| {
-                let album: String = r.get(6)?;
-                let album_artist: Option<String> = r.get(7)?;
-                let artist: String = r.get(8)?;
                 Ok(RigaDoppione {
                     id: r.get(0)?,
                     gruppo: r.get(1)?,
@@ -1589,11 +1753,10 @@ pub(crate) fn ricalcola_doppioni_in(tx: &Connection) -> Result<usize, AppError> 
                         r.get::<_, Option<String>>(3)?.as_deref(),
                         r.get(4)?,
                         r.get(5)?,
-                        r.get(10)?,
-                        r.get(11)?,
+                        r.get(7)?,
+                        r.get(8)?,
                     ),
-                    album: identita_album(&album, album_artist.as_deref(), &artist),
-                    copia_di: r.get(9)?,
+                    copia_di: r.get(6)?,
                 })
             })
             .map_err(|err| db_error(cosa, &err))?;
@@ -1898,7 +2061,7 @@ pub fn dimentica_dispositivo(
         )
         .map_err(|err| db_error(cosa, &err))?;
     }
-    ricalcola_doppioni_in(&tx)?;
+    rifai_doppioni_e_album(&tx, &mut toccati)?;
     ricostruisci_aggregati(&tx, &toccati)?;
     tx.commit().map_err(|err| db_error(cosa, &err))?;
     Ok((rimappate, tolte))

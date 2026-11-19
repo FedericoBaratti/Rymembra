@@ -560,6 +560,7 @@ pub fn scheda(maniglia: i64, voce: &Voce) -> TrackSummary {
         // sessione è già il nome sotto cui la mostra.
         album_artist: None,
         in_grazia: false,
+        copia_qui: false,
     }
 }
 

@@ -35,6 +35,21 @@
 //!   che non è arrivata non si richiede per un minuto, e se ne ricordano poche.
 //! - **Aspettare la rete dove non si può.** Chi chiama lo fa dentro il lucchetto
 //!   dei controlli multimediali: la richiesta parte su un altro filo, sempre.
+//!
+//! # Il protocollo `rymembra-cover` non aspetta mai la rete
+//!
+//! Su Android il gestore del protocollo gira dentro `shouldInterceptRequest`, e
+//! wry tiene il filo della WebView fermo finché Rust risponde (fino a trenta
+//! secondi: `rx.recv_timeout` in `wry/src/android/mod.rs`). Lo stesso filo serve
+//! anche le risposte dei comandi che superano gli 8 KiB — Tauri le consegna con
+//! una `fetch` sul protocollo `ipc://` (`tauri/src/ipc/channel.rs`,
+//! `MAX_JSON_DIRECT_EXECUTE_THRESHOLD`) —, e su un telefono vero, con la Libreria
+//! aperta su un dispositivo e le sue copertine ancora fuori dallo store, i fili
+//! erano tutti in attesa della rete: le pagine da venti brani in su non tornavano
+//! più. [`servi`] risponde quindi **subito** — con i byte se ci sono, con un
+//! «non c'è» che non si ricorda (`no-store`) se no — e la copertina si chiede in
+//! disparte, una volta sola e a numero chiuso ([`IN_VOLO_PER_LA_FINESTRA`]); quando
+//! arriva, l'evento `lontano:copertina` dice alla pagina di richiederla.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
@@ -45,6 +60,15 @@ const RIPROVA: Duration = Duration::from_secs(60);
 
 /// Quante impronte si ricordano al più, fra quelle in volo e quelle non arrivate.
 const RICORDATE: usize = 256;
+
+/// Quante copertine chiede insieme la **finestra**: due dispositivi per i tre
+/// posti ciascuno di `COPERTINE_PER_DISPOSITIVO`. Una pagina con centinaia di
+/// righe specchio senza copertina ne chiede centinaia, ognuna con un filo in
+/// attesa del suo posto per quindici secondi: a numero chiuso se ne chiedono
+/// poche, e le altre tornano alla pagina quando ne arriva una
+/// (`lontano:copertina`). Le schede di sistema non hanno un tetto: ne chiedono una
+/// per brano che suona.
+const IN_VOLO_PER_LA_FINESTRA: usize = 6;
 
 /// Solo una riga di un altro dispositivo ha una copertina da andare a prendere:
 /// una riga di questa macchina senza il file della copertina (il tag non ce
@@ -101,13 +125,18 @@ impl Richieste {
     ///
     /// Non dà niente indietro: chi chiama ha già guardato lo store, e lo riguarda
     /// quando `arrivata` lo fa ricomporre.
+    ///
+    /// `tetto` è quante richieste possono essere in volo insieme: a quel punto la
+    /// nuova non parte e non si ricorda, e chi la vuole la richiede dopo. Le
+    /// schede di sistema non ne hanno (`usize::MAX`).
     pub(super) fn richiedi<A: Ambiente>(
         &self,
         ambiente: &A,
         impronta: &str,
+        tetto: usize,
         arrivata: impl FnOnce() + Send + 'static,
     ) {
-        if ambiente.nello_store(impronta) || !self.comincia(impronta) {
+        if ambiente.nello_store(impronta) || !self.comincia(impronta, tetto) {
             return;
         }
         let richieste = self.clone();
@@ -127,8 +156,9 @@ impl Richieste {
     }
 
     /// Segna che la richiesta di `impronta` parte adesso. `false` se non deve
-    /// partire: è già in volo, o non è arrivata da meno di `riprova`.
-    fn comincia(&self, impronta: &str) -> bool {
+    /// partire: è già in volo, non è arrivata da meno di `riprova`, o ce ne sono
+    /// già `tetto` in volo.
+    fn comincia(&self, impronta: &str, tetto: usize) -> bool {
         let mut dentro = self
             .ricordate
             .lock()
@@ -137,6 +167,14 @@ impl Richieste {
             Some(Stato::InVolo) => return false,
             Some(Stato::NonArrivata(quando)) if quando.elapsed() < self.riprova => return false,
             _ => {}
+        }
+        if dentro
+            .values()
+            .filter(|stato| matches!(stato, Stato::InVolo))
+            .count()
+            >= tetto
+        {
+            return false;
         }
         if dentro.len() >= RICORDATE && !dentro.contains_key(impronta) {
             // Si dimentica quel che non è arrivato: al più si riprova una
@@ -210,7 +248,54 @@ pub(super) fn richiedi(
     arrivata: impl FnOnce(&tauri::AppHandle) + Send + 'static,
 ) {
     let mano = app.clone();
-    RICHIESTE.richiedi(&ViaApp(app.clone()), impronta, move || arrivata(&mano));
+    RICHIESTE.richiedi(&ViaApp(app.clone()), impronta, usize::MAX, move || {
+        arrivata(&mano)
+    });
+}
+
+/// La risposta del protocollo `rymembra-cover` a una richiesta della finestra:
+/// **subito**, senza aspettare la rete. Vedi il `//!`.
+///
+/// `letta` è quel che lo store ha: con i byte, `rispondi(Some(..))` e basta. Senza,
+/// `rispondi(None)` — il gestore dice «non c'è», e non si ricorda — **prima** di
+/// qualunque richiesta, e poi la copertina si chiede in disparte, una volta sola
+/// e a numero chiuso; quando è nello store si chiama `arrivata`. Pura rispetto
+/// alla rete: `ambiente` è quel che le prove sostituiscono.
+fn senza_aspettare<A: Ambiente>(
+    richieste: &Richieste,
+    ambiente: &A,
+    impronta: &str,
+    letta: Option<Vec<u8>>,
+    rispondi: impl FnOnce(Option<Vec<u8>>),
+    arrivata: impl FnOnce() + Send + 'static,
+) {
+    if letta.is_some() {
+        rispondi(letta);
+        return;
+    }
+    rispondi(None);
+    richieste.richiedi(ambiente, impronta, IN_VOLO_PER_LA_FINESTRA, arrivata);
+}
+
+/// [`senza_aspettare`] con l'applicazione vera: lo store, la rete, e l'evento
+/// `lontano:copertina` a copertina arrivata.
+pub(crate) fn servi(
+    app: &tauri::AppHandle,
+    impronta: &str,
+    letta: Option<Vec<u8>>,
+    rispondi: impl FnOnce(Option<Vec<u8>>),
+) {
+    use crate::spegnimento::Emette as _;
+    let mano = app.clone();
+    let chi = impronta.to_owned();
+    senza_aspettare(
+        &RICHIESTE,
+        &ViaApp(app.clone()),
+        impronta,
+        letta,
+        rispondi,
+        move || mano.emetti("lontano:copertina", chi),
+    );
 }
 
 #[cfg(test)]
@@ -305,7 +390,7 @@ mod prove {
         let (ripubblicate, arrivata) = contatore();
 
         // Prima pubblicazione: lo store non ha la copertina, e non si aspetta.
-        richieste.richiedi(&finto, IMPRONTA, arrivata);
+        richieste.richiedi(&finto, IMPRONTA, usize::MAX, arrivata);
         assert_eq!(ripubblicate.load(Ordering::SeqCst), 0, "non ancora");
 
         // Arriva.
@@ -320,7 +405,7 @@ mod prove {
 
         // Seconda pubblicazione: lo store la ha, e non si chiede di nuovo.
         let (altre, arrivata) = contatore();
-        richieste.richiedi(&finto, IMPRONTA, arrivata);
+        richieste.richiedi(&finto, IMPRONTA, usize::MAX, arrivata);
         finto.aspetta();
         assert_eq!(finto.scaricate.load(Ordering::SeqCst), 1);
         assert_eq!(altre.load(Ordering::SeqCst), 0);
@@ -336,7 +421,7 @@ mod prove {
         let (ripubblicate, _) = contatore();
         for _ in 0..5 {
             let conti = Arc::clone(&ripubblicate);
-            richieste.richiedi(&finto, IMPRONTA, move || {
+            richieste.richiedi(&finto, IMPRONTA, usize::MAX, move || {
                 conti.fetch_add(1, Ordering::SeqCst);
             });
         }
@@ -362,7 +447,7 @@ mod prove {
         let finto = Finto::nuovo(false, true);
         let richieste = Richieste::nuove(Duration::from_secs(3600));
         let (ripubblicate, arrivata) = contatore();
-        richieste.richiedi(&finto, IMPRONTA, arrivata);
+        richieste.richiedi(&finto, IMPRONTA, usize::MAX, arrivata);
         finto.aspetta();
         assert_eq!(finto.scaricate.load(Ordering::SeqCst), 1);
         assert_eq!(
@@ -373,7 +458,7 @@ mod prove {
 
         // Un altro stato del lettore, un minuto dopo: ancora niente.
         let (_, arrivata) = contatore();
-        richieste.richiedi(&finto, IMPRONTA, arrivata);
+        richieste.richiedi(&finto, IMPRONTA, usize::MAX, arrivata);
         finto.aspetta();
         assert_eq!(
             finto.scaricate.load(Ordering::SeqCst),
@@ -389,7 +474,7 @@ mod prove {
         let richieste = Richieste::nuove(Duration::ZERO);
         for _ in 0..2 {
             let (_, arrivata) = contatore();
-            richieste.richiedi(&finto, IMPRONTA, arrivata);
+            richieste.richiedi(&finto, IMPRONTA, usize::MAX, arrivata);
             finto.aspetta();
         }
         assert_eq!(finto.scaricate.load(Ordering::SeqCst), 2);
@@ -397,7 +482,7 @@ mod prove {
         // E se stavolta arriva, arriva.
         *finto.porta.lock().unwrap() = true;
         let (ripubblicate, arrivata) = contatore();
-        richieste.richiedi(&finto, IMPRONTA, arrivata);
+        richieste.richiedi(&finto, IMPRONTA, usize::MAX, arrivata);
         finto.aspetta();
         assert_eq!(ripubblicate.load(Ordering::SeqCst), 1);
     }
@@ -414,7 +499,7 @@ mod prove {
             .insert(IMPRONTA.to_owned());
         let richieste = Richieste::nuove(RIPROVA);
         let (ripubblicate, arrivata) = contatore();
-        richieste.richiedi(&finto, IMPRONTA, arrivata);
+        richieste.richiedi(&finto, IMPRONTA, usize::MAX, arrivata);
         finto.aspetta();
         assert_eq!(
             finto.scaricate.load(Ordering::SeqCst),
@@ -446,7 +531,7 @@ mod prove {
         for n in 0..(RICORDATE * 3) {
             let impronta = format!("{n:032x}");
             let (_, arrivata) = contatore();
-            richieste.richiedi(&finto, &impronta, arrivata);
+            richieste.richiedi(&finto, &impronta, usize::MAX, arrivata);
             finto.aspetta();
         }
         let ricordate = richieste
@@ -455,5 +540,107 @@ mod prove {
             .unwrap_or_else(PoisonError::into_inner)
             .len();
         assert!(ricordate <= RICORDATE, "{ricordate} impronte ricordate");
+    }
+
+    /// Il protocollo `rymembra-cover` non aspetta mai la rete (FC1, la WebView
+    /// bloccata sul telefono vero): con la rete lenta — qui ferma, finché la
+    /// prova non la lascia andare — la risposta alla finestra è **subito**, e
+    /// quando la copertina arriva la pagina lo sa.
+    ///
+    /// Sul telefono il gestore gira dentro `shouldInterceptRequest` e quel filo
+    /// resta fermo finché risponde: le copertine di una Libreria con centinaia di
+    /// righe specchio lo tenevano occupato per la durata della rete, e le risposte
+    /// dei comandi oltre gli 8 KiB — che passano dallo stesso posto — non tornavano.
+    #[test]
+    fn la_finestra_riceve_la_risposta_subito_anche_con_la_rete_ferma() {
+        let finto = Finto::nuovo(true, false);
+        let richieste = Richieste::nuove(RIPROVA);
+        let risposte: Arc<Mutex<Vec<Option<Vec<u8>>>>> = Arc::new(Mutex::new(Vec::new()));
+        let (arrivate, arrivata) = contatore();
+
+        let inizio = Instant::now();
+        let dentro = Arc::clone(&risposte);
+        senza_aspettare(
+            &richieste,
+            &finto,
+            IMPRONTA,
+            None,
+            move |r| dentro.lock().unwrap().push(r),
+            arrivata,
+        );
+        assert!(
+            inizio.elapsed() < Duration::from_millis(500),
+            "ha aspettato la rete: {:?}",
+            inizio.elapsed()
+        );
+        assert_eq!(
+            *risposte.lock().unwrap(),
+            vec![None],
+            "«non c'è», subito, senza aspettare l'altro dispositivo"
+        );
+        assert_eq!(arrivate.load(Ordering::SeqCst), 0, "ancora niente");
+
+        // La rete risponde: la copertina entra nello store e la pagina lo sa.
+        finto.apri();
+        finto.aspetta();
+        assert_eq!(finto.scaricate.load(Ordering::SeqCst), 1, "una richiesta");
+        assert_eq!(arrivate.load(Ordering::SeqCst), 1, "e la pagina avvisata");
+    }
+
+    /// Una copertina già nello store si serve com'era, e la rete non si tocca.
+    #[test]
+    fn una_copertina_nello_store_non_chiede_niente() {
+        let finto = Finto::nuovo(true, false);
+        let richieste = Richieste::nuove(RIPROVA);
+        let risposte: Arc<Mutex<Vec<Option<Vec<u8>>>>> = Arc::new(Mutex::new(Vec::new()));
+        let dentro = Arc::clone(&risposte);
+        let (arrivate, arrivata) = contatore();
+        senza_aspettare(
+            &richieste,
+            &finto,
+            IMPRONTA,
+            Some(vec![1, 2, 3]),
+            move |r| dentro.lock().unwrap().push(r),
+            arrivata,
+        );
+        finto.aspetta();
+        assert_eq!(*risposte.lock().unwrap(), vec![Some(vec![1, 2, 3])]);
+        assert_eq!(finto.scaricate.load(Ordering::SeqCst), 0);
+        assert_eq!(arrivate.load(Ordering::SeqCst), 0);
+    }
+
+    /// Una pagina con centinaia di copertine mancanti non apre centinaia di
+    /// richieste insieme — ognuna con un filo ad aspettare il suo posto per
+    /// quindici secondi —: ne partono [`IN_VOLO_PER_LA_FINESTRA`], e le altre
+    /// non si ricordano, così si richiedono quando c'è posto.
+    #[test]
+    fn la_finestra_chiede_a_numero_chiuso_e_le_altre_si_richiedono_dopo() {
+        let finto = Finto::nuovo(true, false);
+        let richieste = Richieste::nuove(RIPROVA);
+        for n in 0..(IN_VOLO_PER_LA_FINESTRA * 4) {
+            let impronta = format!("{n:032x}");
+            senza_aspettare(&richieste, &finto, &impronta, None, |_| {}, || {});
+        }
+        assert_eq!(
+            richieste
+                .ricordate
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            IN_VOLO_PER_LA_FINESTRA,
+            "solo quelle in volo si ricordano"
+        );
+        // Arrivano: c'è di nuovo posto, e una già scartata parte.
+        finto.apri();
+        finto.aspetta();
+        assert_eq!(
+            finto.scaricate.load(Ordering::SeqCst),
+            IN_VOLO_PER_LA_FINESTRA
+        );
+        let (arrivate, arrivata) = contatore();
+        let scartata = format!("{:032x}", IN_VOLO_PER_LA_FINESTRA * 4 - 1);
+        senza_aspettare(&richieste, &finto, &scartata, None, |_| {}, arrivata);
+        finto.aspetta();
+        assert_eq!(arrivate.load(Ordering::SeqCst), 1, "ora parte");
     }
 }

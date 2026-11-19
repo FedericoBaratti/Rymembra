@@ -74,6 +74,7 @@ import {
   chiedeConfermaPerLoScarico,
   conAvanzamento,
   conIlSiDeiDatiMobili,
+  copertinaArrivata,
   daFotografia,
   domandaDelloScarico,
   inBlocchi,
@@ -207,6 +208,7 @@ import {
   ugualiOrigini,
   perIlNucleo,
   primoSpento,
+  rigaSuonabile,
   statoDellaRiga,
   suonabili,
   vistaPerIlFiltro,
@@ -1357,6 +1359,15 @@ export function App() {
   );
 
   /*
+   * La copertina di una riga di un altro dispositivo è arrivata nello store:
+   * `lontano:copertina`. Il protocollo `rymembra-cover` non aspetta la rete — a
+   * una copertina che lo store non ha ancora risponde «non c'è» subito, e il nucleo la
+   * chiede in disparte (`media/lontane.rs`) —, e i segnaposto (`Copertina`) ci
+   * riprovano quando arriva. Gli arrivi si raccolgono: vedi `copertinaArrivata`.
+   */
+  useAscolto<string>("lontano:copertina", () => copertinaArrivata());
+
+  /*
    * Un brano saltato perché non si apriva: lo dice la fascia, con il titolo e
    * il motivo. Il nucleo riprova il brano dopo quando arriva il suo turno, e se
    * non si apre per colpa sua passa oltre (`riprova_o_salta` in
@@ -2035,14 +2046,24 @@ export function App() {
    * della lista salta le righe di un dispositivo spento (`suonabili`), e una lista
    * senza niente di suonabile dice la stessa cosa invece di mandare al lettore un
    * elenco vuoto.
+   *
+   * «Grigia» vuol dire che non si suona: una riga di un dispositivo spento che ha
+   * una copia di qui (`copiaQui`) si suona lo stesso, con la copia, e non è
+   * grigia — il nucleo sceglie la copia quando il dispositivo tace (D1 del
+   * collaudo del 18/11).
    */
   const suonaDa = useCallback(
     async (elenco: Brano[], indice: number, daUnaRiga = true) => {
       const pannello = archivioLontano.leggi();
       const toccata = elenco[indice];
       if (daUnaRiga && toccata !== undefined) {
-        const riga = statoDellaRiga(toccata.path, pannello, toccata.inGrazia === true);
-        if (riga?.spenta === true) {
+        const riga = statoDellaRiga(
+          toccata.path,
+          pannello,
+          toccata.inGrazia === true,
+          toccata.copiaQui === true,
+        );
+        if (!rigaSuonabile(riga)) {
           avvisaNonRaggiungibile(riga);
           return;
         }
@@ -2929,8 +2950,9 @@ export function App() {
         premuto?.path,
         archivioLontano.leggi(),
         premuto?.inGrazia === true,
+        premuto?.copiaQui === true,
       );
-      if (grigia?.spenta === true) {
+      if (!rigaSuonabile(grigia)) {
         avvisaNonRaggiungibile(grigia);
         return;
       }
@@ -5288,14 +5310,17 @@ export function App() {
                         corso col suo «Esci», che vale tutta la sessione. Si
                         disegna da sé, e quasi sempre non c'è. */}
                     <AvvisiInsieme onErrore={segnalaErrore} />
-                    {/* Col primo avvio aperto le notizie le mostra lui: qui
-                        sarebbero sotto la sua schermata, e due copie della stessa
-                        fascia d'errore si annuncerebbero due volte.
-                        Qui solo sul telefono: sul computer stanno nella pila
-                        dei toast (più sotto), perché nel flusso spingevano giù
-                        la pagina — titolo, indice, filtro — proprio mentre si
-                        stava per cliccarci (R18-17). */}
-                    {!primoVisibile && MOBILE && notizieDiFascia}
+                    {/* Le notizie, gli avvisi e i guasti della fascia non stanno
+                        più nel flusso della pagina, né sul computer né sul
+                        telefono: stanno nella pila dei toast (più sotto), perché
+                        nel flusso spingevano giù la pagina — titolo, indice,
+                        filtro — proprio mentre si stava per cliccarci (R18-17).
+                        Sul telefono c'era anche di peggio: nelle pagine d'album
+                        la tinta sale fin sotto la barra di stato, il contenuto
+                        parte dal bordo dello schermo e la fascia, prima di tutto,
+                        copriva l'orologio. La pila rispetta il riquadro di sotto
+                        (`--riquadro-basso`), e non ce n'è uno di sopra da
+                        rispettare. */}
                     {corpo()}
                   </div>
                 </PresenzaPagina>
@@ -5652,14 +5677,16 @@ export function App() {
                   ipc.annullaScansione().catch(segnalaErrore);
                 }}
               >
-                {/* Le fasce di notizia e d'errore, sul computer: galleggiano
-                    qui sopra il lettore invece di entrare nel flusso della
-                    pagina, che spingevano giù di una fascia (R18-17). Una copia
-                    viva sola: non col primo avvio, che le mostra da sé, né a
-                    schermo intero, che ha la sua (`avvisiGrande`); con lo
-                    Studio aperto questa è sotto di lui e inerte, e parla la
-                    sua. */}
-                {!MOBILE && !primoVisibile && !(grande && conBrano) && notizieDiFascia}
+                {/* Le fasce di notizia e d'errore, sul computer e sul telefono:
+                    galleggiano qui sopra il lettore (o sopra le schede)
+                    invece di entrare nel flusso della pagina, che spingevano
+                    giù di una fascia (R18-17), e sul telefono coprivano la
+                    barra di stato nelle pagine d'album (D7 del collaudo del
+                    18/11). Una copia viva sola: non col primo avvio, che le
+                    mostra da sé, né a schermo intero, che ha la sua
+                    (`avvisiGrande`); con lo Studio aperto questa è sotto di
+                    lui e inerte, e parla la sua. */}
+                {!primoVisibile && !(grande && conBrano) && notizieDiFascia}
                 {/* La coda segue chi se ne va, per la ragione scritta sopra — e a
                     maggior ragione: la scansione dura venti secondi, questa un'ora, e
                     sopravvive alla chiusura dell'applicazione. Sulla pagina stessa il

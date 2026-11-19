@@ -15,7 +15,7 @@ const sorgente = (file: string) => readFileSync(new URL(`../src/${file}`, import
 
 test("la riga dice da quale dispositivo viene, con il nome per chi non vede l'icona", () => {
   const elenco = sorgente("schermate/Elenco.tsx");
-  assert.match(elenco, /const lontana = useStatoDellaRiga\(brano\.path, brano\.inGrazia === true\);/);
+  assert.match(elenco, /const lontana = useStatoDellaRiga\(brano\.path, brano\.inGrazia === true, brano\.copiaQui === true\);/);
   const da = elenco.indexOf('className="dispositivo-riga"');
   assert.ok(da >= 0, "manca l'icona del dispositivo");
   const icona = elenco.slice(da - 80, elenco.indexOf("</span>", da));
@@ -27,8 +27,9 @@ test("la riga dice da quale dispositivo viene, con il nome per chi non vede l'ic
 
 test("una riga di un dispositivo che non risponde è `aria-disabled`, e tiene il fuoco e il menù", () => {
   const elenco = sorgente("schermate/Elenco.tsx");
-  assert.match(elenco, /aria-disabled=\{lontana\?\.spenta === true \? true : undefined\}/);
-  assert.match(elenco, /data-spenta=\{lontana\?\.spenta === true \? true : undefined\}/);
+  // Grigia vuol dire che non si suona: una riga con una copia di qui suona, e non lo è (D1).
+  assert.match(elenco, /aria-disabled=\{rigaSuonabile\(lontana\) \? undefined : true\}/);
+  assert.match(elenco, /data-spenta=\{rigaSuonabile\(lontana\) \? undefined : true\}/);
   // Non `disabled` sui comandi: il cuore e le stelle partono lo stesso (restano nella posta), e il menù si apre.
   const riga = elenco.slice(elenco.indexOf('className="riga list-row"'), elenco.indexOf('className="indice track-index"'));
   assert.doesNotMatch(riga, /tabIndex=\{-1\}\s*disabled=\{lontana/);
@@ -39,7 +40,7 @@ test("una riga di qui non iscrive niente al pannello (R13-11)", () => {
   const da = hook.indexOf("export function useStatoDellaRiga(");
   assert.ok(da >= 0, "manca useStatoDellaRiga");
   const corpo = hook.slice(da, hook.indexOf("\n}\n", da));
-  assert.match(corpo, /chiave === null \? null : statoDellaRiga\(percorso, stato, inGrazia\)/, "senza dispositivo la scelta è `null` senza leggere");
+  assert.match(corpo, /chiave === null \? null : statoDellaRiga\(percorso, stato, inGrazia, copiaQui\)/, "senza dispositivo la scelta è `null` senza leggere");
   assert.match(corpo, /ugualiInSuperficie/, "un pannello nuovo con gli stessi campi non ridisegna la riga");
   assert.doesNotMatch(corpo, /useArchivio\(archivioLontano\)/, "l'archivio intero ridisegnava ogni riga a ogni evento");
 });
@@ -65,7 +66,9 @@ test("un tocco su una riga grigia dice chi non risponde, e non è un errore", ()
   // E lo dice anche a chi ascolta lo schermo.
   assert.match(app, /<Annuncio testo=\{avviso\?\.testo \?\? null\} \/>/);
   // Riproduci e il tocco passano dallo stesso posto.
-  assert.match(app, /statoDellaRiga\(toccata\.path, pannello, toccata\.inGrazia === true\)/);
+  assert.match(app, /statoDellaRiga\(\s*toccata\.path,\s*pannello,\s*toccata\.inGrazia === true,\s*toccata\.copiaQui === true,?\s*\)/);
+  assert.match(app, /if \(!rigaSuonabile\(riga\)\) \{\s*avvisaNonRaggiungibile\(riga\);/);
   assert.match(app, /suonabili\(elenco, indice, pannello\)/);
-  assert.match(app, /statoDellaRiga\(\s*premuto\?\.path,\s*archivioLontano\.leggi\(\),\s*premuto\?\.inGrazia === true,?\s*\)/, "anche nelle liste rade");
+  assert.match(app, /statoDellaRiga\(\s*premuto\?\.path,\s*archivioLontano\.leggi\(\),\s*premuto\?\.inGrazia === true,\s*premuto\?\.copiaQui === true,?\s*\)/, "anche nelle liste rade");
+  assert.match(app, /if \(!rigaSuonabile\(grigia\)\) \{\s*avvisaNonRaggiungibile\(grigia\);/);
 });

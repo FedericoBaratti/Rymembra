@@ -6,23 +6,38 @@ import { readFileSync } from "node:fs";
  * R18-17: le fasce di notizia e d'errore entravano nel flusso della pagina e
  * la spingevano giù — 77 px di titolo, indice e schede dopo «Scansiona», il
  * filtro e l'albero delle Cartelle sotto la fascia rossa, i tasti del primo
- * avvio spostati di 60 px mentre si stava per premere «Ascolta». Sul computer
- * adesso stanno nella pila dei toast, che galleggia in basso a destra sopra il
- * lettore; nel primo avvio galleggiano sopra la scheda. Il telefono resta
- * com'era: la sua pila è larga quanto lo schermo, e lì la fascia in cima alla
- * pagina è la forma di sempre.
+ * avvio spostati di 60 px mentre si stava per premere «Ascolta». Adesso stanno
+ * nella pila dei toast, che galleggia sopra il lettore — in basso a destra sul
+ * computer, a tutta larghezza sul telefono —; nel primo avvio galleggiano sopra
+ * la scheda.
+ *
+ * Sul telefono la fascia in cima alla pagina era la forma di sempre, e nel
+ * collaudo del 18/11 (D7) copriva la barra di stato nelle pagine d'album — la
+ * tinta sale fin sotto di lei e il contenuto parte dal bordo dello schermo — e
+ * nelle liste spingeva giù il contenuto. Non c'è più: una pila sola, che
+ * rispetta il riquadro di sotto come le altre notifiche.
  */
 const sorgente = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
 
-test("sul computer le fasce stanno nella pila dei toast, non nel flusso della pagina", () => {
+test("le fasce stanno nella pila dei toast, sul computer e sul telefono, non nel flusso della pagina", () => {
   const app = sorgente("App.tsx");
-  // Nella pagina solo sul telefono.
-  assert.match(app, /\{!primoVisibile && MOBILE && notizieDiFascia\}/);
+  // Nella pagina mai, nemmeno sul telefono (D7).
+  assert.doesNotMatch(app, /\{!primoVisibile && MOBILE && notizieDiFascia\}/);
   assert.doesNotMatch(app, /\{!primoVisibile && notizieDiFascia\}/);
-  // Nella pila sul computer, e non quando c'è già un'altra copia viva: il
-  // primo avvio le mostra da sé, e così lo schermo intero (`avvisiGrande`).
+  // Nella pila, e non quando c'è già un'altra copia viva: il primo avvio le
+  // mostra da sé, e così lo schermo intero (`avvisiGrande`).
   const pila = app.slice(app.indexOf("<PilaToast"), app.indexOf("</PilaToast>"));
-  assert.match(pila, /\{!MOBILE && !primoVisibile && !\(grande && conBrano\) && notizieDiFascia\}/);
+  assert.match(pila, /\{!primoVisibile && !\(grande && conBrano\) && notizieDiFascia\}/);
+  assert.doesNotMatch(pila, /\{!MOBILE && !primoVisibile/);
+});
+
+test("sul telefono la fascia nella pila riempie la pila invece di restare larga 360 px", () => {
+  const foglio = sorgente("stile/telefono.css");
+  const regola = foglio.slice(foglio.indexOf(':root[data-forma="telefono"] .pila-toast > .notizia,'));
+  const corpo = regola.slice(0, regola.indexOf("}"));
+  assert.match(corpo, /:root\[data-forma="telefono"\] \.pila-toast > \.errore \{/);
+  assert.match(corpo, /width: auto;/);
+  assert.match(corpo, /max-width: none;/);
 });
 
 test("nella pila le fasce sono toast: piene, ombreggiate e cliccabili", () => {

@@ -429,6 +429,16 @@ fn riapri_davvero(
     // dopo è dietro il lucchetto, e serve a [`riprendi_dov_era`] che gira
     // quando il lucchetto è già stato lasciato. Sono due interi `Copy`.
     let formato = motore.formato();
+    // Dove suona il motore nuovo, e dove suonava quello di prima: se l'uscita di
+    // fuori se n'è andata e Android ha ripiegato sull'altoparlante, la musica si
+    // ferma invece di ripartire dal telefono (D-T2). La casella si aggiorna a
+    // ogni apertura, anche quella a mano.
+    let era_esterna = ULTIMA_USCITA_ESTERNA.swap(
+        motore.su_uscita_esterna(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let per_il_cambio =
+        deve_fermarsi_per_il_cambio(modo, era_esterna, motore.su_altoparlante_del_telefono());
     // Il primo motore della sessione — l'avvio, che lo apre qui (R23-9) — si
     // racconta come l'avvio, non come una riapertura.
     let primo = stato
@@ -679,7 +689,7 @@ fn riapri_davvero(
     if modo == Modo::SoloDispositivo {
         return Ok(Riaperta::Vuota);
     }
-    if riprendi_dov_era(app, stato, formato) {
+    if riprendi_dov_era(app, stato, formato, per_il_cambio) {
         Ok(Riaperta::Rimessa)
     } else {
         Ok(Riaperta::Vuota)
@@ -977,6 +987,52 @@ fn apri_con_un_secondo_tentativo(
     }
 }
 
+/// L'uscita su cui il lettore ha suonato l'ultima volta che si è aperta era fuori
+/// dal telefono — l'auto, le cuffie, un cavo —, per quel che dice Android.
+///
+/// Una casella di modulo per la stessa ragione di [`ULTIMA_RIPRESA`]: fra il
+/// motore che se ne va e quello che nasce non sopravvive niente. La scrive
+/// [`riapri_davvero`] a ogni apertura, e **prima** di scriverla legge quella di
+/// prima.
+static ULTIMA_USCITA_ESTERNA: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Quando l'uscita di fuori se ne va, e la musica è finita sull'altoparlante,
+/// Rymembra si ferma (D-T2 del collaudo sul telefono vero).
+///
+/// L'auto che si stacca era già un caso a parte: Spotify andava in pausa, e
+/// Rymembra — che riapre da sola l'uscita e «riparte come stava» — continuava a
+/// suonare dal telefono, davanti a chi era appena sceso. È il `BECOMING_NOISY` di
+/// un'uscita che quel segnale non copre (la proiezione di Android Auto, un cavo
+/// USB): la regola è la stessa — se l'uscita persa non era l'altoparlante e la
+/// nuova è l'altoparlante, si mette in pausa.
+///
+/// Solo per la riapertura **automatica**, quella del sorvegliante: chi sceglie
+/// un'uscita nelle impostazioni o preme play ha chiesto lui di sentire proprio
+/// lì. E solo se la nuova è l'altoparlante: il Bluetooth dell'auto che si
+/// riconnette subito riapre su un'uscita di fuori, e la musica continua com'era.
+/// Dove Android non dice niente (`false` per entrambe) la regola non scatta.
+const fn deve_fermarsi_per_il_cambio(modo: Modo, era_esterna: bool, sul_telefono: bool) -> bool {
+    matches!(modo, Modo::Automatica) && era_esterna && sul_telefono
+}
+
+/// [`riparte_fermo`], con la pausa del cambio d'uscita
+/// ([`deve_fermarsi_per_il_cambio`]).
+///
+/// Un gesto dopo il segno vince, come per ogni altra riapertura: chi ha premuto
+/// play mentre l'uscita si riapriva voleva sentire. Il resto è com'era.
+fn riparte_fermo_dopo_il_cambio(
+    ripresa: &super::Ripresa,
+    adesso_ms: i64,
+    chiesta: (u64, bool),
+    per_il_cambio: bool,
+) -> bool {
+    if per_il_cambio && chiesta.0 == ripresa.gesti {
+        return true;
+    }
+    riparte_fermo(ripresa, adesso_ms, chiesta)
+}
+
 /// Il brano rimesso nel solco riparte fermo? La regola di [`riprendi_dov_era`],
 /// senza lucchetti: `chiesta` è [`Lettore::pausa_chiesta`] nell'istante della
 /// consegna.
@@ -1048,6 +1104,7 @@ fn riprendi_dov_era(
     app: &tauri::AppHandle,
     stato: &StatoLettore,
     formato: rymembra_play::FormatoUscita,
+    per_il_cambio: bool,
 ) -> bool {
     let annotato = *stato
         .ripresa
@@ -1108,7 +1165,12 @@ fn riprendi_dov_era(
         // dire una musica che non aveva chiesto. Deciso **qui**, sotto il
         // lucchetto e nell'istante della consegna: vedi [`riparte_fermo`].
         let chiesta = lettore.pausa_chiesta;
-        let fermo = riparte_fermo(&ripresa, crate::stato::adesso_ms(), chiesta);
+        let fermo = riparte_fermo_dopo_il_cambio(
+            &ripresa,
+            crate::stato::adesso_ms(),
+            chiesta,
+            per_il_cambio,
+        );
         let da_ms = super::consegna(lettore, brano, fermo, ripresa.ms, chiesta.0);
         // L'annuncio d'inizio che il motore nuovo manderà per questo brano è
         // la ripresa dell'ascolto di prima, non un ascolto nuovo. Scritto qui,
@@ -1137,12 +1199,13 @@ fn riprendi_dov_era(
             crate::stato::adesso_ms().saturating_sub(ripresa.quando_ms) < super::RIPRESA_FRESCA;
         nota!(
             "[riproduzione] posizione ripresa dopo la riapertura ms={} suonando={} \
-             suonava={} fresca={} gesto_dopo_il_segno={}",
+             suonava={} fresca={} gesto_dopo_il_segno={} ferma_per_il_cambio_di_uscita={}",
             ripresa.ms,
             !fermo,
             ripresa.suonava,
             fresca,
-            gesto
+            gesto,
+            per_il_cambio
         );
     }
     let rimessa = rimessa.is_some();
@@ -1530,6 +1593,67 @@ mod prove {
             &ripresa(true, 5, vecchio),
             adesso,
             (5, false)
+        ));
+    }
+
+    // ── l'uscita di fuori se ne va: vedi `deve_fermarsi_per_il_cambio` (D-T2) ──
+
+    /// L'auto si stacca (o le cuffie, o il cavo): l'uscita persa non era
+    /// l'altoparlante e quella nuova sì. Si ferma, come con un'uscita «rumorosa».
+    #[test]
+    fn staccata_l_uscita_di_fuori_la_musica_sull_altoparlante_si_ferma() {
+        assert!(deve_fermarsi_per_il_cambio(Modo::Automatica, true, true));
+        let adesso = 1_000_000;
+        // Suonava, nessun gesto dopo il segno: la riapertura la tiene ferma.
+        assert!(riparte_fermo_dopo_il_cambio(
+            &ripresa(true, 5, adesso),
+            adesso,
+            (5, false),
+            true
+        ));
+    }
+
+    /// Il Bluetooth dell'auto si riconnette subito: la riapertura finisce su
+    /// un'uscita di fuori e non sull'altoparlante, e la musica continua com'era.
+    #[test]
+    fn se_il_bluetooth_dell_auto_si_riconnette_subito_la_musica_continua() {
+        assert!(!deve_fermarsi_per_il_cambio(Modo::Automatica, true, false));
+        let adesso = 1_000_000;
+        assert!(!riparte_fermo_dopo_il_cambio(
+            &ripresa(true, 5, adesso),
+            adesso,
+            (5, false),
+            false
+        ));
+    }
+
+    /// Solo un'uscita di fuori che se ne va ferma: dall'altoparlante
+    /// all'altoparlante — o dove Android non dice niente — niente cambia, e chi ha
+    /// scelto lui l'uscita nelle impostazioni, o ha premuto play, sente dove l'ha
+    /// messa.
+    #[test]
+    fn le_altre_riaperture_non_si_fermano() {
+        assert!(!deve_fermarsi_per_il_cambio(Modo::Automatica, false, true));
+        assert!(!deve_fermarsi_per_il_cambio(Modo::Automatica, false, false));
+        assert!(!deve_fermarsi_per_il_cambio(Modo::AMano, true, true));
+        assert!(!deve_fermarsi_per_il_cambio(Modo::Suona, true, true));
+        assert!(!deve_fermarsi_per_il_cambio(
+            Modo::SoloDispositivo,
+            true,
+            true
+        ));
+    }
+
+    /// Un play premuto mentre l'uscita si riapriva vince: il gesto è più recente
+    /// del guasto, come per ogni riapertura.
+    #[test]
+    fn un_play_dopo_il_segno_vince_sulla_pausa_del_cambio() {
+        let adesso = 1_000_000;
+        assert!(!riparte_fermo_dopo_il_cambio(
+            &ripresa(true, 5, adesso),
+            adesso,
+            (6, false),
+            true
         ));
     }
 

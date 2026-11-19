@@ -21,6 +21,31 @@
 //! cresce fino a centinaia di fili: un lavoro fermo lì non toglie il posto a
 //! nessuno.
 //!
+//! # Su Android un comando sincrono non gira sul filo principale, e ferma la pagina
+//!
+//! Il «filo della finestra» di cui parla il paragrafo sopra è quello di Windows.
+//! Su Android Tauri non usa il protocollo `ipc://` — `canUseCustomProtocol =
+//! osName !== 'android'` in `scripts/ipc-protocol.js` — ma `window.ipc.postMessage`,
+//! cioè il metodo `@JavascriptInterface` di `Ipc.kt` (wry), che passa dal JNI
+//! `ipc` (`android/binding.rs`) e chiama il gestore **sul posto**, sul filo del
+//! ponte Java. Un comando sincrono vi gira intero, e la pagina — che ha chiamato
+//! un metodo di quel ponte — aspetta che torni: finché non torna non risponde ai
+//! tocchi, non risponde a CDP (`Runtime.evaluate` non ritorna), non ridisegna, e
+//! il filo Java principale resta tranquillo nel suo `Looper`, senza un ANR. È la
+//! firma dei tre blocchi del collaudo del 18/11: la causa era un comando
+//! sincrono (`lontano_specchio_stato`) che aspettava un lucchetto che nessuno
+//! avrebbe più lasciato — la prova `un_giro_che_non_riesce_…` in
+//! `lontano/specchio.rs`. Un comando `async` torna appena il lavoro è partito, e
+//! la pagina non aspetta niente.
+//!
+//! Il tetto dei quattro secondi di [`crate::stato::con_libreria`] vale per il
+//! filo della finestra di Windows e **non** per quello del ponte: su Android una
+//! lettura del lucchetto da un comando sincrono è senza limite. Per questo i
+//! comandi di `lontano/` sono tutti `async` — la prova
+//! `nessun_comando_di_lontano_e_sincrono` — e gli altri comandi sincroni che
+//! prendono la libreria restano il rischio che resta, limitato alla durata di
+//! ogni presa.
+//!
 //! # Perché non basta `rymembra_app::scadenza::con_scadenza`
 //!
 //! Perché rispondono a due domande diverse. `con_scadenza` dice **quanto** si è
@@ -360,5 +385,53 @@ mod prove {
                 "{nome} chiede ancora il lucchetto"
             );
         }
+    }
+
+    /// Nessun comando di `lontano/` è sincrono (collaudo del 18/11: la WebView
+    /// ferma, tre volte).
+    ///
+    /// Su Android un comando sincrono gira sul filo del ponte Java e la pagina ne
+    /// aspetta il ritorno: se aspetta un lucchetto, la pagina è ferma finché quel
+    /// lucchetto non si apre — vedi il `//!` di questo modulo. Quelli di `lontano/`
+    /// parlano con il collegamento, lo specchio e le code, che hanno ognuno i suoi
+    /// lucchetti e i suoi fili: un comando `async` che passa da
+    /// [`in_disparte`](super::in_disparte) li prende altrove. La prova è sul
+    /// sorgente perché il difetto non si vede in nessun altro posto: un comando
+    /// sincrono risponde uguale, finché non c'è chi tiene il lucchetto.
+    #[test]
+    fn nessun_comando_di_lontano_e_sincrono() {
+        let tutti = sorgenti();
+        let mut visti = 0_usize;
+        let mut sincroni = Vec::new();
+        for (file, testo) in &tutti {
+            if !file.components().any(|c| c.as_os_str() == "lontano") {
+                continue;
+            }
+            for (dove, _) in testo.match_indices(concat!("\n#[tauri::", "command")) {
+                let resto = &testo[dove + 1..];
+                let firma = &resto[..resto.find('{').unwrap_or(resto.len())];
+                visti += 1;
+                if firma.contains("async fn ") {
+                    continue;
+                }
+                let nome: String = firma
+                    .find("fn ")
+                    .map(|i| &firma[i + 3..])
+                    .unwrap_or_default()
+                    .chars()
+                    .take_while(|c| *c == '_' || c.is_alphanumeric())
+                    .collect();
+                let file = file.file_name().unwrap_or_default().to_string_lossy();
+                sincroni.push(format!("{file}: {nome}"));
+            }
+        }
+        assert!(
+            visti >= 25,
+            "i comandi di lontano/ non si sono trovati ({visti})"
+        );
+        assert!(
+            sincroni.is_empty(),
+            "comandi sincroni in lontano/: {sincroni:#?}"
+        );
     }
 }

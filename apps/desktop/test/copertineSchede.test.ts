@@ -75,5 +75,8 @@ test("chiede solo la riga di un altro dispositivo, e solo se manca", () => {
     /percorso\.is_some_and\(rymembra_app::specchio::e_specchio\)/,
   );
   const richiedi = corpo(LONTANE, "pub(super) fn richiedi<A: Ambiente>(");
-  assert.match(richiedi, /ambiente\.nello_store\(impronta\) \|\| !self\.comincia\(impronta\)/);
+  // `tetto` è quante richieste possono essere in volo insieme: la finestra ne ha
+  // un numero chiuso (`IN_VOLO_PER_LA_FINESTRA`), le schede di sistema nessuno.
+  assert.match(richiedi, /ambiente\.nello_store\(impronta\) \|\| !self\.comincia\(impronta, tetto\)/);
+  assert.match(LONTANE, /RICHIESTE\.richiedi\(&ViaApp\(app\.clone\(\)\), impronta, usize::MAX,/);
 });

@@ -564,6 +564,7 @@ fn la_scheda_di_una_riga_porta_il_livello_del_brano() {
         licenza: None,
         album_artist: None,
         in_grazia: false,
+        copia_qui: false,
     };
     let livello = SchedaSorgente {
         track_id: 9,
@@ -724,8 +725,8 @@ fn una_riga_della_libreria_unica_non_entra_in_una_sessione() {
         let errore = rifiuta_le_righe_lontane(&libreria, ids).expect_err("una riga lontana");
         assert_eq!(
             errore.code().kind(),
-            rymembra_domain::errors::ErrorCodeKind::InsiemeGestoNonDisponibile,
-            "{ids:?}"
+            rymembra_domain::errors::ErrorCodeKind::InsiemeBraniAltrui,
+            "{ids:?}: il codice dice perché, non solo «non si può»"
         );
     }
     // Un id che non c'è non è una riga lontana.

@@ -75,11 +75,34 @@
  * `accanto`, e l'immagine diventa decorazione (`alt=""`), che è quel che è.
  * Dove la copertina sta da sola, l'`alt` resta il titolo.
  */
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useArchivio } from "./archivio";
 import { indirizzoCopertina, sizesPer, srcsetCopertina } from "./copertine";
 import { useDati } from "./dati";
+import { archivioCopertine } from "./lontano";
 import { useCambio, type AttributiSuono } from "./segnali";
+
+/**
+ * Un segnaposto che aspetta la sua copertina: quando ne arriva una dall'altro
+ * dispositivo (`lontano:copertina`, raccolta da `copertinaArrivata`) ci riprova.
+ *
+ * Il protocollo non aspetta la rete — vedi `media/lontane.rs` —: una copertina
+ * che lo store non ha ancora riceve un «non c'è» subito, e il nucleo la chiede in
+ * disparte. Solo i segnaposto si iscrivono qui, e non ogni copertina: una riga
+ * dell'elenco non può permettersi un abbonamento in più, e quella che ha la sua
+ * immagine non aspetta niente.
+ */
+function RiprovaAllArrivo({ onRiprova }: { onRiprova: () => void }) {
+  const arrivate = useArchivio(archivioCopertine);
+  const viste = useRef(arrivate);
+  useEffect(() => {
+    if (arrivate === viste.current) return;
+    viste.current = arrivate;
+    onRiprova();
+  }, [arrivate, onRiprova]);
+  return null;
+}
 
 export function Copertina({
   hash,
@@ -136,11 +159,17 @@ export function Copertina({
    * possono permettere.
    */
   const [esito, setEsito] = useState<{ url: string; riuscita: boolean } | null>(null);
+  // Quante volte un segnaposto ci ha riprovato perché è arrivata una copertina:
+  // entra nell'indirizzo (`?r=`), che il gestore ignora e che fa nascere un
+  // `<img>` nuovo. Zero finché non serve.
+  const [tentativo, setTentativo] = useState(0);
+  const riprova = useCallback(() => setTentativo((n) => n + 1), []);
   const dati = useDati();
   const conSrcset = misura === "scheda" && !dati.anteprima && hash !== null;
-  const url = conSrcset
+  const base = conSrcset
     ? indirizzoCopertina(hash, "media")
     : dati.copertina(hash, !piena);
+  const url = base && tentativo > 0 ? `${base}?r=${tentativo}` : base;
   const pronta = esito !== null && esito.url === url;
   const fallita = pronta && !esito.riuscita;
   // Si chiede sempre, anche quando non serve: un hook non si salta.
@@ -150,6 +179,7 @@ export function Copertina({
     return (
       <div className={`${classe} vuota`} aria-hidden="true" {...segnali}>
         ♪
+        {url && <RiprovaAllArrivo onRiprova={riprova} />}
       </div>
     );
   }

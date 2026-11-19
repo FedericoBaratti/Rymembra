@@ -679,22 +679,33 @@ fn lavora(app: &AppHandle, chiave: &str) {
                 "[lontano] un giro del catalogo non è riuscito codice={}",
                 err.code().kind().code()
             );
-            avanza(
-                &dati,
-                AvanzamentoSpecchio {
-                    dispositivo: chiave.to_owned(),
-                    fase: Fase::Errore,
-                    errore: Some(codice(&err)),
-                    righe: avanzamenti().get(chiave).map_or(0, |a| a.righe),
-                    ..AvanzamentoSpecchio::default()
-                },
-            );
+            segna_il_guasto(&dati, chiave, &err);
         }
     } else if consegnate > 0 {
         // Quel che si è mandato ha cambiato le righe del proprietario: si
         // rilegge il catalogo, perché i nostri voti tornino col suo orologio.
         presi(&RIPETI).insert(chiave.to_owned());
     }
+}
+
+/// Un giro che non è riuscito: la finestra lo sa, e continua a vedere le righe
+/// che il dispositivo aveva.
+fn segna_il_guasto<D: Dati>(dati: &D, chiave: &str, err: &AppError) {
+    // Le righe si leggono **prima**, in un'istruzione loro: il guardiano del
+    // registro che serve a leggerle vive fino al punto e virgola, e se stesse
+    // dentro la chiamata di `avanza` — che il registro lo riprende — il filo
+    // aspetterebbe se stesso per sempre. Era il blocco della WebView.
+    let righe = avanzamenti().get(chiave).map_or(0, |a| a.righe);
+    avanza(
+        dati,
+        AvanzamentoSpecchio {
+            dispositivo: chiave.to_owned(),
+            fase: Fase::Errore,
+            errore: Some(codice(err)),
+            righe,
+            ..AvanzamentoSpecchio::default()
+        },
+    );
 }
 
 /// Un dispositivo ha cominciato a rispondere: il suo catalogo, la sua posta, e
@@ -968,23 +979,35 @@ pub(crate) fn apri_riga(
 // ── i comandi ───────────────────────────────────────────────────────────────
 
 /// L'ultimo avanzamento di ogni dispositivo, per la finestra che arriva dopo.
+///
+/// `async`, come ogni comando di questo modulo: su Android la pagina aspetta la
+/// risposta di un comando sincrono, e un registro chiuso da un giro fermava la
+/// finestra intera (vedi la prova `un_giro_che_non_riesce_…`). Qui la lettura
+/// sta sul pool bloccante, e un lucchetto che non si apre ferma un filo, non la
+/// pagina.
 #[tauri::command]
-pub fn lontano_specchio_stato() -> Esito<Vec<AvanzamentoSpecchio>> {
-    Ok(avanzamenti().values().cloned().collect())
+pub async fn lontano_specchio_stato() -> Esito<Vec<AvanzamentoSpecchio>> {
+    in_disparte(|| Ok(ultimi_avanzamenti())).await
+}
+
+/// L'ultimo avanzamento di ogni dispositivo.
+fn ultimi_avanzamenti() -> Vec<AvanzamentoSpecchio> {
+    avanzamenti().values().cloned().collect()
 }
 
 /// Rilegge adesso il catalogo di un dispositivo (e gli manda la posta). Non
 /// aspetta il giro.
 #[tauri::command]
-pub fn lontano_specchio_ora(app: AppHandle, chiave: String) -> Esito<()> {
-    let comune = comune(&app).map_err(crate::errore::errore)?;
-    if !comune.associato(&chiave) {
-        return Err(crate::errore::errore(AppError::new(
-            ErrorCode::LontanoNonAssociato,
-        )));
-    }
-    richiedi(&app, &chiave);
-    Ok(())
+pub async fn lontano_specchio_ora(app: AppHandle, chiave: String) -> Esito<()> {
+    in_disparte(move || {
+        let comune = comune(&app)?;
+        if !comune.associato(&chiave) {
+            return Err(AppError::new(ErrorCode::LontanoNonAssociato));
+        }
+        richiedi(&app, &chiave);
+        Ok(())
+    })
+    .await
 }
 
 /// La persona ha detto di sì: le righe che il dispositivo non manda più se ne
@@ -1834,5 +1857,111 @@ mod prove {
         );
         // E il testo di qui è quello giusto, senza chiedere a nessuno.
         assert!(dei_testi::in_attesa(&telefono.db.lock().unwrap(), &remoto).unwrap());
+    }
+
+    /// Un `Dati` che non ha rete né libreria: serve a provare che un guasto si dice
+    /// alla finestra, e basta.
+    struct Muto {
+        emessi: Mutex<Vec<AvanzamentoSpecchio>>,
+    }
+
+    impl Dati for Muto {
+        fn associato(&self, _chiave: &str) -> bool {
+            true
+        }
+
+        fn dichiara(&self, _chiave: &str, _sigla: &str) -> bool {
+            true
+        }
+
+        fn risponde(&self, _chiave: &str) -> bool {
+            false
+        }
+
+        fn chiedi(
+            &self,
+            _chiave: &str,
+            _domanda: Domanda,
+            _scadenza: Duration,
+        ) -> Result<Risposta, AppError> {
+            Err(AppError::new(ErrorCode::LontanoIrraggiungibile))
+        }
+
+        fn leggi<T>(
+            &self,
+            _azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+        ) -> Result<T, AppError> {
+            Err(AppError::new(ErrorCode::LontanoIrraggiungibile))
+        }
+
+        fn scrivi<T>(
+            &self,
+            _azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+        ) -> Result<T, AppError> {
+            Err(AppError::new(ErrorCode::LontanoIrraggiungibile))
+        }
+
+        fn emetti(&self, avanzamento: &AvanzamentoSpecchio) {
+            self.emessi.lock().unwrap().push(avanzamento.clone());
+        }
+    }
+
+    /// La WebView ferma (collaudo del 18/11, tre volte): un giro del catalogo che
+    /// non riusciva — il pari irraggiungibile dopo trenta secondi — si bloccava
+    /// da solo. `segna_il_guasto` leggeva le righe dal registro degli avanzamenti
+    /// dentro l'istruzione che poi lo riprendeva in `avanza`: il guardiano
+    /// temporaneo vive fino al punto e virgola, e lo stesso filo lo chiedeva due
+    /// volte. Il registro restava chiuso per sempre, e il comando che lo legge
+    /// (`lontano_specchio_stato`) non tornava mai: su Android la pagina aspetta la
+    /// risposta di quel comando, su Windows è il filo della finestra.
+    ///
+    /// Sta su un filo suo con una scadenza, perché il difetto era proprio
+    /// un'attesa senza fine: un test che aspetta di per sé non fallirebbe,
+    /// resterebbe appeso.
+    #[test]
+    fn un_giro_che_non_riesce_si_dice_alla_finestra_e_non_chiude_il_registro() {
+        use std::sync::mpsc;
+
+        let chiave = "e".repeat(64);
+        // Il dispositivo aveva già delle righe: il guasto non le fa sparire.
+        let muto = Arc::new(Muto {
+            emessi: Mutex::new(Vec::new()),
+        });
+        avanza(
+            &*muto,
+            AvanzamentoSpecchio {
+                dispositivo: chiave.clone(),
+                fase: Fase::Fine,
+                righe: 7,
+                ..AvanzamentoSpecchio::default()
+            },
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let (muto_filo, chiave_filo) = (Arc::clone(&muto), chiave.clone());
+        std::thread::spawn(move || {
+            segna_il_guasto(
+                &*muto_filo,
+                &chiave_filo,
+                &AppError::new(ErrorCode::LontanoIrraggiungibile),
+            );
+            // E il registro si legge da un altro filo, come fa il comando.
+            let _ = tx.send(ultimi_avanzamenti());
+        });
+        let letti = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("il guasto si dice senza chiudersi il registro in faccia");
+        let suo = letti
+            .iter()
+            .find(|a| a.dispositivo == chiave)
+            .expect("il dispositivo c'è ancora");
+        assert_eq!(suo.fase, Fase::Errore);
+        assert_eq!(suo.errore.as_deref(), Some("lontano.irraggiungibile"));
+        assert_eq!(suo.righe, 7, "le righe che c'erano si vedono ancora");
+        assert_eq!(
+            muto.emessi.lock().unwrap().last().map(|a| a.fase),
+            Some(Fase::Errore),
+            "e la finestra l'ha saputo"
+        );
     }
 }

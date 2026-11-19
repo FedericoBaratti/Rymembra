@@ -677,6 +677,10 @@ pub struct UscitaAudio {
     pub nome: String,
     /// È Bluetooth.
     pub bluetooth: bool,
+    /// Esce dal telefono stesso: l'altoparlante o l'auricolare. Un ponte di prima
+    /// non lo dice, e vale `false`.
+    #[serde(default)]
+    pub integrata: bool,
 }
 
 /// Dove Android manda la musica adesso: la risposta di `AudioManager` da

@@ -75,13 +75,32 @@ pub struct TrackSummary {
     /// e non viaggia.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub in_grazia: bool,
+    /// La riga è di un altro dispositivo e di questo brano c'è una copia anche
+    /// **qui**, nascosta dietro di lei (`copia_di` che punta a questa riga)
+    /// perché la riga di là è migliore. Se quel dispositivo non risponde il nucleo
+    /// suona la copia di qui (`specchio::scelta::copia_da_suonare`): la finestra
+    /// lo sa da questo campo, e non dice «non raggiungibile» né disegna la riga
+    /// in grigio. Per ogni altra riga è `false` e non viaggia. Le righe in grazia
+    /// non ne hanno: non si suonano in nessun caso.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub copia_qui: bool,
 }
 
 /// Le colonne di [`TrackSummary`], nell'ordine in cui le legge `track_from_row`.
+///
+/// L'ultima, `copia_qui`, si calcola solo per una riga specchio: una `EXISTS` sulle
+/// righe di qui che le stanno dietro, servita dall'indice parziale di `copia_di`.
+/// Una libreria senza dispositivi collegati non ha righe specchio e non paga
+/// niente.
 pub(crate) const COLONNE_BRANO: &str = "t.id, t.path, t.title, t.artist, t.album, t.album_key,
      t.track_number, t.disc_number, t.duration_ms, t.year, t.cover_art_hash,
      t.play_count, t.liked, t.rating, t.source_service, t.fonte_pagina, t.licenza,
-     t.album_artist";
+     t.album_artist,
+     CASE WHEN (t.path >= 'lontano://' AND t.path < 'lontano:/0')
+          THEN EXISTS (SELECT 1 FROM tracks h
+                        WHERE h.copia_di = t.id AND h.id <> t.id AND h.path IS NOT NULL
+                          AND NOT (h.path >= 'lontano://' AND h.path < 'lontano:/0'))
+          ELSE 0 END";
 
 /// Quante sono le colonne di [`COLONNE_BRANO`].
 ///
@@ -91,7 +110,7 @@ pub(crate) const COLONNE_BRANO: &str = "t.id, t.path, t.title, t.artist, t.album
 /// resta un cambiamento in un posto solo; scritto a mano in ogni chiamante,
 /// sarebbe il genere di disallineamento che si manifesta come «l'ora
 /// dell'ascolto è diventata il voto».
-pub(crate) const COLONNE_BRANO_QUANTE: usize = 18;
+pub(crate) const COLONNE_BRANO_QUANTE: usize = 19;
 
 pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
     Ok(TrackSummary {
@@ -114,6 +133,7 @@ pub(crate) fn track_from_row(row: &Row<'_>) -> rusqlite::Result<TrackSummary> {
         licenza: row.get(16)?,
         album_artist: row.get(17)?,
         in_grazia: false,
+        copia_qui: row.get::<_, i64>(18)? != 0,
     })
 }
 
@@ -1101,27 +1121,57 @@ pub fn ids_by_path(
         .collect()
 }
 
-/// L'origine di un album: i suoi brani stanno tutti su una macchina sola — le
+/// Le colonne di [`AlbumSummary`] per `origine`: `total_tracks` conta i brani
+/// che quell'origine **mostra**, non tutti quelli dell'album.
+///
+/// `albums.total_tracks` conta ogni riga dell'album, copie nascoste comprese. Con
+/// una chiave d'album sola per un disco che sta su due dispositivi (D4 del
+/// collaudo del 18/11) la scheda di «Tutti» direbbe «8 brani» per sei visibili, e
+/// quella di un dispositivo i brani di tutti. Dove non c'è niente da togliere —
+/// «Tutti» senza copie nascoste — resta la colonna com'è, e non si paga una
+/// sottoquery per album.
+fn colonne_album(connection: &Connection, origine: &Origine) -> Result<String, AppError> {
+    Ok(match filtro(connection, origine, "c.")? {
+        None => COLONNE_ALBUM.to_owned(),
+        Some(visibili) => COLONNE_ALBUM.replace(
+            "a.total_tracks",
+            &format!(
+                "(SELECT COUNT(*) FROM tracks c WHERE c.album_key = a.album_key AND {visibili})"
+            ),
+        ),
+    })
+}
+
+/// L'origine di un album: se i suoi brani stanno tutti su una macchina sola — le
 /// righe locali hanno la chiave di una cartella di qui, quelle specchio la
-/// chiave dell'album di un dispositivo —, e per aprirlo senza che «Tutti» ne
-/// nasconda dei pezzi basta chiedergli da dove viene.
+/// chiave dell'album di un dispositivo —, per aprirlo senza che «Tutti» ne
+/// nasconda dei pezzi basta chiedergli da dove viene. Un disco che sta su più
+/// dispositivi ha una chiave d'album sola (vedi `specchio::archivio::
+/// riallinea_le_chiavi_d_album`) e le sue righe vengono da più macchine: la sua
+/// origine è «Tutti», e i brani sono quelli scelti dai doppioni.
 ///
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn origine_dell_album(connection: &Connection, album_key: &str) -> Result<Origine, AppError> {
-    use rusqlite::OptionalExtension as _;
-    let percorso: Option<Option<String>> = connection
-        .query_row(
-            "SELECT path FROM tracks WHERE album_key = ?1 LIMIT 1",
-            [album_key],
-            |row| row.get(0),
+    let mut statement = connection
+        .prepare_cached(
+            "SELECT DISTINCT COALESCE(l.dispositivo, '') FROM tracks t
+               LEFT JOIN lontano_brani l ON l.track_id = t.id
+              WHERE t.album_key = ?1 LIMIT 2",
         )
-        .optional()
         .map_err(|err| db_error("origine di un album", &err))?;
-    Ok(crate::specchio::origine_della_riga(
-        percorso.flatten().as_deref(),
-    ))
+    let provenienze: Vec<String> = statement
+        .query_map([album_key], |row| row.get(0))
+        .and_then(Iterator::collect)
+        .map_err(|err| db_error("origine di un album", &err))?;
+    Ok(match provenienze.as_slice() {
+        [sola] if sola.is_empty() => Origine::Locale,
+        [sola] => Origine::Dispositivo(sola.clone()),
+        // Nessuna riga: come prima, l'album si apre da dove vuole la finestra.
+        [] => Origine::Locale,
+        _ => Origine::Tutti,
+    })
 }
 
 /// I brani di un album, nell'ordine del disco.
@@ -1168,8 +1218,9 @@ pub fn list_albums(
             format!("EXISTS (SELECT 1 FROM tracks t WHERE t.album_key = a.album_key AND {t})")
         }
     };
+    let colonne = colonne_album(connection, origine)?;
     let sql = format!(
-        "SELECT {COLONNE_ALBUM} FROM albums a
+        "SELECT {colonne} FROM albums a
          WHERE {con_brani}
          ORDER BY {ORDINE_DEGLI_ALBUM}
          LIMIT ?1 OFFSET ?2"
@@ -1230,12 +1281,13 @@ pub fn recently_added_albums(
     // `idx_tracks_album_added` e ne esce una riga per album, invece di tutte le
     // tracce della libreria da scartare dopo.
     let sql = format!(
-        "SELECT {COLONNE_ALBUM} FROM albums a
+        "SELECT {} FROM albums a
          JOIN (SELECT album_key, MAX(date_added) AS entrato, MAX(id) AS ultima
                FROM tracks WHERE album_key IS NOT NULL AND {}
                GROUP BY album_key) u ON u.album_key = a.album_key
          ORDER BY u.entrato DESC, u.ultima DESC
          LIMIT ?1",
+        colonne_album(connection, origine)?,
         dove(connection, origine, "")?
     );
     let mut statement = connection
@@ -1302,11 +1354,12 @@ pub(super) fn sql_degli_album_di_un_artista(
     origine: &Origine,
 ) -> Result<String, AppError> {
     Ok(format!(
-        "SELECT {COLONNE_ALBUM} FROM albums a
+        "SELECT {} FROM albums a
          WHERE a.album_key IN (SELECT album_key FROM tracks
                                 WHERE {ARTISTA_EFFETTIVO} = ?1 AND {})
          ORDER BY a.year, a.title COLLATE NOCASE
          LIMIT ?2 OFFSET ?3",
+        colonne_album(connection, origine)?,
         dove(connection, origine, "")?
     ))
 }

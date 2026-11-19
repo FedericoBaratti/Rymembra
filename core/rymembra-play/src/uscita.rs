@@ -346,6 +346,10 @@ pub struct Uscita {
     /// (`BTHENUM`); un'uscita che non sa dirlo vale come non Bluetooth, cioè
     /// tiene i trenta secondi di sempre.
     pub bluetooth: bool,
+    /// L'uscita aperta è dentro il telefono (`Some(true)`: l'altoparlante, l'auricolare)
+    /// o fuori (`Some(false)`: l'auto, le cuffie, un cavo). `None` dove non si sa —
+    /// sul computer, o se Android non risponde.
+    pub integrata: Option<bool>,
     /// Il ponte fra l'orologio di questo flusso e quello del processo, misurato
     /// appena il flusso è stato costruito. Vedi [`Ponte`].
     pub ponte: Ponte,
@@ -619,6 +623,7 @@ pub(crate) fn apri(
         dispositivo: aperta.dispositivo,
         era_predefinito: aperta.era_predefinito,
         bluetooth: aperta.bluetooth,
+        integrata: aperta.integrata,
         ponte: aperta.ponte,
         ordini: Arc::new(ordini),
     })
@@ -642,6 +647,7 @@ struct Aperta {
     dispositivo: String,
     era_predefinito: bool,
     bluetooth: bool,
+    integrata: Option<bool>,
     /// Il ponte fra gli orologi: lo misura il filo dell'uscita appena
     /// `costruisci` torna, e fino ad allora vale zero.
     ponte: Ponte,
@@ -991,6 +997,7 @@ fn costruisci(
     // descriversi vale come non Bluetooth, che è il comportamento di prima.
     // Su Android lo dice Android: vedi `dispositivi::e_bluetooth`.
     let bluetooth = crate::dispositivi::e_bluetooth(&dispositivo);
+    let integrata = crate::dispositivi::e_integrata(&dispositivo);
 
     let voce = Voce {
         lettore: anelli.campioni,
@@ -1064,6 +1071,7 @@ fn costruisci(
             dispositivo: scelta.id,
             era_predefinito: scelta.predefinito,
             bluetooth,
+            integrata,
             ponte: Ponte::default(),
         },
     ))

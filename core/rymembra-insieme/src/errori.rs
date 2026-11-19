@@ -51,6 +51,7 @@ fn codice_di(kind: ErrorCodeKind) -> ErrorCode {
         ErrorCodeKind::InsiemeGestoNonDisponibile => ErrorCode::InsiemeGestoNonDisponibile {
             gesto: String::new(),
         },
+        ErrorCodeKind::InsiemeBraniAltrui => ErrorCode::InsiemeBraniAltrui,
         ErrorCodeKind::InsiemeNonConcesso => ErrorCode::InsiemeNonConcesso,
         ErrorCodeKind::InsiemeRifiutato => ErrorCode::InsiemeRifiutato,
         ErrorCodeKind::InsiemeCodaPiena => ErrorCode::InsiemeCodaPiena {

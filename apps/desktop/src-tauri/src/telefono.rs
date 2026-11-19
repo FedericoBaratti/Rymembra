@@ -753,6 +753,7 @@ pub fn installa_l_uscita_audio() {
             .map(|uscita| rymembra_play::dispositivi::UscitaDiAndroid {
                 nome: uscita.nome,
                 bluetooth: uscita.bluetooth,
+                integrata: uscita.integrata,
             })
     });
 }

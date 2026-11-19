@@ -59,6 +59,14 @@ export interface Brano {
    * altrove è assente.
    */
   inGrazia?: boolean;
+  /**
+   * La riga è di un altro dispositivo, ma di questo brano c'è una copia **anche
+   * qui**, nascosta dietro di lei perché la riga di là è migliore. Se quel
+   * dispositivo non risponde la riga suona lo stesso, con la copia di qui (il
+   * nucleo la sceglie: `copia_da_suonare`): per questo non è grigia, e il tocco
+   * non dice «non raggiungibile». Assente — e `false` — per ogni altra riga.
+   */
+  copiaQui?: boolean;
 }
 
 /** Un risultato della ricerca nei cataloghi liberi. */

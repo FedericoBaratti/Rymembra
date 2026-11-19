@@ -364,6 +364,21 @@ impl Motore {
         self.uscita.bluetooth
     }
 
+    /// L'uscita aperta è fuori dal telefono — l'auto, le cuffie, un cavo —: lo
+    /// dice solo Android (vedi `dispositivi::e_integrata`), e dove non lo sa vale
+    /// `false`.
+    #[must_use]
+    pub const fn su_uscita_esterna(&self) -> bool {
+        matches!(self.uscita.integrata, Some(false))
+    }
+
+    /// L'uscita aperta è l'altoparlante o l'auricolare del telefono: solo Android,
+    /// e dove non lo sa vale `false`.
+    #[must_use]
+    pub const fn su_altoparlante_del_telefono(&self) -> bool {
+        matches!(self.uscita.integrata, Some(true))
+    }
+
     /// Comincia a suonare questo brano, adesso, scartando quel che c'era.
     ///
     /// Il brano arriva **già aperto**: il perché sta in [`BranoAperto`].
