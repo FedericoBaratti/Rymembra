@@ -484,10 +484,9 @@ release:
   open it again once you have fixed it: a process that is already running does not
   reopen the library by itself. If the core falls over halfway, the notification
   says the same, and the app shows “Rymembra did not start properly” instead of
-  its screens. A file
-  that lives in a cloud folder plays only after the app has been opened once in
-  that run: the cloud folders start with the app. The battery cost is not
-  measured.
+  its screens. A file that lives in a cloud folder plays only after the app has
+  been opened once in that run: the cloud folders start with the app. The
+  battery cost is not measured.
 - **“Start with the car”** needs Android Auto and is not
   offered in the Google Play build, because Google’s quality rule for media apps
   in cars (MA-1) forbids starting playback without a user action. It has not
