@@ -765,20 +765,23 @@ pub async fn lontano_scarica_righe(app: AppHandle, righe: Vec<i64>) -> Esito<Sta
 
 /// Svuota le code e ferma i brani in corso, i cui `.part` si cancellano.
 #[tauri::command]
-pub fn lontano_scarico_annulla(app: AppHandle) -> Esito<StatoScaricoIpc> {
-    let stato = {
-        let mut coda = prendi(&CODA);
-        coda.annulla();
-        coda.stato.clone()
-    };
-    annuncia(&app);
-    Ok(stato)
+pub async fn lontano_scarico_annulla(app: AppHandle) -> Esito<StatoScaricoIpc> {
+    in_disparte(move || {
+        let stato = {
+            let mut coda = prendi(&CODA);
+            coda.annulla();
+            coda.stato.clone()
+        };
+        annuncia(&app);
+        Ok(stato)
+    })
+    .await
 }
 
 /// A che punto è, adesso: per la finestra che si apre a coda avviata.
 #[tauri::command]
-pub fn lontano_scarico_stato() -> Esito<StatoScaricoIpc> {
-    Ok(prendi(&CODA).stato.clone())
+pub async fn lontano_scarico_stato() -> Esito<StatoScaricoIpc> {
+    in_disparte(|| Ok(prendi(&CODA).stato.clone())).await
 }
 
 #[cfg(test)]

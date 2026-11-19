@@ -1453,6 +1453,10 @@ fn racconta_la_tenuta(tenuta: Duration, presa: Option<u32>) {
 /// gira **lì**, e lì un'attesa senza limite non è un comando lento: è la
 /// finestra intera che non ridisegna, non risponde ai clic e che Windows dopo
 /// cinque secondi dichiara «non risponde».
+///
+/// Vale per Windows. Su Android un comando sincrono gira sul filo del ponte
+/// Java, non su questo, e il tetto di [`ATTESA_DELLA_FINESTRA`] non lo
+/// raggiunge: vedi il `//!` di [`crate::disparte`].
 static FILO_DELLA_FINESTRA: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
 
 /// Segna il filo corrente come quello della finestra. Va chiamata dal `setup`
