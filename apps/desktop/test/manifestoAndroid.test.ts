@@ -529,12 +529,22 @@ test("la sveglia dell'auto avvia il nucleo da qui, e non apre più l'attività",
   assert.doesNotMatch(kotlin("MainActivity.kt"), /Nucleo\.SFONDO|moveTaskToBack\(true\)\s*\n\s*}\s*\n\s*cercaDaIntento/);
   // La notifica dice la verità: si sta avviando finché il nucleo non c'è.
   const presenza = kotlin("Presenza.kt");
-  // E il nucleo che c'è vince su un tentativo fallito di prima.
+  // E il nucleo che c'è vince su un tentativo fallito di prima: ma non su uno caduto a
+  // metà (FC5, C1), che può aver detto «pronto» prima di cadere (`media::avvia` lo dice a
+  // metà dell'avvio) e deve dirlo lo stesso, nel titolo e nel testo.
+  assert.match(
+    /private fun nucleoManca\(\)[^\n]*/.exec(presenza)?.[0] ?? "",
+    /Ponte\.nucleoRotto \|\| !Nucleo\.pronto/,
+  );
   const titolo = /private fun titolo\([\s\S]*?\n    }\n/.exec(presenza)?.[0] ?? "";
   assert.match(
     titolo,
-    /if \(!Nucleo\.pronto\) \{[\s\S]*?Ponte\.nucleoRotto -> R\.string\.presenza_titolo_rotto\s*Ponte\.nucleoNonParte -> R\.string\.presenza_titolo_riposo\s*else -> R\.string\.presenza_titolo_avvio/,
+    /if \(nucleoManca\(\)\) \{[\s\S]*?Ponte\.nucleoRotto -> R\.string\.presenza_titolo_rotto\s*Ponte\.nucleoNonParte -> R\.string\.presenza_titolo_riposo\s*else -> R\.string\.presenza_titolo_avvio/,
   );
+  assert.doesNotMatch(titolo, /if \(!Nucleo\.pronto\)/, "un nucleo rotto che ha detto «pronto» dà il titolo «è attiva»");
+  const notifica = /private fun notifica\([\s\S]*?\n    }\n/.exec(presenza)?.[0] ?? "";
+  assert.match(notifica, /if \(nucleoManca\(\)\) \{\s*when \{\s*Ponte\.nucleoRotto -> costruttore\.setContentText/);
+  assert.doesNotMatch(notifica, /if \(!Nucleo\.pronto\)/, "un nucleo rotto che ha detto «pronto» non ha il suo testo");
   assert.match(kotlin("Nucleo.kt"), /Presenza\.rinfresca\(contesto\)/);
   assert.match(kotlin("Nucleo.kt"), /Ponte\.segnaNucleoParte\(\)/);
   // Rust dice a Kotlin che il nucleo non è partito, e se riprovare ha senso; Kotlin lo mette
@@ -578,6 +588,26 @@ test("un avvio dal servizio fallito si può rifare, e un nucleo caduto a metà n
       assert.match(testi, new RegExp(`<string name="${nome}">[^<]+</string>`), `${lingua}: manca ${nome}`);
     }
   }
+});
+
+test("un nucleo caduto a metà resta caduto: né un «pronto» né un «non parte» in ritardo lo cancellano", () => {
+  // FC5, C1. `sessione.pronta` parte a metà di `avvia_il_nucleo` (`media::avvia`), e Kotlin lo
+  // posta sul filo principale; `nucleo.nonParte` arriva da un filo di Rust e agisce subito. Un
+  // panico dopo `media::avvia` dà Rotto, e il «pronto» ancora in coda non deve rimettere a
+  // posto una notifica che il nucleo caduto ha già corretto.
+  const ponte = kotlin("Ponte.kt");
+  const parte = /fun segnaNucleoParte\([\s\S]*?\n  }\n/.exec(ponte)?.[0] ?? "";
+  assert.ok(parte.length > 0, "segnaNucleoParte non si trova");
+  assert.doesNotMatch(parte, /nucleoRotto = false/, "un nucleo che dice «pronto» cancella il «rotto»");
+  assert.match(parte, /if \(nucleoRotto\) return/);
+  // E un «non parte» riprovabile che arriva dopo (un avvio in ritardo, o la finestra che
+  // rifà l'avvio) non lo declassa, né rimette in gioco il segno «già avviato».
+  const segna = /fun segnaNucleoNonParte\([\s\S]*?\n  }\n/.exec(ponte)?.[0] ?? "";
+  const salta = segna.indexOf("if (nucleoRotto) return");
+  assert.ok(
+    salta >= 0 && salta < segna.indexOf("nucleoRotto = !riprovabile"),
+    "un «non parte» riprovabile arrivato dopo un «rotto» lo toglie",
+  );
 });
 
 test("le funzioni native di Ponte tengono il loro nome nella build di rilascio", () => {
