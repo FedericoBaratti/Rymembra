@@ -509,7 +509,9 @@ impl Nucleo {
 ///   nato niente che un secondo tentativo possa raddoppiare.
 ///
 /// Se l'esito non è `Riuscito` lo dice anche a chi ha messo `avvisa` (su Android,
-/// Kotlin, che altrimenti lascerebbe la notifica su «si sta avviando» per sempre).
+/// Kotlin, che altrimenti lascerebbe la notifica su «si sta avviando» per sempre) —
+/// **dopo** aver chiuso l'avvio: chi viene avvisato può rientrare subito, e deve
+/// trovare l'esito già scritto.
 #[cfg_attr(
     not(target_os = "android"),
     allow(
@@ -563,10 +565,14 @@ impl Drop for GuardiaDellAvvio {
         } else {
             Esito::Fallito
         };
+        // **Prima** si chiude l'avvio, **poi** si avvisa Kotlin: appena sa che il nucleo
+        // non è partito, Kotlin può rimettere in coda una sveglia che rientra in Rust, e
+        // questa deve trovare l'avvio chiuso (`Tu` dopo un `Fallito`, `Rotto` dopo un
+        // `Rotto`) e non `GiaInCorso` — che lo lascerebbe «già avviato» per sempre.
+        self.nucleo.avvio_chiuso(esito);
         if esito != Esito::Riuscito {
             (self.avvisa)(esito);
         }
-        self.nucleo.avvio_chiuso(esito);
     }
 }
 
@@ -926,6 +932,34 @@ mod prove {
         drop(guardia);
         assert_eq!(*dette.lock().unwrap(), vec![Esito::Rotto]);
         assert_eq!(nucleo.reclama_l_avvio(), ChiAvvia::Rotto);
+    }
+
+    /// FC5, C2: quando Kotlin viene avvisato l'avvio è **già chiuso**. Kotlin, appena
+    /// sa che il nucleo non è partito, può rimettere in coda una sveglia che rientra in
+    /// Rust (`reclama_l_avvio`): se l'avvio fosse ancora «in corso» riceverebbe
+    /// `GiaInCorso`, Kotlin si segnerebbe «già avviato» e non riproverebbe più.
+    #[test]
+    fn la_guardia_avvisa_kotlin_a_avvio_gia_chiuso() {
+        for (con_la_libreria, atteso) in [(false, ChiAvvia::Tu), (true, ChiAvvia::Rotto)] {
+            let nucleo = Nucleo::nuovo();
+            nucleo.reclama_l_avvio();
+            let visto = Arc::new(Mutex::new(Vec::new()));
+            let dentro = Arc::clone(&visto);
+            let dal_nucleo = nucleo.clone();
+            let mut guardia = GuardiaDellAvvio::nuova(nucleo.clone(), move |_| {
+                // Quel che vedrebbe una sveglia che rientra in Rust proprio adesso.
+                dentro.lock().unwrap().push(dal_nucleo.reclama_l_avvio());
+            });
+            if con_la_libreria {
+                guardia.la_libreria_c_e();
+            }
+            drop(guardia);
+            assert_eq!(
+                *visto.lock().unwrap(),
+                vec![atteso],
+                "avvisato a avvio ancora in corso (libreria aperta: {con_la_libreria})"
+            );
+        }
     }
 
     /// Un panico dentro l'avvio — dopo che la libreria c'era, cioè con dei fili già
