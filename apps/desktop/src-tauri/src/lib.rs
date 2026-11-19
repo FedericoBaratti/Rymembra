@@ -462,8 +462,45 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     if !nucleo.e_gia_avviato() {
         avvia_il_nucleo(&nucleo);
         nucleo.avvio_finito();
+        // Il nucleo qui è partito dalla finestra, anche se la libreria non si è aperta (come
+        // sul computer: la pagina mostra l'errore). Sul telefono la notifica del sottofondo
+        // non deve dire «si sta avviando» né «apri Rymembra» — è già aperta, e il processo non
+        // rifà questo avvio fino alla prossima partenza: vedi [`avvisa_se_la_libreria_manca`].
+        #[cfg(target_os = "android")]
+        avvisa_se_la_libreria_manca(&nucleo);
     }
     avvia_la_finestra(app);
+}
+
+/// La libreria non c'è: lo stato non c'è, o non si è aperta.
+///
+/// Si legge dalla cartella dei dati, che lo stato scrive solo ad apertura riuscita.
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(
+        dead_code,
+        reason = "la usa solo il telefono, per dire a Kotlin che il nucleo parte senza libreria; le prove la provano"
+    )
+)]
+fn senza_libreria(stato: Option<&stato::Stato>) -> bool {
+    stato.is_none_or(|stato| stato.cartella_dati().is_none())
+}
+
+/// Un avvio dalla finestra che non ha una libreria aperta lo dice a Kotlin, **non riprovabile**:
+/// la notifica del sottofondo dice «non è partita bene, chiudi l'app e riaprila» invece di
+/// «si sta avviando» per sempre — la sessione multimediale, che la fa passare a «è attiva»,
+/// non parte senza libreria — o di «apri Rymembra», che qui non serve a niente: il `setup`
+/// gira una volta per processo, e riaprire un'attività nata dopo non riapre la libreria.
+/// Chiudere l'app del tutto sì: il processo nuovo riparte da zero.
+///
+/// Solo se l'avvio qui è davvero della finestra: un avvio fallito del servizio, che la finestra
+/// rifà, passa da qui alla prima uscita, e un secondo guasto è proprio questo caso.
+#[cfg(target_os = "android")]
+fn avvisa_se_la_libreria_manca(nucleo: &Nucleo) {
+    if senza_libreria(nucleo.try_state::<stato::Stato>().as_ref()) {
+        nota!("[avvio] il nucleo parte senza libreria: la notifica dice di chiudere l'app");
+        dillo_a_kotlin(Esito::Rotto);
+    }
 }
 
 /// Il nucleo: la libreria è già aperta, e qui parte quel che serve a Rymembra
@@ -716,26 +753,12 @@ fn avvia_da_capo(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
     // Ma i passi che aprono o scrivono nella cartella nuova non
     // partono — vedi [`rifiuta`].
 
-    // Prima della libreria, perché non ne ha bisogno: una cella vuota
-    // e un cliente HTTP che non ha ancora aperto niente. La prima
-    // richiesta parte quando qualcuno incolla un link, così chi non
-    // importa mai da un catalogo non paga nemmeno una stretta di mano.
-    app.manage(importa::StatoImport::nuovo());
-    app.manage(esplora::StatoEsplora::nuovo());
-    // Come sopra, e per la stessa ragione: una cella vuota e un bit.
-    // Lo zip arriva solo se qualcuno apre la schermata dell'account.
-    app.manage(account::StatoAccount::nuovo());
-    // E anche questo: tre bit e i cataloghi, che sono a loro volta un
-    // cliente HTTP inerte. Non c'è più nessun binario da cercare sul
-    // disco — la coda parla solo con la rete, ed è il motivo per cui
-    // l'installer non impacchetta più niente di eseguibile.
-    app.manage(procura::StatoProcura::nuovo());
-
-    // I testi: due bit, due contatori, e i fornitori che nascono alla
-    // prima richiesta. Prima di allora non c'è niente da aprire, e
-    // aprire il deposito all'avvio vorrebbe dire una connessione al
-    // database in più per chi il pannello del testo non lo apre mai.
-    app.manage(testi::StatoTesti::nuovo());
+    // Gli stati che non vogliono la libreria — l'importazione, l'esplorazione, l'account,
+    // la coda dei download, i testi — prima di tutto il resto: inerti, una cella vuota e
+    // un cliente HTTP che non ha aperto niente, e i comandi li cercano per tipo. La
+    // richiesta di rete parte quando qualcuno incolla un link o apre una schermata, mai
+    // all'avvio. Vedi [`registra_gli_stati_inerti`].
+    registra_gli_stati_inerti(app);
 
     // L'albero delle cartelle: un percorso e tre parole di stato, e
     // nient'altro. Non apre il database e non legge niente — lo fa alla
@@ -3228,6 +3251,39 @@ mod prove {
         );
         // E l'aggancio riuscito non rifà la libreria: la trova.
         assert!(!corpo_di("fn finisci_l_aggancio_al_tentativo(").contains("riapri("));
+    }
+
+    /// R1: un nucleo che parte dalla finestra senza libreria aperta — il guasto è ancora lì, dopo
+    /// che la finestra ha rifatto l'avvio del servizio — non lascia la notifica del sottofondo
+    /// su «si sta avviando» né su «apri Rymembra»: lo dice a Kotlin, non riprovabile.
+    #[test]
+    fn senza_libreria_la_notifica_dice_di_chiudere_l_app() {
+        let dir = tempfile::tempdir().expect("cartella");
+        // Nessuno stato: niente libreria.
+        assert!(senza_libreria(None));
+        // In apertura, o aperta male: la libreria non c'è.
+        let stato = stato::Stato::in_apertura(dir.path().to_path_buf());
+        assert!(senza_libreria(Some(&stato)));
+        stato.completa(Err(AppError::new(ErrorCode::DbOpenFailed { path: None })));
+        stato.apri_il_cancello();
+        assert!(senza_libreria(Some(&stato)));
+        // Aperta: c'è.
+        let aperta = stato::Stato::apri(dir.path().to_path_buf());
+        assert!(!senza_libreria(Some(&aperta)));
+        // Il cablaggio: dopo aver chiuso l'avvio, e non riprovabile.
+        let dopo = corpo_di("fn avvia_dopo_la_libreria(");
+        let chiuso = dopo
+            .find("nucleo.avvio_finito()")
+            .expect("il resto dell'avvio non chiude l'avvio");
+        let avvisa = dopo
+            .find("avvisa_se_la_libreria_manca(&nucleo)")
+            .expect("il nucleo senza libreria non lo dice a Kotlin");
+        assert!(chiuso < avvisa);
+        let corpo = corpo_di("fn avvisa_se_la_libreria_manca(");
+        assert!(
+            corpo.contains("senza_libreria(") && corpo.contains("dillo_a_kotlin(Esito::Rotto)"),
+            "l'avviso a Kotlin non è «non riprovabile»"
+        );
     }
 
     /// Il lettore non segna più il filo della finestra: lo avvia anche un servizio,
