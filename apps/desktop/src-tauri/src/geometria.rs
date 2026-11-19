@@ -159,6 +159,49 @@ fn copertura(x: i64, y: i64, larghezza: i64, altezza: i64, area: &Area) -> i64 {
     }
 }
 
+/// Come rimettere la geometria ricordata sulla finestra di adesso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rimessa {
+    /// Tutta: posizione, misura e ingrandimento.
+    Subito,
+    /// La posizione e la misura, **non** l'ingrandimento: la finestra sta per
+    /// comparire ridotta a icona (l'avvio automatico di Windows). Ingrandita ora,
+    /// ancora nascosta, `tao` alla `show` farebbe `SW_MAXIMIZE`: a chi sta
+    /// arrivando al desktop comparirebbe una finestra a schermo intero un istante
+    /// prima della riduzione. L'ingrandimento aspetta che qualcuno la ripristini.
+    SenzaIngrandire,
+    /// Niente adesso: la finestra è ridotta a icona. `SetWindowPos` su una
+    /// finestra ridotta non cambia il rettangolo con cui si ripristina, e
+    /// `maximize()` la ripristinerebbe sullo schermo. Aspetta che qualcuno la
+    /// ripristini.
+    Dopo,
+}
+
+/// Come rimettere la geometria, dato come sta la finestra.
+///
+/// `ridotta`: è ridotta a icona adesso. `in_riduzione`: sta per comparire
+/// ridotta (la comparsa dell'avvio automatico non è ancora stata consumata).
+#[must_use]
+pub fn come_rimetterla(ridotta: bool, in_riduzione: bool) -> Rimessa {
+    if ridotta {
+        Rimessa::Dopo
+    } else if in_riduzione {
+        Rimessa::SenzaIngrandire
+    } else {
+        Rimessa::Subito
+    }
+}
+
+/// È il momento di rimettere quel che aspettava (`Rimessa::SenzaIngrandire` o
+/// `Rimessa::Dopo`)? Quando la finestra si vede, non è ridotta a icona e non è
+/// a schermo intero: dopo che qualcuno l'ha ripristinata. **Nascosta no**: è
+/// com'è prima che l'avvio automatico la mostri ridotta, e ingrandirla lì
+/// vorrebbe dire il lampo che si voleva evitare.
+#[must_use]
+pub fn e_ora_di_rimettere(visibile: bool, ridotta: bool, schermo_intero: bool) -> bool {
+    visibile && !ridotta && !schermo_intero
+}
+
 /// Mette per prima l'area del monitor principale, lasciando l'ordine degli altri.
 ///
 /// [`rimetti_su_uno_schermo`] centra sulla prima area quando la finestra non
@@ -471,6 +514,43 @@ mod prove {
             principale_per_prima(Vec::new(), Some(PRINCIPALE)),
             Vec::new()
         );
+    }
+
+    // ── quando rimetterla ───────────────────────────────────────────────────
+
+    #[test]
+    fn una_finestra_normale_si_rimette_tutta_subito() {
+        assert_eq!(come_rimetterla(false, false), Rimessa::Subito);
+    }
+
+    /// L'avvio automatico: la finestra sta per comparire ridotta, e ingrandirla
+    /// prima farebbe un lampo a schermo intero (`tao` alla `show` fa
+    /// `SW_MAXIMIZE` se il segno c'è).
+    #[test]
+    fn se_sta_per_comparire_ridotta_non_si_ingrandisce_ancora() {
+        assert_eq!(come_rimetterla(false, true), Rimessa::SenzaIngrandire);
+    }
+
+    /// Una finestra già ridotta (l'apertura lenta: la rete di sicurezza l'ha
+    /// mostrata ridotta prima che la libreria fosse aperta) non si tocca: né la
+    /// posizione, che non cambierebbe il rettangolo con cui si ripristina, né
+    /// l'ingrandimento, che la ripristinerebbe sullo schermo.
+    #[test]
+    fn una_finestra_gia_ridotta_aspetta_che_la_si_ripristini() {
+        assert_eq!(come_rimetterla(true, false), Rimessa::Dopo);
+        assert_eq!(come_rimetterla(true, true), Rimessa::Dopo);
+    }
+
+    #[test]
+    fn quel_che_aspettava_si_rimette_solo_a_finestra_visibile_normale() {
+        // Visibile, né ridotta né a schermo intero: ripristinata da qualcuno.
+        assert!(e_ora_di_rimettere(true, false, false));
+        // Nascosta (prima che l'avvio automatico la mostri ridotta), ridotta o a
+        // schermo intero: ancora no.
+        assert!(!e_ora_di_rimettere(false, false, false));
+        assert!(!e_ora_di_rimettere(true, true, false));
+        assert!(!e_ora_di_rimettere(true, false, true));
+        assert!(!e_ora_di_rimettere(false, true, true));
     }
 
     // ── cosa ricordare ──────────────────────────────────────────────────────

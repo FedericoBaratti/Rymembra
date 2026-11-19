@@ -67,7 +67,7 @@ use rymembra_app::settings;
 use tauri::Manager as _;
 
 use crate::argomenti::{Argomenti, SecondoAvvio, secondo_avvio as decisione};
-use crate::geometria::{self, Area, Geometria, Lettura};
+use crate::geometria::{self, Area, Geometria, Lettura, Rimessa};
 use crate::stato::{Stato, con_libreria, con_libreria_entro};
 use crate::{nota, spegnimento, vassoio};
 
@@ -89,6 +89,12 @@ impl PrimaComparsa {
     /// Da qui in poi la prossima comparsa è ridotta a icona, o torna normale.
     pub fn imposta(&self, ridotta: bool) {
         self.0.store(ridotta, Ordering::Release);
+    }
+
+    /// La prossima comparsa è ridotta e non è ancora avvenuta? Come [`Self::prendi`]
+    /// ma **senza consumarla**: chi lo chiede non è chi mostra la finestra.
+    pub fn in_attesa(&self) -> bool {
+        self.0.load(Ordering::Acquire)
     }
 
     /// La prossima comparsa dev'essere ridotta? Si dice **sì una volta sola**:
@@ -169,6 +175,9 @@ struct Ricordo {
     geometria: Option<Geometria>,
     /// Cambiata dall'ultima scrittura nelle impostazioni.
     da_scrivere: bool,
+    /// Qualcosa è ancora da rimettere sulla finestra, e aspetta che si veda
+    /// ripristinata: vedi [`Rimessa`].
+    in_attesa: bool,
 }
 
 /// La geometria della finestra, in memoria: sopravvive alla finestra, che con la
@@ -176,6 +185,7 @@ struct Ricordo {
 static RICORDO: Mutex<Ricordo> = Mutex::new(Ricordo {
     geometria: None,
     da_scrivere: false,
+    in_attesa: false,
 });
 
 fn ricordo() -> MutexGuard<'static, Ricordo> {
@@ -233,6 +243,21 @@ fn rileggi(app: &tauri::AppHandle) {
     let Some(adesso) = leggi(&finestra) else {
         return;
     };
+    // Quel che aspettava — la finestra era ridotta, o stava per esserlo — si
+    // rimette adesso che qualcuno l'ha ripristinata, e **prima** di aggiornare la
+    // memoria: quel che si legge è ancora la finestra di prima.
+    let aspettava = ricordo().in_attesa;
+    if aspettava
+        && geometria::e_ora_di_rimettere(
+            finestra.is_visible().unwrap_or(false),
+            adesso.ridotta,
+            adesso.schermo_intero,
+        )
+    {
+        ricordo().in_attesa = false;
+        applica(&finestra, true);
+        return;
+    }
     let mut ricordo = ricordo();
     let nuova = geometria::aggiorna(ricordo.geometria, &adesso);
     if nuova != ricordo.geometria {
@@ -278,15 +303,16 @@ fn aree(finestra: &tauri::WebviewWindow) -> Vec<Area> {
     geometria::principale_per_prima(tutti, principale)
 }
 
-/// Rimette la finestra dov'era: la posizione, la misura, e ingrandita se lo era.
+/// Rimette la finestra dov'era: la posizione, la misura, e ingrandita se lo era
+/// e `ingrandisci` lo vuole.
 ///
 /// Prima la posizione e poi la misura: spostata su un monitor con un'altra
 /// scalatura, Windows ridimensiona la finestra da sé, e la misura in pixel
 /// fisici va rimessa **dopo**. L'ingrandimento per ultimo, perché
 /// `set_position` lo toglie. La finestra può essere ancora nascosta — è il caso
 /// normale: nasce così, e la mostra [`mostra`] — e `tao` ingrandisce una
-/// finestra nascosta senza mostrarla.
-fn applica(finestra: &tauri::WebviewWindow) {
+/// finestra nascosta senza mostrarla (e la ingrandisce davvero alla `show`).
+fn applica(finestra: &tauri::WebviewWindow, ingrandisci: bool) {
     let Some(ricordata) = ricordo().geometria else {
         return;
     };
@@ -304,7 +330,8 @@ fn applica(finestra: &tauri::WebviewWindow) {
     if let Err(err) = finestra.set_size(tauri::PhysicalSize::new(messa.larghezza, messa.altezza)) {
         nota!("[finestra] la misura non si rimette: {err}");
     }
-    if messa.ingrandita
+    if ingrandisci
+        && messa.ingrandita
         && let Err(err) = finestra.maximize()
     {
         nota!("[finestra] l'ingrandimento non si rimette: {err}");
@@ -317,9 +344,28 @@ fn applica(finestra: &tauri::WebviewWindow) {
     }
 }
 
+/// Rimette la geometria ricordata sulla finestra, **quando si può**.
+///
+/// Dipende da come sta la finestra (vedi [`Rimessa`]): una finestra ridotta a
+/// icona, o che sta per comparire ridotta perché Windows ha avviato Rymembra al
+/// login, non si ingrandisce — né, se è già ridotta, si sposta — adesso: tocca
+/// a chi la ripristina ([`rileggi`]). Si guarda la comparsa ridotta **senza
+/// consumarla**: la consuma chi mostra la finestra.
+fn rimetti(finestra: &tauri::WebviewWindow) {
+    let ridotta = finestra.is_minimized().unwrap_or(false);
+    match geometria::come_rimetterla(ridotta, COMPARSA.in_attesa()) {
+        Rimessa::Subito => applica(finestra, true),
+        Rimessa::SenzaIngrandire => {
+            applica(finestra, false);
+            ricordo().in_attesa = true;
+        }
+        Rimessa::Dopo => ricordo().in_attesa = true,
+    }
+}
+
 /// Alla fine dell'apertura della libreria: legge dalle impostazioni dove stava la
-/// finestra l'ultima volta, e ce la rimette **prima** che la pagina la mostri.
-/// Sul filo della finestra.
+/// finestra l'ultima volta, e ce la rimette **prima** che la pagina la mostri —
+/// salvo l'avvio automatico, vedi [`rimetti`]. Sul filo della finestra.
 pub fn ritrova_la_geometria(app: &tauri::AppHandle) {
     let Some(stato) = app.try_state::<Stato>() else {
         return;
@@ -332,6 +378,7 @@ pub fn ritrova_la_geometria(app: &tauri::AppHandle) {
             let mut ricordo = ricordo();
             ricordo.geometria = Some(ricordata);
             ricordo.da_scrivere = false;
+            ricordo.in_attesa = false;
         }
         Ok(None) => return,
         Err(err) => {
@@ -343,7 +390,7 @@ pub fn ritrova_la_geometria(app: &tauri::AppHandle) {
         }
     }
     if let Some(finestra) = app.get_webview_window(ETICHETTA) {
-        applica(&finestra);
+        rimetti(&finestra);
     }
 }
 
@@ -436,7 +483,7 @@ fn crea(app: &tauri::AppHandle) {
         Ok(finestra) => {
             nota!("[finestra] il vassoio la riapre: la finestra rinasce dalla configurazione");
             // Dov'era, sulla finestra ancora nascosta: la mostra `mostra`.
-            applica(&finestra);
+            rimetti(&finestra);
             finestra_nata(app);
         }
         Err(err) => nota!("[finestra] la finestra non rinasce: {err}"),
@@ -495,6 +542,20 @@ mod prove {
         // vuole chi ha cliccato, e la vuole davanti.
         assert!(!comparsa.prendi());
         assert!(!comparsa.prendi());
+    }
+
+    /// Chi rimette la geometria guarda se la comparsa ridotta dell'avvio
+    /// automatico è ancora da fare **senza consumarla**: se la consumasse, la
+    /// finestra comparirebbe normale e non ridotta.
+    #[test]
+    fn guardare_la_comparsa_ridotta_non_la_consuma() {
+        let comparsa = PrimaComparsa::nuova();
+        assert!(!comparsa.in_attesa());
+        comparsa.imposta(true);
+        assert!(comparsa.in_attesa());
+        assert!(comparsa.in_attesa(), "guardarla non la consuma");
+        assert!(comparsa.prendi(), "e chi mostra la finestra la trova");
+        assert!(!comparsa.in_attesa(), "consumata, non c'è più");
     }
 
     /// Le tre strade che mostrano la finestra passano tutte da [`mostra`]: se
@@ -581,7 +642,7 @@ mod prove {
             .find("WebviewWindowBuilder::from_config")
             .expect("la finestra non si costruisce dalla configurazione");
         let rimessa = corpo
-            .find("applica(&finestra)")
+            .find("rimetti(&finestra)")
             .expect("la finestra ricreata non riprende la geometria");
         let nata = corpo
             .find("finestra_nata(app)")
@@ -639,6 +700,54 @@ mod prove {
                 && !segna_la_finestra.contains("is_maximized"),
             "`finestra_mossa` legge la finestra invece di segnare e basta"
         );
+    }
+
+    /// L'avvio automatico non deve ricevere un lampo a schermo intero: la
+    /// geometria si rimette secondo `come_rimetterla` — che guarda se la finestra
+    /// è ridotta o sta per esserlo, senza consumare la comparsa — e quel che
+    /// aspetta si rimette solo quando la finestra si vede ripristinata, **prima**
+    /// di aggiornare la memoria con quel che si legge.
+    #[test]
+    fn la_geometria_non_ingrandisce_una_finestra_che_sta_per_comparire_ridotta() {
+        let sorgente = include_str!("comparsa.rs");
+        let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
+        let corpo_di = |firma: &str| {
+            sorgente
+                .split(firma)
+                .nth(1)
+                .and_then(|resto| resto.split("\n}\n").next())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let rimetti = corpo_di("fn rimetti(");
+        assert!(rimetti.contains("geometria::come_rimetterla("));
+        assert!(
+            rimetti.contains("COMPARSA.in_attesa()"),
+            "non guarda la comparsa ridotta dell'avvio automatico"
+        );
+        assert!(
+            !rimetti.contains("COMPARSA.prendi()"),
+            "consumerebbe la comparsa ridotta: la finestra comparirebbe normale"
+        );
+        assert!(rimetti.contains("Rimessa::SenzaIngrandire => {"));
+        let rileggi = corpo_di("fn rileggi(");
+        let ora = rileggi
+            .find("geometria::e_ora_di_rimettere(")
+            .expect("quel che aspettava non si rimette mai");
+        let aggiorna = rileggi
+            .find("geometria::aggiorna(")
+            .expect("la memoria non si aggiorna");
+        assert!(ora < aggiorna, "si aggiorna la memoria prima di rimettere");
+        // L'ingrandimento è dietro un parametro: `rimetti` lo nega finché la
+        // finestra sta per comparire ridotta.
+        let applica = corpo_di("fn applica(");
+        let chiede = applica
+            .find("if ingrandisci")
+            .expect("l'ingrandimento non dipende dal parametro");
+        let ingrandisce = applica
+            .find("finestra.maximize()")
+            .expect("la finestra ingrandita non si ingrandisce");
+        assert!(chiede < ingrandisce);
     }
 
     /// La geometria si scrive alla `CloseRequested` — l'ultimo momento in cui la
