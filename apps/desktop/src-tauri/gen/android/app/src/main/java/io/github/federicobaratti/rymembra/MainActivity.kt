@@ -1,5 +1,6 @@
 package io.github.federicobaratti.rymembra
 
+import android.Manifest
 import android.app.SearchManager
 import android.content.ComponentName
 import android.content.Intent
@@ -42,7 +43,25 @@ class MainActivity : TauriActivity() {
     registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { risultato ->
       permessiInAttesa?.complete(risultato)
       permessiInAttesa = null
+      // Le notifiche chieste col dialogo che aspetta (il consenso di un servizio):
+      // se il sottofondo era già acceso, la sua notifica compare adesso.
+      if (risultato[Manifest.permission.POST_NOTIFICATIONS] == true) Presenza.ripubblica(this)
     }
+
+  /**
+   * La risposta alla domanda delle notifiche che non aspetta (`Permessi.
+   * notificheAlBisogno`, a chi accende «Resta attiva in sottofondo»): il servizio
+   * è già in primo piano, e senza il permesso la sua notifica non è comparsa. Si
+   * rifà qui, quando il sì arriva, invece che al primo cambio di collegamento.
+   */
+  override fun onRequestPermissionsResult(
+    requestCode: Int,
+    permissions: Array<out String>,
+    grantResults: IntArray,
+  ) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (requestCode == Permessi.CODICE_NOTIFICHE) Presenza.ripubblica(this)
+  }
 
   private var mittenteInAttesa: CompletableFuture<ActivityResult>? = null
   private val lanciatoreMittente =
