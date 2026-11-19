@@ -93,7 +93,7 @@ use rymembra_app::settings;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_net::{Cancello, Corpo, Metodo, Rete, Richiesta, Rimandi};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager as _, State};
+use tauri::{AppHandle, Manager as _};
 
 use crate::corsia::LIBRERIA;
 use crate::disparte::{comanda, stato_di};
