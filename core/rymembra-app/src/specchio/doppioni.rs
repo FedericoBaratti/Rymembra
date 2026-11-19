@@ -47,16 +47,26 @@
 //! quindi una bugia a 384 kHz si scopre anche pesando 700 kbps, e un FLAC mono
 //! di parlato non si tocca.
 //!
-//! # La coerenza d'album
+//! # Album: i brani in comune, uno per uno
 //!
-//! Senza questa regola un album si spezzerebbe in due voci: la traccia 1 dalla
-//! copia migliore, la 2 dalla copia che a parità ha vinto per caso. Quindi
-//! prima si sceglie **per album intero**: se un album (stesso titolo, stesso
-//! artista, normalizzati) c'è su più dispositivi, lo si prende tutto dal
-//! dispositivo la cui copia dell'album è migliore — la qualità *mediana* delle
-//! sue tracce, che una traccia sola ritoccata non sposta — e a parità da quello
-//! con più brani. Poi i brani che da lì non hanno una copia, e quelli senza
-//! album, si scelgono uno per uno.
+//! Un album che sta su più dispositivi si scelge confrontando **i brani che i
+//! dispositivi hanno in comune**, e questo confronto è la regola di ogni brano
+//! qui sopra: la copia migliore, a parità quella di qui, poi la chiave più bassa.
+//! Non c'è un secondo passo che prenda l'album intero da un dispositivo solo. C'era
+//! — la qualità *mediana* dell'album, e a parità chi ha più brani — e in un album
+//! di formati misti dava il peggio brano per brano (collaudo del 18/11, D5): il
+//! FLAC di un dispositivo restava dietro un MP3 a 128 kbps dell'altro perché
+//! l'altro aveva «la mediana migliore», e la copia identica di qui, che a parità
+//! deve vincere, passava dietro quella di là perché là i brani erano di più. Con
+//! §1 — «qualità migliore, sempre» e «a parità vince la locale» — la regola
+//! dell'album intero non si tiene in piedi.
+//!
+//! L'album resta **una voce sola** per un'altra strada: la chiave d'album delle
+//! righe specchio si allinea a quella delle righe di qui
+//! (`archivio::riallinea_le_chiavi_d_album`, con la stessa [`identita_album`]),
+//! così le copie dello stesso disco sono una scheda, coi brani scelti uno per uno.
+//! A parità fra due dispositivi diversi da questo vince lo stesso per tutte le
+//! tracce — la chiave più bassa — e un disco non si spezza per caso.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap};
@@ -201,8 +211,8 @@ impl Qualita {
     }
 }
 
-/// Una riga per la scelta: quel che serve a sapere di che gruppo e di che
-/// album è, da dove viene e quanto vale.
+/// Una riga per la scelta: quel che serve a sapere di che gruppo è, da dove
+/// viene e quanto vale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RigaDoppione {
     /// La riga di `tracks`.
@@ -213,8 +223,6 @@ pub struct RigaDoppione {
     pub dispositivo: Option<String>,
     /// Quanto è buona.
     pub qualita: Qualita,
-    /// L'identità dell'album fra i dispositivi, se è un album con un nome.
-    pub album: Option<String>,
     /// Il valore di `copia_di` di adesso.
     pub copia_di: Option<i64>,
 }
@@ -246,16 +254,6 @@ fn la_migliore<'a>(righe: impl Iterator<Item = &'a RigaDoppione>) -> Option<&'a 
     righe.max_by_key(|r| (r.qualita, rango(r.dispositivo.as_deref()), Reverse(r.id)))
 }
 
-/// La qualità *mediana* (la bassa, se sono pari) di un insieme di righe.
-fn mediana(qualita: &[Qualita]) -> Qualita {
-    let mut ordinate = qualita.to_vec();
-    ordinate.sort_unstable();
-    ordinate
-        .get(ordinate.len().saturating_sub(1).div_euclid(2))
-        .copied()
-        .unwrap_or_default()
-}
-
 /// Per ogni riga, la riga che la rappresenta: `None` se è visibile in «Tutti».
 ///
 /// Puro: vedi il `//!` per la regola. Restituisce solo le righe il cui
@@ -281,63 +279,15 @@ pub fn scegli(righe: &[RigaDoppione]) -> Vec<(i64, Option<i64>)> {
             .collect();
     }
 
-    // La coerenza d'album: com'è ogni album su ogni dispositivo, con **tutte**
-    // le sue righe — anche quelle che non hanno doppioni — perché «più brani»
-    // conti il disco com'è.
-    let mut istanze: BTreeMap<&str, BTreeMap<Option<&str>, Vec<Qualita>>> = BTreeMap::new();
-    for riga in righe {
-        if let Some(album) = riga.album.as_deref() {
-            istanze
-                .entry(album)
-                .or_default()
-                .entry(riga.dispositivo.as_deref())
-                .or_default()
-                .push(riga.qualita);
-        }
-    }
-    // Il dispositivo che vince ogni album che sta su più d'uno.
-    let mut vincitore_dell_album: HashMap<&str, Option<&str>> = HashMap::new();
-    for (album, per_dispositivo) in &istanze {
-        if per_dispositivo.len() < 2 {
-            continue;
-        }
-        let vince = per_dispositivo
-            .iter()
-            .max_by_key(|(dispositivo, qualita)| {
-                (mediana(qualita), qualita.len(), rango(**dispositivo))
-            })
-            .map(|(dispositivo, _)| *dispositivo);
-        if let Some(vince) = vince {
-            vincitore_dell_album.insert(album, vince);
-        }
-    }
-
     let mut decisi: HashMap<i64, Option<i64>> = HashMap::new();
     for membri in per_gruppo.values() {
-        // Il dispositivo che vince questo gruppo: quello di un album che ha il
-        // suo vincitore e una riga anche qui; se no, la riga migliore di tutte.
-        let dall_album = membri
-            .iter()
-            .filter_map(|r| r.album.as_deref())
-            .filter_map(|album| vincitore_dell_album.get(album).copied())
-            .filter(|vince| membri.iter().any(|r| r.dispositivo.as_deref() == *vince))
-            .max_by_key(|vince| rango(*vince));
-        let vince: Option<&str> = match dall_album {
-            Some(vince) => vince,
-            None => match la_migliore(membri.iter().copied()) {
-                Some(r) => r.dispositivo.as_deref(),
-                None => continue,
-            },
-        };
-        // Il rappresentante: la migliore delle righe del dispositivo che vince.
-        let Some(rappresentante) = la_migliore(
-            membri
-                .iter()
-                .copied()
-                .filter(|r| r.dispositivo.as_deref() == vince),
-        ) else {
+        // Il rappresentante è la riga migliore del gruppo — qualità, poi questo
+        // dispositivo, poi la chiave più bassa — e il dispositivo che vince è il
+        // suo: le righe degli altri dispositivi gli stanno dietro.
+        let Some(rappresentante) = la_migliore(membri.iter().copied()) else {
             continue;
         };
+        let vince = rappresentante.dispositivo.as_deref();
         for riga in membri {
             let nuovo = if riga.dispositivo.as_deref() == vince {
                 None
@@ -369,19 +319,12 @@ mod prove {
         Qualita::da_colonne(Some("Flac"), Some(campionamento), None)
     }
 
-    fn riga(
-        id: i64,
-        gruppo: &str,
-        dispositivo: Option<&str>,
-        qualita: Qualita,
-        album: Option<&str>,
-    ) -> RigaDoppione {
+    fn riga(id: i64, gruppo: &str, dispositivo: Option<&str>, qualita: Qualita) -> RigaDoppione {
         RigaDoppione {
             id,
             gruppo: gruppo.to_owned(),
             dispositivo: dispositivo.map(str::to_owned),
             qualita,
-            album: album.map(str::to_owned),
             copia_di: None,
         }
     }
@@ -408,8 +351,8 @@ mod prove {
     #[test]
     fn senza_perdita_batte_con_perdita_anche_se_remota() {
         let mut righe = vec![
-            riga(1, "a|b|c", None, mp3(320), None),
-            riga(2, "a|b|c", Some("pc"), flac(44_100), None),
+            riga(1, "a|b|c", None, mp3(320)),
+            riga(2, "a|b|c", Some("pc"), flac(44_100)),
         ];
         let cambi = scegli(&righe);
         applica(&mut righe, &cambi);
@@ -428,15 +371,15 @@ mod prove {
     #[test]
     fn campionamento_poi_bitrate_decidono_fra_copie_dello_stesso_genere() {
         let mut righe = vec![
-            riga(1, "k", None, flac(44_100), None),
-            riga(2, "k", Some("pc"), flac(96_000), None),
+            riga(1, "k", None, flac(44_100)),
+            riga(2, "k", Some("pc"), flac(96_000)),
         ];
         rifai(&mut righe);
         assert_eq!(copia_di(&righe, 1), Some(2), "96 kHz batte 44,1");
 
         let mut righe = vec![
-            riga(1, "k", None, mp3(192), None),
-            riga(2, "k", Some("pc"), mp3(320), None),
+            riga(1, "k", None, mp3(192)),
+            riga(2, "k", Some("pc"), mp3(320)),
         ];
         rifai(&mut righe);
         assert_eq!(copia_di(&righe, 1), Some(2), "320 batte 192");
@@ -445,9 +388,9 @@ mod prove {
     #[test]
     fn a_parita_vince_la_locale_e_poi_la_chiave_piu_bassa() {
         let mut righe = vec![
-            riga(1, "k", Some("bb"), mp3(320), None),
-            riga(2, "k", None, mp3(320), None),
-            riga(3, "k", Some("aa"), mp3(320), None),
+            riga(1, "k", Some("bb"), mp3(320)),
+            riga(2, "k", None, mp3(320)),
+            riga(3, "k", Some("aa"), mp3(320)),
         ];
         rifai(&mut righe);
         assert_eq!(copia_di(&righe, 2), None, "la locale a parità");
@@ -455,8 +398,8 @@ mod prove {
         assert_eq!(copia_di(&righe, 3), Some(2));
         // Senza la locale, fra due remote, la chiave più bassa.
         let mut righe = vec![
-            riga(1, "k", Some("bb"), mp3(320), None),
-            riga(3, "k", Some("aa"), mp3(320), None),
+            riga(1, "k", Some("bb"), mp3(320)),
+            riga(3, "k", Some("aa"), mp3(320)),
         ];
         rifai(&mut righe);
         assert_eq!(copia_di(&righe, 3), None);
@@ -467,67 +410,115 @@ mod prove {
     fn due_copie_dello_stesso_dispositivo_restano_due_voci() {
         // Il doppione locale non è affare della libreria unica.
         let mut righe = vec![
-            riga(1, "k", None, mp3(128), None),
-            riga(2, "k", None, flac(44_100), None),
-            riga(3, "altro", Some("pc"), mp3(320), None),
+            riga(1, "k", None, mp3(128)),
+            riga(2, "k", None, flac(44_100)),
+            riga(3, "altro", Some("pc"), mp3(320)),
         ];
         rifai(&mut righe);
         assert!(righe.iter().all(|r| r.copia_di.is_none()), "{righe:?}");
     }
 
     #[test]
-    fn un_album_si_prende_tutto_dalla_copia_migliore() {
-        // L'album A su due dispositivi. Locale: tre mp3 da 320. Remoto: due
-        // flac e un mp3 da 128 (la traccia 3): per traccia, la 3 resterebbe
-        // locale e l'album si spezzerebbe. La mediana del remoto è flac, e
-        // l'album va tutto dal remoto.
-        let a = Some("album a");
+    fn i_brani_che_il_vincitore_non_ha_si_scelgono_da_soli() {
+        // Il remoto ha il flac della traccia 1 ma non la traccia 3, che c'è
+        // solo di qui: non è un doppione, è una voce sola e resta visibile.
         let mut righe = vec![
-            riga(1, "t1", None, mp3(320), a),
-            riga(2, "t2", None, mp3(320), a),
-            riga(3, "t3", None, mp3(320), a),
-            riga(11, "t1", Some("pc"), flac(44_100), a),
-            riga(12, "t2", Some("pc"), flac(44_100), a),
-            riga(13, "t3", Some("pc"), mp3(128), a),
+            riga(1, "t1", None, mp3(320)),
+            riga(3, "t3", None, mp3(320)),
+            riga(11, "t1", Some("pc"), flac(44_100)),
         ];
         rifai(&mut righe);
-        for (locale, remota) in [(1, 11), (2, 12), (3, 13)] {
-            assert_eq!(copia_di(&righe, locale), Some(remota), "traccia {locale}");
-            assert_eq!(copia_di(&righe, remota), None);
+        assert_eq!(copia_di(&righe, 1), Some(11));
+        assert_eq!(copia_di(&righe, 3), None);
+    }
+
+    /// L'album «Formati» del collaudo del 18/11 (D5), nei due database.
+    ///
+    /// A ha sei brani, uno in FLAC e cinque con perdita, quattro dei quali a
+    /// 64 kbps; B ne ha due: un MP3 a 128 kbps ricavato dal FLAC di A e un MP3 a
+    /// 192 kbps identico a quello di A. Per §1 vale il brano, non l'album: il
+    /// FLAC batte l'MP3 a 128 («qualità migliore, sempre») e fra due copie uguali
+    /// vince quella di qui («a parità vince la locale»), qualunque sia il
+    /// dispositivo da cui si guarda.
+    fn il_disco_formati(a_e_di_qui: bool) -> (Vec<RigaDoppione>, i64, i64, i64, i64) {
+        // Le righe di A (id 1-6, o 101-106 se A sta in rete) e di B (11, 12 /
+        // 111, 112): quello che non è di qui ha la chiave del suo dispositivo.
+        let a = |id: i64| if a_e_di_qui { id } else { 100 + id };
+        let b = |id: i64| if a_e_di_qui { 10 + id } else { 110 + id };
+        let (disp_a, disp_b) = if a_e_di_qui {
+            (None, Some("b"))
+        } else {
+            (Some("a"), None)
+        };
+        let mut righe = vec![
+            riga(a(1), "t1", disp_a, flac(44_100)),
+            riga(a(2), "t2", disp_a, mp3(192)),
+        ];
+        for n in 3..=6 {
+            righe.push(riga(a(n), &format!("t{n}"), disp_a, mp3(64)));
         }
-        // E per traccia, senza album, la 3 sarebbe rimasta locale.
-        let mut senza_album = righe.clone();
-        for r in &mut senza_album {
-            r.album = None;
-            r.copia_di = None;
-        }
-        rifai(&mut senza_album);
-        assert_eq!(
-            copia_di(&senza_album, 13),
-            Some(3),
-            "il caso che la regola evita"
-        );
+        righe.push(riga(b(1), "t1", disp_b, mp3(128)));
+        righe.push(riga(b(2), "t2", disp_b, mp3(192)));
+        (righe, a(1), a(2), b(1), b(2))
     }
 
     #[test]
-    fn a_parita_di_qualita_l_album_va_da_chi_ha_piu_brani() {
-        let a = Some("album a");
+    fn nel_disco_formati_visto_da_a_il_flac_di_a_batte_l_mp3_di_b_e_la_copia_identica_resta_di_a() {
+        // A è «questo» dispositivo (`None`), B è il telefono.
+        let (mut righe, flac_a, cbr_a, mp3_b, cbr_b) = il_disco_formati(true);
+        rifai(&mut righe);
+        assert_eq!(copia_di(&righe, flac_a), None, "il FLAC di A è visibile");
+        assert_eq!(
+            copia_di(&righe, mp3_b),
+            Some(flac_a),
+            "l'MP3 a 128 di B sta dietro il FLAC"
+        );
+        assert_eq!(copia_di(&righe, cbr_a), None, "a parità, la copia di qui");
+        assert_eq!(copia_di(&righe, cbr_b), Some(cbr_a));
+        for n in 3..=6 {
+            assert_eq!(copia_di(&righe, n), None, "i brani senza doppione restano");
+        }
+    }
+
+    #[test]
+    fn nel_disco_formati_visto_da_b_il_flac_di_a_batte_l_mp3_di_b_e_la_copia_identica_resta_di_b() {
+        // Stesso disco, dall'altra parte: qui «questo» dispositivo è B, e A è
+        // l'altro.
+        let (mut righe, flac_a, cbr_a, mp3_b, cbr_b) = il_disco_formati(false);
+        rifai(&mut righe);
+        assert_eq!(copia_di(&righe, flac_a), None, "il FLAC di A è visibile");
+        assert_eq!(
+            copia_di(&righe, mp3_b),
+            Some(flac_a),
+            "l'MP3 a 128, di qui, sta dietro il FLAC di là"
+        );
+        assert_eq!(copia_di(&righe, cbr_b), None, "a parità, la copia di qui");
+        assert_eq!(copia_di(&righe, cbr_a), Some(cbr_b));
+        for n in 3..=6 {
+            assert_eq!(copia_di(&righe, 100 + n), None);
+        }
+    }
+
+    #[test]
+    fn a_parita_di_qualita_vince_la_copia_di_qui_anche_se_l_altro_ha_piu_brani() {
         let mut righe = vec![
-            riga(1, "t1", None, mp3(320), a),
-            riga(2, "t2", None, mp3(320), a),
-            riga(3, "t3", None, mp3(320), a),
-            riga(11, "t1", Some("pc"), mp3(320), a),
-            riga(12, "t2", Some("pc"), mp3(320), a),
-            riga(13, "t3", Some("pc"), mp3(320), a),
-            riga(14, "t4", Some("pc"), mp3(320), a),
+            riga(1, "t1", None, mp3(320)),
+            riga(2, "t2", None, mp3(320)),
+            riga(3, "t3", None, mp3(320)),
+            riga(11, "t1", Some("pc"), mp3(320)),
+            riga(12, "t2", Some("pc"), mp3(320)),
+            riga(13, "t3", Some("pc"), mp3(320)),
+            riga(14, "t4", Some("pc"), mp3(320)),
         ];
         rifai(&mut righe);
-        assert_eq!(
-            copia_di(&righe, 1),
-            Some(11),
-            "il remoto ha quattro brani, la locale tre"
-        );
-        assert_eq!(copia_di(&righe, 11), None);
+        for (locale, remota) in [(1, 11), (2, 12), (3, 13)] {
+            assert_eq!(
+                copia_di(&righe, locale),
+                None,
+                "traccia {locale}: la locale"
+            );
+            assert_eq!(copia_di(&righe, remota), Some(locale));
+        }
         assert_eq!(
             copia_di(&righe, 14),
             None,
@@ -536,18 +527,40 @@ mod prove {
     }
 
     #[test]
-    fn i_brani_che_il_vincitore_non_ha_si_scelgono_da_soli() {
-        // Il remoto vince l'album (flac) ma non ha la traccia 3, che c'è
-        // locale: è una voce sola e resta visibile.
-        let a = Some("album a");
+    fn un_album_di_formati_misti_non_perde_qualita_su_nessun_brano_in_comune() {
+        // Locale: tre MP3 a 320. Remoto: due FLAC e un MP3 a 128 (la traccia 3).
+        // Le tracce 1 e 2 vanno al remoto, la 3 resta di qui: l'album è una voce
+        // sola per la chiave d'album allineata, non perché si prenda tutto da un
+        // dispositivo.
         let mut righe = vec![
-            riga(1, "t1", None, mp3(320), a),
-            riga(3, "t3", None, mp3(320), a),
-            riga(11, "t1", Some("pc"), flac(44_100), a),
+            riga(1, "t1", None, mp3(320)),
+            riga(2, "t2", None, mp3(320)),
+            riga(3, "t3", None, mp3(320)),
+            riga(11, "t1", Some("pc"), flac(44_100)),
+            riga(12, "t2", Some("pc"), flac(44_100)),
+            riga(13, "t3", Some("pc"), mp3(128)),
         ];
         rifai(&mut righe);
         assert_eq!(copia_di(&righe, 1), Some(11));
-        assert_eq!(copia_di(&righe, 3), None);
+        assert_eq!(copia_di(&righe, 2), Some(12));
+        assert_eq!(copia_di(&righe, 3), None, "320 batte 128");
+        assert_eq!(copia_di(&righe, 13), Some(3));
+    }
+
+    #[test]
+    fn fra_due_dispositivi_che_non_sono_di_qui_a_parita_vince_la_chiave_piu_bassa_per_ogni_brano() {
+        // Nessuna copia di qui: lo stesso dispositivo vince tutte le tracce pari,
+        // e il disco non si spezza per caso.
+        let mut righe = Vec::new();
+        for n in 1..=3 {
+            righe.push(riga(10 + n, &format!("t{n}"), Some("bb"), mp3(320)));
+            righe.push(riga(20 + n, &format!("t{n}"), Some("aa"), mp3(320)));
+        }
+        rifai(&mut righe);
+        for n in 1..=3 {
+            assert_eq!(copia_di(&righe, 20 + n), None, "«aa» vince la traccia {n}");
+            assert_eq!(copia_di(&righe, 10 + n), Some(20 + n));
+        }
     }
 
     #[test]
@@ -555,8 +568,8 @@ mod prove {
         // Il PC aveva la copia migliore, poi la sua riga se ne va: la locale
         // torna visibile. E se arriva un flac sul telefono, la scelta si rifà.
         let mut righe = vec![
-            riga(1, "k", None, mp3(320), None),
-            riga(2, "k", Some("pc"), flac(44_100), None),
+            riga(1, "k", None, mp3(320)),
+            riga(2, "k", Some("pc"), flac(44_100)),
         ];
         rifai(&mut righe);
         assert_eq!(copia_di(&righe, 1), Some(2));
@@ -564,7 +577,7 @@ mod prove {
         let cambi = scegli(&righe);
         assert_eq!(cambi, vec![(1, None)]);
         applica(&mut righe, &cambi);
-        righe.push(riga(3, "k", None, flac(96_000), None));
+        righe.push(riga(3, "k", None, flac(96_000)));
         rifai(&mut righe);
         assert_eq!(copia_di(&righe, 1), None, "due locali restano due voci");
         assert_eq!(copia_di(&righe, 3), None);

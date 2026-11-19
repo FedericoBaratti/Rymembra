@@ -80,7 +80,7 @@ use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::scan_plan::{RemovedIdentity, match_moved_tracks};
 
 use super::convalida::MAX_RIGHE_PER_DISPOSITIVO;
-use super::doppioni::{Qualita, RigaDoppione, identita_album, scegli};
+use super::doppioni::{Qualita, RigaDoppione, scegli};
 use super::{PREFISSO, SORGENTE, percorso};
 use crate::library::condivisa::{
     BranoCatalogo, ID_PER_SECCHIO, RiassuntoCatalogo, SecchioCatalogo,
@@ -1570,17 +1570,13 @@ pub(crate) fn ricalcola_doppioni_in(tx: &Connection) -> Result<usize, AppError> 
         let mut st = tx
             .prepare(
                 "SELECT t.id, COALESCE(t.content_key, l.content_key, t.track_key), l.dispositivo,
-                        t.codec, t.sample_rate, t.bitrate, t.album, t.album_artist, t.artist,
-                        t.copia_di, t.file_size, t.duration_ms
+                        t.codec, t.sample_rate, t.bitrate, t.copia_di, t.file_size, t.duration_ms
                    FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
                   WHERE t.path IS NOT NULL AND l.sparito_ms IS NULL",
             )
             .map_err(|err| db_error(cosa, &err))?;
         let lette = st
             .query_map([], |r| {
-                let album: String = r.get(6)?;
-                let album_artist: Option<String> = r.get(7)?;
-                let artist: String = r.get(8)?;
                 Ok(RigaDoppione {
                     id: r.get(0)?,
                     gruppo: r.get(1)?,
@@ -1589,11 +1585,10 @@ pub(crate) fn ricalcola_doppioni_in(tx: &Connection) -> Result<usize, AppError> 
                         r.get::<_, Option<String>>(3)?.as_deref(),
                         r.get(4)?,
                         r.get(5)?,
-                        r.get(10)?,
-                        r.get(11)?,
+                        r.get(7)?,
+                        r.get(8)?,
                     ),
-                    album: identita_album(&album, album_artist.as_deref(), &artist),
-                    copia_di: r.get(9)?,
+                    copia_di: r.get(6)?,
                 })
             })
             .map_err(|err| db_error(cosa, &err))?;
