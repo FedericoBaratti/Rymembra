@@ -1222,12 +1222,15 @@ constraint is stated explicitly in the terms of use.
     core by itself — the library, the player, the car’s session, the link to
     your PCs — without opening the app; when you open it, it joins that core.
     The notification says «Rymembra is starting» until the core is up, and
-    «Rymembra is resting» only if it does not start. Only the core starts: the
-    backup, the sync, the enrichment, the analysis, the folder watch and the
-    update check wait for the app, and a file in a cloud folder plays only
-    after the app has been opened once. Whether Google Play accepts this
-    service type for linking to PCs over the internet is not settled, and the
-    battery cost is not measured.
+    «Rymembra is resting» only if it does not start — the library could not
+    be opened, say — and then opening the app starts it again; if it falls
+    over halfway, or the library still will not open, the notification says
+    so and asks you to force stop Rymembra and open it again. Only the core
+    starts: the backup, the sync, the enrichment, the analysis, the folder
+    watch and the update check wait for the app, and a file in a cloud folder
+    plays only after the app has been opened once. Whether Google Play accepts
+    this service type for linking to PCs over the internet is not settled, and
+    the battery cost is not measured.
   - **The screen** stays upright: the phone interface is locked to portrait
     in this version. The guided tour of the computer is not offered on the
     phone.
