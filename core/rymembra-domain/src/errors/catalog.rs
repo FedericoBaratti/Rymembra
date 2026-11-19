@@ -252,6 +252,22 @@ catalogo! {
     /// Non si ritenta presto: quasi sempre è chi pubblica, e il controllo
     /// dopo lo rivede da sé.
     NetReleaseMissing = "net.releaseMissing", Net, Warning, Never, None, { service: Option<String> };
+    /// L'aggiornamento scaricato non è firmato con la chiave di Rymembra, e non
+    /// si installa: la firma non torna, è di un'altra versione, o non si legge.
+    ///
+    /// Era [`ErrorCode::InternalUnexpected`] — «qualcosa è andato storto in un
+    /// modo che non era previsto» — per un caso previsto, con una frase vera da
+    /// dire (collaudo in Windows Sandbox, D3). Succede con un pacchetto cambiato
+    /// per strada, con una release pubblicata male, o in sviluppo con una build
+    /// firmata con un'altra chiave. Vale sul computer (`tauri-plugin-updater`) e
+    /// sul telefono (`rilasci::verifica_la_firma`).
+    ///
+    /// Mai ritentabile da sé: la stessa firma darebbe lo stesso rifiuto, e un
+    /// pacchetto rifiutato non si riprova a ripetizione. A riprovare, più tardi,
+    /// o a scaricarlo dal sito, è chi legge — lo dice la frase. Non è
+    /// [`ErrorCode::NetBadSchema`]: là è la risposta del server a non avere la
+    /// forma attesa, qui il pacchetto è arrivato e **non è quello firmato**.
+    UpdateSignatureInvalid = "update.signatureInvalid", Net, Warning, Never, None;
     /// Interruttore aperto: il servizio ha fallito troppe volte di seguito.
     NetCircuitOpen = "net.circuitOpen", Net, Warning, Always, None, { service: String, retry_after_ms: Option<u64> };
     /// Android non lascia vedere la rete di casa: da Android 17 serve il
