@@ -535,7 +535,9 @@ mod prove {
             "chiusura.rs",
             "chiusura_scritto",
             "lo stesso `Mutex` di `chiusura_da_scrivere`, poi `finestra.close()` o \
-             `app.exit`, che sono messaggi al ciclo degli eventi",
+             `esci_adesso`: due bandiere atomiche (`aggiornamenti::uscita_voluta`, \
+             `spegnimento::chiedi`) e `app.exit`, che manda un messaggio al ciclo \
+             degli eventi senza aspettarlo",
         ),
         (
             "ia.rs",
@@ -600,7 +602,8 @@ mod prove {
         (
             "lib.rs",
             "pronto",
-            "la finestra, più una bandiera e un `send` senza limite (`aggiornamenti::finestra_pronta`)",
+            "la finestra, più uno `swap` atomico (`COMPARSA.prendi`) e una bandiera \
+             con un `send` senza limite (`aggiornamenti::finestra_pronta`)",
         ),
         ("lib.rs", "finestra_mostra", "la finestra"),
         (
