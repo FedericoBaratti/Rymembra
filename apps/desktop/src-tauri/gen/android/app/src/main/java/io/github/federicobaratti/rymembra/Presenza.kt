@@ -442,8 +442,13 @@ class Presenza : Service() {
      * notifica apre l'app, che il nucleo lo avvia da sé.
      */
     private fun titolo(contesto: Context): String {
-      if (Ponte.nucleoNonParte) return contesto.getString(R.string.presenza_titolo_riposo)
-      if (!Nucleo.pronto) return contesto.getString(R.string.presenza_titolo_avvio)
+      // Il nucleo che c'è vince su un tentativo fallito di prima: l'attività può
+      // averlo avviato dopo che il servizio non c'era riuscito.
+      if (!Nucleo.pronto) {
+        return contesto.getString(
+          if (Ponte.nucleoNonParte) R.string.presenza_titolo_riposo else R.string.presenza_titolo_avvio,
+        )
+      }
       val nomi = collegati
       return when (nomi.size) {
         0 -> contesto.getString(R.string.presenza_titolo)
@@ -533,7 +538,7 @@ class Presenza : Service() {
             spegni,
           ).build(),
         )
-      if (Ponte.nucleoNonParte) {
+      if (Ponte.nucleoNonParte && !Nucleo.pronto) {
         costruttore.setContentText(contesto.getString(R.string.presenza_testo_riposo))
       }
       return costruttore.build()

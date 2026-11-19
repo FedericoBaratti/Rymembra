@@ -158,6 +158,19 @@ pub fn accogli_lontano(app: &Nucleo, da: &str, presa: Box<dyn rymembra_insieme::
         let _ = presa.shutdown(std::net::Shutdown::Both);
         return;
     };
+    // Il filo della sessione parte con la finestra: finché non c'è, nessuno legge la
+    // cassetta, e un flusso accolto lì resterebbe aperto per sempre (il nucleo che
+    // parte da un servizio non lo avvia, vedi `avvia_il_nucleo`). Si chiude subito,
+    // come con la rete spenta: chi vuole sentire insieme riprova.
+    if stato
+        .cassetta
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_some()
+    {
+        let _ = presa.shutdown(std::net::Shutdown::Both);
+        return;
+    }
     if let Err(rifiutata) = stato.posta.send(Posta::Accogli {
         presa,
         dove: rymembra_insieme::Dove::Lontano(da.to_owned()),
@@ -753,6 +766,35 @@ pub async fn insieme_calibra(app: Nucleo, attiva: bool) -> Esito<()> {
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    /// Un flusso che arriva dal collegamento mentre il filo della sessione non è
+    /// partito — il nucleo che parte da un servizio, prima della finestra — si
+    /// chiude subito: nessuno legge la cassetta, e resterebbe aperto per sempre.
+    #[test]
+    fn un_flusso_accolto_senza_il_filo_si_chiude_invece_di_aspettare() {
+        let sorgente = include_str!("mod.rs");
+        let da = sorgente
+            .find("pub fn accogli_lontano(")
+            .expect("accogli_lontano");
+        let corpo = &sorgente[da..];
+        let corpo = &corpo[..corpo
+            .find(
+                "
+}
+",
+            )
+            .unwrap_or(corpo.len())];
+        let controllo = corpo.find(".cassetta");
+        let invio = corpo.find("stato.posta.send(");
+        assert!(
+            controllo.is_some() && controllo < invio,
+            "il flusso si accoda prima di sapere se il filo c'è"
+        );
+        assert!(
+            corpo.matches("shutdown(std::net::Shutdown::Both)").count() >= 3,
+            "ogni strada che non accoda chiude la presa"
+        );
+    }
 
     /// Il file di una copertina di sessione non si scrive sotto il lucchetto
     /// delle copertine (l'handler di `rymembra-cover` lo prende sul filo della

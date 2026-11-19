@@ -497,6 +497,21 @@ test("il servizio avvia il nucleo da sé, e l'attività toglie il contesto del s
   assert.match(ponte, /check\(Looper\.myLooper\(\) == Looper\.getMainLooper\(\)\)/);
   assert.match(ponte, /if \(attivitaGiaNata \|\| nucleoAvviatoDalServizio\) return/);
   assert.match(ponte, /avviaNucleo\(applicazione, applicazione\.dataDir\.absolutePath, true\)/);
+  // Il rilascio non dipende dalla riuscita dell'avvio: se Rust ha messo il contesto e
+  // poi la chiamata è fallita, la prima attività deve rilasciarlo lo stesso, o
+  // abortisce in `Rust.onCreate`. Il flag si alza dopo il caricamento e prima della
+  // chiamata che può metterlo.
+  const carica = ponte.indexOf('System.loadLibrary("rymembra_lib")');
+  const alza = ponte.indexOf("nativaDelServizio = true");
+  const chiama = ponte.indexOf("avviaNucleo(applicazione, applicazione.dataDir");
+  assert.ok(carica > 0 && carica < alza && alza < chiama, "il flag della libreria nativa si alza fra il caricamento e la chiamata");
+  assert.match(ponte, /if \(!nativaDelServizio\) return\s+rilasciaIlContestoDelServizio\(\)/);
+  assert.match(ponte, /if \(nativaDelServizio\) contestoDiTaoPronto\(\)/);
+  assert.doesNotMatch(
+    /fun preparaLAttivita\(\)[\s\S]*?\n  }\n/.exec(ponte)?.[0] ?? "",
+    /nucleoAvviatoDalServizio/,
+    "il rilascio dipende dalla riuscita dell'avvio",
+  );
 
   const attivita = kotlin("MainActivity.kt");
   const prepara = attivita.indexOf("Ponte.preparaLAttivita()");
@@ -514,8 +529,14 @@ test("la sveglia dell'auto avvia il nucleo da qui, e non apre più l'attività",
   assert.doesNotMatch(kotlin("MainActivity.kt"), /Nucleo\.SFONDO|moveTaskToBack\(true\)\s*\n\s*}\s*\n\s*cercaDaIntento/);
   // La notifica dice la verità: si sta avviando finché il nucleo non c'è.
   const presenza = kotlin("Presenza.kt");
-  assert.match(presenza, /if \(!Nucleo\.pronto\) return contesto\.getString\(R\.string\.presenza_titolo_avvio\)/);
+  // E il nucleo che c'è vince su un tentativo fallito di prima.
+  const titolo = /private fun titolo\([\s\S]*?\n    }\n/.exec(presenza)?.[0] ?? "";
+  assert.match(titolo, /if \(!Nucleo\.pronto\) \{[\s\S]*?presenza_titolo_riposo else R\.string\.presenza_titolo_avvio/);
   assert.match(kotlin("Nucleo.kt"), /Presenza\.rinfresca\(contesto\)/);
+  assert.match(kotlin("Nucleo.kt"), /Ponte\.segnaNucleoNonParte\(false\)/);
+  // Rust dice a Kotlin che il nucleo non è partito, e Kotlin lo mette sulla notifica.
+  assert.match(kotlin("Ponte.kt"), /"nucleo\.nonParte" -> \{\s*segnaNucleoNonParte\(true\)\s*Presenza\.rinfresca\(contesto\(\)\)/);
+  assert.match(leggi("../rymembra-android/src/sistema.rs"), /chiama\("nucleo\.nonParte", &\(\)\)/);
 });
 
 test("le funzioni native di Ponte tengono il loro nome nella build di rilascio", () => {

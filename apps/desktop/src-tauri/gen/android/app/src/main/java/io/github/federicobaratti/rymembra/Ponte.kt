@@ -96,12 +96,29 @@ object Ponte {
    */
   private var attivitaGiaNata = false
 
-  /** Il servizio ha già fatto entrare Rust: una volta sola per processo. Filo principale. */
+  /** Il servizio ha già fatto entrare Rust, e l'avvio è riuscito: una volta sola per processo. Filo principale. */
   private var nucleoAvviatoDalServizio = false
+
+  /**
+   * La libreria nativa è stata caricata dal servizio, e Rust **può** aver messo
+   * `ndk-context`: si alza prima della chiamata che lo mette, e non si abbassa. È
+   * questo, e non la riuscita dell'avvio, a decidere se l'attività deve rilasciare
+   * il contesto: se la chiamata fallisce dopo che Rust l'ha messo (il riferimento
+   * globale della classe, il filo che non parte), il contesto del servizio resta, e
+   * una prima attività che non lo rilasciasse abortirebbe il processo in
+   * `Rust.onCreate`. Il rilascio, in Rust, non fa niente se non c'è niente da
+   * rilasciare. Filo principale.
+   */
+  private var nativaDelServizio = false
 
   /** L'avvio dal servizio è fallito: il nucleo non c'è, e lo dice la notifica. */
   @Volatile var nucleoNonParte = false
     private set
+
+  /** Rust dice che il nucleo non è partito (`nucleo.nonParte`), o che adesso c'è ([Nucleo.pronta]). */
+  fun segnaNucleoNonParte(valore: Boolean) {
+    nucleoNonParte = valore
+  }
 
   /**
    * Avvia il nucleo Rust da un servizio, senza attività: la libreria nativa, il
@@ -117,6 +134,7 @@ object Ponte {
     if (attivitaGiaNata || nucleoAvviatoDalServizio) return
     try {
       System.loadLibrary("rymembra_lib")
+      nativaDelServizio = true
       // Come farebbe l'attività, ma col contesto dell'applicazione: i comandi che
       // non vogliono un'attività (`sistema.cartellaCache`, la sessione, i segreti)
       // rispondono già.
@@ -140,13 +158,13 @@ object Ponte {
   fun preparaLAttivita() {
     if (attivitaGiaNata) return
     attivitaGiaNata = true
-    if (!nucleoAvviatoDalServizio) return
+    if (!nativaDelServizio) return
     rilasciaIlContestoDelServizio()
   }
 
   /** Dall'attività, dopo `super.onCreate`: se il contesto era stato rilasciato, `tao` lo ha rimesso. */
   fun attivitaNata() {
-    if (nucleoAvviatoDalServizio) contestoDiTaoPronto()
+    if (nativaDelServizio) contestoDiTaoPronto()
   }
 
   private fun contesto(): Context = contesto ?: error("il ponte non è ancora agganciato")
@@ -229,6 +247,13 @@ object Ponte {
         Nucleo.pronta(contesto(), a.getString("copertine"), a.optString("lontane", "").ifEmpty { null }).let { null }
       "sessione.errore" -> Sessione.errore(contesto(), a.optString("codice")).let { null }
       "sessione.libreria" -> Sessione.nucleoPronto().let { null }
+      // Il nucleo avviato dal servizio non è partito (la libreria non si apre, o è
+      // caduto): la notifica del sottofondo non dice «si sta avviando» per sempre.
+      "nucleo.nonParte" -> {
+        segnaNucleoNonParte(true)
+        Presenza.rinfresca(contesto())
+        null
+      }
 
       "auto.richiesta" -> Biblioteca.prossimaRichiesta(a.optLong("entroMs", 5_000))
       "auto.risposta" -> Biblioteca.risposta(a).let { null }

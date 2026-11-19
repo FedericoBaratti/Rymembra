@@ -730,6 +730,13 @@ fn avvia_dal_servizio(dati: PathBuf) {
         nota!("[avvio] il nucleo lo avvia già l'attività: il servizio non fa niente");
         return;
     }
+    // **Subito** dopo aver reclamato, prima di ogni passo che può cadere: comunque
+    // finisca questa funzione — anche con un panico — l'avvio si chiude, e la
+    // finestra che nasce dopo e aspetta `dopo_l_avvio` non aspetta per sempre.
+    let mut fine = FineDellAvvio {
+        nucleo: nucleo.clone(),
+        riuscito: false,
+    };
     let scelta = match cartella_dati_da(|| Ok::<_, std::convert::Infallible>(dati)) {
         Ok(scelta) => scelta,
         Err(mai) => match mai {},
@@ -752,6 +759,7 @@ fn avvia_dal_servizio(dati: PathBuf) {
             stato.apri_il_cancello();
             if stato.cartella_dati().is_some() {
                 avvia_il_nucleo(&nucleo);
+                fine.riuscito = true;
             } else {
                 // Senza libreria il nucleo non ha niente da servire: l'attività, se
                 // nasce, mostra l'errore.
@@ -760,7 +768,28 @@ fn avvia_dal_servizio(dati: PathBuf) {
         }
         Err(errore) => annota_il_rifiuto(&errore),
     }
-    nucleo.avvio_finito();
+}
+
+/// Chiude l'avvio del nucleo avviato da un servizio, comunque finisca: vedi
+/// [`avvia_dal_servizio`]. Se il nucleo non è partito — la libreria non si è
+/// aperta, o un panico — lo dice anche a Kotlin, che altrimenti lascerebbe la
+/// notifica del sottofondo su «si sta avviando» per sempre.
+#[cfg(target_os = "android")]
+struct FineDellAvvio {
+    nucleo: Nucleo,
+    riuscito: bool,
+}
+
+#[cfg(target_os = "android")]
+impl Drop for FineDellAvvio {
+    fn drop(&mut self) {
+        if (!self.riuscito || std::thread::panicking())
+            && let Err(err) = rymembra_android::sistema::nucleo_non_parte()
+        {
+            nota!("[avvio] Kotlin non sa che il nucleo non è partito: {err}");
+        }
+        self.nucleo.avvio_finito();
+    }
 }
 
 // La porta da cui Kotlin entra in Rust per avviare il nucleo da un servizio: una
@@ -2788,12 +2817,32 @@ mod prove {
         let nucleo = servizio
             .find("avvia_il_nucleo(&nucleo)")
             .expect("il servizio non avvia il nucleo");
-        let fine = servizio
-            .find("nucleo.avvio_finito()")
-            .expect("il servizio non dice di aver finito");
+        // L'avvio si chiude comunque finisca la funzione, anche con un panico: una
+        // guardia che lo chiude nel `Drop`, creata **subito** dopo il reclamo e prima
+        // di ogni passo che può cadere. Senza, la finestra che nasce dopo aspetta
+        // `dopo_l_avvio` per sempre e resta su «Apro la libreria…».
+        let guardia = servizio
+            .find("FineDellAvvio {")
+            .expect("il servizio non ha la guardia che chiude l'avvio");
+        let primo_passo = servizio
+            .find("cartella_dati_da(")
+            .expect("il servizio non calcola le cartelle");
         assert!(
-            processo < reclama && reclama < nucleo && nucleo < fine,
-            "l'ordine del servizio non è processo, reclamo, nucleo, fine"
+            processo < reclama
+                && reclama < guardia
+                && guardia < primo_passo
+                && primo_passo < nucleo,
+            "l'ordine del servizio non è processo, reclamo, guardia, passi, nucleo"
+        );
+        assert!(
+            !servizio.contains("nucleo.avvio_finito()"),
+            "l'avvio si chiude a mano: un panico lo salterebbe"
+        );
+        let guardia = corpo_di("impl Drop for FineDellAvvio {");
+        assert!(
+            guardia.contains("self.nucleo.avvio_finito()")
+                && guardia.contains("rymembra_android::sistema::nucleo_non_parte()"),
+            "la guardia non chiude l'avvio e non avvisa Kotlin se il nucleo non è partito"
         );
         // I fili del nucleo aspettano il cancello della libreria (`con_libreria` →
         // `aspetta_l_apertura`): senza una finestra che lo apra dopo, lo apre il
