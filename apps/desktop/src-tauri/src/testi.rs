@@ -253,27 +253,28 @@ fn testo_di(
 /// # Errori
 ///
 /// `library.trackNotFound`, `db.queryFailed`.
-#[tauri::command(async)]
-pub fn testo_scarto(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    id: i64,
-    scarto_ms: i32,
-) -> Esito<()> {
+#[tauri::command]
+pub async fn testo_scarto(app: tauri::AppHandle, id: i64, scarto_ms: i32) -> Esito<()> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
-    let esito = con_libreria(&stato, |libreria| {
-        let brano = testi::brano(&libreria.connection, id)?;
-        testi::imposta_scarto(&libreria.connection, &brano.track_key, scarto_ms)?;
-        // Per un brano di un altro dispositivo la correzione è sua: qui resta la
-        // copia, e a lui va dalla posta.
-        al_proprietario(&libreria.connection, &brano, &Scrittura::Scarto(scarto_ms))
-    })
-    .map(|da_svegliare| svegliali(&app, da_svegliare))
-    .map_err(errore);
-    // Come `preferito` e `valutazione`: è una decisione di chi ascolta, e va
-    // dove vanno le altre.
-    crate::nuvola::se_riuscito(&app, esito)
+    // Come `preferito` e `valutazione`: un valore dove l'ultimo vince, sulla
+    // corsia della libreria.
+    crate::corsia::LIBRERIA
+        .comanda("scarto del testo", move || {
+            let stato = crate::disparte::stato_di::<Stato>(&app)?;
+            let esito = con_libreria(&stato, |libreria| {
+                let brano = testi::brano(&libreria.connection, id)?;
+                testi::imposta_scarto(&libreria.connection, &brano.track_key, scarto_ms)?;
+                // Per un brano di un altro dispositivo la correzione è sua: qui resta la
+                // copia, e a lui va dalla posta.
+                al_proprietario(&libreria.connection, &brano, &Scrittura::Scarto(scarto_ms))
+            })
+            .map(|da_svegliare| svegliali(&app, da_svegliare))
+            .map_err(errore);
+            // È una decisione di chi ascolta, e va dove vanno le altre.
+            crate::nuvola::se_riuscito(&app, esito)
+        })
+        .await
 }
 
 /// Un gesto dato al testo di un brano di un altro dispositivo va in posta al suo

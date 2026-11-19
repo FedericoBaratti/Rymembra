@@ -1031,11 +1031,11 @@ fn fai(app: &AppHandle, azione: &Azione) -> Option<String> {
         // usa: una voce che nel frattempo non c'è più non si suona.
         Passo::Vai(uid) => dal_ponte(ponte::suona_voce(app, uid).map(|_| ())),
         Passo::Togli(uid) => dal_ponte(ponte::togli_voci(app, &[uid])),
-        Passo::Pausa => dalla_finestra(r::pausa(app.clone(), stato)),
+        Passo::Pausa => dalla_finestra(r::pausa_ora(app.clone(), stato)),
         Passo::Riprendi => dalla_finestra(r::riprendi_ora(app.clone(), stato)),
         Passo::Prossimo => dalla_finestra(r::prossimo_ora(app.clone(), stato)),
         Passo::Precedente => dalla_finestra(r::precedente_ora(app.clone(), stato)),
-        Passo::VaiA(ms) => dalla_finestra(r::vai_a(app.clone(), stato, ms)),
+        Passo::VaiA(ms) => dalla_finestra(r::vai_a_ora(app.clone(), stato, ms)),
         // Col brano che l'istantanea ha in `da`: se la coda cambia fra
         // l'istantanea e il lucchetto, non si sposta un'altra voce (R04-4).
         Passo::Riordina { da, a } => dalla_finestra(r::coda_riordina_ora(

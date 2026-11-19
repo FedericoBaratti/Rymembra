@@ -93,9 +93,11 @@ use crate::spegnimento::Emette as _;
 use rymembra_app::settings;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager as _, State};
+use tauri::{AppHandle, Manager as _};
 use tauri_plugin_updater::{Update, Updater, UpdaterExt as _};
 
+use crate::corsia::LIBRERIA;
+use crate::disparte::{comanda, stato_di};
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
@@ -528,12 +530,13 @@ pub struct AvanzamentoIpc {
 ///
 /// `db.queryFailed` se il database non risponde.
 #[tauri::command]
-pub fn aggiornamenti_stato(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-) -> Esito<StatoAggiornamentiIpc> {
-    stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+pub async fn aggiornamenti_stato(app: AppHandle) -> Esito<StatoAggiornamentiIpc> {
+    comanda("stato degli aggiornamenti", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+        stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+    })
+    .await
 }
 
 /// Accende o spegne il controllo periodico.
@@ -551,32 +554,34 @@ pub fn aggiornamenti_stato(
 ///
 /// `db.queryFailed` se la scrittura fallisce.
 #[tauri::command]
-pub fn aggiornamenti_attivo(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-    attivo: bool,
-) -> Esito<StatoAggiornamentiIpc> {
-    con_libreria(&stato, |libreria| {
-        settings::write(
-            &libreria.connection,
-            CHIAVE_ATTIVO,
-            if attivo { "1" } else { "0" },
-        )
-    })
-    .map_err(errore)?;
-    if attivo {
-        let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
-    } else {
-        butta(&aggiornamenti.trovato, &aggiornamenti.generazione);
-        // Anche il pacchetto già scaricato: chi ha detto di non voler essere
-        // avvisato non vuole nemmeno un installer che aspetta di partire.
-        scarta_pronto(&aggiornamenti);
-        azzera_errore(&aggiornamenti);
-    }
-    // Anche a chi non ha chiesto: vedi `riferisci`.
-    riferisci(&app);
-    stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+pub async fn aggiornamenti_attivo(app: AppHandle, attivo: bool) -> Esito<StatoAggiornamentiIpc> {
+    // Sulla corsia della libreria: un interruttore dove l'ultimo vince.
+    LIBRERIA
+        .comanda("aggiornamenti attivi", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+            con_libreria(&stato, |libreria| {
+                settings::write(
+                    &libreria.connection,
+                    CHIAVE_ATTIVO,
+                    if attivo { "1" } else { "0" },
+                )
+            })
+            .map_err(errore)?;
+            if attivo {
+                let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
+            } else {
+                butta(&aggiornamenti.trovato, &aggiornamenti.generazione);
+                // Anche il pacchetto già scaricato: chi ha detto di non voler essere
+                // avvisato non vuole nemmeno un installer che aspetta di partire.
+                scarta_pronto(&aggiornamenti);
+                azzera_errore(&aggiornamenti);
+            }
+            // Anche a chi non ha chiesto: vedi `riferisci`.
+            riferisci(&app);
+            stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+        })
+        .await
 }
 
 /// Controlla adesso, senza aspettare il turno di mezz'ora.
@@ -592,13 +597,14 @@ pub fn aggiornamenti_attivo(
 ///
 /// `db.queryFailed` se il database non risponde.
 #[tauri::command]
-pub fn aggiornamenti_adesso(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-) -> Esito<StatoAggiornamentiIpc> {
-    let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
-    stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+pub async fn aggiornamenti_adesso(app: AppHandle) -> Esito<StatoAggiornamentiIpc> {
+    comanda("controllo degli aggiornamenti", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+        let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
+        stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+    })
+    .await
 }
 
 /// Dimentica questa versione finché non ne esce un'altra.
@@ -611,30 +617,31 @@ pub fn aggiornamenti_adesso(
 ///
 /// `db.queryFailed` se la scrittura fallisce.
 #[tauri::command]
-pub fn aggiornamenti_salta(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-    versione: String,
-) -> Esito<StatoAggiornamentiIpc> {
-    con_libreria(&stato, |libreria| {
-        settings::write(&libreria.connection, CHIAVE_SALTATA, &versione)
-    })
-    .map_err(errore)?;
-    // Saltare una versione è non volerla: se il suo pacchetto aspettava la
-    // chiusura, se ne va.
-    let aspetta_questa = aggiornamenti
-        .pronto
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .is_some_and(|pronto| pronto.aggiornamento.version == versione);
-    if aspetta_questa {
-        scarta_pronto(&aggiornamenti);
-    }
-    // Anche a chi non ha chiesto: vedi `riferisci`.
-    riferisci(&app);
-    stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+pub async fn aggiornamenti_salta(app: AppHandle, versione: String) -> Esito<StatoAggiornamentiIpc> {
+    LIBRERIA
+        .comanda("versione saltata", move || {
+            let stato = stato_di::<Stato>(&app)?;
+            let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+            con_libreria(&stato, |libreria| {
+                settings::write(&libreria.connection, CHIAVE_SALTATA, &versione)
+            })
+            .map_err(errore)?;
+            // Saltare una versione è non volerla: se il suo pacchetto aspettava la
+            // chiusura, se ne va.
+            let aspetta_questa = aggiornamenti
+                .pronto
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|pronto| pronto.aggiornamento.version == versione);
+            if aspetta_questa {
+                scarta_pronto(&aggiornamenti);
+            }
+            // Anche a chi non ha chiesto: vedi `riferisci`.
+            riferisci(&app);
+            stato_ipc(&app, &stato, &aggiornamenti).map_err(errore)
+        })
+        .await
 }
 
 /// Scarica l'aggiornamento trovato, ne verifica la firma e lo installa — adesso,
@@ -660,11 +667,16 @@ pub fn aggiornamenti_salta(
 /// già uno in corso, o se si chiede l'installazione alla chiusura su una copia
 /// del Store.
 #[tauri::command]
-pub fn aggiornamenti_installa(
-    app: AppHandle,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-    quando: Quando,
-) -> Esito<()> {
+pub async fn aggiornamenti_installa(app: AppHandle, quando: Quando) -> Esito<()> {
+    comanda("installazione dell'aggiornamento", move || {
+        installa_ora(&app, quando)
+    })
+    .await
+}
+
+/// Il corpo di [`aggiornamenti_installa`], sul pool bloccante.
+fn installa_ora(app: &AppHandle, quando: Quando) -> Esito<()> {
+    let aggiornamenti = stato_di::<StatoAggiornamenti>(app)?;
     if quando == Quando::AllaChiusura && gestita_dallo_store() {
         return Err(errore(AppError::new(ErrorCode::InternalAborted {
             what: Some("sulla copia del Microsoft Store non si installa alla chiusura".to_owned()),
@@ -720,7 +732,7 @@ pub fn aggiornamenti_installa(
             what: Some("nessun aggiornamento da installare".to_owned()),
         })));
     };
-    riferisci(&app);
+    riferisci(app);
 
     let suo = app.clone();
     let avviato = std::thread::Builder::new()
@@ -741,7 +753,7 @@ pub fn aggiornamenti_installa(
         // rilascio è suo — vedi `scarica_e_installa`.
         aggiornamenti.installazione.store(false, Ordering::Release);
         nota!("[aggiornamenti] il filo dell'installazione non è partito: {err}");
-        riferisci(&app);
+        riferisci(app);
         return Err(errore(
             AppError::new(ErrorCode::InternalUnexpected {
                 detail: Some("il filo dell'installazione non è partito".to_owned()),
@@ -764,16 +776,17 @@ pub fn aggiornamenti_installa(
 /// Dopo che lo scaricamento è finito non ferma più niente: l'installer è già
 /// partito, e da lì non si torna indietro.
 #[tauri::command]
-pub fn aggiornamenti_annulla(
-    app: AppHandle,
-    aggiornamenti: State<'_, StatoAggiornamenti>,
-) -> Esito<()> {
-    if aggiornamenti.installazione.load(Ordering::Acquire) {
-        aggiornamenti.annulla.store(true, Ordering::Release);
-    } else if scarta_pronto(&aggiornamenti) {
-        riferisci(&app);
-    }
-    Ok(())
+pub async fn aggiornamenti_annulla(app: AppHandle) -> Esito<()> {
+    comanda("annullo dell'aggiornamento", move || {
+        let aggiornamenti = stato_di::<StatoAggiornamenti>(&app)?;
+        if aggiornamenti.installazione.load(Ordering::Acquire) {
+            aggiornamenti.annulla.store(true, Ordering::Release);
+        } else if scarta_pronto(&aggiornamenti) {
+            riferisci(&app);
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// Butta il pacchetto in attesa, se c'è. `true` se c'era.
@@ -1631,7 +1644,7 @@ fn fermare_la_musica(app: &AppHandle) {
     // aggiornamento che riguarda solo questo PC.
     crate::insieme::ferma(app);
     let lettore = app.state::<crate::riproduzione::StatoLettore>();
-    let _ = crate::riproduzione::pausa(app.clone(), lettore);
+    let _ = crate::riproduzione::pausa_ora(app.clone(), lettore);
 }
 
 /// Manda alla finestra lo stato aggiornato.
@@ -2496,9 +2509,9 @@ mod prove {
     #[test]
     fn il_pacchetto_in_attesa_se_ne_va_con_chi_lo_rifiuta() {
         for firma in [
-            "pub fn aggiornamenti_attivo(",
-            "pub fn aggiornamenti_salta(",
-            "pub fn aggiornamenti_annulla(",
+            "pub async fn aggiornamenti_attivo(",
+            "pub async fn aggiornamenti_salta(",
+            "pub async fn aggiornamenti_annulla(",
         ] {
             assert!(
                 corpo_di(firma).contains("pronto"),
@@ -2511,7 +2524,7 @@ mod prove {
     /// Il Store non ha niente da installare alla chiusura: il comando lo dice.
     #[test]
     fn alla_chiusura_non_c_e_sulla_copia_del_store() {
-        assert!(corpo_di("pub fn aggiornamenti_installa(").contains("gestita_dallo_store()"));
+        assert!(corpo_di("fn installa_ora(").contains("gestita_dallo_store()"));
     }
 
     /// Il dialogo dice, in due lingue, che Rymembra si chiude, e porta la

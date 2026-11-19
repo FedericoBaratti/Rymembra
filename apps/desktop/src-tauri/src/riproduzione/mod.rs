@@ -1487,19 +1487,24 @@ fn con_lettore<T>(
 /// # Perché una scadenza, e solo lì
 ///
 /// Perché i comandi scritti senza `(async)` — `pausa`, `vai_a`, `volume`,
-/// l'equalizzatore — girano sul filo che disegna la finestra, e restano
+/// l'equalizzatore — giravano sul filo che disegna la finestra, e restavano
 /// sincroni apposta: arrivano a raffica da un cursore sotto il dito, e sul
 /// filo della finestra si eseguono nell'ordine in cui sono partiti, cosa che
 /// su un gruppo di fili nessuno garantisce. Il prezzo era che il lucchetto lo
 /// aspettavano **senza limite**, e chi lo teneva poteva star aspettando il
 /// database: la finestra si fermava con lui, e dopo cinque secondi Windows la
-/// dichiarava morta.
+/// dichiarava morta. Su Android era peggio: il filo del ponte non ha nemmeno
+/// questo tetto, e la pagina restava ferma finché il lucchetto non si apriva.
 ///
-/// Adesso lì si rinuncia con `db.locked`, che è ritentabile e dice la verità —
-/// quando il lettore resta chiuso per secondi, è quasi sempre perché qualcuno
-/// lo tiene aspettando il database. Sugli altri fili — gli eventi, il
-/// preparatore, l'orologio, i comandi asincroni — l'attesa resta quella di
-/// sempre: lì aspettare non ferma niente che si veda.
+/// Oggi quei comandi sono `async fn` sulla corsia del lettore
+/// ([`crate::corsia::LETTORE`]): l'ordine di arrivo lo tiene la coda, e nessuno
+/// aspetta il lucchetto sul filo della pagina. La scadenza resta per chi gira
+/// ancora sul filo della finestra — i gestori degli eventi del vassoio, della
+/// chiusura, delle SMTC — e lì rinuncia con `db.locked`, che è ritentabile e
+/// dice la verità: quando il lettore resta chiuso per secondi, è quasi sempre
+/// perché qualcuno lo tiene aspettando il database. Sugli altri fili — gli
+/// eventi, il preparatore, l'orologio, i comandi asincroni, la corsia —
+/// l'attesa resta quella di sempre: lì aspettare non ferma niente che si veda.
 ///
 /// Il veleno si recupera, come ovunque in questo modulo.
 fn prendi_il_lettore(
@@ -2851,31 +2856,34 @@ fn cambia_preferenza<T, R>(
 /// Cambia anche quel che il motore ha già in canna: se si accende mentre
 /// l'ultimo brano sta suonando, il successivo va scelto **adesso**, non al
 /// prossimo cambio di traccia — che non ci sarebbe.
-#[tauri::command(async)]
-pub fn autoplay(app: tauri::AppHandle, stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
-    if let Strada::Fatto = strada(&app, &Gesto::Autoplay).map_err(errore)? {
-        return Ok(());
-    }
-    // Si rilegge quel che è stato scritto, come per la normalizzazione: se il
-    // salvataggio fallisce, l'interruttore non deve restare acceso su una
-    // scelta che non sopravvivrà alla chiusura. La scrittura fuori dal
-    // lucchetto del lettore: vedi [`cambia_preferenza`].
-    cambia_preferenza(
-        &app,
-        &stato,
-        "autoplay",
-        |libreria| {
-            playback::save_autoplay(&libreria.connection, attivo)?;
-            playback::load_autoplay(&libreria.connection)
-        },
-        |lettore, salvato| {
-            lettore.autoplay = salvato.unwrap_or(attivo);
-            prepara_prossimo(&app, lettore);
-            manda_stato(&app, lettore);
-            Ok(())
-        },
-    )
-    .map_err(errore)
+#[tauri::command]
+pub async fn autoplay(app: tauri::AppHandle, attivo: bool) -> Esito<()> {
+    col_lettore_in_disparte(app, "autoplay", move |app, stato| {
+        if let Strada::Fatto = strada(&app, &Gesto::Autoplay).map_err(errore)? {
+            return Ok(());
+        }
+        // Si rilegge quel che è stato scritto, come per la normalizzazione: se il
+        // salvataggio fallisce, l'interruttore non deve restare acceso su una
+        // scelta che non sopravvivrà alla chiusura. La scrittura fuori dal
+        // lucchetto del lettore: vedi [`cambia_preferenza`].
+        cambia_preferenza(
+            &app,
+            &stato,
+            "autoplay",
+            |libreria| {
+                playback::save_autoplay(&libreria.connection, attivo)?;
+                playback::load_autoplay(&libreria.connection)
+            },
+            |lettore, salvato| {
+                lettore.autoplay = salvato.unwrap_or(attivo);
+                prepara_prossimo(&app, lettore);
+                manda_stato(&app, lettore);
+                Ok(())
+            },
+        )
+        .map_err(errore)
+    })
+    .await
 }
 
 /// Sceglie quanto due brani si sovrappongono, in secondi. `0` la spegne.
@@ -2894,39 +2902,38 @@ pub fn autoplay(app: tauri::AppHandle, stato: State<'_, StatoLettore>, attivo: b
 /// rampe che non si sommano più a uno, cioè un salto di volume proprio nel
 /// punto in cui la dissolvenza esiste per non farne.
 ///
-/// `(async)` per la ragione scritta su `suono::normalizzazione`: si scrive sul
-/// database, e sul filo della finestra una libreria occupata fermava la
-/// finestra. Il lucchetto del lettore, invece, non aspetta più la scrittura:
-/// vedi [`cambia_preferenza`].
-#[tauri::command(async)]
-pub fn dissolvenza(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    secondi: u64,
-) -> Esito<()> {
-    // Riletta invece che ripetuta, come per l'autoplay: `save_crossfade` taglia
-    // al massimo, e senza rileggere il cursore resterebbe su un valore che il
-    // database ha rifiutato.
-    cambia_preferenza(
-        &app,
-        &stato,
-        "dissolvenza",
-        |libreria| {
-            playback::save_crossfade(&libreria.connection, secondi)?;
-            playback::load_crossfade(&libreria.connection)
-        },
-        |lettore, salvato| {
-            let salvato = salvato.unwrap_or(secondi.min(playback::CROSSFADE_MASSIMO_S));
-            lettore.dissolvenza_s = salvato;
-            // Quella che vale adesso: in sessione resta zero, e la scelta
-            // appena scritta torna al motore all'uscita. Vedi
-            // `insieme::dissolvenza_ms`.
-            lettore.motore.dissolvenza(insieme::dissolvenza_ms(lettore));
-            manda_stato(&app, lettore);
-            Ok(())
-        },
-    )
-    .map_err(errore)
+/// Sul pool bloccante per la ragione scritta su `suono::normalizzazione`: si
+/// scrive sul database, e sul filo della finestra una libreria occupata
+/// fermava la finestra. Il lucchetto del lettore, invece, non aspetta più la
+/// scrittura: vedi [`cambia_preferenza`].
+#[tauri::command]
+pub async fn dissolvenza(app: tauri::AppHandle, secondi: u64) -> Esito<()> {
+    col_lettore_in_disparte(app, "dissolvenza", move |app, stato| {
+        // Riletta invece che ripetuta, come per l'autoplay: `save_crossfade` taglia
+        // al massimo, e senza rileggere il cursore resterebbe su un valore che il
+        // database ha rifiutato.
+        cambia_preferenza(
+            &app,
+            &stato,
+            "dissolvenza",
+            |libreria| {
+                playback::save_crossfade(&libreria.connection, secondi)?;
+                playback::load_crossfade(&libreria.connection)
+            },
+            |lettore, salvato| {
+                let salvato = salvato.unwrap_or(secondi.min(playback::CROSSFADE_MASSIMO_S));
+                lettore.dissolvenza_s = salvato;
+                // Quella che vale adesso: in sessione resta zero, e la scelta
+                // appena scritta torna al motore all'uscita. Vedi
+                // `insieme::dissolvenza_ms`.
+                lettore.motore.dissolvenza(insieme::dissolvenza_ms(lettore));
+                manda_stato(&app, lettore);
+                Ok(())
+            },
+        )
+        .map_err(errore)
+    })
+    .await
 }
 
 /// Dichiara di quanto la catena d'uscita ritarda il suono, in millisecondi.
@@ -2967,45 +2974,52 @@ pub fn dissolvenza(
 /// descriverebbe un'altra. Per lo stesso motivo non entra in
 /// `profilo::CATALOGO`, accanto a `player.output`.
 ///
-/// `(async)`, come [`dissolvenza`].
-#[tauri::command(async)]
-pub fn latenza(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: i64) -> Esito<i64> {
-    // Il nome dell'uscita si chiede **prima** di `cambia_preferenza`, che vuole
-    // il suo lucchetto per primo e senza niente in mano. Un lettore mai aperto
-    // non ha un'uscita: si scrive la sola globale.
-    let uscita = con_lettore(&stato, |lettore| {
-        Ok(lettore.motore.dispositivo().to_owned())
+/// Sul pool bloccante, come [`dissolvenza`].
+#[tauri::command]
+pub async fn latenza(app: tauri::AppHandle, ms: i64) -> Esito<i64> {
+    col_lettore_in_disparte(app, "latenza", move |app, stato| {
+        // Il nome dell'uscita si chiede **prima** di `cambia_preferenza`, che vuole
+        // il suo lucchetto per primo e senza niente in mano. Un lettore mai aperto
+        // non ha un'uscita: si scrive la sola globale.
+        let uscita = con_lettore(&stato, |lettore| {
+            Ok(lettore.motore.dispositivo().to_owned())
+        })
+        .ok();
+        let quando_ms = adesso_ms();
+        // Riletta invece che ripetuta, come per la dissolvenza: `save_latenza`
+        // taglia, e senza rileggere il cursore resterebbe su un valore che il
+        // database ha rifiutato.
+        cambia_preferenza(
+            &app,
+            &stato,
+            "latenza",
+            |libreria| {
+                playback::dichiara_latenza(&libreria.connection, uscita.as_deref(), ms, quando_ms)
+            },
+            |lettore, salvato| {
+                let salvato = salvato.map_or_else(
+                    |_| ms.clamp(-playback::LATENZA_MASSIMA_MS, playback::LATENZA_MASSIMA_MS),
+                    |(globale, voci)| {
+                        playback::latenza_effettiva(
+                            globale,
+                            &voci,
+                            Some(lettore.motore.dispositivo()),
+                        )
+                    },
+                );
+                let prima = lettore.latenza_ms;
+                lettore.motore.latenza(salvato);
+                lettore.latenza_ms = salvato;
+                // In sessione il numero nuovo si sente subito: vedi
+                // `insieme::latenza_cambiata`.
+                insieme::latenza_cambiata(lettore, prima, salvato);
+                manda_stato(&app, lettore);
+                Ok(salvato)
+            },
+        )
+        .map_err(errore)
     })
-    .ok();
-    let quando_ms = adesso_ms();
-    // Riletta invece che ripetuta, come per la dissolvenza: `save_latenza`
-    // taglia, e senza rileggere il cursore resterebbe su un valore che il
-    // database ha rifiutato.
-    cambia_preferenza(
-        &app,
-        &stato,
-        "latenza",
-        |libreria| {
-            playback::dichiara_latenza(&libreria.connection, uscita.as_deref(), ms, quando_ms)
-        },
-        |lettore, salvato| {
-            let salvato = salvato.map_or_else(
-                |_| ms.clamp(-playback::LATENZA_MASSIMA_MS, playback::LATENZA_MASSIMA_MS),
-                |(globale, voci)| {
-                    playback::latenza_effettiva(globale, &voci, Some(lettore.motore.dispositivo()))
-                },
-            );
-            let prima = lettore.latenza_ms;
-            lettore.motore.latenza(salvato);
-            lettore.latenza_ms = salvato;
-            // In sessione il numero nuovo si sente subito: vedi
-            // `insieme::latenza_cambiata`.
-            insieme::latenza_cambiata(lettore, prima, salvato);
-            manda_stato(&app, lettore);
-            Ok(salvato)
-        },
-    )
-    .map_err(errore)
+    .await
 }
 
 // ── lo spettro ──────────────────────────────────────────────────────────────
@@ -3034,7 +3048,13 @@ pub fn latenza(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: i64) -
 /// dimenticata — farebbe lavorare la callback audio per un anello che nessuno
 /// legge.
 #[tauri::command]
-pub fn spettro(stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
+pub async fn spettro(app: tauri::AppHandle, attivo: bool) -> Esito<()> {
+    col_lettore_in_fila(app, "spettro", move |_, stato| spettro_ora(stato, attivo)).await
+}
+
+/// [`spettro`], sul posto: lo chiama anche la pagina che si ricarica
+/// (`pagina.rs`), dal suo filo.
+pub fn spettro_ora(stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
     if cfg!(mobile) {
         return Ok(());
     }
@@ -3057,11 +3077,12 @@ pub fn spettro(stato: State<'_, StatoLettore>, attivo: bool) -> Esito<()> {
 }
 
 /// Quante barre disegna la scena dello spettro.
-#[tauri::command(async)]
-pub fn spettro_bande(stato: State<'_, Stato>) -> Esito<u16> {
-    con_libreria(&stato, |libreria| {
+#[tauri::command]
+pub async fn spettro_bande(app: tauri::AppHandle) -> Esito<u16> {
+    crate::disparte::leggi_la_libreria(app, "barre dello spettro", |libreria| {
         playback::load_spettro_bande(&libreria.connection)
     })
+    .await
     .map_err(errore)
 }
 
@@ -3074,41 +3095,41 @@ pub fn spettro_bande(stato: State<'_, Stato>) -> Esito<u16> {
 /// deve vedere la linguetta che è rimasta accesa davvero — la stessa disciplina
 /// dell'equalizzatore, che rilegge quel che ha scritto invece di fidarsi di
 /// quel che è arrivato.
-#[tauri::command(async)]
-pub fn spettro_bande_scegli(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    quante: u16,
-) -> Esito<u16> {
-    let _in_fila = stato
-        .preferenze
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let stato_app = libreria_di(&app, "barre dello spettro").map_err(errore)?;
-    let rimaste = con_libreria(&stato_app, |libreria| {
-        playback::save_spettro_bande(&libreria.connection, quante)?;
-        playback::load_spettro_bande(&libreria.connection)
+#[tauri::command]
+pub async fn spettro_bande_scegli(app: tauri::AppHandle, quante: u16) -> Esito<u16> {
+    col_lettore_in_disparte(app, "barre dello spettro", move |app, stato| {
+        let _in_fila = stato
+            .preferenze
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stato_app = libreria_di(&app, "barre dello spettro").map_err(errore)?;
+        let rimaste = con_libreria(&stato_app, |libreria| {
+            playback::save_spettro_bande(&libreria.connection, quante)?;
+            playback::load_spettro_bande(&libreria.connection)
+        })
+        .map_err(errore)?;
+        stato
+            .spettro_bande
+            .store(rimaste, std::sync::atomic::Ordering::Relaxed);
+        // Il motore può non esserci — nessuna scheda audio — e la preferenza resta
+        // comunque scritta: è una scelta di disegno, e negarla perché le casse non
+        // rispondono sarebbe legare due cose che non c'entrano.
+        let _ = con_lettore(&stato, |lettore| {
+            lettore.motore.spettro_dettaglio(rimaste);
+            Ok(())
+        });
+        Ok(rimaste)
     })
-    .map_err(errore)?;
-    stato
-        .spettro_bande
-        .store(rimaste, std::sync::atomic::Ordering::Relaxed);
-    // Il motore può non esserci — nessuna scheda audio — e la preferenza resta
-    // comunque scritta: è una scelta di disegno, e negarla perché le casse non
-    // rispondono sarebbe legare due cose che non c'entrano.
-    let _ = con_lettore(&stato, |lettore| {
-        lettore.motore.spettro_dettaglio(rimaste);
-        Ok(())
-    });
-    Ok(rimaste)
+    .await
 }
 
 /// Se la scena dello spettro parte accesa.
-#[tauri::command(async)]
-pub fn spettro_visibile(stato: State<'_, Stato>) -> Esito<bool> {
-    con_libreria(&stato, |libreria| {
+#[tauri::command]
+pub async fn spettro_visibile(app: tauri::AppHandle) -> Esito<bool> {
+    crate::disparte::leggi_la_libreria(app, "spettro visibile", |libreria| {
         playback::load_spettro_visibile(&libreria.connection)
     })
+    .await
     .map_err(errore)
 }
 
@@ -3126,29 +3147,31 @@ pub fn spettro_visibile(stato: State<'_, Stato>) -> Esito<bool> {
 /// sorvegliate e skin attiva) e la sincronia tre — nessuna delle quali è
 /// questa. Chiamarlo qui vorrebbe dire un giro su Drive che non porterebbe via
 /// niente.
-#[tauri::command(async)]
-pub fn spettro_visibile_scegli(
-    stato: State<'_, Stato>,
-    lettore: State<'_, StatoLettore>,
-    acceso: bool,
-) -> Esito<bool> {
-    let _in_fila = lettore
-        .preferenze
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    con_libreria(&stato, |libreria| {
-        playback::save_spettro_visibile(&libreria.connection, acceso)?;
-        playback::load_spettro_visibile(&libreria.connection)
+#[tauri::command]
+pub async fn spettro_visibile_scegli(app: tauri::AppHandle, acceso: bool) -> Esito<bool> {
+    crate::disparte::comanda("spettro visibile", move || {
+        let stato = crate::disparte::stato_di::<Stato>(&app)?;
+        let lettore = crate::disparte::stato_di::<StatoLettore>(&app)?;
+        let _in_fila = lettore
+            .preferenze
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        con_libreria(&stato, |libreria| {
+            playback::save_spettro_visibile(&libreria.connection, acceso)?;
+            playback::load_spettro_visibile(&libreria.connection)
+        })
+        .map_err(errore)
     })
-    .map_err(errore)
+    .await
 }
 
 /// Quanto la scena dello spettro può costare a questa macchina.
-#[tauri::command(async)]
-pub fn spettro_qualita(stato: State<'_, Stato>) -> Esito<Qualita> {
-    con_libreria(&stato, |libreria| {
+#[tauri::command]
+pub async fn spettro_qualita(app: tauri::AppHandle) -> Esito<Qualita> {
+    crate::disparte::leggi_la_libreria(app, "qualità dello spettro", |libreria| {
         playback::load_spettro_qualita(&libreria.connection)
     })
+    .await
     .map_err(errore)
 }
 
@@ -3166,22 +3189,23 @@ pub fn spettro_qualita(stato: State<'_, Stato>) -> Esito<Qualita> {
 ///
 /// Come sopra: **niente `nuvola::se_riuscito`**, questa riga non sta né nel
 /// backup né nella sincronia.
-#[tauri::command(async)]
-pub fn spettro_qualita_scegli(
-    stato: State<'_, Stato>,
-    lettore: State<'_, StatoLettore>,
-    livello: String,
-) -> Esito<Qualita> {
-    let _in_fila = lettore
-        .preferenze
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let scelta = Qualita::da_nome(&livello);
-    con_libreria(&stato, |libreria| {
-        playback::save_spettro_qualita(&libreria.connection, scelta)?;
-        playback::load_spettro_qualita(&libreria.connection)
+#[tauri::command]
+pub async fn spettro_qualita_scegli(app: tauri::AppHandle, livello: String) -> Esito<Qualita> {
+    crate::disparte::comanda("qualità dello spettro", move || {
+        let stato = crate::disparte::stato_di::<Stato>(&app)?;
+        let lettore = crate::disparte::stato_di::<StatoLettore>(&app)?;
+        let _in_fila = lettore
+            .preferenze
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let scelta = Qualita::da_nome(&livello);
+        con_libreria(&stato, |libreria| {
+            playback::save_spettro_qualita(&libreria.connection, scelta)?;
+            playback::load_spettro_qualita(&libreria.connection)
+        })
+        .map_err(errore)
     })
-    .map_err(errore)
+    .await
 }
 
 // ── i dati tecnici del file ─────────────────────────────────────────────────
@@ -3191,11 +3215,12 @@ pub fn spettro_qualita_scegli(
 /// Serve all'interruttore delle Impostazioni, che è l'unico a chiederlo: le due
 /// viste che disegnano la riga non leggono questa preferenza, e la ragione sta
 /// nella carta di [`StatoRiproduzione::formato`].
-#[tauri::command(async)]
-pub fn formato_visibile(stato: State<'_, Stato>) -> Esito<bool> {
-    con_libreria(&stato, |libreria| {
+#[tauri::command]
+pub async fn formato_visibile(app: tauri::AppHandle) -> Esito<bool> {
+    crate::disparte::leggi_la_libreria(app, "formato visibile", |libreria| {
         playback::load_formato_visibile(&libreria.connection)
     })
+    .await
     .map_err(errore)
 }
 
@@ -3221,31 +3246,30 @@ pub fn formato_visibile(stato: State<'_, Stato>) -> Esito<bool> {
 /// questo modulo: il backup su Drive copia due righe di `settings` e la
 /// sincronia tre, nessuna delle quali è questa. A portarla su un altro computer
 /// ci pensa il profilo, dove la chiave è in elenco.
-#[tauri::command(async)]
-pub fn formato_visibile_scegli(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    acceso: bool,
-) -> Esito<bool> {
-    let _in_fila = stato
-        .preferenze
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let stato_app = libreria_di(&app, "formato visibile").map_err(errore)?;
-    let rimasto = con_libreria(&stato_app, |libreria| {
-        playback::save_formato_visibile(&libreria.connection, acceso)?;
-        playback::load_formato_visibile(&libreria.connection)
+#[tauri::command]
+pub async fn formato_visibile_scegli(app: tauri::AppHandle, acceso: bool) -> Esito<bool> {
+    col_lettore_in_disparte(app, "formato visibile", move |app, stato| {
+        let _in_fila = stato
+            .preferenze
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stato_app = libreria_di(&app, "formato visibile").map_err(errore)?;
+        let rimasto = con_libreria(&stato_app, |libreria| {
+            playback::save_formato_visibile(&libreria.connection, acceso)?;
+            playback::load_formato_visibile(&libreria.connection)
+        })
+        .map_err(errore)?;
+        // Il lettore può non esserci — nessuna scheda audio, o nessun brano — e la
+        // preferenza resta comunque scritta: è una scelta di cosa si legge, e
+        // negarla perché le casse non rispondono sarebbe legare due cose che non
+        // c'entrano. La stessa clemenza di `spettro_bande_scegli`.
+        let _ = con_lettore(&stato, |lettore| {
+            manda_stato(&app, lettore);
+            Ok(())
+        });
+        Ok(rimasto)
     })
-    .map_err(errore)?;
-    // Il lettore può non esserci — nessuna scheda audio, o nessun brano — e la
-    // preferenza resta comunque scritta: è una scelta di cosa si legge, e
-    // negarla perché le casse non rispondono sarebbe legare due cose che non
-    // c'entrano. La stessa clemenza di `spettro_bande_scegli`.
-    let _ = con_lettore(&stato, |lettore| {
-        manda_stato(&app, lettore);
-        Ok(())
-    });
-    Ok(rimasto)
+    .await
 }
 
 // ── la strada dei gesti, quando c'è una sessione ────────────────────────────
@@ -3347,19 +3371,57 @@ async fn col_lettore_in_disparte<T: Send + 'static>(
     nome: &'static str,
     nucleo: impl for<'a> FnOnce(tauri::AppHandle, State<'a, StatoLettore>) -> Esito<T> + Send + 'static,
 ) -> Esito<T> {
-    crate::disparte::in_disparte(nome, move || {
-        let Some(stato) = app.try_state::<StatoLettore>() else {
-            return Err(errore(
-                AppError::new(ErrorCode::InternalAborted {
-                    what: Some(nome.to_owned()),
-                })
-                .with_cause("il lettore non è più fra gli stati gestiti"),
-            ));
-        };
-        nucleo(app.clone(), stato)
-    })
-    .await
-    .map_err(errore)?
+    crate::disparte::comanda(nome, move || col_lettore(app, nome, nucleo)).await
+}
+
+/// [`col_lettore_in_disparte`], ma sulla corsia del lettore
+/// ([`crate::corsia::LETTORE`]): i comandi che arrivano a raffica da un
+/// cursore, o che scrivono uno stato dove l'ultimo vince — `volume`,
+/// `equalizzatore`, `pausa`, `vai_a`, `spettro`, `coda_svuota` — si eseguono
+/// **uno alla volta, nell'ordine in cui sono arrivati**.
+///
+/// # Perché una corsia e non il pool
+///
+/// Perché finché erano sincroni giravano sul filo della finestra, e lì
+/// l'ordine di arrivo era gratis: lo dice il commento di [`prendi_il_lettore`].
+/// Sul pool due `volume` in fila sul lucchetto del lettore si risvegliano
+/// nell'ordine che sceglie il sistema operativo, e l'ultimo valore scritto può
+/// essere quello mandato prima: il cursore tornerebbe indietro da solo
+/// (`volume.ts`, `Equalizzatore.tsx`). Vedi [`crate::corsia`].
+///
+/// # Errori
+///
+/// Come [`col_lettore_in_disparte`].
+async fn col_lettore_in_fila<T: Send + 'static>(
+    app: tauri::AppHandle,
+    nome: &'static str,
+    nucleo: impl for<'a> FnOnce(tauri::AppHandle, State<'a, StatoLettore>) -> Esito<T> + Send + 'static,
+) -> Esito<T> {
+    crate::corsia::LETTORE
+        .comanda(nome, move || col_lettore(app, nome, nucleo))
+        .await
+}
+
+/// Il nucleo di un comando del lettore, con lo stato preso dal registro.
+///
+/// Sincrona: la chiamano la chiusura sul pool ([`col_lettore_in_disparte`]) e
+/// quella sulla corsia ([`col_lettore_in_fila`]), che girano entrambe fuori dal
+/// filo della pagina. Lo stato si prende con `try_state`: lì dentro il lettore
+/// può essere già stato lasciato cadere, e la risposta giusta è un errore.
+fn col_lettore<T>(
+    app: tauri::AppHandle,
+    nome: &'static str,
+    nucleo: impl for<'a> FnOnce(tauri::AppHandle, State<'a, StatoLettore>) -> Esito<T>,
+) -> Esito<T> {
+    let Some(stato) = app.try_state::<StatoLettore>() else {
+        return Err(errore(
+            AppError::new(ErrorCode::InternalAborted {
+                what: Some(nome.to_owned()),
+            })
+            .with_cause("il lettore non è più fra gli stati gestiti"),
+        ));
+    };
+    nucleo(app.clone(), stato)
 }
 
 // ── i comandi ───────────────────────────────────────────────────────────────
@@ -3969,7 +4031,13 @@ pub(super) fn avvio_fallito(
 /// che invece è programmata. Un avvio programmato e non ancora partito si
 /// butta: vedi `insieme::dopo_una_pausa`.
 #[tauri::command]
-pub fn pausa(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
+pub async fn pausa(app: tauri::AppHandle) -> Esito<()> {
+    col_lettore_in_fila(app, "pausa", pausa_ora).await
+}
+
+/// [`pausa`], sul posto: lo chiamano i tasti multimediali, la sessione e gli
+/// altri fili, ciascuno dal suo — vedi [`col_lettore_in_disparte`].
+pub fn pausa_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Pausa).map_err(errore)? {
         return Ok(());
     }
@@ -4153,7 +4221,7 @@ pub fn alterna_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>) -> Esi
     if in_pausa {
         riprendi_ora(app, stato)
     } else {
-        pausa(app, stato)
+        pausa_ora(app, stato)
     }
 }
 
@@ -4262,16 +4330,17 @@ const fn dove_per_il_precedente(
 /// Perché i comandi del motore che svuotano l'anello — il salto, lo stop —
 /// svegliano prima il flusso, e un flusso a riposo ci mette fino a mezzo
 /// secondo a rispondere: lo dice `rymembra_play::uscita::Uscita::sveglia`. Due
-/// di quei comandi, [`vai_a`] e `coda::coda_svuota`, girano sul filo della
-/// finestra e chiedevano il risveglio **con il lucchetto del lettore in mano**:
+/// di quei comandi, [`vai_a`] e `coda::coda_svuota`, chiedevano il risveglio
+/// **con il lucchetto del lettore in mano**:
 /// per quel mezzo secondo restavano in fila gli annunci del motore, l'orologio,
 /// il preparatore. Adesso il risveglio si paga qui, a lucchetto lasciato, e il
 /// comando vero lo trova già fatto.
 ///
-/// L'ordine dei comandi non cambia: tutti e due restano sincroni, sul filo
-/// della finestra, e il secondo non parte prima che il primo abbia finito. Il
-/// filo della finestra aspetta lo stesso il risveglio — è lui a chiederlo — ma
-/// adesso aspetta da solo.
+/// L'ordine dei comandi non cambia: tutti e due stanno sulla corsia del
+/// lettore ([`crate::corsia::LETTORE`]), e il secondo non parte prima che il
+/// primo abbia finito. A aspettare il risveglio è il filo della corsia — è lui a
+/// chiederlo — e non più quello della finestra né quello del ponte di Android:
+/// la pagina non aspetta niente.
 ///
 /// Se nel frattempo il motore è stato sostituito il campanello suona a vuoto,
 /// e il comando sveglierà il motore nuovo da sé: è un caso raro, ed è il
@@ -4327,7 +4396,12 @@ const ATTESA_DEL_CAMPANELLO: Duration = Duration::from_millis(100);
 /// salto e ripresa fra un quarto di secondo, annunciata. Vedi
 /// `insieme::salta`.
 #[tauri::command]
-pub fn vai_a(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: u64) -> Esito<()> {
+pub async fn vai_a(app: tauri::AppHandle, ms: u64) -> Esito<()> {
+    col_lettore_in_fila(app, "vai a", move |app, stato| vai_a_ora(app, stato, ms)).await
+}
+
+/// [`vai_a`], sul posto: vedi [`pausa_ora`].
+pub fn vai_a_ora(app: tauri::AppHandle, stato: State<'_, StatoLettore>, ms: u64) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::VaiA { ms }).map_err(errore)? {
         return Ok(());
     }

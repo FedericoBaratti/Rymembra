@@ -19,8 +19,8 @@
 
 use rymembra_app::incerti::{self, TracciaIncerta};
 use rymembra_app::provenienza::Correzioni;
-use tauri::State;
 
+use crate::disparte::leggi_la_libreria;
 use crate::errore::{Esito, errore};
 use crate::stato::{Stato, con_libreria};
 
@@ -29,57 +29,65 @@ use crate::stato::{Stato, con_libreria};
 /// Serve alla pastiglia sul pulsante: un numero che si legge senza aprire
 /// niente, come `arricchimento_stato`.
 #[tauri::command]
-pub fn metadati_conteggio(stato: State<'_, Stato>) -> Esito<i64> {
-    con_libreria(&stato, |libreria| incerti::quanti(&libreria.connection)).map_err(errore)
+pub async fn metadati_conteggio(app: tauri::AppHandle) -> Esito<i64> {
+    leggi_la_libreria(app, "conteggio dei brani incerti", |libreria| {
+        incerti::quanti(&libreria.connection)
+    })
+    .await
+    .map_err(errore)
 }
 
 /// Una pagina di brani da guardare.
 ///
-/// `(async)`: legge fino a `limite` righe con il loro JSON di provenienza, e su
-/// una libreria appena importata da un disco esterno quelle righe sono molte.
-#[tauri::command(async)]
-pub fn metadati_incerti(
-    stato: State<'_, Stato>,
+/// Sul pool bloccante: legge fino a `limite` righe con il loro JSON di
+/// provenienza, e su una libreria appena importata da un disco esterno quelle
+/// righe sono molte.
+#[tauri::command]
+pub async fn metadati_incerti(
+    app: tauri::AppHandle,
     offset: i64,
     limite: i64,
 ) -> Esito<Vec<TracciaIncerta>> {
     let (offset, limite) = crate::comandi::pagina(offset, limite);
-    con_libreria(&stato, |libreria| {
+    leggi_la_libreria(app, "brani incerti", move |libreria| {
         incerti::elenco(&libreria.connection, offset, limite)
     })
+    .await
     .map_err(errore)
 }
 
 /// Scrive la correzione dell'utente su un brano.
 ///
-/// `(async)`: ricostruisce gli aggregati, che su una libreria grande è la parte
-/// lenta — un artista o un album appena corretti devono esistere come schede, e
-/// farlo sul filo della finestra la bloccherebbe.
-#[tauri::command(async)]
-pub fn metadati_correggi(
-    stato: State<'_, Stato>,
+/// Sul pool bloccante: ricostruisce gli aggregati, che su una libreria grande è
+/// la parte lenta — un artista o un album appena corretti devono esistere come
+/// schede, e farlo sul filo della finestra la bloccherebbe.
+#[tauri::command]
+pub async fn metadati_correggi(
+    app: tauri::AppHandle,
     id: i64,
     campi: Correzioni,
 ) -> Esito<Option<TracciaIncerta>> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
-    con_libreria(&stato, |libreria| {
+    leggi_la_libreria(app, "correzione di un brano", move |libreria| {
         incerti::correggi(&mut libreria.connection, id, &campi)?;
         incerti::uno(&libreria.connection, id)
     })
+    .await
     .map_err(errore)
 }
 
 /// «La deduzione è giusta»: si tiene quel che c'è e non se ne parla più.
 ///
-/// `(async)` per la stessa ragione di [`metadati_correggi`].
-#[tauri::command(async)]
-pub fn metadati_conferma(stato: State<'_, Stato>, id: i64) -> Esito<()> {
+/// Sul pool bloccante per la stessa ragione di [`metadati_correggi`].
+#[tauri::command]
+pub async fn metadati_conferma(app: tauri::AppHandle, id: i64) -> Esito<()> {
     // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
     let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
-    con_libreria(&stato, |libreria| {
+    leggi_la_libreria(app, "conferma di un brano", move |libreria| {
         incerti::conferma(&mut libreria.connection, id)
     })
+    .await
     .map_err(errore)
 }
 

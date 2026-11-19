@@ -352,7 +352,7 @@ mod prove {
     fn i_posti_che_aprono_o_mostrano_i_dati_passano_dalla_traduzione() {
         let manutenzione = include_str!("manutenzione.rs");
         let apri = manutenzione
-            .find("pub fn manutenzione_apri_cartella_dati")
+            .find("pub async fn manutenzione_apri_cartella_dati")
             .expect("il comando");
         let corpo = manutenzione.get(apri..).expect("il resto");
         let corpo = corpo
@@ -372,7 +372,7 @@ mod prove {
         );
 
         let diario = include_str!("diario.rs");
-        let apri = diario.find("pub fn diario_apri").expect("il comando");
+        let apri = diario.find("pub async fn diario_apri").expect("il comando");
         let corpo = diario.get(apri..).expect("il resto");
         let corpo = corpo
             .get(

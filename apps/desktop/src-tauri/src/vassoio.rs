@@ -79,7 +79,6 @@ use rymembra_app::settings;
 use rymembra_domain::errors::AppError;
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
-use tauri::State;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -683,10 +682,11 @@ fn ricorda_le_etichette(app: &tauri::AppHandle, etichette: &Etichette) {
 
 /// Se il tasto di chiusura manda in secondo piano.
 #[tauri::command]
-pub fn secondo_piano(stato: State<'_, Stato>) -> Esito<bool> {
-    con_libreria(&stato, |libreria| {
+pub async fn secondo_piano(app: tauri::AppHandle) -> Esito<bool> {
+    crate::disparte::leggi_la_libreria(app, "secondo piano", |libreria| {
         rymembra_app::preferenze::secondo_piano(&libreria.connection)
     })
+    .await
     .map_err(errore)
 }
 
@@ -697,13 +697,15 @@ pub fn secondo_piano(stato: State<'_, Stato>) -> Esito<bool> {
 /// l'interruttore da dove lo disegnerà al prossimo avvio. Un interruttore
 /// ottimistico che resta acceso su una scrittura fallita è un'impostazione che
 /// mente fino al riavvio.
-#[tauri::command(async)]
-pub fn secondo_piano_attiva(
-    app: tauri::AppHandle,
-    stato: State<'_, Stato>,
-    attivo: bool,
-) -> Esito<bool> {
-    imposta_il_secondo_piano(&app, &stato, attivo).map_err(errore)
+#[tauri::command]
+pub async fn secondo_piano_attiva(app: tauri::AppHandle, attivo: bool) -> Esito<bool> {
+    // Un interruttore dove l'ultimo vince: sulla corsia della libreria.
+    crate::corsia::LIBRERIA
+        .comanda("secondo piano", move || {
+            let stato = crate::disparte::stato_di::<Stato>(&app)?;
+            imposta_il_secondo_piano(&app, &stato, attivo).map_err(errore)
+        })
+        .await
 }
 
 /// Il corpo di [`secondo_piano_attiva`], per chi non è la finestra: la proposta
@@ -732,8 +734,8 @@ pub(crate) fn imposta_il_secondo_piano(
 /// Le quattro della musica sono facoltative: senza — una finestra che non le
 /// manda — il menù resta quello di due voci, invece di mostrarne quattro
 /// senza nome.
-#[tauri::command(async)]
-pub fn vassoio_lingua(
+#[tauri::command]
+pub async fn vassoio_lingua(
     app: tauri::AppHandle,
     mostra: String,
     esci: String,
@@ -742,41 +744,47 @@ pub fn vassoio_lingua(
     successivo: Option<String>,
     precedente: Option<String>,
 ) {
-    let trasporto = match (riproduci, pausa, successivo, precedente) {
-        (Some(riproduci), Some(pausa), Some(successivo), Some(precedente)) => Some(Trasporto {
-            riproduci,
-            pausa,
-            successivo,
-            precedente,
-        }),
-        _ => None,
-    };
-    // Le stesse etichette fanno da suggerimento ai pulsanti nell'anteprima:
-    // vedi `crate::barra`.
-    if let Some(trasporto) = &trasporto {
-        crate::barra::etichette(&app, per_la_barra(trasporto));
-    }
-    let nuove = Etichette {
-        mostra,
-        esci,
-        trasporto,
-    };
-    let cambiate = app.try_state::<StatoVassoio>().is_some_and(|stato| {
-        let mut dentro = stato
-            .etichette
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let cambiate = dentro.as_ref() != Some(&nuove);
-        *dentro = Some(nuove.clone());
-        cambiate
-    });
-    // Il nucleo le ricorda per il vassoio senza pagina, ma le riscrive solo se
-    // sono cambiate: la finestra le manda a ogni cambio di lingua, e a ogni
-    // finestra nuova.
-    if cambiate {
-        ricorda_le_etichette(&app, &nuove);
-    }
-    riallinea(&app);
+    // Scrive le etichette nelle impostazioni e rifà il menù, parlando col filo
+    // principale e aspettandone la risposta: sul pool bloccante. L'esito non si
+    // guarda, come prima: se il lavoro cade, il vassoio resta com'era.
+    let _ = crate::disparte::in_disparte("etichette del vassoio", move || {
+        let trasporto = match (riproduci, pausa, successivo, precedente) {
+            (Some(riproduci), Some(pausa), Some(successivo), Some(precedente)) => Some(Trasporto {
+                riproduci,
+                pausa,
+                successivo,
+                precedente,
+            }),
+            _ => None,
+        };
+        // Le stesse etichette fanno da suggerimento ai pulsanti nell'anteprima:
+        // vedi `crate::barra`.
+        if let Some(trasporto) = &trasporto {
+            crate::barra::etichette(&app, per_la_barra(trasporto));
+        }
+        let nuove = Etichette {
+            mostra,
+            esci,
+            trasporto,
+        };
+        let cambiate = app.try_state::<StatoVassoio>().is_some_and(|stato| {
+            let mut dentro = stato
+                .etichette
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let cambiate = dentro.as_ref() != Some(&nuove);
+            *dentro = Some(nuove.clone());
+            cambiate
+        });
+        // Il nucleo le ricorda per il vassoio senza pagina, ma le riscrive solo se
+        // sono cambiate: la finestra le manda a ogni cambio di lingua, e a ogni
+        // finestra nuova.
+        if cambiate {
+            ricorda_le_etichette(&app, &nuove);
+        }
+        riallinea(&app);
+    })
+    .await;
 }
 
 /// Rispecchia lo stato del lettore nell'icona: il suggerimento e la prima voce.
@@ -993,7 +1001,7 @@ mod prove {
             carica.is_some() && carica < icona,
             "l'icona nascerebbe prima delle etichette ricordate"
         );
-        let lingua = corpo(sorgente(), "pub fn vassoio_lingua(");
+        let lingua = corpo(sorgente(), "pub async fn vassoio_lingua(");
         assert!(lingua.contains("ricorda_le_etichette("));
         assert!(
             lingua.contains("if cambiate"),

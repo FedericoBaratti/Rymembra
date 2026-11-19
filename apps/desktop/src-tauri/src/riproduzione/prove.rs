@@ -513,7 +513,7 @@ fn i_gesti_che_accorciano_la_coda_dimenticano_le_voci_uscite() {
             "pub fn suona_ora(",
             "lettore.coda.play_tracks(brani, indice, seme());",
         ),
-        (coda, "pub fn coda_svuota(", "lettore.coda.clear();"),
+        (coda, "pub fn coda_svuota_ora(", "lettore.coda.clear();"),
         (
             coda,
             "pub fn coda_togli_ora(",
@@ -661,10 +661,15 @@ fn le_guardie_degli_id_stanno_in_testa_ai_comandi_di_libreria() {
     ];
     for (file, testo, nomi) in comandi {
         for nome in nomi {
+            // Il nucleo, se il comando ne ha uno (`preferito_ora`): il comando
+            // `async` lo mette sulla corsia della libreria e basta, ed è il
+            // nucleo che ha la guardia. Vedi `crate::corsia`.
+            let firma_ora = format!("pub fn {nome}_ora(");
             let firma_sync = format!("pub fn {nome}(");
             let firma_async = format!("pub async fn {nome}(");
             let inizio = testo
-                .find(&firma_sync)
+                .find(&firma_ora)
+                .or_else(|| testo.find(&firma_sync))
                 .or_else(|| testo.find(&firma_async))
                 .unwrap_or_else(|| panic!("{file}: «{nome}» non c'è"));
             let corpo = &testo[inizio..];

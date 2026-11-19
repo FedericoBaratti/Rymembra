@@ -130,7 +130,16 @@ struct StatoVolume {
 /// per ogni passo, e ridisegnare l'applicazione intera con quel che ne usciva.
 /// Parte `riproduzione:volume`, che sono due campi.
 #[tauri::command]
-pub fn volume(
+pub async fn volume(app: tauri::AppHandle, volume: f32, muto: bool) -> Esito<()> {
+    super::col_lettore_in_fila(app, "volume", move |app, stato| {
+        volume_ora(app, stato, volume, muto)
+    })
+    .await
+}
+
+/// [`volume`], sul posto: il lavoro sta qui, e il comando lo mette in fila
+/// sulla corsia del lettore.
+fn volume_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
     volume: f32,
@@ -172,14 +181,22 @@ pub fn volume(
 /// e nessuna query — quanto basta perché il pannello nella barra e la pagina
 /// delle impostazioni restino d'accordo fra loro.
 #[tauri::command]
-pub fn equalizzatore(
+pub async fn equalizzatore(app: tauri::AppHandle, guadagni: Vec<f32>, attivo: bool) -> Esito<()> {
+    super::col_lettore_in_fila(app, "equalizzatore", move |app, stato| {
+        equalizzatore_ora(app, stato, &guadagni, attivo)
+    })
+    .await
+}
+
+/// [`equalizzatore`], sul posto: vedi [`volume`].
+fn equalizzatore_ora(
     app: tauri::AppHandle,
     stato: State<'_, StatoLettore>,
-    guadagni: Vec<f32>,
+    guadagni: &[f32],
     attivo: bool,
 ) -> Esito<()> {
     con_lettore(&stato, |lettore| {
-        lettore.motore.equalizzatore(&guadagni, attivo);
+        lettore.motore.equalizzatore(guadagni, attivo);
         // `playback::normalizza` fa qui il taglio che prima si andava a
         // rileggere dal database: è **la stessa** funzione che usa `save_eq`,
         // chiamata dove il valore nasce invece che dopo un giro su SQLite. La
@@ -187,7 +204,7 @@ pub fn equalizzatore(
         // c'è più una scrittura più una rilettura per ogni pixel di cursore.
         lettore.eq = Equalizzazione {
             attivo,
-            guadagni: playback::normalizza(&guadagni),
+            guadagni: playback::normalizza(guadagni),
         };
         stato
             .eq_da_salvare
@@ -229,41 +246,40 @@ pub fn equalizzatore(
 /// comandi ravvicinati; adesso li mette in fila un lucchetto loro, e il lettore
 /// si prende solo per copiare il valore riletto — vedi
 /// `super::cambia_preferenza`.
-#[tauri::command(async)]
-pub fn normalizzazione(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    livello: String,
-) -> Esito<()> {
-    // Si rilegge quel che è stato scritto invece di fidarsi di quel che è
-    // arrivato: è la disciplina dell'equalizzatore, e serve perché il bersaglio
-    // passa per un taglio. La scrittura fuori dal lucchetto del lettore, e in
-    // fila con le altre preferenze: vedi `super::cambia_preferenza`.
-    super::cambia_preferenza(
-        &app,
-        &stato,
-        "normalizzazione",
-        |libreria| {
-            let modo = playback::load_replaygain(&libreria.connection)?.modo;
-            playback::save_replaygain(
-                &libreria.connection,
-                normalizzazione_da_nome(&livello, modo),
-            )?;
-            playback::load_replaygain(&libreria.connection)
-        },
-        |lettore, salvata| {
-            let salvata = salvata.unwrap_or_else(|_| {
-                normalizzazione_da_nome(&livello, lettore.normalizzazione.modo)
-            });
-            lettore
-                .motore
-                .replaygain(salvata.attivo, salvata.bersaglio_db);
-            lettore.normalizzazione = salvata;
-            manda_stato(&app, lettore);
-            Ok(())
-        },
-    )
-    .map_err(errore)
+#[tauri::command]
+pub async fn normalizzazione(app: tauri::AppHandle, livello: String) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "normalizzazione", move |app, stato| {
+        // Si rilegge quel che è stato scritto invece di fidarsi di quel che è
+        // arrivato: è la disciplina dell'equalizzatore, e serve perché il bersaglio
+        // passa per un taglio. La scrittura fuori dal lucchetto del lettore, e in
+        // fila con le altre preferenze: vedi `super::cambia_preferenza`.
+        super::cambia_preferenza(
+            &app,
+            &stato,
+            "normalizzazione",
+            |libreria| {
+                let modo = playback::load_replaygain(&libreria.connection)?.modo;
+                playback::save_replaygain(
+                    &libreria.connection,
+                    normalizzazione_da_nome(&livello, modo),
+                )?;
+                playback::load_replaygain(&libreria.connection)
+            },
+            |lettore, salvata| {
+                let salvata = salvata.unwrap_or_else(|_| {
+                    normalizzazione_da_nome(&livello, lettore.normalizzazione.modo)
+                });
+                lettore
+                    .motore
+                    .replaygain(salvata.attivo, salvata.bersaglio_db);
+                lettore.normalizzazione = salvata;
+                manda_stato(&app, lettore);
+                Ok(())
+            },
+        )
+        .map_err(errore)
+    })
+    .await
 }
 
 /// Come si sceglie il livello: del brano, del disco, o da sé.
@@ -276,11 +292,12 @@ pub fn normalizzazione(
 /// e scrivono la libreria, e sul filo della finestra `con_libreria` aspetta fino
 /// a quattro secondi (R23-11). I tre che scrivono si mettono in fila sul
 /// lucchetto delle preferenze, come `normalizzazione`.
-#[tauri::command(async)]
-pub fn normalizzazione_modo(stato: State<'_, Stato>) -> Esito<ModoLivello> {
-    con_libreria(&stato, |libreria| {
+#[tauri::command]
+pub async fn normalizzazione_modo(app: tauri::AppHandle) -> Esito<ModoLivello> {
+    crate::disparte::leggi_la_libreria(app, "modo della normalizzazione", |libreria| {
         playback::load_replaygain(&libreria.connection).map(|letta| letta.modo)
     })
+    .await
     .map_err(errore)
 }
 
@@ -296,30 +313,32 @@ pub fn normalizzazione_modo(stato: State<'_, Stato>) -> Esito<ModoLivello> {
 /// quello che suona — e quello già pronto dietro di lui — se lo tengono: un
 /// cambio a metà canzone sarebbe un salto di volume che nessuno ha chiesto
 /// adesso, e il prossimo brano è fra pochi minuti.
-#[tauri::command(async)]
-pub fn normalizzazione_modo_scegli(
+#[tauri::command]
+pub async fn normalizzazione_modo_scegli(
     app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
     modo: ModoLivello,
 ) -> Esito<ModoLivello> {
-    let _in_fila = stato
-        .preferenze
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let stato_app = super::libreria_di(&app, "modo della normalizzazione").map_err(errore)?;
-    let salvata = con_libreria(&stato_app, |libreria| {
-        let attuale = playback::load_replaygain(&libreria.connection)?;
-        playback::save_replaygain(&libreria.connection, Normalizzazione { modo, ..attuale })?;
-        playback::load_replaygain(&libreria.connection)
+    super::col_lettore_in_disparte(app, "modo della normalizzazione", move |app, stato| {
+        let _in_fila = stato
+            .preferenze
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stato_app = super::libreria_di(&app, "modo della normalizzazione").map_err(errore)?;
+        let salvata = con_libreria(&stato_app, |libreria| {
+            let attuale = playback::load_replaygain(&libreria.connection)?;
+            playback::save_replaygain(&libreria.connection, Normalizzazione { modo, ..attuale })?;
+            playback::load_replaygain(&libreria.connection)
+        })
+        .map_err(errore)?;
+        // Il lettore può non esserci, e la scelta resta comunque scritta: la stessa
+        // clemenza di `formato_visibile_scegli`.
+        let _ = con_lettore(&stato, |lettore| {
+            lettore.normalizzazione = salvata;
+            Ok(())
+        });
+        Ok(salvata.modo)
     })
-    .map_err(errore)?;
-    // Il lettore può non esserci, e la scelta resta comunque scritta: la stessa
-    // clemenza di `formato_visibile_scegli`.
-    let _ = con_lettore(&stato, |lettore| {
-        lettore.normalizzazione = salvata;
-        Ok(())
-    });
-    Ok(salvata.modo)
+    .await
 }
 
 /// A che punto è la misura del volume.
@@ -338,11 +357,12 @@ pub struct AvanzamentoVolume {
 /// `(async)`: due conteggi su `tracks`, che su una libreria grande sono
 /// qualche decina di millisecondi, e il selettore li chiede ogni tanto mentre
 /// è aperto.
-#[tauri::command(async)]
-pub fn normalizzazione_avanzamento(stato: State<'_, Stato>) -> Esito<AvanzamentoVolume> {
-    con_libreria(&stato, |libreria| {
+#[tauri::command]
+pub async fn normalizzazione_avanzamento(app: tauri::AppHandle) -> Esito<AvanzamentoVolume> {
+    crate::disparte::leggi_la_libreria(app, "avanzamento della misura del volume", |libreria| {
         rymembra_app::intensita::avanzamento(&libreria.connection, adesso_ms())
     })
+    .await
     .map(|(misurati, totale)| AvanzamentoVolume { misurati, totale })
     .map_err(errore)
 }
@@ -352,8 +372,8 @@ pub fn normalizzazione_avanzamento(stato: State<'_, Stato>) -> Esito<Avanzamento
 /// In quest'ordine perché è quello in cui si guardano: chi apre l'elenco la
 /// prima volta non ha curve sue, e chi ne ha vuole trovarle in fondo, sempre
 /// nello stesso posto, invece che mescolate alfabeticamente alle altre.
-#[tauri::command(async)]
-pub fn eq_preset_elenco(stato: State<'_, Stato>) -> Esito<Vec<VocePreset>> {
+#[tauri::command]
+pub async fn eq_preset_elenco(app: tauri::AppHandle) -> Esito<Vec<VocePreset>> {
     let mut elenco: Vec<VocePreset> = PRESET_DI_SERIE
         .iter()
         .map(|(nome, guadagni)| VocePreset {
@@ -362,9 +382,10 @@ pub fn eq_preset_elenco(stato: State<'_, Stato>) -> Esito<Vec<VocePreset>> {
             di_serie: true,
         })
         .collect();
-    let miei = con_libreria(&stato, |libreria| {
+    let miei = crate::disparte::leggi_la_libreria(app, "curve salvate", |libreria| {
         playback::load_preset_eq(&libreria.connection)
     })
+    .await
     .map_err(errore)?;
     elenco.extend(miei.into_iter().map(|p| VocePreset {
         nome: p.nome,
@@ -378,42 +399,44 @@ pub fn eq_preset_elenco(stato: State<'_, Stato>) -> Esito<Vec<VocePreset>> {
 ///
 /// `false` se il nome era vuoto. Un nome che c'è già sostituisce quella curva:
 /// la regola sta in `rymembra_app::playback::salva_preset`, con la sua ragione.
-#[tauri::command(async)]
-pub fn eq_preset_salva(
-    stato: State<'_, Stato>,
-    stato_lettore: State<'_, StatoLettore>,
-    nome: String,
-) -> Esito<bool> {
-    let _in_fila = stato_lettore
-        .preferenze
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let guadagni =
-        con_lettore(&stato_lettore, |lettore| Ok(lettore.eq.guadagni.clone())).map_err(errore)?;
-    con_libreria(&stato, |libreria| {
-        playback::salva_preset(&libreria.connection, &nome, &guadagni)
+#[tauri::command]
+pub async fn eq_preset_salva(app: tauri::AppHandle, nome: String) -> Esito<bool> {
+    crate::disparte::comanda("curva salvata", move || {
+        let stato = crate::disparte::stato_di::<Stato>(&app)?;
+        let stato_lettore = crate::disparte::stato_di::<StatoLettore>(&app)?;
+        let _in_fila = stato_lettore
+            .preferenze
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guadagni = con_lettore(&stato_lettore, |lettore| Ok(lettore.eq.guadagni.clone()))
+            .map_err(errore)?;
+        con_libreria(&stato, |libreria| {
+            playback::salva_preset(&libreria.connection, &nome, &guadagni)
+        })
+        .map_err(errore)
     })
-    .map_err(errore)
+    .await
 }
 
 /// Toglie una curva salvata. `false` se non ce n'era una con quel nome.
 ///
 /// Quelle di serie non passano di qui: non stanno nel database, quindi non c'è
 /// niente da togliere e la finestra non ne offre il comando.
-#[tauri::command(async)]
-pub fn eq_preset_cancella(
-    stato: State<'_, Stato>,
-    stato_lettore: State<'_, StatoLettore>,
-    nome: String,
-) -> Esito<bool> {
-    let _in_fila = stato_lettore
-        .preferenze
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    con_libreria(&stato, |libreria| {
-        playback::cancella_preset(&libreria.connection, &nome)
+#[tauri::command]
+pub async fn eq_preset_cancella(app: tauri::AppHandle, nome: String) -> Esito<bool> {
+    crate::disparte::comanda("curva cancellata", move || {
+        let stato = crate::disparte::stato_di::<Stato>(&app)?;
+        let stato_lettore = crate::disparte::stato_di::<StatoLettore>(&app)?;
+        let _in_fila = stato_lettore
+            .preferenze
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        con_libreria(&stato, |libreria| {
+            playback::cancella_preset(&libreria.connection, &nome)
+        })
+        .map_err(errore)
     })
-    .map_err(errore)
+    .await
 }
 
 #[cfg(test)]

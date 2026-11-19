@@ -51,6 +51,7 @@ use rymembra_scrobble::{LastFm, ListenBrainz, per_richiesta};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
+use crate::corsia::LIBRERIA;
 use crate::disparte::in_disparte;
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -191,11 +192,14 @@ pub struct EsitoInvio {
 
 /// Lo stato dello scrobbling. Istantaneo: non tocca la rete.
 #[tauri::command]
-pub fn scrobble_stato(
-    stato: State<'_, Stato>,
-    scrobble: State<'_, StatoScrobble>,
-) -> Esito<StatoScrobbleIpc> {
-    stato_ipc(&stato, &scrobble).map_err(errore)
+pub async fn scrobble_stato(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+    in_disparte("stato dello scrobbling", move || {
+        let (stato, scrobble) = stati(&app)?;
+        stato_ipc(&stato, &scrobble)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Accende o spegne lo scrobbling, senza toccare le credenziali.
@@ -204,20 +208,22 @@ pub fn scrobble_stato(
 /// mettere in pausa lo scrobbling e poi trovarsi tre giorni di ascolti spediti
 /// tutti insieme alla riaccensione sarebbe una sorpresa, non una comodità.
 #[tauri::command]
-pub fn scrobble_attivo(
-    stato: State<'_, Stato>,
-    scrobble: State<'_, StatoScrobble>,
-    attivo: bool,
-) -> Esito<StatoScrobbleIpc> {
-    con_libreria(&stato, |libreria| {
-        settings::write(
-            &libreria.connection,
-            coda::CHIAVE_ATTIVO,
-            if attivo { "1" } else { "0" },
-        )
-    })
-    .map_err(errore)?;
-    stato_ipc(&stato, &scrobble).map_err(errore)
+pub async fn scrobble_attivo(app: AppHandle, attivo: bool) -> Esito<StatoScrobbleIpc> {
+    // Un interruttore dove l'ultimo vince: sulla corsia della libreria.
+    LIBRERIA
+        .comanda("scrobbling attivo", move || {
+            let (stato, scrobble) = stati(&app).map_err(errore)?;
+            con_libreria(&stato, |libreria| {
+                settings::write(
+                    &libreria.connection,
+                    coda::CHIAVE_ATTIVO,
+                    if attivo { "1" } else { "0" },
+                )
+            })
+            .map_err(errore)?;
+            stato_ipc(&stato, &scrobble).map_err(errore)
+        })
+        .await
 }
 
 /// I due stati che servono ai comandi che lavorano in disparte.
@@ -278,20 +284,21 @@ pub async fn scrobble_listenbrainz_collega(
 /// di oggi — che sul servizio comparirebbero come ascolti di un mese fa mai
 /// avvenuti, ma che nel frattempo l'utente ha già ascoltato altrove.
 #[tauri::command]
-pub fn scrobble_listenbrainz_scollega(
-    stato: State<'_, Stato>,
-    scrobble: State<'_, StatoScrobble>,
-) -> Esito<StatoScrobbleIpc> {
-    let esito = (|| {
+pub async fn scrobble_listenbrainz_scollega(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+    // Il portachiavi: in disparte e non su una corsia, perché un portachiavi
+    // che non risponde non deve tenere ferme le stelle.
+    in_disparte("scollegamento da ListenBrainz", move || {
+        let (stato, scrobble) = stati(&app)?;
         portachiavi().cancella(CHIAVE_LB_TOKEN)?;
         con_libreria(&stato, |libreria| {
             settings::forget(&libreria.connection, coda::CHIAVE_LB_UTENTE)?;
             coda::dimentica(&libreria.connection, Some(Servizio::ListenBrainz), false)
-        })
-        .map(|_| ())
-    })();
-    esito.map_err(errore)?;
-    stato_ipc(&stato, &scrobble).map_err(errore)
+        })?;
+        stato_ipc(&stato, &scrobble)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Scrive chiave e segreto dell'applicazione Last.fm.
@@ -306,13 +313,13 @@ pub fn scrobble_listenbrainz_scollega(
 /// via gli ascolti accumulati senza rete. Vuote tutte e due vuol dire togliere
 /// Last.fm, e allora vale [`scollega_lastfm`] intero.
 #[tauri::command]
-pub fn scrobble_lastfm_credenziali(
-    stato: State<'_, Stato>,
-    scrobble: State<'_, StatoScrobble>,
+pub async fn scrobble_lastfm_credenziali(
+    app: AppHandle,
     api_key: String,
     segreto: String,
 ) -> Esito<StatoScrobbleIpc> {
-    let esito = (|| {
+    in_disparte("credenziali Last.fm", move || {
+        let (stato, scrobble) = stati(&app)?;
         let api_key = api_key.trim();
         let segreto = segreto.trim();
         // Nel portachiavi, accanto al segreto. E in `settings` si cancella
@@ -333,13 +340,15 @@ pub fn scrobble_lastfm_credenziali(
             portachiavi().scrivi(CHIAVE_LFM_SEGRETO, segreto)?;
         }
         if api_key.is_empty() && segreto.is_empty() {
-            scollega_lastfm(&stato, &scrobble)
+            scollega_lastfm(&stato, &scrobble)?;
         } else {
-            togli_la_sessione_lastfm(&stato, &scrobble)
+            togli_la_sessione_lastfm(&stato, &scrobble)?;
         }
-    })();
-    esito.map_err(errore)?;
-    stato_ipc(&stato, &scrobble).map_err(errore)
+        stato_ipc(&stato, &scrobble)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Primo tempo del consenso: chiede un token e apre il browser.
@@ -420,12 +429,15 @@ fn sessione_lastfm(stato: &Stato, scrobble: &StatoScrobble) -> Result<(), AppErr
 
 /// Scollega Last.fm.
 #[tauri::command]
-pub fn scrobble_lastfm_scollega(
-    stato: State<'_, Stato>,
-    scrobble: State<'_, StatoScrobble>,
-) -> Esito<StatoScrobbleIpc> {
-    scollega_lastfm(&stato, &scrobble).map_err(errore)?;
-    stato_ipc(&stato, &scrobble).map_err(errore)
+pub async fn scrobble_lastfm_scollega(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+    in_disparte("scollegamento da Last.fm", move || {
+        let (stato, scrobble) = stati(&app)?;
+        scollega_lastfm(&stato, &scrobble)?;
+        stato_ipc(&stato, &scrobble)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Svuota la coda adesso, senza aspettare il filo.
@@ -452,31 +464,33 @@ pub async fn scrobble_invia(app: AppHandle) -> Esito<EsitoInvio> {
 /// schermata ha i suoi pulsanti, e «Riprova» sotto ListenBrainz non deve
 /// rimettere in fila anche quel che Last.fm ha rifiutato.
 #[tauri::command]
-pub fn scrobble_riprova(
-    stato: State<'_, Stato>,
-    app: AppHandle,
-    servizio: String,
-) -> Esito<StatoScrobbleIpc> {
-    con_libreria(&stato, |libreria| {
-        riprova_abbandonati(&libreria.connection, &servizio)
+pub async fn scrobble_riprova(app: AppHandle, servizio: String) -> Esito<StatoScrobbleIpc> {
+    in_disparte("riprova degli ascolti", move || {
+        let (stato, scrobble) = stati(&app)?;
+        con_libreria(&stato, |libreria| {
+            riprova_abbandonati(&libreria.connection, &servizio)
+        })?;
+        sveglia(&app);
+        stato_ipc(&stato, &scrobble)
     })
-    .map_err(errore)?;
-    sveglia(&app);
-    stato_ipc(&stato, &app.state::<StatoScrobble>()).map_err(errore)
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Butta gli ascolti abbandonati di un servizio: vedi [`scrobble_riprova`].
 #[tauri::command]
-pub fn scrobble_dimentica(
-    stato: State<'_, Stato>,
-    scrobble: State<'_, StatoScrobble>,
-    servizio: String,
-) -> Esito<StatoScrobbleIpc> {
-    con_libreria(&stato, |libreria| {
-        dimentica_abbandonati(&libreria.connection, &servizio)
+pub async fn scrobble_dimentica(app: AppHandle, servizio: String) -> Esito<StatoScrobbleIpc> {
+    in_disparte("ascolti dimenticati", move || {
+        let (stato, scrobble) = stati(&app)?;
+        con_libreria(&stato, |libreria| {
+            dimentica_abbandonati(&libreria.connection, &servizio)
+        })?;
+        stato_ipc(&stato, &scrobble)
     })
-    .map_err(errore)?;
-    stato_ipc(&stato, &scrobble).map_err(errore)
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Il servizio scritto dalla finestra. `Servizio` non ha `serde`: arriva la

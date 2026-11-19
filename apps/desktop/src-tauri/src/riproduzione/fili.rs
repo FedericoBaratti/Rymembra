@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use crate::spegnimento::Emette as _;
 use rymembra_app::playback;
-use tauri::{Manager as _, State};
+use tauri::Manager as _;
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -506,45 +506,44 @@ pub(super) fn quanto_manca(stato_lettore: &StatoLettore) -> Option<i64> {
 /// finestra sarebbe calcolato con l'orologio della finestra. Sono lo stesso
 /// orologio finché nessuno cambia fuso, e «finché nessuno» non è una
 /// garanzia.
-#[tauri::command(async)]
-pub fn spegnimento(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    minuti: i64,
-) -> Esito<()> {
-    use std::sync::atomic::Ordering;
+#[tauri::command]
+pub async fn spegnimento(app: tauri::AppHandle, minuti: i64) -> Esito<()> {
+    super::col_lettore_in_disparte(app, "timer di spegnimento", move |app, stato| {
+        use std::sync::atomic::Ordering;
 
-    // In sessione si rifiuta, anche per spegnerlo: all'ingresso lo si è già
-    // spento, e un timer che ferma l'host fermerebbe tutti. Vedi
-    // `crate::insieme::strada`.
-    if let Strada::Fatto = strada(&app, &crate::insieme::Gesto::Timer).map_err(errore)? {
-        return Ok(());
-    }
-    let quando = match minuti {
-        0 => 0,
-        FINE_DEL_BRANO => FINE_DEL_BRANO,
-        // Un tetto a ventiquattro ore: oltre non è più un timer per
-        // addormentarsi, e `adesso_ms` più un numero arbitrario è il modo di
-        // farlo traboccare.
-        minuti => adesso_ms().saturating_add(minuti.clamp(1, 24 * 60).saturating_mul(60_000)),
-    };
-    stato.spegnimento.store(quando, Ordering::Relaxed);
-
-    // «Fine del brano» cambia quel che il motore ha già in canna: il brano
-    // successivo era stato preparato quando questo è cominciato, e senza
-    // questa riga suonerebbe lo stesso.
-    con_lettore(&stato, |lettore| {
-        // Un timer toccato mentre la musica si sta già spegnendo è un timer che
-        // qualcuno ha deciso di cambiare: la discesa si lascia perdere, e il
-        // volume torna dov'era. Vedi [`scade_il_timer`].
-        if stato.sfumando_fino.swap(0, Ordering::Relaxed) != 0 {
-            lettore.motore.annulla_sfumatura();
+        // In sessione si rifiuta, anche per spegnerlo: all'ingresso lo si è già
+        // spento, e un timer che ferma l'host fermerebbe tutti. Vedi
+        // `crate::insieme::strada`.
+        if let Strada::Fatto = strada(&app, &crate::insieme::Gesto::Timer).map_err(errore)? {
+            return Ok(());
         }
-        prepara_prossimo(&app, lettore);
-        manda_stato(&app, lettore);
-        Ok(())
+        let quando = match minuti {
+            0 => 0,
+            FINE_DEL_BRANO => FINE_DEL_BRANO,
+            // Un tetto a ventiquattro ore: oltre non è più un timer per
+            // addormentarsi, e `adesso_ms` più un numero arbitrario è il modo di
+            // farlo traboccare.
+            minuti => adesso_ms().saturating_add(minuti.clamp(1, 24 * 60).saturating_mul(60_000)),
+        };
+        stato.spegnimento.store(quando, Ordering::Relaxed);
+
+        // «Fine del brano» cambia quel che il motore ha già in canna: il brano
+        // successivo era stato preparato quando questo è cominciato, e senza
+        // questa riga suonerebbe lo stesso.
+        con_lettore(&stato, |lettore| {
+            // Un timer toccato mentre la musica si sta già spegnendo è un timer che
+            // qualcuno ha deciso di cambiare: la discesa si lascia perdere, e il
+            // volume torna dov'era. Vedi [`scade_il_timer`].
+            if stato.sfumando_fino.swap(0, Ordering::Relaxed) != 0 {
+                lettore.motore.annulla_sfumatura();
+            }
+            prepara_prossimo(&app, lettore);
+            manda_stato(&app, lettore);
+            Ok(())
+        })
+        .map_err(errore)
     })
-    .map_err(errore)
+    .await
 }
 
 /// Quanto dura la discesa del volume quando scade il timer di spegnimento.
@@ -953,7 +952,7 @@ fn pausa_al_risveglio(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
     let Some(stato) = app.try_state::<StatoLettore>() else {
         return;
     };
-    if let Err(err) = super::pausa(app.clone(), stato) {
+    if let Err(err) = super::pausa_ora(app.clone(), stato) {
         nota!(
             "[riproduzione] pausa al risveglio non riuscita codice={} causa={}",
             err.code,

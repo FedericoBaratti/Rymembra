@@ -497,11 +497,11 @@ fn esegui(app: &tauri::AppHandle, gesto: Gesto) {
     };
     let esito = match gesto {
         Gesto::Riprendi => crate::riproduzione::riprendi_ora(app.clone(), lettore),
-        Gesto::Pausa => crate::riproduzione::pausa(app.clone(), lettore),
+        Gesto::Pausa => crate::riproduzione::pausa_ora(app.clone(), lettore),
         Gesto::Alterna => crate::riproduzione::alterna_ora(app.clone(), lettore),
         Gesto::Prossimo => crate::riproduzione::prossimo_ora(app.clone(), lettore),
         Gesto::Precedente => crate::riproduzione::precedente_ora(app.clone(), lettore),
-        Gesto::VaiA(ms) => crate::riproduzione::vai_a(app.clone(), lettore, ms),
+        Gesto::VaiA(ms) => crate::riproduzione::vai_a_ora(app.clone(), lettore, ms),
         #[cfg(mobile)]
         Gesto::Auto(gesto) => crate::auto::esegui(app, gesto),
     };

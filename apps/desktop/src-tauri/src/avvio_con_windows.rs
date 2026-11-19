@@ -27,9 +27,10 @@ use rymembra_app::preferenze::{self, RispostaProposta};
 use rymembra_barra::{Impedimento, StatoAvvio};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{Manager as _, State};
+use tauri::Manager as _;
 
 use crate::DatiAMano;
+use crate::disparte::{comanda, stato_di};
 use crate::errore::Esito;
 use crate::errore::errore;
 #[cfg(windows)]
@@ -147,24 +148,34 @@ fn dal_sistema(acceso: Option<bool>) -> Result<AvvioConWindowsIpc, AppError> {
 }
 
 /// Parte con Windows? Lo dice il sistema, non una preferenza nostra.
-#[tauri::command(async)]
-pub fn avvio_con_windows_stato(app: tauri::AppHandle) -> Esito<AvvioConWindowsIpc> {
-    if e_di_prova(&app) {
-        return Ok(AvvioConWindowsIpc::PROVA);
-    }
-    dal_sistema(None).map_err(errore)
+#[tauri::command]
+pub async fn avvio_con_windows_stato(app: tauri::AppHandle) -> Esito<AvvioConWindowsIpc> {
+    // Legge il registro di Windows: sul pool bloccante.
+    comanda("avvio con Windows", move || {
+        if e_di_prova(&app) {
+            return Ok(AvvioConWindowsIpc::PROVA);
+        }
+        dal_sistema(None).map_err(errore)
+    })
+    .await
 }
 
 /// Accende o spegne l'avvio con Windows. Riporta com'è rimasto, **riletto**.
 ///
 /// Con la scelta dell'utente fatta altrove — Gestione attività, un criterio —
 /// non scrive niente e dice perché: vedi `rymembra_barra::avvio`.
-#[tauri::command(async)]
-pub fn avvio_con_windows_imposta(app: tauri::AppHandle, acceso: bool) -> Esito<AvvioConWindowsIpc> {
-    if e_di_prova(&app) {
-        return Ok(AvvioConWindowsIpc::PROVA);
-    }
-    dal_sistema(Some(acceso)).map_err(errore)
+#[tauri::command]
+pub async fn avvio_con_windows_imposta(
+    app: tauri::AppHandle,
+    acceso: bool,
+) -> Esito<AvvioConWindowsIpc> {
+    comanda("avvio con Windows", move || {
+        if e_di_prova(&app) {
+            return Ok(AvvioConWindowsIpc::PROVA);
+        }
+        dal_sistema(Some(acceso)).map_err(errore)
+    })
+    .await
 }
 
 /// Cosa fare della proposta: «parti con Windows e resta nel vassoio» sul
@@ -286,78 +297,82 @@ pub struct RispostaPropostaIpc {
 /// Sul computer è «parti con Windows e resta nel vassoio»; sul telefono, «resta
 /// attiva in sottofondo» ([`da_proporre_sul_telefono`]). Una chiave sola, ma
 /// ogni installazione ha la sua risposta.
-#[tauri::command(async)]
-pub fn proposta_sottofondo_da_fare(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<bool> {
-    // «Più tardi» in questa sessione: prima di ogni lettura, che non costa né la
-    // libreria né il sistema. Non si ricorda niente: vedi [`Rimando`].
-    if RIMANDO.attivo() {
-        return Ok(false);
-    }
-    #[cfg(desktop)]
-    {
-        if e_di_prova(&app) {
+#[tauri::command]
+pub async fn proposta_sottofondo_da_fare(app: tauri::AppHandle) -> Esito<bool> {
+    comanda("proposta del sottofondo", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        // «Più tardi» in questa sessione: prima di ogni lettura, che non costa né la
+        // libreria né il sistema. Non si ricorda niente: vedi [`Rimando`].
+        if RIMANDO.attivo() {
             return Ok(false);
         }
-        let risposta = con_libreria(&stato, |libreria| {
-            preferenze::proposta_sottofondo(&libreria.connection)
-        })
-        .map_err(errore)?;
-        // Già risposto: non si chiede nemmeno al sistema.
-        if risposta.is_some() {
-            return Ok(false);
-        }
-        let avvio = dal_sistema(None).map_err(errore)?;
-        let secondo_piano = con_libreria(&stato, |libreria| {
-            preferenze::secondo_piano(&libreria.connection)
-        })
-        .map_err(errore)?;
-        match da_proporre(risposta, &avvio, secondo_piano) {
-            Proposta::DaFare => Ok(true),
-            Proposta::No => Ok(false),
-            Proposta::GiaAcceso => {
-                con_libreria(&stato, |libreria| {
-                    preferenze::imposta_proposta_sottofondo(
-                        &libreria.connection,
-                        RispostaProposta::Gia,
-                    )
-                })
-                .map_err(errore)?;
-                Ok(false)
+        #[cfg(desktop)]
+        {
+            if e_di_prova(&app) {
+                return Ok(false);
+            }
+            let risposta = con_libreria(&stato, |libreria| {
+                preferenze::proposta_sottofondo(&libreria.connection)
+            })
+            .map_err(errore)?;
+            // Già risposto: non si chiede nemmeno al sistema.
+            if risposta.is_some() {
+                return Ok(false);
+            }
+            let avvio = dal_sistema(None).map_err(errore)?;
+            let secondo_piano = con_libreria(&stato, |libreria| {
+                preferenze::secondo_piano(&libreria.connection)
+            })
+            .map_err(errore)?;
+            match da_proporre(risposta, &avvio, secondo_piano) {
+                Proposta::DaFare => Ok(true),
+                Proposta::No => Ok(false),
+                Proposta::GiaAcceso => {
+                    con_libreria(&stato, |libreria| {
+                        preferenze::imposta_proposta_sottofondo(
+                            &libreria.connection,
+                            RispostaProposta::Gia,
+                        )
+                    })
+                    .map_err(errore)?;
+                    Ok(false)
+                }
             }
         }
-    }
-    #[cfg(mobile)]
-    {
-        // Una copia di prova è un fatto del computer: il telefono non ne ha.
-        let _ = app;
-        let risposta = con_libreria(&stato, |libreria| {
-            preferenze::proposta_sottofondo(&libreria.connection)
-        })
-        .map_err(errore)?;
-        // Già risposto: non si chiede nemmeno alle impostazioni.
-        if risposta.is_some() {
-            return Ok(false);
-        }
-        let sottofondo = con_libreria(&stato, |libreria| {
-            rymembra_app::dispositivi::impostazioni(&libreria.connection)
-        })
-        .map_err(errore)?
-        .sottofondo;
-        match da_proporre_sul_telefono(risposta, sottofondo) {
-            Proposta::DaFare => Ok(true),
-            Proposta::No => Ok(false),
-            Proposta::GiaAcceso => {
-                con_libreria(&stato, |libreria| {
-                    preferenze::imposta_proposta_sottofondo(
-                        &libreria.connection,
-                        RispostaProposta::Gia,
-                    )
-                })
-                .map_err(errore)?;
-                Ok(false)
+        #[cfg(mobile)]
+        {
+            // Una copia di prova è un fatto del computer: il telefono non ne ha.
+            let _ = &app;
+            let risposta = con_libreria(&stato, |libreria| {
+                preferenze::proposta_sottofondo(&libreria.connection)
+            })
+            .map_err(errore)?;
+            // Già risposto: non si chiede nemmeno alle impostazioni.
+            if risposta.is_some() {
+                return Ok(false);
+            }
+            let sottofondo = con_libreria(&stato, |libreria| {
+                rymembra_app::dispositivi::impostazioni(&libreria.connection)
+            })
+            .map_err(errore)?
+            .sottofondo;
+            match da_proporre_sul_telefono(risposta, sottofondo) {
+                Proposta::DaFare => Ok(true),
+                Proposta::No => Ok(false),
+                Proposta::GiaAcceso => {
+                    con_libreria(&stato, |libreria| {
+                        preferenze::imposta_proposta_sottofondo(
+                            &libreria.connection,
+                            RispostaProposta::Gia,
+                        )
+                    })
+                    .map_err(errore)?;
+                    Ok(false)
+                }
             }
         }
-    }
+    })
+    .await
 }
 
 /// «Più tardi»: la proposta non si rifà per il resto della sessione del
@@ -374,65 +389,68 @@ pub fn proposta_sottofondo_rimanda() {
 /// una volta sola, e se l'accensione fallisce — un criterio, un registro che non
 /// risponde — l'errore si dice e la domanda non si ripete a ogni avvio. L'avvio
 /// con Windows resta spento, e c'è l'interruttore nelle Impostazioni.
-#[tauri::command(async)]
-pub fn proposta_sottofondo_rispondi(
+#[tauri::command]
+pub async fn proposta_sottofondo_rispondi(
     app: tauri::AppHandle,
-    stato: State<'_, Stato>,
     accetta: bool,
 ) -> Esito<RispostaPropostaIpc> {
-    #[cfg(desktop)]
-    {
-        let risposta = if accetta {
-            RispostaProposta::Si
-        } else {
-            RispostaProposta::No
-        };
-        con_libreria(&stato, |libreria| {
-            preferenze::imposta_proposta_sottofondo(&libreria.connection, risposta)
-        })
-        .map_err(errore)?;
-        // Una copia di prova non tocca il login vero né accende il vassoio per
-        // una risposta che la proposta, lì, non avrebbe nemmeno chiesto.
-        let di_prova = e_di_prova(&app);
-        if accetta && !di_prova {
-            crate::vassoio::imposta_il_secondo_piano(&app, &stato, true).map_err(errore)?;
-            dal_sistema(Some(true)).map_err(errore)?;
+    comanda("risposta alla proposta del sottofondo", move || {
+        let stato = stato_di::<Stato>(&app)?;
+        #[cfg(desktop)]
+        {
+            let risposta = if accetta {
+                RispostaProposta::Si
+            } else {
+                RispostaProposta::No
+            };
+            con_libreria(&stato, |libreria| {
+                preferenze::imposta_proposta_sottofondo(&libreria.connection, risposta)
+            })
+            .map_err(errore)?;
+            // Una copia di prova non tocca il login vero né accende il vassoio per
+            // una risposta che la proposta, lì, non avrebbe nemmeno chiesto.
+            let di_prova = e_di_prova(&app);
+            if accetta && !di_prova {
+                crate::vassoio::imposta_il_secondo_piano(&app, &stato, true).map_err(errore)?;
+                dal_sistema(Some(true)).map_err(errore)?;
+            }
+            let avvio = if di_prova {
+                AvvioConWindowsIpc::PROVA
+            } else {
+                dal_sistema(None).map_err(errore)?
+            };
+            let secondo_piano = con_libreria(&stato, |libreria| {
+                preferenze::secondo_piano(&libreria.connection)
+            })
+            .map_err(errore)?;
+            Ok(RispostaPropostaIpc {
+                avvio,
+                secondo_piano,
+            })
         }
-        let avvio = if di_prova {
-            AvvioConWindowsIpc::PROVA
-        } else {
-            dal_sistema(None).map_err(errore)?
-        };
-        let secondo_piano = con_libreria(&stato, |libreria| {
-            preferenze::secondo_piano(&libreria.connection)
-        })
-        .map_err(errore)?;
-        Ok(RispostaPropostaIpc {
-            avvio,
-            secondo_piano,
-        })
-    }
-    #[cfg(mobile)]
-    {
-        let _ = app;
-        let risposta = if accetta {
-            RispostaProposta::Si
-        } else {
-            RispostaProposta::No
-        };
-        con_libreria(&stato, |libreria| {
-            preferenze::imposta_proposta_sottofondo(&libreria.connection, risposta)
-        })
-        .map_err(errore)?;
-        // Qui si ricorda e basta. Il servizio in primo piano lo accende la
-        // finestra, con lo stesso comando dell'interruttore delle Impostazioni
-        // (`lontano_sottofondo`), che chiede anche le notifiche; l'avvio con
-        // Windows e il vassoio sul telefono non esistono.
-        Ok(RispostaPropostaIpc {
-            avvio: AvvioConWindowsIpc::NON_DISPONIBILE,
-            secondo_piano: false,
-        })
-    }
+        #[cfg(mobile)]
+        {
+            let _ = &app;
+            let risposta = if accetta {
+                RispostaProposta::Si
+            } else {
+                RispostaProposta::No
+            };
+            con_libreria(&stato, |libreria| {
+                preferenze::imposta_proposta_sottofondo(&libreria.connection, risposta)
+            })
+            .map_err(errore)?;
+            // Qui si ricorda e basta. Il servizio in primo piano lo accende la
+            // finestra, con lo stesso comando dell'interruttore delle Impostazioni
+            // (`lontano_sottofondo`), che chiede anche le notifiche; l'avvio con
+            // Windows e il vassoio sul telefono non esistono.
+            Ok(RispostaPropostaIpc {
+                avvio: AvvioConWindowsIpc::NON_DISPONIBILE,
+                secondo_piano: false,
+            })
+        }
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -487,7 +505,7 @@ mod prove {
         let sorgente = include_str!("avvio_con_windows.rs");
         let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
         let corpo = sorgente
-            .split("pub fn proposta_sottofondo_rispondi(")
+            .split("pub async fn proposta_sottofondo_rispondi(")
             .nth(1)
             .and_then(|resto| resto.split("\n}\n").next())
             .unwrap_or_default();
@@ -502,7 +520,7 @@ mod prove {
         );
         // La domanda stessa: una chiave sola, quella di sempre.
         let da_fare = sorgente
-            .split("pub fn proposta_sottofondo_da_fare(")
+            .split("pub async fn proposta_sottofondo_da_fare(")
             .nth(1)
             .and_then(|resto| resto.split("\n}\n").next())
             .and_then(|resto| resto.split("#[cfg(mobile)]").nth(1))
@@ -546,7 +564,7 @@ mod prove {
         let sorgente = include_str!("avvio_con_windows.rs");
         let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
         let da_fare = sorgente
-            .split("pub fn proposta_sottofondo_da_fare(")
+            .split("pub async fn proposta_sottofondo_da_fare(")
             .nth(1)
             .and_then(|resto| resto.split("\n}\n").next())
             .unwrap_or_default();
@@ -605,7 +623,7 @@ mod prove {
         let sorgente = include_str!("avvio_con_windows.rs");
         let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
         let corpo = sorgente
-            .split("pub fn proposta_sottofondo_rispondi(")
+            .split("pub async fn proposta_sottofondo_rispondi(")
             .nth(1)
             .and_then(|resto| resto.split("\n}\n").next())
             .unwrap_or_default();
@@ -693,8 +711,8 @@ mod prove {
         let sorgente = include_str!("avvio_con_windows.rs");
         let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
         for comando in [
-            "pub fn avvio_con_windows_stato(",
-            "pub fn avvio_con_windows_imposta(",
+            "pub async fn avvio_con_windows_stato(",
+            "pub async fn avvio_con_windows_imposta(",
         ] {
             let corpo = sorgente
                 .split(comando)

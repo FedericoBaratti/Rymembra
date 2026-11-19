@@ -54,7 +54,7 @@ use rymembra_sync::{Cartella, Magazzino, Memoria, Motore};
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State};
 
-use crate::disparte::in_disparte;
+use crate::disparte::{in_disparte, leggi_la_libreria};
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, Turno, adesso_ms, con_libreria};
@@ -269,11 +269,14 @@ pub struct Resoconto {
 ///
 /// `db.queryFailed` se il database non risponde.
 #[tauri::command]
-pub fn sincronia_stato(
-    stato: State<'_, Stato>,
-    sincronia: State<'_, StatoSincronia>,
-) -> Esito<StatoSincroniaIpc> {
-    stato_ipc(&stato, &sincronia).map_err(errore)
+pub async fn sincronia_stato(app: AppHandle) -> Esito<StatoSincroniaIpc> {
+    in_disparte("stato della sincronia", move || {
+        let (stato, sincronia) = stati(&app)?;
+        stato_ipc(&stato, &sincronia)
+    })
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Accende o spegne la sincronia automatica.
@@ -285,26 +288,26 @@ pub fn sincronia_stato(
 /// # Errori
 ///
 /// `db.queryFailed` se la scrittura fallisce.
-#[tauri::command(async)]
-pub fn sincronia_attiva(
-    app: AppHandle,
-    stato: State<'_, Stato>,
-    sincronia: State<'_, StatoSincronia>,
-    accesa: bool,
-) -> Esito<StatoSincroniaIpc> {
-    con_libreria(&stato, |libreria| {
-        settings::write(
-            &libreria.connection,
-            CHIAVE_ATTIVA,
-            if accesa { "1" } else { "0" },
-        )
-    })
-    .map_err(errore)?;
-    if accesa {
-        let _ = sincronia.sveglia.send(Sveglia::Subito);
-    }
-    let _ = &app;
-    stato_ipc(&stato, &sincronia).map_err(errore)
+#[tauri::command]
+pub async fn sincronia_attiva(app: AppHandle, accesa: bool) -> Esito<StatoSincroniaIpc> {
+    // Un interruttore dove l'ultimo vince: sulla corsia della libreria.
+    crate::corsia::LIBRERIA
+        .comanda("sincronia attiva", move || {
+            let (stato, sincronia) = stati(&app).map_err(errore)?;
+            con_libreria(&stato, |libreria| {
+                settings::write(
+                    &libreria.connection,
+                    CHIAVE_ATTIVA,
+                    if accesa { "1" } else { "0" },
+                )
+            })
+            .map_err(errore)?;
+            if accesa {
+                let _ = sincronia.sveglia.send(Sveglia::Subito);
+            }
+            stato_ipc(&stato, &sincronia).map_err(errore)
+        })
+        .await
 }
 
 /// Sceglie dove depositare i documenti.
@@ -459,11 +462,12 @@ pub async fn sincronia_adesso(app: AppHandle) -> Esito<Resoconto> {
 ///
 /// `db.queryFailed` se la lettura fallisce.
 #[tauri::command]
-pub fn sincronia_dispositivi(stato: State<'_, Stato>) -> Esito<Vec<DispositivoIpc>> {
-    con_libreria(&stato, |libreria| {
+pub async fn sincronia_dispositivi(app: AppHandle) -> Esito<Vec<DispositivoIpc>> {
+    leggi_la_libreria(app, "dispositivi della sincronia", |libreria| {
         let io = crate::nuvola::dispositivo(&libreria.connection)?;
         Ok(in_ipc(sincronia::dispositivi(&libreria.connection)?, &io))
     })
+    .await
     .map_err(errore)
 }
 
@@ -473,16 +477,17 @@ pub fn sincronia_dispositivi(stato: State<'_, Stato>) -> Esito<Vec<DispositivoIp
 ///
 /// `db.queryFailed` se la scrittura fallisce.
 #[tauri::command]
-pub fn sincronia_accoppia(
-    stato: State<'_, Stato>,
+pub async fn sincronia_accoppia(
+    app: AppHandle,
     id: String,
     nome: Option<String>,
 ) -> Esito<Vec<DispositivoIpc>> {
-    con_libreria(&stato, |libreria| {
+    leggi_la_libreria(app, "accoppiamento di un dispositivo", move |libreria| {
         sincronia::fidati(&libreria.connection, &id, nome.as_deref(), None)?;
         let io = crate::nuvola::dispositivo(&libreria.connection)?;
         Ok(in_ipc(sincronia::dispositivi(&libreria.connection)?, &io))
     })
+    .await
     .map_err(errore)
 }
 
@@ -498,20 +503,26 @@ pub fn sincronia_accoppia(
 ///
 /// `db.queryFailed` se la scrittura fallisce.
 #[tauri::command]
-pub fn sincronia_rinomina(
+pub async fn sincronia_rinomina(
     app: AppHandle,
-    stato: State<'_, Stato>,
     id: String,
     nome: Option<String>,
 ) -> Esito<Vec<DispositivoIpc>> {
-    let elenco = con_libreria(&stato, |libreria| {
-        sincronia::rinomina(&libreria.connection, &id, nome.as_deref())?;
-        let io = crate::nuvola::dispositivo(&libreria.connection)?;
-        Ok(in_ipc(sincronia::dispositivi(&libreria.connection)?, &io))
+    // Anche `riferisci` rilegge la libreria: tutto dentro lo stesso lavoro in
+    // disparte, e non una metà sul pool e una metà su un worker del runtime.
+    in_disparte("nome di un dispositivo", move || {
+        let (stato, _) = stati(&app)?;
+        let elenco = con_libreria(&stato, |libreria| {
+            sincronia::rinomina(&libreria.connection, &id, nome.as_deref())?;
+            let io = crate::nuvola::dispositivo(&libreria.connection)?;
+            Ok(in_ipc(sincronia::dispositivi(&libreria.connection)?, &io))
+        })?;
+        riferisci(&app);
+        Ok(elenco)
     })
-    .map_err(errore)?;
-    riferisci(&app);
-    Ok(elenco)
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 /// Dimentica un dispositivo.
@@ -523,20 +534,21 @@ pub fn sincronia_rinomina(
 /// # Errori
 ///
 /// `db.queryFailed` se la scrittura fallisce.
-#[tauri::command(async)]
-pub fn sincronia_dimentica(
-    stato: State<'_, Stato>,
-    sincronia: State<'_, StatoSincronia>,
-    id: String,
-) -> Esito<Vec<DispositivoIpc>> {
-    let elenco = con_libreria(&stato, |libreria| {
-        sincronia::dimentica(&libreria.connection, &id)?;
-        let io = crate::nuvola::dispositivo(&libreria.connection)?;
-        Ok(in_ipc(sincronia::dispositivi(&libreria.connection)?, &io))
+#[tauri::command]
+pub async fn sincronia_dimentica(app: AppHandle, id: String) -> Esito<Vec<DispositivoIpc>> {
+    in_disparte("dispositivo dimenticato", move || {
+        let (stato, sincronia) = stati(&app)?;
+        let elenco = con_libreria(&stato, |libreria| {
+            sincronia::dimentica(&libreria.connection, &id)?;
+            let io = crate::nuvola::dispositivo(&libreria.connection)?;
+            Ok(in_ipc(sincronia::dispositivi(&libreria.connection)?, &io))
+        })?;
+        sincronia.dimentica_la_memoria();
+        Ok(elenco)
     })
-    .map_err(errore)?;
-    sincronia.dimentica_la_memoria();
-    Ok(elenco)
+    .await
+    .map_err(errore)?
+    .map_err(errore)
 }
 
 // ── il filo di sottofondo ───────────────────────────────────────────────────

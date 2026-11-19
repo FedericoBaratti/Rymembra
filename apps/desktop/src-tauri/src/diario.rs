@@ -75,6 +75,7 @@ use rymembra_domain::tempo::istante_iso;
 use crate::nota;
 use rymembra_domain::errors::{AppError, ErrorCode};
 
+use crate::disparte::{comanda, in_disparte};
 use crate::errore::{Esito, errore};
 
 /// Come si chiama il file su cui si sta scrivendo adesso.
@@ -827,34 +828,41 @@ pub(crate) fn a_diario_chiuso(prova: impl FnOnce()) -> String {
 /// diversi e portano due cause diverse, perché nel primo caso non c'è niente da
 /// aprire e nel secondo il file c'è ma non lo si sta vedendo.
 #[tauri::command]
-pub fn diario_apri() -> Esito<()> {
-    let Some(dove) = cartella() else {
-        return Err(errore(
-            AppError::new(ErrorCode::InternalAborted {
-                what: Some("apertura della cartella del diario".to_owned()),
-            })
-            .with_cause(
-                "il diario non è stato aperto: la cartella dei dati non è scrivibile".to_owned(),
-            ),
-        ));
-    };
-    #[cfg(target_os = "android")]
-    return condividi_sul_telefono(&dove);
-    #[cfg(not(target_os = "android"))]
-    {
-        // Nella copia del Store la cartella del diario è nuova, quindi sta
-        // nella cartella privata del pacchetto, e Esplora risorse — che gira
-        // fuori — non vede il percorso di dentro (R20-4). Vedi `pacchetto`.
-        let dove = crate::pacchetto::per_esplora(&dove);
-        tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| {
-            errore(
+pub async fn diario_apri() -> Esito<()> {
+    // Sul computer chiede al sistema di aprire una cartella (un processo, e su
+    // una cartella dentro il pacchetto del Store un percorso da tradurre); sul
+    // telefono copia il diario e apre la condivisione. Aspetta tutte e due.
+    comanda("apertura del diario", || {
+        let Some(dove) = cartella() else {
+            return Err(errore(
                 AppError::new(ErrorCode::InternalAborted {
                     what: Some("apertura della cartella del diario".to_owned()),
                 })
-                .with_cause(err.to_string()),
-            )
-        })
-    }
+                .with_cause(
+                    "il diario non è stato aperto: la cartella dei dati non è scrivibile"
+                        .to_owned(),
+                ),
+            ));
+        };
+        #[cfg(target_os = "android")]
+        return condividi_sul_telefono(&dove);
+        #[cfg(not(target_os = "android"))]
+        {
+            // Nella copia del Store la cartella del diario è nuova, quindi sta
+            // nella cartella privata del pacchetto, e Esplora risorse — che gira
+            // fuori — non vede il percorso di dentro (R20-4). Vedi `pacchetto`.
+            let dove = crate::pacchetto::per_esplora(&dove);
+            tauri_plugin_opener::open_path(&dove, None::<&str>).map_err(|err| {
+                errore(
+                    AppError::new(ErrorCode::InternalAborted {
+                        what: Some("apertura della cartella del diario".to_owned()),
+                    })
+                    .with_cause(err.to_string()),
+                )
+            })
+        }
+    })
+    .await
 }
 
 /// [`diario_apri`] sul telefono: una cartella non c'è nessuno che la apra —
@@ -937,12 +945,19 @@ fn una_riga_sola(testo: &str) -> String {
 /// questo file). Un `Esito` qui vorrebbe dire una finestra già in avaria che
 /// riceve un secondo errore dal codice chiamato a raccontare il primo.
 #[tauri::command]
-pub fn diario_annota(dove: String, cosa: String) {
-    nota(format_args!(
-        "[{}] {}",
-        una_riga_sola(&dove),
-        una_riga_sola(&cosa)
-    ));
+pub async fn diario_annota(dove: String, cosa: String) {
+    // Sul pool bloccante: `nota` prende il lucchetto del diario e scrive su
+    // disco, e può ruotare il file. Un disco lento non deve fermare la pagina
+    // che sta raccontando il proprio guasto. L'esito non si guarda: se la
+    // scrittura cade, il diario non ha dove dirlo.
+    let _ = in_disparte("annotazione della finestra", move || {
+        nota(format_args!(
+            "[{}] {}",
+            una_riga_sola(&dove),
+            una_riga_sola(&cosa)
+        ));
+    })
+    .await;
 }
 
 #[cfg(test)]

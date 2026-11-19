@@ -53,7 +53,7 @@ use std::time::Duration;
 
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_insieme::messaggi::Diritti;
-use tauri::{AppHandle, Manager as _, State};
+use tauri::{AppHandle, Manager as _};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -540,13 +540,11 @@ fn con_la_rete_di_casa() -> Esito<()> {
 
 /// Il pannello, adesso.
 #[tauri::command]
-pub fn insieme_stato(stato: State<'_, StatoInsieme>) -> Esito<StatoInsiemeIpc> {
-    Ok(stato
-        .comune
-        .vetrina
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone())
+pub async fn insieme_stato(app: AppHandle) -> Esito<StatoInsiemeIpc> {
+    // Legge la vetrina sotto un `Mutex`: sul pool anche lui, come `lontano_stato`
+    // — un comando sincrono che «legge solo un lucchetto» è la forma di quello
+    // che fermò la pagina del telefono (vedi `disparte.rs`).
+    in_sessione(move || Ok(vetrina(&app))).await
 }
 
 /// Accende o spegne «Ascolta insieme».
