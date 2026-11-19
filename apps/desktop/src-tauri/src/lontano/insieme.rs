@@ -29,9 +29,9 @@ use std::net::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::nucleo::Nucleo;
 use rymembra_insieme::{Origine, Presa, Strada};
 use rymembra_lontano::Flusso;
-use tauri::AppHandle;
 
 use super::comune;
 use super::filo::prendi;
@@ -94,7 +94,7 @@ impl Presa for PresaLontana {
 
 /// Chi apre i flussi verso i dispositivi associati.
 struct StradaLontana {
-    app: AppHandle,
+    app: Nucleo,
 }
 
 impl Strada for StradaLontana {
@@ -119,7 +119,7 @@ impl Strada for StradaLontana {
 
 /// La strada per la rete di «Ascolta insieme».
 #[must_use]
-pub fn strada(app: &AppHandle) -> Arc<dyn Strada> {
+pub fn strada(app: &Nucleo) -> Arc<dyn Strada> {
     Arc::new(StradaLontana { app: app.clone() })
 }
 
@@ -132,7 +132,7 @@ pub fn strada(app: &AppHandle) -> Arc<dyn Strada> {
 ///
 /// `lontano.reteAConsumo` sui dati mobili senza il sì; la finestra chiede
 /// come per «Sfoglia» (`gestoLontano`).
-pub fn dati_permessi(app: &AppHandle) -> Result<(), rymembra_domain::errors::AppError> {
+pub fn dati_permessi(app: &Nucleo) -> Result<(), rymembra_domain::errors::AppError> {
     match comune(app) {
         Ok(comune) => super::sfoglia::dati_permessi(&comune),
         Err(_) => Ok(()),
@@ -143,7 +143,7 @@ pub fn dati_permessi(app: &AppHandle) -> Result<(), rymembra_domain::errors::App
 /// chiave di «Ascolta insieme» in testo: `(chiave del collegamento, chiave di
 /// «Ascolta insieme»)`. Vuoto a collegamento spento.
 #[must_use]
-pub fn ospitano(app: &AppHandle) -> Vec<(String, String)> {
+pub fn ospitano(app: &Nucleo) -> Vec<(String, String)> {
     comune(app)
         .map(|comune| prendi(&comune.ospitano).clone())
         .unwrap_or_default()

@@ -35,6 +35,12 @@
 //! che non vuole un telefono: gli identificativi, le pagine, le lettere, la
 //! scelta di che cosa suonare per una richiesta a voce.
 
+#[cfg(mobile)]
+use crate::errore::{Esito, errore};
+#[cfg(mobile)]
+use crate::nucleo::Nucleo;
+#[cfg(mobile)]
+use crate::stato::{Stato, con_libreria};
 use rusqlite::Connection;
 use rymembra_app::covers::CoverStore;
 use rymembra_app::library::{
@@ -47,13 +53,6 @@ use rymembra_app::specchio::Origine;
 use rymembra_domain::keys::sort_name;
 use rymembra_domain::{AppError, ErrorCode};
 use serde::Serialize;
-#[cfg(mobile)]
-use tauri::Manager as _;
-
-#[cfg(mobile)]
-use crate::errore::{Esito, errore};
-#[cfg(mobile)]
-use crate::stato::{Stato, con_libreria};
 
 /// Quante voci al massimo in una pagina, qualunque cosa chieda l'auto.
 ///
@@ -957,7 +956,7 @@ fn niente(dove: &str) -> AppError {
 /// si chiude —, poi quelli della libreria.
 #[cfg(mobile)]
 pub fn leggi<T>(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     lettura: impl FnOnce(&Connection, &Origine, &CoverStore) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
     let stato = app.try_state::<Stato>().ok_or_else(|| {
@@ -983,7 +982,7 @@ pub fn leggi<T>(
 /// Quelli dei comandi; `library.trackNotFound` per una voce o una ricerca che
 /// non porta a niente da suonare.
 #[cfg(mobile)]
-pub fn esegui(app: &tauri::AppHandle, gesto: GestoAuto) -> Esito<()> {
+pub fn esegui(app: &Nucleo, gesto: GestoAuto) -> Esito<()> {
     let Some(lettore) = app.try_state::<crate::riproduzione::StatoLettore>() else {
         return Ok(());
     };

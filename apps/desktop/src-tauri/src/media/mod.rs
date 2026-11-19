@@ -82,16 +82,14 @@ mod sistema;
 
 pub(crate) mod lontane;
 
+use crate::nucleo::{ComeNucleo, Nucleo};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-use tauri::Manager as _;
-
 use crate::nota;
 use crate::riproduzione::{StatoLettore, StatoRiproduzione};
-use crate::spegnimento::Emette as _;
 
 pub use sistema::{avvia, stacca};
 
@@ -192,7 +190,7 @@ impl StatoMedia {
 /// Gira sul filo del seguito del lettore, non dentro il suo lucchetto: la
 /// consegna della copertina aspetta il sistema, e prima si aspettava con il
 /// lettore chiuso. Vedi `crate::riproduzione::in_ordine`.
-pub fn aggiorna(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
+pub fn aggiorna(app: &Nucleo, stato: &StatoRiproduzione) {
     // `try_state` e non `state`: quest'ultima **va in panico** se lo stato non
     // è registrato, e chi chiama è anche il filo dell'orologio, che parte
     // insieme al lettore. L'ordine in `main` è già quello giusto, ma un ordine
@@ -220,7 +218,7 @@ pub fn aggiorna(app: &tauri::AppHandle, stato: &StatoRiproduzione) {
 /// ricomporre niente. Serve ai salti relativi — vedi
 /// [`StatoMedia::posizione_ms`] — e non ridisegna la scheda del sistema, che
 /// interpola per conto suo dall'ultimo [`MediaPlayback`] ricevuto.
-pub fn segna_posizione(app: &tauri::AppHandle, ms: u64) {
+pub fn segna_posizione(app: &Nucleo, ms: u64) {
     // `try_state` per la stessa ragione di [`aggiorna`]: l'orologio parte
     // insieme al lettore, e questo modulo può non essere ancora registrato.
     if let Some(media) = app.try_state::<StatoMedia>() {
@@ -290,7 +288,8 @@ pub(crate) enum Gesto {
 ///
 /// Parte al primo gesto, non all'avvio: chi non tocca mai un tasto non paga un
 /// filo.
-pub(crate) fn premi(app: &tauri::AppHandle, gesto: Gesto) {
+pub(crate) fn premi(app: &impl ComeNucleo, gesto: Gesto) {
+    let app = &app.come_nucleo();
     let Some(media) = app.try_state::<StatoMedia>() else {
         return;
     };
@@ -497,7 +496,7 @@ fn avvia_corsie(
 /// così un tasto della tastiera, una voce del vassoio e il pulsante nella
 /// finestra fanno **letteralmente** la stessa cosa, salvataggio della coda e
 /// invio dello stato compresi.
-fn esegui(app: &tauri::AppHandle, gesto: Gesto) {
+fn esegui(app: &Nucleo, gesto: Gesto) {
     let Some(lettore) = app.try_state::<StatoLettore>() else {
         return;
     };
@@ -546,7 +545,8 @@ fn esegui(app: &tauri::AppHandle, gesto: Gesto) {
 /// Con durata sconosciuta non si limita niente: `0` significa che nessun brano
 /// è ancora partito, e trattarlo come una lunghezza vera manderebbe ogni salto
 /// all'inizio.
-fn dentro_il_brano(app: &tauri::AppHandle, ms: u64) -> u64 {
+fn dentro_il_brano(app: &impl ComeNucleo, ms: u64) -> u64 {
+    let app = &app.come_nucleo();
     let durata = app.state::<StatoMedia>().durata_ms.load(Ordering::Relaxed);
     entro_la_durata(ms, durata)
 }
@@ -554,7 +554,7 @@ fn dentro_il_brano(app: &tauri::AppHandle, ms: u64) -> u64 {
 /// La regola di [`dentro_il_brano`], senza il posto da cui viene la durata.
 ///
 /// Una funzione a sé unicamente perché si possa provare: leggere `durata_ms`
-/// vuole un `AppHandle`, e un `AppHandle` vuole un ciclo degli eventi. La riga
+/// vuole un `Nucleo`, e un `Nucleo` vuole un ciclo degli eventi. La riga
 /// è la stessa di prima, spostata di un livello.
 fn entro_la_durata(ms: u64, durata: u64) -> u64 {
     if durata == 0 { ms } else { ms.min(durata) }

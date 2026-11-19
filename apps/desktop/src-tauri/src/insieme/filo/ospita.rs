@@ -8,12 +8,12 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::nucleo::Nucleo;
 use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_insieme::messaggi::{
     Ambito, AncoraSulFilo, Azione, Diritti, Dove, MASSIMO_AGGIUNTE, Messaggio, VoceSulFilo,
 };
 use rymembra_insieme::{ChiavePubblica, Gettone, IdConnessione};
-use tauri::{AppHandle, Manager as _};
 
 use super::{
     DalFilo, Dettagli, Filo, ImprontaStato, OGNI_ANCORA_MS, OGNI_DESCRIZIONI_MS, OGNI_STATO_MS,
@@ -709,7 +709,7 @@ impl Filo {
 /// scadenza per tutto il blocco. Il costo è suo, non delle ancore: ogni blocco
 /// torna appena è fatto, e lo stato si ripubblica a ogni blocco.
 pub(super) fn avvia_il_preparatore(
-    app: AppHandle,
+    app: Nucleo,
     posta: Sender<Posta>,
 ) -> Option<Sender<DaPreparare>> {
     let (coda, orecchio) = channel::<DaPreparare>();
@@ -866,7 +866,7 @@ pub(super) struct Incarico {
 /// non arriva a nessuno. Uno alla volta, nell'ordine d'arrivo: per pausa e
 /// salto vince l'ultimo arrivato.
 pub(super) fn avvia_l_esecutore(
-    app: AppHandle,
+    app: Nucleo,
     posta: Sender<Posta>,
     sessione_viva: Arc<AtomicU64>,
     diritti_vivi: DirittiVivi,
@@ -943,7 +943,7 @@ pub(super) fn avvia_l_esecutore(
 /// `None` se è andato (o non c'era niente da fare), altrimenti quello del
 /// rifiuto; accanto, gli `uid` delle voci di un `Aggiungi` rimaste fuori dalla
 /// coda, che la sessione deve dimenticare (vedi [`esito_dell_aggiunta`]).
-fn esegui(app: &AppHandle, lavoro: Lavoro) -> (Option<String>, Vec<u64>) {
+fn esegui(app: &Nucleo, lavoro: Lavoro) -> (Option<String>, Vec<u64>) {
     let codice_di = |err: &AppError| codice_sul_filo(err.code().kind().code());
     match lavoro {
         Lavoro::Azione(azione) => (fai(app, &azione), Vec::new()),
@@ -1010,7 +1010,7 @@ pub(super) fn esito_dell_aggiunta(
 
 /// Un'azione diversa da `Aggiungi`, con la coda di adesso: vedi
 /// [`gesti::piano`].
-fn fai(app: &AppHandle, azione: &Azione) -> Option<String> {
+fn fai(app: &Nucleo, azione: &Azione) -> Option<String> {
     let rifiutato = || Some(ErrorCodeKind::InsiemeRifiutato.code().to_owned());
     let Some(adesso) = ponte::istantanea(app) else {
         return rifiutato();
@@ -1073,7 +1073,7 @@ pub(super) fn codice_sul_filo(codice: &str) -> String {
 /// fa sul disco: un brano cambiato sul servizio a metà sessione non si legge a
 /// pezzi di due versioni.
 fn lettore_del_cloud(
-    app: &AppHandle,
+    app: &Nucleo,
     file: &rymembra_insieme::FileServito,
 ) -> Option<rymembra_insieme::Lettore> {
     let percorso = file.percorso.to_string_lossy().into_owned();

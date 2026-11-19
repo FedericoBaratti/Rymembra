@@ -51,9 +51,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use crate::nucleo::{ComeNucleo, Nucleo};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_insieme::messaggi::Diritti;
-use tauri::{AppHandle, Manager as _};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -119,7 +119,7 @@ impl StatoInsieme {
 ///
 /// Da spento il filo dorme: legge le impostazioni e i fidati, e non apre
 /// niente in rete finché l'interruttore non è acceso.
-pub fn avvia_filo(app: AppHandle, orecchio: Receiver<()>) {
+pub fn avvia_filo(app: Nucleo, orecchio: Receiver<()>) {
     let Some(stato) = app.try_state::<StatoInsieme>() else {
         return;
     };
@@ -139,7 +139,7 @@ pub fn avvia_filo(app: AppHandle, orecchio: Receiver<()>) {
 /// Un flusso di «Ascolta insieme» arrivato dal collegamento via internet,
 /// da `da`: la rete lo accoglie come una connessione in entrata, se ospita.
 /// Senza la rete accesa si chiude. Non aspetta.
-pub fn accogli_lontano(app: &AppHandle, da: &str, presa: Box<dyn rymembra_insieme::Presa>) {
+pub fn accogli_lontano(app: &Nucleo, da: &str, presa: Box<dyn rymembra_insieme::Presa>) {
     let Some(stato) = app.try_state::<StatoInsieme>() else {
         let _ = presa.shutdown(std::net::Shutdown::Both);
         return;
@@ -157,7 +157,7 @@ pub fn accogli_lontano(app: &AppHandle, da: &str, presa: Box<dyn rymembra_insiem
 /// collegamento via internet ha scritto in `insieme_pari` la chiave di un
 /// dispositivo associato col QR (`lontano::ospite`). Il filo li rilegge. Non
 /// aspetta.
-pub fn fidati_cambiati(app: &AppHandle) {
+pub fn fidati_cambiati(app: &Nucleo) {
     if let Some(stato) = app.try_state::<StatoInsieme>() {
         let _ = stato.posta.send(Posta::Fidati);
     }
@@ -166,7 +166,7 @@ pub fn fidati_cambiati(app: &AppHandle) {
 /// I dispositivi collegati via internet che ospitano una sessione sono
 /// cambiati (`lontano::insieme::ospitano`): la scoperta li guarda subito. Non
 /// aspetta.
-pub fn vicini_cambiati(app: &AppHandle) {
+pub fn vicini_cambiati(app: &Nucleo) {
     if let Some(stato) = app.try_state::<StatoInsieme>() {
         let _ = stato.posta.send(Posta::Cerca);
     }
@@ -176,7 +176,8 @@ pub fn vicini_cambiati(app: &AppHandle) {
 /// quando un aggiornamento non è riuscito dopo che [`ferma`] l'aveva spenta, e
 /// l'applicazione resta viva. Non aspetta.
 #[cfg(desktop)]
-pub fn riaccendi(app: &AppHandle) {
+pub fn riaccendi(app: &impl ComeNucleo) {
+    let app = &app.come_nucleo();
     if let Some(stato) = app.try_state::<StatoInsieme>() {
         let _ = stato.posta.send(Posta::Riaccendi);
     }
@@ -193,7 +194,8 @@ pub fn riaccendi(app: &AppHandle) {
 /// toccano: alla prossima apertura l'interruttore è com'era.
 ///
 /// Ripetibile: la seconda volta trova tutto spento e torna subito.
-pub fn ferma(app: &AppHandle) {
+pub fn ferma(app: &impl ComeNucleo) {
+    let app = &app.come_nucleo();
     let Some(stato) = app.try_state::<StatoInsieme>() else {
         return;
     };
@@ -217,7 +219,7 @@ pub fn chiave_pubblica(dispositivo: &str) -> Option<String> {
 
 /// Il ruolo di questo PC, senza lucchetti.
 #[must_use]
-pub fn ruolo(app: &AppHandle) -> Ruolo {
+pub fn ruolo(app: &Nucleo) -> Ruolo {
     filo::ruolo_dal_byte(
         app.try_state::<StatoInsieme>()
             .map_or(0, |stato| stato.comune.ruolo.load(Ordering::Acquire)),
@@ -234,7 +236,7 @@ pub fn ruolo(app: &AppHandle) -> Ruolo {
 /// della sessione manda: il comando torna subito, senza aspettare l'esito —
 /// `pausa` gira sul filo della finestra.
 #[must_use]
-pub fn instrada(app: &AppHandle, gesto: &Gesto) -> Instradato {
+pub fn instrada(app: &Nucleo, gesto: &Gesto) -> Instradato {
     match strada::regola(ruolo(app), gesto) {
         Regola::Locale => Instradato::Locale,
         Regola::LocaleConVoci => {
@@ -263,7 +265,7 @@ pub fn instrada(app: &AppHandle, gesto: &Gesto) -> Instradato {
 /// `instrada`), e i brani da aggiungere si descrivono qui: `brani_di_questo`
 /// legge il database e il disco, e i comandi che aggiungono girano già in
 /// disparte, mentre il filo della sessione deve restare libero per le ancore.
-fn inoltra(app: &AppHandle, gesto: &Gesto) -> Instradato {
+fn inoltra(app: &Nucleo, gesto: &Gesto) -> Instradato {
     let Some(stato) = app.try_state::<StatoInsieme>() else {
         return Instradato::Rifiutato(AppError::new(ErrorCode::InternalAborted {
             what: Some("insieme".to_owned()),
@@ -335,7 +337,7 @@ pub const fn nome_del_gesto(gesto: &Gesto) -> &'static str {
 
 /// Chi ospita: la coda, la voce corrente o la pausa sono cambiate, e gli altri
 /// vanno avvisati. Non blocca: suona il campanello del filo della sessione.
-pub fn lettore_cambiato(app: &AppHandle) {
+pub fn lettore_cambiato(app: &Nucleo) {
     if let Some(stato) = app.try_state::<StatoInsieme>()
         && stato.comune.ruolo.load(Ordering::Acquire) == filo::ruolo_in_byte(Ruolo::Host)
     {
@@ -347,7 +349,7 @@ pub fn lettore_cambiato(app: &AppHandle) {
 /// capo, perché la deriva che aveva imparato era di quell'altra scheda. Non
 /// blocca. Vedi `richieste-sessione.md`: la chiama il lettore dove l'uscita
 /// cambia davvero.
-pub fn uscita_cambiata(app: &AppHandle) {
+pub fn uscita_cambiata(app: &Nucleo) {
     if let Some(stato) = app.try_state::<StatoInsieme>() {
         let _ = stato.posta.send(Posta::UscitaCambiata);
     }
@@ -358,7 +360,8 @@ pub fn uscita_cambiata(app: &AppHandle) {
 /// nell'archivio delle copertine. Per chi vuole un file — le schede del
 /// sistema — c'è [`copertina_su_file`].
 #[must_use]
-pub fn copertina(app: &AppHandle, chiave: &str) -> Option<Arc<[u8]>> {
+pub fn copertina(app: &impl ComeNucleo, chiave: &str) -> Option<Arc<[u8]>> {
+    let app = &app.come_nucleo();
     voci::uid_della_chiave(chiave)?;
     let stato = app.try_state::<StatoInsieme>()?;
     stato
@@ -394,7 +397,8 @@ pub fn e_una_chiave_di_sessione(chiave: &str) -> bool {
 /// `rymembra-cover` lo prende sul filo della finestra, e un disco lento non
 /// deve tenerlo fermo.
 #[must_use]
-pub fn copertina_su_file(app: &AppHandle, chiave: &str) -> Option<PathBuf> {
+pub fn copertina_su_file(app: &impl ComeNucleo, chiave: &str) -> Option<PathBuf> {
+    let app = &app.come_nucleo();
     voci::uid_della_chiave(chiave)?;
     let stato = app.try_state::<StatoInsieme>()?;
     let cache = crate::lontano::sfoglia::cartella_copertine(app)?;
@@ -455,7 +459,7 @@ pub fn percorso_per_android(file: &std::path::Path) -> Option<String> {
 /// della sessione tiene aggiornata. Nessun lucchetto del lettore: lo si legge
 /// col suo in mano.
 #[must_use]
-pub fn nel_lettore(app: &AppHandle) -> Option<InsiemeNelLettore> {
+pub fn nel_lettore(app: &Nucleo) -> Option<InsiemeNelLettore> {
     app.try_state::<StatoInsieme>()?
         .comune
         .nel_lettore
@@ -465,7 +469,7 @@ pub fn nel_lettore(app: &AppHandle) -> Option<InsiemeNelLettore> {
 }
 
 /// Un comando al filo della sessione, e la sua risposta.
-fn chiedi(app: &AppHandle, richiesta: Richiesta) -> Result<(), AppError> {
+fn chiedi(app: &Nucleo, richiesta: Richiesta) -> Result<(), AppError> {
     let fermo = || {
         AppError::new(ErrorCode::InternalAborted {
             what: Some("insieme".to_owned()),
@@ -503,7 +507,7 @@ fn senza_causa_di_rete(err: AppError) -> AppError {
 }
 
 /// Il pannello com'è adesso nella vetrina.
-fn vetrina(app: &AppHandle) -> StatoInsiemeIpc {
+fn vetrina(app: &Nucleo) -> StatoInsiemeIpc {
     app.try_state::<StatoInsieme>()
         .map_or_else(filo::vetrina_spenta, |stato| {
             stato
@@ -516,7 +520,7 @@ fn vetrina(app: &AppHandle) -> StatoInsiemeIpc {
 }
 
 /// Un comando che risponde col pannello aggiornato.
-fn e_poi_il_pannello(app: &AppHandle, richiesta: Richiesta) -> Esito<StatoInsiemeIpc> {
+fn e_poi_il_pannello(app: &Nucleo, richiesta: Richiesta) -> Esito<StatoInsiemeIpc> {
     chiedi(app, richiesta).map_err(errore)?;
     Ok(vetrina(app))
 }
@@ -546,7 +550,7 @@ fn con_la_rete_di_casa() -> Esito<()> {
 
 /// Il pannello, adesso.
 #[tauri::command]
-pub async fn insieme_stato(app: AppHandle) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_stato(app: Nucleo) -> Esito<StatoInsiemeIpc> {
     // Legge la vetrina sotto un `Mutex`: sul pool anche lui, come `lontano_stato`
     // — un comando sincrono che «legge solo un lucchetto» è la forma di quello
     // che fermò la pagina del telefono (vedi `disparte.rs`).
@@ -555,7 +559,7 @@ pub async fn insieme_stato(app: AppHandle) -> Esito<StatoInsiemeIpc> {
 
 /// Accende o spegne «Ascolta insieme».
 #[tauri::command]
-pub async fn insieme_attiva(app: AppHandle, attivo: bool) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_attiva(app: Nucleo, attivo: bool) -> Esito<StatoInsiemeIpc> {
     in_sessione(move || {
         if attivo {
             con_la_rete_di_casa()?;
@@ -570,19 +574,19 @@ pub async fn insieme_attiva(app: AppHandle, attivo: bool) -> Esito<StatoInsiemeI
 
 /// Cambia il nome di questo PC.
 #[tauri::command]
-pub async fn insieme_nome(app: AppHandle, nome: String) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_nome(app: Nucleo, nome: String) -> Esito<StatoInsiemeIpc> {
     in_sessione(move || e_poi_il_pannello(&app, Richiesta::Nome(nome))).await
 }
 
 /// Il dialogo sul firewall è stato visto.
 #[tauri::command]
-pub async fn insieme_firewall_visto(app: AppHandle) -> Esito<()> {
+pub async fn insieme_firewall_visto(app: Nucleo) -> Esito<()> {
     in_sessione(move || chiedi(&app, Richiesta::FirewallVisto).map_err(errore)).await
 }
 
 /// Comincia a ospitare una sessione.
 #[tauri::command]
-pub async fn insieme_ospita(app: AppHandle) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_ospita(app: Nucleo) -> Esito<StatoInsiemeIpc> {
     in_sessione(move || {
         con_la_rete_di_casa()?;
         e_poi_il_pannello(&app, Richiesta::Ospita)
@@ -592,20 +596,20 @@ pub async fn insieme_ospita(app: AppHandle) -> Esito<StatoInsiemeIpc> {
 
 /// Chi ospita: termina la sessione per tutti.
 #[tauri::command]
-pub async fn insieme_termina(app: AppHandle) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_termina(app: Nucleo) -> Esito<StatoInsiemeIpc> {
     in_sessione(move || e_poi_il_pannello(&app, Richiesta::Termina)).await
 }
 
 /// Chi segue: esce dalla sessione.
 #[tauri::command]
-pub async fn insieme_esci(app: AppHandle) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_esci(app: Nucleo) -> Esito<StatoInsiemeIpc> {
     in_sessione(move || e_poi_il_pannello(&app, Richiesta::Esci)).await
 }
 
 /// Un giro di scoperta adesso: il pannello si è appena aperto. Non aspetta:
 /// le risposte arrivano col prossimo `insieme:stato`.
 #[tauri::command]
-pub fn insieme_cerca(app: AppHandle) -> Esito<()> {
+pub fn insieme_cerca(app: Nucleo) -> Esito<()> {
     if let Some(stato) = app.try_state::<StatoInsieme>() {
         let _ = stato.posta.send(Posta::Cerca);
     }
@@ -614,7 +618,7 @@ pub fn insieme_cerca(app: AppHandle) -> Esito<()> {
 
 /// Comincia l'associazione con un PC visto in rete.
 #[tauri::command]
-pub async fn insieme_associa(app: AppHandle, vicino: String) -> Esito<()> {
+pub async fn insieme_associa(app: Nucleo, vicino: String) -> Esito<()> {
     in_sessione(move || {
         con_la_rete_di_casa()?;
         chiedi(&app, Richiesta::Associa(vicino)).map_err(errore)
@@ -624,7 +628,7 @@ pub async fn insieme_associa(app: AppHandle, vicino: String) -> Esito<()> {
 
 /// La risposta al codice di quattro cifre.
 #[tauri::command]
-pub async fn insieme_codice(app: AppHandle, associazione: u64, uguale: bool) -> Esito<()> {
+pub async fn insieme_codice(app: Nucleo, associazione: u64, uguale: bool) -> Esito<()> {
     in_sessione(move || {
         chiedi(
             &app,
@@ -640,13 +644,13 @@ pub async fn insieme_codice(app: AppHandle, associazione: u64, uguale: bool) -> 
 
 /// Chi ospita: invita un PC associato e collegato, con quel che potrà fare.
 #[tauri::command]
-pub async fn insieme_invita(app: AppHandle, pari: i64, diritti: Diritti) -> Esito<()> {
+pub async fn insieme_invita(app: Nucleo, pari: i64, diritti: Diritti) -> Esito<()> {
     in_sessione(move || chiedi(&app, Richiesta::Invita { pari, diritti }).map_err(errore)).await
 }
 
 /// La risposta a un invito.
 #[tauri::command]
-pub async fn insieme_rispondi(app: AppHandle, invito: u64, accetta: bool) -> Esito<()> {
+pub async fn insieme_rispondi(app: Nucleo, invito: u64, accetta: bool) -> Esito<()> {
     in_sessione(move || {
         if accetta {
             con_la_rete_di_casa()?;
@@ -658,7 +662,7 @@ pub async fn insieme_rispondi(app: AppHandle, invito: u64, accetta: bool) -> Esi
 
 /// Chiede a un PC associato che ospita di entrare nella sua sessione.
 #[tauri::command]
-pub async fn insieme_chiedi(app: AppHandle, pari: i64) -> Esito<()> {
+pub async fn insieme_chiedi(app: Nucleo, pari: i64) -> Esito<()> {
     in_sessione(move || {
         con_la_rete_di_casa()?;
         chiedi(&app, Richiesta::Chiedi(pari)).map_err(errore)
@@ -670,7 +674,7 @@ pub async fn insieme_chiedi(app: AppHandle, pari: i64) -> Esito<()> {
 /// fare chi entra. Per un no, `diritti` non conta.
 #[tauri::command]
 pub async fn insieme_ammetti(
-    app: AppHandle,
+    app: Nucleo,
     richiesta: u64,
     accetta: bool,
     diritti: Diritti,
@@ -691,52 +695,44 @@ pub async fn insieme_ammetti(
 
 /// Chi ospita: toglie un membro dalla sessione.
 #[tauri::command]
-pub async fn insieme_allontana(app: AppHandle, membro: u32) -> Esito<()> {
+pub async fn insieme_allontana(app: Nucleo, membro: u32) -> Esito<()> {
     in_sessione(move || chiedi(&app, Richiesta::Allontana(membro)).map_err(errore)).await
 }
 
 /// Chi ospita: cambia che cosa può fare un membro.
 #[tauri::command]
-pub async fn insieme_concedi(app: AppHandle, membro: u32, diritti: Diritti) -> Esito<()> {
+pub async fn insieme_concedi(app: Nucleo, membro: u32, diritti: Diritti) -> Esito<()> {
     in_sessione(move || chiedi(&app, Richiesta::Concedi { membro, diritti }).map_err(errore)).await
 }
 
 /// Rinomina un PC associato, per questo PC.
 #[tauri::command]
-pub async fn insieme_pari_rinomina(
-    app: AppHandle,
-    id: i64,
-    nome: String,
-) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_pari_rinomina(app: Nucleo, id: i64, nome: String) -> Esito<StatoInsiemeIpc> {
     in_sessione(move || e_poi_il_pannello(&app, Richiesta::Rinomina { id, nome })).await
 }
 
 /// Dimentica un PC associato: la prossima volta si riassocia.
 #[tauri::command]
-pub async fn insieme_pari_dimentica(app: AppHandle, id: i64) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_pari_dimentica(app: Nucleo, id: i64) -> Esito<StatoInsiemeIpc> {
     in_sessione(move || e_poi_il_pannello(&app, Richiesta::Dimentica(id))).await
 }
 
 /// Blocca o sblocca un PC associato.
 #[tauri::command]
-pub async fn insieme_pari_blocca(
-    app: AppHandle,
-    id: i64,
-    bloccato: bool,
-) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_pari_blocca(app: Nucleo, id: i64, bloccato: bool) -> Esito<StatoInsiemeIpc> {
     in_sessione(move || e_poi_il_pannello(&app, Richiesta::Blocca { id, bloccato })).await
 }
 
 /// Gli indirizzi scritti a mano, `ip:porta`.
 #[tauri::command]
-pub async fn insieme_indirizzi(app: AppHandle, indirizzi: Vec<String>) -> Esito<StatoInsiemeIpc> {
+pub async fn insieme_indirizzi(app: Nucleo, indirizzi: Vec<String>) -> Esito<StatoInsiemeIpc> {
     in_sessione(move || e_poi_il_pannello(&app, Richiesta::Indirizzi(indirizzi))).await
 }
 
 /// Accende o spegne la voce di calibrazione: clic identici su tutti i PC della
 /// sessione, nel percorso di sincronia normale.
 #[tauri::command]
-pub async fn insieme_calibra(app: AppHandle, attiva: bool) -> Esito<()> {
+pub async fn insieme_calibra(app: Nucleo, attiva: bool) -> Esito<()> {
     in_sessione(move || chiedi(&app, Richiesta::Calibra(attiva)).map_err(errore)).await
 }
 

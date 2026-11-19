@@ -38,6 +38,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, Once, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::nucleo::{ComeNucleo, Nucleo};
 use rymembra_app::dispositivi::{self, POSTA_TESTO, POSTA_VALUTA, SCADENZA_POSTA_MS};
 use rymembra_app::library::condivisa::{PaginaCatalogo, RiassuntoCatalogo};
 use rymembra_app::specchio::archivio::{self, Anteprima, Giro, TETTO_RIMOZIONI_PER_GIRO};
@@ -47,14 +48,12 @@ use rymembra_domain::errors::{AppError, ErrorCode, ErrorCodeKind};
 use rymembra_lontano::protocollo::CAPACITA_CATALOGO;
 use rymembra_lontano::{Domanda, Risposta};
 use serde::Serialize;
-use tauri::{AppHandle, Manager as _};
 
 use super::filo::{Comune, leggi_a_parte, scrivi_in_libreria};
 use super::testo::{self, Consegna};
 use super::{comune, in_disparte};
 use crate::errore::Esito;
 use crate::nota;
-use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, adesso_ms};
 
 /// Ogni quanto si riguarda il catalogo di un dispositivo che risponde.
@@ -173,12 +172,12 @@ pub(super) trait Dati {
 
 /// L'app vera.
 pub(super) struct DallApp {
-    app: AppHandle,
+    app: Nucleo,
     comune: Arc<Comune>,
 }
 
 impl DallApp {
-    pub(super) fn nuovo(app: &AppHandle) -> Result<Self, AppError> {
+    pub(super) fn nuovo(app: &Nucleo) -> Result<Self, AppError> {
         Ok(Self {
             app: app.clone(),
             comune: comune(app)?,
@@ -626,7 +625,7 @@ fn presi<T>(m: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
 /// Fa partire un giro con `chiave` su un filo suo, se non ce n'è già uno (e se
 /// c'è, ne vuole un altro appena finisce): la posta e il catalogo. Non
 /// aspetta.
-pub(super) fn richiedi(app: &AppHandle, chiave: &str) {
+pub(super) fn richiedi(app: &Nucleo, chiave: &str) {
     if !presi(&IN_CORSO).insert(chiave.to_owned()) {
         presi(&RIPETI).insert(chiave.to_owned());
         return;
@@ -652,7 +651,7 @@ pub(super) fn richiedi(app: &AppHandle, chiave: &str) {
 
 /// Un giro intero con `chiave`: la posta prima — un voto dato qui non deve
 /// perdere contro il catalogo di prima — poi il catalogo.
-fn lavora(app: &AppHandle, chiave: &str) {
+fn lavora(app: &Nucleo, chiave: &str) {
     let dati = match DallApp::nuovo(app) {
         Ok(dati) => dati,
         Err(err) => {
@@ -710,14 +709,15 @@ fn segna_il_guasto<D: Dati>(dati: &D, chiave: &str, err: &AppError) {
 
 /// Un dispositivo ha cominciato a rispondere: il suo catalogo, la sua posta, e
 /// da qui un giro ogni [`OGNI`] finché risponde. Non aspetta.
-pub(super) fn presente(app: &AppHandle, chiave: &str) {
+pub(super) fn presente(app: &Nucleo, chiave: &str) {
     parte_il_ciclo(app);
     richiedi(app, chiave);
 }
 
 /// C'è posta nuova per questi dispositivi: si manda subito, se rispondono.
 /// Non aspetta.
-pub(crate) fn posta_nuova(app: &AppHandle, dispositivi: &[String]) {
+pub(crate) fn posta_nuova(app: &impl ComeNucleo, dispositivi: &[String]) {
+    let app = &app.come_nucleo();
     let Ok(comune) = comune(app) else {
         return;
     };
@@ -731,7 +731,7 @@ pub(crate) fn posta_nuova(app: &AppHandle, dispositivi: &[String]) {
 static CICLO: Once = Once::new();
 
 /// Il filo che, ogni [`OGNI`], riguarda il catalogo di chi risponde.
-fn parte_il_ciclo(app: &AppHandle) {
+fn parte_il_ciclo(app: &Nucleo) {
     CICLO.call_once(|| {
         let app = app.clone();
         let partito = std::thread::Builder::new()
@@ -812,7 +812,7 @@ static ASSENTI: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
 /// `lontano.*` dalla rete; `metadata.tagReadFailed` per byte che non sono una
 /// copertina nei limiti.
 pub(crate) fn copertina_di_una_riga(
-    app: &AppHandle,
+    app: &Nucleo,
     impronta: &str,
 ) -> Result<Option<Vec<u8>>, AppError> {
     if !rymembra_app::covers::e_un_impronta(impronta) || impronta.len() < 16 {
@@ -897,11 +897,7 @@ pub(crate) fn copertina_di_una_riga(
 /// # Errori
 ///
 /// `lontano.irraggiungibile`, `lontano.reteAConsumo`; quelli della libreria.
-pub(crate) fn scegli_la_copia(
-    app: &AppHandle,
-    stato: &Stato,
-    track_id: i64,
-) -> Result<i64, AppError> {
+pub(crate) fn scegli_la_copia(app: &Nucleo, stato: &Stato, track_id: i64) -> Result<i64, AppError> {
     let comune = comune(app)?;
     let presenti: HashSet<String> = super::filo::prendi(&comune.presenze)
         .keys()
@@ -928,7 +924,7 @@ pub(crate) fn scegli_la_copia(
 /// In ordine: due chiamate con gli stessi dispositivi danno la stessa lista, e
 /// chi la usa come chiave (la cache delle query) non la rifà per l'ordine con
 /// cui la mappa l'ha restituita.
-pub(crate) fn dispositivi_raggiungibili(app: &AppHandle) -> Vec<String> {
+pub(crate) fn dispositivi_raggiungibili(app: &Nucleo) -> Vec<String> {
     let Ok(comune) = comune(app) else {
         return Vec::new();
     };
@@ -949,7 +945,8 @@ pub(crate) fn dispositivi_raggiungibili(app: &AppHandle) -> Vec<String> {
 /// ogni riga un confronto di percorso e un `EXISTS` su `copia_di`, e chi non ha
 /// collegato niente non deve pagarli (R21-6: «origine» non costa niente a chi
 /// non ha dispositivi). I risultati sono gli stessi.
-pub(crate) fn origine_che_suona(app: &AppHandle) -> rymembra_app::specchio::Origine {
+pub(crate) fn origine_che_suona(app: &impl ComeNucleo) -> rymembra_app::specchio::Origine {
+    let app = &app.come_nucleo();
     use rymembra_app::specchio::Origine;
     let ne_ha = comune(app)
         .is_ok_and(|comune| !super::filo::prendi(&comune.vetrina).dispositivi.is_empty());
@@ -962,7 +959,7 @@ pub(crate) fn origine_che_suona(app: &AppHandle) -> rymembra_app::specchio::Orig
 /// I byte di una riga specchio: la sorgente a blocchi sul nodo del suo
 /// dispositivo, come per Sfoglia, con il cancello di «Dati mobili» dentro.
 pub(crate) fn apri_riga(
-    app: &AppHandle,
+    app: &Nucleo,
     riga: &rymembra_app::specchio::scelta::RigaRemota,
 ) -> Result<crate::riproduzione::insieme::ApriInRete, AppError> {
     let comune = comune(app)?;
@@ -998,7 +995,7 @@ fn ultimi_avanzamenti() -> Vec<AvanzamentoSpecchio> {
 /// Rilegge adesso il catalogo di un dispositivo (e gli manda la posta). Non
 /// aspetta il giro.
 #[tauri::command]
-pub async fn lontano_specchio_ora(app: AppHandle, chiave: String) -> Esito<()> {
+pub async fn lontano_specchio_ora(app: Nucleo, chiave: String) -> Esito<()> {
     in_disparte(move || {
         let comune = comune(&app)?;
         if !comune.associato(&chiave) {
@@ -1013,7 +1010,7 @@ pub async fn lontano_specchio_ora(app: AppHandle, chiave: String) -> Esito<()> {
 /// La persona ha detto di sì: le righe che il dispositivo non manda più se ne
 /// vanno. Quante.
 #[tauri::command]
-pub async fn lontano_specchio_conferma(app: AppHandle, chiave: String) -> Esito<usize> {
+pub async fn lontano_specchio_conferma(app: Nucleo, chiave: String) -> Esito<usize> {
     in_disparte(move || {
         // A blocchi, e ogni blocco in una presa sua del lucchetto: la conferma di
         // centomila righe non deve tenerlo fermo per quanto dura.
@@ -1039,7 +1036,7 @@ pub async fn lontano_specchio_conferma(app: AppHandle, chiave: String) -> Esito<
 /// Cosa succederebbe alle playlist dimenticando un dispositivo: per chiedere
 /// conferma dicendo quante playlist perdono brani.
 #[tauri::command]
-pub async fn lontano_dimentica_anteprima(app: AppHandle, chiave: String) -> Esito<Anteprima> {
+pub async fn lontano_dimentica_anteprima(app: Nucleo, chiave: String) -> Esito<Anteprima> {
     in_disparte(move || leggi_a_parte(&app, |c| archivio::anteprima_dimentica(c, &chiave))).await
 }
 

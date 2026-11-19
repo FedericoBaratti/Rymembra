@@ -255,6 +255,28 @@ impl Nucleo {
             .cloned()
     }
 
+    /// Lo stato di tipo `T`, o `internal.aborted`: come `importa::gestito`, per
+    /// chi lavora in disparte e può ritrovarsi vivo mentre gli stati vengono
+    /// lasciati cadere (la finestra si sta chiudendo), e lì un panico non è la
+    /// risposta.
+    ///
+    /// # Errori
+    ///
+    /// `internal.aborted` se lo stato non c'è.
+    pub fn gestito<T: Clone + Send + Sync + 'static>(
+        &self,
+        cosa: &str,
+    ) -> Result<T, rymembra_domain::errors::AppError> {
+        self.try_state::<T>().ok_or_else(|| {
+            rymembra_domain::errors::AppError::new(
+                rymembra_domain::errors::ErrorCode::InternalAborted {
+                    what: Some(cosa.to_owned()),
+                },
+            )
+            .with_cause("lo stato non c'è nel nucleo")
+        })
+    }
+
     /// Lo stato di tipo `T`; **va in panico** se non c'è, come `Manager::state`,
     /// di cui prende il posto per le parti del nucleo che lo usavano. Chi può
     /// trovarsi a nucleo non ancora riempito usa [`Nucleo::try_state`].
@@ -382,6 +404,18 @@ impl Nucleo {
         }
     }
 
+    /// L'avvio è già finito, di chi che sia: il nucleo c'è, e chi arriva dopo — la
+    /// finestra che nasce dopo un servizio — non lo avvia, si aggancia.
+    #[must_use]
+    pub fn e_gia_avviato(&self) -> bool {
+        self.0
+            .avvio
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .fase
+            == Fase::Finito
+    }
+
     /// Fa `lavoro` quando l'avvio è finito: subito, se lo è già, sul filo che
     /// chiama; altrimenti sul filo che lo finisce.
     ///
@@ -406,6 +440,31 @@ fn riga_senza_finestra<C: Serialize>(evento: &str, carico: &C) -> Option<String>
     }
     let testo = serde_json::to_string(carico).unwrap_or_else(|err| format!("illeggibile ({err})"));
     Some(format!("[nucleo] senza finestra, {evento}: {testo}"))
+}
+
+/// Chi può dare il nucleo del processo: il nucleo stesso, o l'`AppHandle` della
+/// finestra, che nel processo c'è sempre quando c'è un `AppHandle`.
+///
+/// È il ponte fra i due mondi, per le funzioni che chiamano **da tutti e due**:
+/// quelle del nucleo, che non hanno una finestra, e quelle della finestra — i
+/// comandi, il vassoio, la chiusura — che hanno un `AppHandle`. Prendono
+/// `&impl ComeNucleo` e il chiamante passa quel che ha, senza convertire a mano
+/// in cento posti.
+pub trait ComeNucleo {
+    /// Il nucleo di questo processo.
+    fn come_nucleo(&self) -> Nucleo;
+}
+
+impl ComeNucleo for Nucleo {
+    fn come_nucleo(&self) -> Nucleo {
+        self.clone()
+    }
+}
+
+impl ComeNucleo for AppHandle {
+    fn come_nucleo(&self) -> Nucleo {
+        Nucleo::di(self)
+    }
 }
 
 /// Lo stato che `Manager::state` non trova: un errore di chi scrive il codice.
@@ -491,6 +550,26 @@ mod prove {
         assert!(Arc::ptr_eq(&a.0, &b.0), "due richieste, due nuclei");
     }
 
+    /// Il ponte fra i due mondi dà sempre lo stesso nucleo: quello di cui si parte.
+    #[test]
+    fn come_nucleo_dal_nucleo_e_il_nucleo_stesso() {
+        let nucleo = Nucleo::nuovo();
+        assert!(Arc::ptr_eq(&nucleo.come_nucleo().0, &nucleo.0));
+    }
+
+    /// Chi lavora in disparte e trova lo stato caduto riceve `internal.aborted`, non
+    /// un panico: la finestra si sta chiudendo.
+    #[test]
+    fn uno_stato_che_manca_e_un_errore_e_non_un_panico() {
+        let nucleo = Nucleo::nuovo();
+        let errore = nucleo
+            .gestito::<Contatore>("contatore")
+            .err()
+            .expect("lo stato non c'è");
+        assert_eq!(errore.code().kind().code(), "internal.aborted");
+        nucleo.manage(Contatore(Arc::new(AtomicUsize::new(1))));
+        assert!(nucleo.gestito::<Contatore>("contatore").is_ok());
+    }
     /// Quel che `emetti` fa senza finestra, senza la bandiera dell'uscita (una
     /// statica di tutto il processo, che un'altra prova può aver alzato) e senza
     /// l'`AppHandle` (vedi [`Nucleo::emetti`]): gli ascoltatori, poi il diario.

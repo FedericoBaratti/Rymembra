@@ -38,6 +38,7 @@
 //! voce dell'host in mano al suo punto, perché la sincronia si vedrà alla
 //! ripresa, che è programmata (decisione D-31: prima bastava la stima).
 
+use crate::nucleo::Nucleo;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -82,7 +83,7 @@ pub trait Motore {
 }
 
 /// Il motore vero, attraverso il ponte.
-pub struct PonteVero(pub tauri::AppHandle);
+pub struct PonteVero(pub Nucleo);
 
 impl Motore for PonteVero {
     fn da_me(&self) -> Option<DaMe> {
@@ -594,7 +595,7 @@ pub fn ciclo(
 ///
 /// Quello di `Builder::spawn`.
 pub fn avvia(
-    app: tauri::AppHandle,
+    app: Nucleo,
     condivisa: Arc<Condivisa>,
     sveglia: Receiver<()>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {

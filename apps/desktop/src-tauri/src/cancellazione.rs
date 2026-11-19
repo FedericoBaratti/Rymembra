@@ -123,7 +123,7 @@ pub(crate) fn sgombera(app: &tauri::AppHandle, brani: &[i64], ferma: bool) {
     let Some(lettore) = app.try_state::<StatoLettore>() else {
         return;
     };
-    if let Err(err) = sgombra_dalla_coda(app, &lettore, brani, ferma) {
+    if let Err(err) = sgombra_dalla_coda(&crate::nucleo::Nucleo::di(app), &lettore, brani, ferma) {
         nota!(
             "[cancellazione] la coda non si è potuta sgomberare: {} causa={}",
             err.code().kind().code(),

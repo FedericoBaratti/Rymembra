@@ -1,6 +1,7 @@
 //! Le regole di sessione e il motore in sessione: quel che `riproduzione` chiede al ponte
 //! dentro i suoi gesti, sul `Lettore` che ha già in mano.
 
+use crate::nucleo::Nucleo;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::queue::{Queue, QueueSnapshot};
 use rymembra_insieme::messaggi::MASSIMO_VOCI;
@@ -9,7 +10,6 @@ use rymembra_play::tempo;
 use crate::nota;
 use crate::riproduzione::Lettore;
 use crate::riproduzione::ospiti::{self, MANIGLIA_CALIBRAZIONE};
-use crate::spegnimento::Emette as _;
 
 use super::{Programmata, Ruolo, SCADENZA_PROGRAMMATA_NS, anticipo};
 
@@ -203,11 +203,7 @@ pub(crate) fn cursore_sulla_voce(lettore: &mut Lettore, maniglia: i64) {
 /// È la strada dei gesti di **chi ospita**, che l'avviso lo deve vedere.
 /// L'aggiunta di un membro passa da [`accoda_maniglie`](super::accoda_maniglie), che usa lo stesso
 /// conto senza avvisare questa finestra: il gesto non è suo.
-pub(crate) fn entrano<'a>(
-    app: &tauri::AppHandle,
-    lettore: &Lettore,
-    brani: &'a [i64],
-) -> &'a [i64] {
+pub(crate) fn entrano<'a>(app: &Nucleo, lettore: &Lettore, brani: &'a [i64]) -> &'a [i64] {
     let quante = quante_entrano(lettore.sessione.is_some(), lettore.coda.len(), brani.len());
     if quante < brani.len() {
         // Sul filo del seguito: qui il lucchetto del lettore è in mano, e il
@@ -231,7 +227,7 @@ pub(super) const fn quante_entrano(in_sessione: bool, in_coda: usize, chiesti: u
 /// Dei brani sono rimasti fuori dalla coda di sessione: una riga nel diario
 /// (il conto, non i brani) e un avviso alla finestra, con la chiave di
 /// `insieme.codaPiena`. Senza lucchetti in mano.
-fn avvisa_coda_piena(app: &tauri::AppHandle, fuori: usize) {
+fn avvisa_coda_piena(app: &Nucleo, fuori: usize) {
     nota!("[insieme] coda di sessione piena: {fuori} brani lasciati fuori");
     app.emetti(
         "insieme:avviso",
@@ -336,7 +332,7 @@ fn indice_fra_le_voci(
 }
 
 /// La riga dietro ogni maniglia, dal registro: vedi [`lista_da_suonare`].
-pub(crate) fn righe_delle_voci(app: &tauri::AppHandle, maniglie: &[i64]) -> Vec<Option<i64>> {
+pub(crate) fn righe_delle_voci(app: &Nucleo, maniglie: &[i64]) -> Vec<Option<i64>> {
     ospiti::con_registro(app, |registro| {
         maniglie
             .iter()
@@ -352,7 +348,7 @@ pub(crate) fn righe_delle_voci(app: &tauri::AppHandle, maniglie: &[i64]) -> Vec<
 
 /// Toglie dal registro voci che nessuna coda nominerà. Il registro è un
 /// lucchetto foglia: si può chiamare col lettore in mano.
-pub(crate) fn dimentica_voci(app: &tauri::AppHandle, maniglie: &[i64]) {
+pub(crate) fn dimentica_voci(app: &Nucleo, maniglie: &[i64]) {
     if maniglie.is_empty() {
         return;
     }
@@ -383,7 +379,7 @@ pub(super) fn ripulita(istantanea: QueueSnapshot) -> QueueSnapshot {
 /// Si legge il ruolo della sessione e non il lettore: si chiama prima della
 /// strada del gesto, senza lucchetti, e la strada stessa decide dal ruolo.
 pub(crate) fn finestra_di_sessione(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     brani: Vec<i64>,
     indice: usize,
 ) -> (Vec<i64>, usize) {
@@ -600,7 +596,7 @@ pub(crate) fn dopo_un_avvio(lettore: &mut Lettore) {
 /// era di quella di prima (`Regolatore::azzera`). L'avviso non blocca, e si
 /// può dare col lucchetto del lettore in mano: vedi
 /// `crate::insieme::uscita_cambiata`.
-pub(crate) fn motore_sostituito(app: &tauri::AppHandle, lettore: &mut Lettore) {
+pub(crate) fn motore_sostituito(app: &Nucleo, lettore: &mut Lettore) {
     let Some(sessione) = lettore.sessione.as_mut() else {
         return;
     };
@@ -610,7 +606,7 @@ pub(crate) fn motore_sostituito(app: &tauri::AppHandle, lettore: &mut Lettore) {
 
 /// Chi ospita: avvisa la sessione che il lettore è cambiato. Lo chiama
 /// `manda_stato`, che è dove passa ogni cambiamento. Non blocca.
-pub(crate) fn cambiato(app: &tauri::AppHandle, lettore: &Lettore) {
+pub(crate) fn cambiato(app: &Nucleo, lettore: &Lettore) {
     if ospita(lettore) {
         crate::insieme::lettore_cambiato(app);
     }

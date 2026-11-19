@@ -2,17 +2,16 @@
 //! «rymembra-seguito» e «rymembra-scritture», e la fotografia dello stato,
 //! scattata sotto il lucchetto e sviluppata fuori per la finestra e il sistema.
 
+use crate::nucleo::Nucleo;
 use std::time::Duration;
 
 use crate::nota;
-use crate::spegnimento::Emette as _;
 use crate::stato::{Stato, con_libreria, con_libreria_entro};
 use rymembra_app::library::{FormatoFile, TrackSummary};
 use rymembra_app::playback;
 use rymembra_domain::errors::{AppError, ErrorCodeKind};
 use rymembra_domain::queue::RepeatMode;
 use rymembra_play::Motore;
-use tauri::Manager as _;
 
 use super::fili::quanto_manca;
 use super::ospiti::{self, Chi};
@@ -27,7 +26,7 @@ use super::{
 /// stato da comporre e mandare, un ascolto da scrivere, un evento piccolo per
 /// la finestra — e l'unica cosa che hanno in comune è l'ordine in cui vanno
 /// fatti.
-pub(super) type Seguito = Box<dyn FnOnce(&tauri::AppHandle) + Send>;
+pub(super) type Seguito = Box<dyn FnOnce(&Nucleo) + Send>;
 
 /// Avvia il filo «rymembra-seguito» e restituisce il canale per parlargli.
 ///
@@ -63,7 +62,7 @@ pub(super) type Seguito = Box<dyn FnOnce(&tauri::AppHandle) + Send>;
 /// Si torna al lavoro sul posto: il canale ha l'altro capo chiuso, e
 /// [`in_ordine`] se ne accorge alla prima spedizione. Lento come prima, ma non
 /// muto.
-pub(super) fn avvia_seguito(app: &tauri::AppHandle) -> std::sync::mpsc::Sender<Seguito> {
+pub(super) fn avvia_seguito(app: &Nucleo) -> std::sync::mpsc::Sender<Seguito> {
     avvia_fila(app, "rymembra-seguito", |_| {})
 }
 
@@ -74,7 +73,7 @@ pub(super) fn avvia_seguito(app: &tauri::AppHandle) -> std::sync::mpsc::Sender<S
 /// vedi [`da_scrivere`]. Dopo ogni lavoro, riuscito o caduto, conta: è il
 /// numero che [`pubblica`] guarda per sapere se l'ascolto di prima è già sul
 /// disco.
-pub(super) fn avvia_scritture(app: &tauri::AppHandle) -> std::sync::mpsc::Sender<Seguito> {
+pub(super) fn avvia_scritture(app: &Nucleo) -> std::sync::mpsc::Sender<Seguito> {
     avvia_fila(app, "rymembra-scritture", |app| {
         if let Some(stato) = app.try_state::<StatoLettore>() {
             stato
@@ -88,9 +87,9 @@ pub(super) fn avvia_scritture(app: &tauri::AppHandle) -> std::sync::mpsc::Sender
 ///
 /// `dopo_ogni_lavoro` gira dopo ciascuno, anche se è caduto.
 fn avvia_fila(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     nome: &'static str,
-    dopo_ogni_lavoro: fn(&tauri::AppHandle),
+    dopo_ogni_lavoro: fn(&Nucleo),
 ) -> std::sync::mpsc::Sender<Seguito> {
     let (manda, ricevi) = std::sync::mpsc::channel::<Seguito>();
     let manico = app.clone();
@@ -127,10 +126,7 @@ fn avvia_fila(
 ///
 /// Se il filo non c'è — non è partito, o l'applicazione sta chiudendo — il
 /// lavoro si fa qui, subito.
-pub(crate) fn in_ordine(
-    app: &tauri::AppHandle,
-    lavoro: impl FnOnce(&tauri::AppHandle) + Send + 'static,
-) {
+pub(crate) fn in_ordine(app: &Nucleo, lavoro: impl FnOnce(&Nucleo) + Send + 'static) {
     let Some(stato) = app.try_state::<StatoLettore>() else {
         lavoro(app);
         return;
@@ -170,10 +166,7 @@ pub(crate) fn in_ordine(
 /// libreria occupata lo stato parte lo stesso.
 ///
 /// Se il filo non c'è, si scrive qui, subito: lento come prima, ma non muto.
-pub(super) fn da_scrivere(
-    app: &tauri::AppHandle,
-    lavoro: impl FnOnce(&tauri::AppHandle) + Send + 'static,
-) {
+pub(super) fn da_scrivere(app: &Nucleo, lavoro: impl FnOnce(&Nucleo) + Send + 'static) {
     use std::sync::atomic::Ordering;
     let Some(stato) = app.try_state::<StatoLettore>() else {
         lavoro(app);
@@ -238,7 +231,7 @@ pub(super) fn aspetta_le_risposte(
 /// una scadenza sola per quell'attesa e per la scheda, [`ATTESA_SCHEDA`]: una
 /// libreria occupata non tiene fermo lo stato più di così. Vedi
 /// [`da_scrivere`].
-pub(super) fn pubblica(app: &tauri::AppHandle, abbozzo: Abbozzo) {
+pub(super) fn pubblica(app: &Nucleo, abbozzo: Abbozzo) {
     // Superata: ne arriva un'altra dietro, e questa non aspetta né le
     // scritture né la libreria. Vedi [`superato`].
     if let Some(generazione) = abbozzo.generazione
@@ -269,8 +262,12 @@ pub(super) fn pubblica(app: &tauri::AppHandle, abbozzo: Abbozzo) {
         return;
     }
     crate::media::aggiorna(app, &copia);
-    crate::vassoio::riflette(app, &copia);
-    crate::barra::riflette(app, &copia);
+    // Il vassoio e i pulsanti della miniatura sono della finestra: senza,
+    // niente da riflettere.
+    app.con_finestra(|app| {
+        crate::vassoio::riflette(app, &copia);
+        crate::barra::riflette(app, &copia);
+    });
 }
 
 /// Lo stato come lo sa il lettore, senza la scheda del brano.
@@ -315,7 +312,7 @@ pub(super) const fn superato(generazione: u64, ultima: u64) -> bool {
 ///
 /// Si chiama col lucchetto del lettore in mano, come [`in_ordine`]: è quel
 /// che tiene il numero nello stesso ordine della fila.
-pub(super) fn spedisci(app: &tauri::AppHandle, mut abbozzo: Abbozzo) {
+pub(super) fn spedisci(app: &Nucleo, mut abbozzo: Abbozzo) {
     if let Some(stato) = app.try_state::<StatoLettore>() {
         abbozzo.generazione = Some(
             stato
@@ -366,7 +363,7 @@ pub(super) fn dal_ricordo<A: Clone, B: Clone>(
 }
 
 /// La fotografia del lettore: vedi [`Abbozzo`].
-pub(super) fn abbozzo(app: &tauri::AppHandle, lettore: &Lettore) -> Abbozzo {
+pub(super) fn abbozzo(app: &Nucleo, lettore: &Lettore) -> Abbozzo {
     let posizione = lettore.motore.posizione();
     // Un dispositivo perso è fermo, comunque la pensi il motore.
     //
@@ -438,7 +435,7 @@ pub(super) fn abbozzo(app: &tauri::AppHandle, lettore: &Lettore) -> Abbozzo {
             // Solo una lettura atomica: `try_state` restituisce il registro,
             // non prende il lucchetto — che del resto è già in mano a chi ci ha
             // chiamati.
-            spegnimento_ms: stato_lettore.as_ref().and_then(|stato| quanto_manca(stato)),
+            spegnimento_ms: stato_lettore.as_ref().and_then(quanto_manca),
             autoplay: lettore.autoplay,
             dissolvenza_s: lettore.dissolvenza_s,
             latenza_ms: lettore.latenza_ms,
@@ -474,7 +471,7 @@ pub(super) fn abbozzo(app: &tauri::AppHandle, lettore: &Lettore) -> Abbozzo {
 /// l'attesa delle scritture (vedi [`pubblica`]): dietro di lui aspettano tutti
 /// gli stati che vengono dopo.
 pub(super) fn completa(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     abbozzo: Abbozzo,
     attesa: Option<Duration>,
 ) -> StatoRiproduzione {
@@ -560,7 +557,7 @@ pub(super) fn completa(
 /// di un file che sta su un altro PC il database di qui non sa niente, ma
 /// quel che si sente lo sa il motore.
 fn scheda_di_voce(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     maniglia: i64,
     voce: &ospiti::Voce,
     attesa: Option<Duration>,

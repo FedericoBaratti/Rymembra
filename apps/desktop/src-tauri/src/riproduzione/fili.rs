@@ -15,11 +15,10 @@
 //! e un'attesa non si fa né sul filo che disegna la finestra né su quello che
 //! riempie l'anello dei campioni.
 
+use crate::nucleo::{ComeNucleo, Nucleo};
 use std::time::Duration;
 
-use crate::spegnimento::Emette as _;
 use rymembra_app::playback;
-use tauri::Manager as _;
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -59,7 +58,7 @@ use super::{
 ///
 /// Adesso è una **spinta**: si manda un colpetto sul canale e si torna subito.
 /// Il lavoro vero lo fa il filo di [`avvia_preparatore`], a lucchetto lasciato.
-pub(super) fn prepara_prossimo(app: &tauri::AppHandle, lettore: &mut Lettore) {
+pub(super) fn prepara_prossimo(app: &Nucleo, lettore: &mut Lettore) {
     // Il successivo in canna che non è più il brano dopo esce **adesso**, non
     // quando il preparatore avrà aperto quello nuovo: fino ad allora il motore
     // lo attaccherebbe alla fine del corrente — il brano appena tolto dalla
@@ -185,7 +184,7 @@ const FILO_SPETTRO: &str = "rymembra-spettro";
 /// Niente attesa dopo la caduta, al contrario dei fili a battito: questo non
 /// gira da solo, gira a spinte, e le spinte arrivano a ogni cambio di brano —
 /// un panico che si ripete non diventa un ciclo che consuma il processore.
-pub fn avvia_preparatore(app: tauri::AppHandle, orecchio: std::sync::mpsc::Receiver<()>) {
+pub fn avvia_preparatore(app: Nucleo, orecchio: std::sync::mpsc::Receiver<()>) {
     let avviato = std::thread::Builder::new()
         .name(FILO_PREPARATORE.to_owned())
         .spawn(move || {
@@ -255,7 +254,7 @@ fn accoda_la_scelta(
 /// serve più — un successivo sbagliato attaccato in gapless si sente — ma la
 /// richiesta, a quel punto, è già partita: è la raffica a doverla evitare, non
 /// il controllo finale.
-fn prepara_prossimo_adesso(app: &tauri::AppHandle) {
+fn prepara_prossimo_adesso(app: &Nucleo) {
     // `try_state` e non `state`: `state` panica se lo stato non c'è, e questo
     // filo gira anche mentre gli stati vengono lasciati cadere.
     let Some(stato) = app.try_state::<StatoLettore>() else {
@@ -507,7 +506,7 @@ pub(super) fn quanto_manca(stato_lettore: &StatoLettore) -> Option<i64> {
 /// orologio finché nessuno cambia fuso, e «finché nessuno» non è una
 /// garanzia.
 #[tauri::command]
-pub async fn spegnimento(app: tauri::AppHandle, minuti: i64) -> Esito<()> {
+pub async fn spegnimento(app: Nucleo, minuti: i64) -> Esito<()> {
     super::col_lettore_in_disparte(app, "timer di spegnimento", move |app, stato| {
         use std::sync::atomic::Ordering;
 
@@ -573,7 +572,7 @@ const SFUMATURA_SPEGNIMENTO: Duration = Duration::from_secs(6);
 /// Il modo «fine del brano» non passa di qui: quello non è una scadenza ma un
 /// brano successivo che non viene preparato, e lo decide
 /// [`prepara_prossimo`].
-fn scade_il_timer(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
+fn scade_il_timer(app: &Nucleo, stato_lettore: &StatoLettore) {
     use std::sync::atomic::Ordering;
 
     // La discesa finita: il motore è già in pausa, se nessuno l'ha fermata.
@@ -689,7 +688,7 @@ fn scade_il_timer(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
 /// bandiera, stessa scadenza, stessa regola del rialzo — e stessa ragione:
 /// scriverla dentro il gesto voleva dire tenere il lucchetto del lettore per
 /// tutto il tempo di una transazione.
-fn salva_quel_che_manca(app: &tauri::AppHandle, stato: &StatoLettore, entro: Duration) {
+fn salva_quel_che_manca(app: &Nucleo, stato: &StatoLettore, entro: Duration) {
     use std::sync::atomic::Ordering::Relaxed;
     if stato.coda_da_salvare.swap(false, Relaxed) {
         match scrivi_coda(app, stato, entro) {
@@ -781,7 +780,8 @@ const ATTESA_USCENDO: Duration = Duration::from_millis(400);
 /// ascolti chiusi un istante prima di uscire, e un ascolto finito che non
 /// arriva sul disco è una canzone che non conta. Una scadenza sola per le due
 /// file, e non una per fila, perché l'attesa all'uscita è corta apposta.
-pub fn salva_uscendo(app: &tauri::AppHandle) {
+pub fn salva_uscendo(app: &impl ComeNucleo) {
+    let app = &app.come_nucleo();
     if let Some(stato) = app.try_state::<StatoLettore>() {
         let fine = std::time::Instant::now() + ATTESA_USCENDO;
         chiudi_uscendo(app, &stato);
@@ -806,7 +806,7 @@ pub fn salva_uscendo(app: &tauri::AppHandle) {
 /// riga della libreria che la coda indica: mai una maniglia di sessione — il
 /// segno è di domani, e domani la sessione non c'è più. Ripetibile: la seconda
 /// chiamata trova l'ascolto già chiuso, e riscrive lo stesso segno.
-fn chiudi_uscendo(app: &tauri::AppHandle, stato: &StatoLettore) {
+fn chiudi_uscendo(app: &Nucleo, stato: &StatoLettore) {
     let segno = con_lettore(stato, |lettore| {
         chiudi_ascolto(app, lettore);
         let posizione = lettore.motore.posizione();
@@ -849,7 +849,7 @@ fn chiudi_uscendo(app: &tauri::AppHandle, stato: &StatoLettore) {
 /// Se il filo non parte lo dice il diario, come per gli altri fili del lettore.
 /// Prima l'esito della `spawn` si buttava, e un orologio mai partito era un
 /// cursore fermo senza nessuna spiegazione.
-pub fn avvia_orologio(app: tauri::AppHandle) {
+pub fn avvia_orologio(app: Nucleo) {
     let avviato = std::thread::Builder::new()
         .name(FILO_OROLOGIO.to_owned())
         .spawn(move || {
@@ -857,7 +857,7 @@ pub fn avvia_orologio(app: tauri::AppHandle) {
             let mut cadute_di_fila = 0_u32;
             loop {
                 std::thread::sleep(PASSO_TEMPO);
-                // Prima di qualunque cosa che tocchi l'`AppHandle`: se la
+                // Prima di qualunque cosa che tocchi l'`Nucleo`: se la
                 // finestra si sta chiudendo, un `emit` da qui fa panicare il
                 // ciclo degli eventi. Vedi `crate::spegnimento`.
                 if crate::spegnimento::in_uscita() {
@@ -939,7 +939,7 @@ pub(super) fn e_un_risveglio(prima_ms: Option<i64>, adesso_ms: i64) -> bool {
 /// guasto, cioè **dopo** il risveglio, ed era quindi sempre «fresco». Con il
 /// comando `pausa`, lo stesso del tasto: è un gesto, e la riapertura che
 /// segue lo rispetta.
-fn pausa_al_risveglio(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
+fn pausa_al_risveglio(app: &Nucleo, stato_lettore: &StatoLettore) {
     let suona = con_lettore(stato_lettore, |lettore| {
         let posizione = lettore.motore.posizione();
         Ok(posizione.track_id.is_some() && !posizione.in_pausa)
@@ -963,7 +963,7 @@ fn pausa_al_risveglio(app: &tauri::AppHandle, stato_lettore: &StatoLettore) {
 
 /// Un giro d'orologio. `Break` quando non c'è più niente da raccontare a
 /// nessuno — lo stato del lettore se n'è andato — e il filo deve uscire.
-fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::ControlFlow<()> {
+fn giro_d_orologio(app: &Nucleo, memoria: &mut Orologio) -> std::ops::ControlFlow<()> {
     use std::ops::ControlFlow;
 
     // `try_state` e non `state`: `state` panica se lo stato non c'è, e questo
@@ -1174,7 +1174,7 @@ fn giro_d_orologio(app: &tauri::AppHandle, memoria: &mut Orologio) -> std::ops::
     mobile,
     allow(dead_code, reason = "sul telefono lo spettro non c'è: vedi `lib.rs`")
 )]
-pub fn avvia_spettro(app: tauri::AppHandle) {
+pub fn avvia_spettro(app: Nucleo) {
     let avviato = std::thread::Builder::new()
         .name(FILO_SPETTRO.to_owned())
         .spawn(move || {
@@ -1267,7 +1267,7 @@ fn attesa_fino(
 ///
 /// E nemmeno per la presa si aspetta più: vedi [`presa_spettro_se_libera`].
 fn giro_dello_spettro(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     presa: &mut Option<rymembra_play::motore::PresaSpettro>,
 ) -> Option<bool> {
     let stato_lettore = app.try_state::<StatoLettore>()?;

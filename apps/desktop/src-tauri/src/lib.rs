@@ -428,6 +428,7 @@ fn finisci_l_avvio(app: &tauri::AppHandle) {
 /// sottofondo, il vassoio, la sorveglianza. Gira sul filo della finestra, come
 /// quando stava nel `setup`: vedi [`apri_e_avvia`].
 fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
+    let nucleo = Nucleo::di(app);
     // Le cartelle dal cloud **subito dopo** la libreria: lo specchio si
     // carica da lì, e prima di ogni scansione — anche quella del lettore
     // che riapre la coda di ieri — chi apre un file deve già trovare il
@@ -445,40 +446,40 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // dispositivo audio sparisce: se quel momento arrivasse prima di
     // questa riga, cercherebbe uno stato non registrato. Registrarlo
     // vuoto costa un mutex e un intero.
-    Nucleo::di(app).manage(media::StatoMedia::nuovo());
+    nucleo.manage(media::StatoMedia::nuovo());
     // Lo stesso per i pulsanti nell'anteprima, e per una ragione in
     // più: il loro stato ricorda l'aspetto anche prima che i pulsanti
     // ci siano, e il primo stato del lettore arriva quando il dispositivo
     // si apre. Vedi `barra`.
     app.manage(barra::StatoBarra::nuovo());
 
-    let (lettore, orecchio, orecchio_dispositivi) = riproduzione::StatoLettore::avvia(app);
+    let (lettore, orecchio, orecchio_dispositivi) = riproduzione::StatoLettore::avvia(&nucleo);
     riproduzione::riga_di_avvio_lettore(&lettore);
-    Nucleo::di(app).manage(lettore);
+    nucleo.manage(lettore);
     // Il filo che apre il brano successivo, insieme agli altri del
     // lettore. L'ordine fra questi quattro non conta: il canale del
     // preparatore non ha limite, quindi una spinta che arrivasse prima
     // che il filo sia in piedi lo aspetta lì invece di perdersi.
-    riproduzione::avvia_preparatore(app.clone(), orecchio);
+    riproduzione::avvia_preparatore(nucleo.clone(), orecchio);
     // Lo stato del collegamento via internet prima della coda: la coda
     // di ieri può avere brani di un altro dispositivo, e le loro voci
     // si rifanno con lui. Il suo filo parte più sotto, dopo «Ascolta
     // insieme»; lo stato da solo non apre niente.
-    Nucleo::di(app).manage(lontano::StatoLontano::nuovo());
-    riproduzione::avvia_orologio(app.clone());
+    nucleo.manage(lontano::StatoLontano::nuovo());
+    riproduzione::avvia_orologio(nucleo.clone());
     // Sul telefono lo spettro non c'è (`InRiproduzione.tsx`,
     // `CON_SPETTRO`), e un filo che si sveglia quattro volte al secondo
     // per sentirsi dire che nessuno guarda è batteria spesa per niente,
     // per tutta la vita del processo — che su Android è lunga, perché
     // la musica continua anche a schermata chiusa.
     #[cfg(desktop)]
-    riproduzione::avvia_spettro(app.clone());
+    riproduzione::avvia_spettro(nucleo.clone());
     // Il dispositivo audio, su un filo suo, e dopo il primo tentativo il
     // filo che guarda le uscite andare e venire. Ultimo dei quattro, e non
     // conta nemmeno qui: chi pungola il sorvegliante prima che sia in piedi
     // trova un canale che tiene la spinta finché non c'è nessuno a
     // raccoglierla. Vedi `riproduzione::apri_il_primo_motore`.
-    riproduzione::apri_il_primo_motore(app.clone(), orecchio_dispositivi);
+    riproduzione::apri_il_primo_motore(nucleo.clone(), orecchio_dispositivi);
 
     // I controlli veri **dopo** il lettore, e per una ragione che non è
     // l'ordine di dipendenza ma quello della finestra: su Windows le
@@ -535,25 +536,25 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // guardare se è rimasto qualcosa in coda dalla sessione precedente.
     // Il suo filo dorme finché non lo si chiama: a servizi scollegati
     // non costa niente.
-    Nucleo::di(app).manage(scrobble::StatoScrobble::nuovo());
-    scrobble::avvia(app);
+    nucleo.manage(scrobble::StatoScrobble::nuovo());
+    scrobble::avvia(&nucleo);
 
     // «Ascolta insieme» **dopo** il lettore e la libreria: la sessione
     // legge le impostazioni da lì e parla col lettore attraverso il
     // ponte. Spento di serie, e da spento il suo filo dorme: nessun
     // pacchetto in rete finché qualcuno non accende l'interruttore.
     let (insieme, orecchio) = insieme::StatoInsieme::nuovo();
-    Nucleo::di(app).manage(insieme);
-    insieme::avvia_filo(app.clone(), orecchio);
+    nucleo.manage(insieme);
+    insieme::avvia_filo(nucleo.clone(), orecchio);
 
     // Il collegamento via internet **dopo** «Ascolta insieme»: dice
     // agli altri dispositivi se la sessione è accesa. Spento di serie:
     // da spento il filo legge le impostazioni e basta.
-    lontano::avvia_filo(app);
+    lontano::avvia_filo(&nucleo);
     // Una volta per avvio, **dopo** «Ascolta insieme» — che dice se c'è una
     // sessione, e allora non si tocca niente —: via quel che le versioni di prima
     // hanno lasciato in `copertine-lontane`. Su un filo suo.
-    lontano::ripulisci_le_copertine_di_prima(app);
+    lontano::ripulisci_le_copertine_di_prima(&nucleo);
 
     // I modelli di linguaggio: un lucchetto vuoto e un contatore, e
     // nessun filo. Qui non parte niente da solo — non c'e` niente da
@@ -579,7 +580,7 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
     // Adesso che ci sono tutti e tre — il riquadro multimediale, i
     // pulsanti della miniatura, il vassoio — il brano della coda di
     // ieri anche a loro. Vedi `riproduzione::primo_stato_fuori`.
-    riproduzione::primo_stato_fuori(app);
+    riproduzione::primo_stato_fuori(&nucleo);
 
     // Le cartelle sorvegliate **dopo** la libreria: legge la scelta e
     // l'elenco da lì, e il suo filo aspetta dieci secondi prima di
@@ -1618,17 +1619,23 @@ pub(crate) struct DatiAMano(pub(crate) bool);
 /// aperta (il rifiuto di una cartella relativa): la cartella locale è quella
 /// dell'istanza vera, che può girare insieme, e una cache aperta da qui
 /// poterebbe la sua. Senza nessuna delle due cartelle, quella temporanea.
-pub(crate) fn cartella_di_cache(app: &tauri::AppHandle, nome: &str) -> Option<PathBuf> {
-    let a_mano = app.try_state::<DatiAMano>().is_some_and(|dati| dati.0);
-    let dati = app
+pub(crate) fn cartella_di_cache(app: &impl nucleo::ComeNucleo, nome: &str) -> Option<PathBuf> {
+    let nucleo = app.come_nucleo();
+    let a_mano = nucleo.try_state::<DatiAMano>().is_some_and(|dati| dati.0);
+    let dati = nucleo
         .try_state::<stato::Stato>()
         .and_then(|stato| stato.cartella_dati().map(std::path::Path::to_path_buf));
     // Della copia del Microsoft Store, per la copia del Store: vedi
     // [`cartella_di_serie`].
-    let locale = app
-        .path()
-        .app_local_data_dir()
-        .ok()
+    //
+    // Senza la finestra â€” il nucleo che parte da un servizio, su Android â€” non c'Ã¨
+    // chi risolva il percorso locale, e non serve: lÃ¬ la cartella locale e quella
+    // dei dati sono la stessa (`Context.getDataDir()`, per tutte e due:
+    // `tauri-2.12.0/mobile/android/.../PathPlugin.kt`), e `dove_sta_la_cache`
+    // risponde `dati/nome` come risponderebbe `locale/nome`.
+    let locale = nucleo
+        .finestra()
+        .and_then(|app| app.path().app_local_data_dir().ok())
         .map(|base| cartella_di_serie(base, dallo_store()));
     dove_sta_la_cache(a_mano, dati.as_deref(), locale.as_deref(), nome)
 }

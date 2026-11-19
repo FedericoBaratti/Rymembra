@@ -51,11 +51,11 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use crate::nucleo::{ComeNucleo, Nucleo};
 use rymembra_app::dispositivi::{self, DatiMobili};
 use rymembra_domain::errors::{AppError, Domain, ErrorCode, ErrorCodeKind};
 use rymembra_lontano::nodo::VALIDITA_INVITO;
 use rymembra_lontano::{Domanda, Nodo};
-use tauri::{AppHandle, Manager as _};
 
 use crate::errore::{Esito, errore};
 use crate::stato::adesso_ms;
@@ -112,7 +112,7 @@ impl Default for StatoLontano {
 }
 
 /// Fa partire il filo. Da spento il filo legge le impostazioni e basta.
-pub fn avvia_filo(app: &AppHandle) {
+pub fn avvia_filo(app: &Nucleo) {
     let Some(stato) = app.try_state::<StatoLontano>() else {
         return;
     };
@@ -129,7 +129,8 @@ pub fn avvia_filo(app: &AppHandle) {
 
 /// Spegne il nodo uscendo: si chiama da `spegnimento::spegni`. Aspetta al
 /// più [`ATTESA_FERMA`]. Ripetibile.
-pub fn ferma(app: &AppHandle) {
+pub fn ferma(app: &impl ComeNucleo) {
+    let app = &app.come_nucleo();
     let Some(stato) = app.try_state::<StatoLontano>() else {
         return;
     };
@@ -144,7 +145,8 @@ pub fn ferma(app: &AppHandle) {
 /// Quel che questo dispositivo dice di sé è cambiato fuori dal filo — «Ascolta
 /// insieme» ha cominciato o smesso di ospitare, si è acceso o spento: lo si
 /// rilegge e lo si annuncia subito, senza aspettare il giro. Non aspetta.
-pub fn presenza_cambiata(app: &AppHandle) {
+pub fn presenza_cambiata(app: &impl ComeNucleo) {
+    let app = &app.come_nucleo();
     if let Some(stato) = app.try_state::<StatoLontano>() {
         stato.comune.sveglia(Posta::Rileggi {
             risposta: None,
@@ -158,7 +160,8 @@ pub fn presenza_cambiata(app: &AppHandle) {
 /// `rymembra/associa/1` resta aperto a chi lo presenta, e chi non vede più la
 /// finestra non sa che c'è; la scheda che lo mostra resta montata anche con la
 /// finestra nascosta, e da sola non se ne accorge. Non aspetta.
-pub fn finestra_nascosta(app: &AppHandle) {
+pub fn finestra_nascosta(app: &impl ComeNucleo) {
+    let app = &app.come_nucleo();
     if let Some(stato) = app.try_state::<StatoLontano>() {
         annulla_il_qr(&stato.comune);
     }
@@ -200,7 +203,8 @@ fn metti_il_qr(comune: &Comune, invito: InvitoIpc, annullati: u64) -> bool {
     not(target_os = "android"),
     expect(dead_code, reason = "serve al telefono")
 )]
-pub fn cambio_di_rete(app: &AppHandle) {
+pub fn cambio_di_rete(app: &impl ComeNucleo) {
+    let app = &app.come_nucleo();
     if let Some(stato) = app.try_state::<StatoLontano>() {
         stato.comune.sveglia(Posta::CambioDiRete);
     }
@@ -215,7 +219,8 @@ static LINK_IN_ATTESA: Mutex<Option<String>> = Mutex::new(None);
 /// fotocamera; Windows: `rymembra://collega/…` cliccato, dalla riga di comando
 /// — vedi `argomenti`). Se ha la forma giusta, lo si tiene e lo si dice alla
 /// finestra, che chiede conferma prima di collegarsi.
-pub fn link_arrivato(app: &AppHandle, link: &str) {
+pub fn link_arrivato(app: &impl ComeNucleo, link: &str) {
+    let app = &app.come_nucleo();
     if rymembra_lontano::Invito::da_link(link).is_err() {
         crate::nota!("[lontano] un link aperto da fuori non è un link di collegamento");
         return;
@@ -223,7 +228,6 @@ pub fn link_arrivato(app: &AppHandle, link: &str) {
     *LINK_IN_ATTESA
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = Some(link.to_owned());
-    use crate::spegnimento::Emette as _;
     app.emetti("lontano:link", link.to_owned());
 }
 
@@ -277,7 +281,7 @@ fn senza_causa_di_rete(err: AppError) -> AppError {
     }
 }
 
-fn comune(app: &AppHandle) -> Result<Arc<Comune>, AppError> {
+fn comune(app: &Nucleo) -> Result<Arc<Comune>, AppError> {
     app.try_state::<StatoLontano>()
         .map(|stato| Arc::clone(&stato.comune))
         .ok_or_else(|| {
@@ -288,7 +292,7 @@ fn comune(app: &AppHandle) -> Result<Arc<Comune>, AppError> {
 }
 
 /// Il filo rilegge (e accende o spegne), e torna il pannello.
-fn rileggi_e_aspetta(app: &AppHandle) -> Result<StatoLontanoIpc, AppError> {
+fn rileggi_e_aspetta(app: &Nucleo) -> Result<StatoLontanoIpc, AppError> {
     let comune = comune(app)?;
     let (risposta, attesa) = channel();
     comune.sveglia(Posta::Rileggi {
@@ -306,7 +310,7 @@ fn rileggi_e_aspetta(app: &AppHandle) -> Result<StatoLontanoIpc, AppError> {
 
 /// Qualcosa col nodo acceso; spento è `lontano.spento`.
 fn nel_nodo<T>(
-    app: &AppHandle,
+    app: &Nucleo,
     azione: impl FnOnce(&Nodo) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
     let nodo = comune(app)?
@@ -329,7 +333,7 @@ fn attivo_per_collegare(c: &rusqlite::Connection) -> Result<(), AppError> {
 }
 
 /// Il nodo acceso per collegare: vedi [`attivo_per_collegare`].
-fn acceso_per_collegare(app: &AppHandle) -> Result<(), AppError> {
+fn acceso_per_collegare(app: &Nucleo) -> Result<(), AppError> {
     leggi_a_parte(app, attivo_per_collegare)?;
     let pannello = rileggi_e_aspetta(app)?;
     if pannello.acceso {
@@ -363,13 +367,13 @@ async fn in_disparte<T: Send + 'static>(
 
 /// Il pannello, adesso.
 #[tauri::command]
-pub async fn lontano_stato(app: AppHandle) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_stato(app: Nucleo) -> Esito<StatoLontanoIpc> {
     in_disparte(move || Ok(prendi(&comune(&app)?.vetrina).clone())).await
 }
 
 /// Accende o spegne «Raggiungibile da internet».
 #[tauri::command]
-pub async fn lontano_attiva(app: AppHandle, attivo: bool) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_attiva(app: Nucleo, attivo: bool) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
         if attivo {
             chiedi_la_rete_di_casa();
@@ -382,7 +386,7 @@ pub async fn lontano_attiva(app: AppHandle, attivo: bool) -> Esito<StatoLontanoI
 
 /// Il relay proprio, o nessuno per tornare a quelli di n0. Il nodo riparte.
 #[tauri::command]
-pub async fn lontano_relay(app: AppHandle, relay: Option<String>) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_relay(app: Nucleo, relay: Option<String>) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
         scrivi_in_libreria(&app, |c| dispositivi::scegli_relay(c, relay.as_deref()))?;
         rileggi_e_aspetta(&app)
@@ -392,7 +396,7 @@ pub async fn lontano_relay(app: AppHandle, relay: Option<String>) -> Esito<Stato
 
 /// «Solo Wi-Fi».
 #[tauri::command]
-pub async fn lontano_dati_mobili(app: AppHandle, scelta: DatiMobili) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_dati_mobili(app: Nucleo, scelta: DatiMobili) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
         scrivi_in_libreria(&app, |c| dispositivi::scegli_dati_mobili(c, scelta))?;
         rileggi_e_aspetta(&app)
@@ -407,7 +411,7 @@ pub async fn lontano_dati_mobili(app: AppHandle, scelta: DatiMobili) -> Esito<St
 /// ([`lontano_attiva`]), e senza i PC non trovano il telefono lo stesso.
 /// Fuori da Android è `internal.aborted`: la finestra non lo chiama.
 #[tauri::command]
-pub async fn lontano_sottofondo(app: AppHandle, attivo: bool) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_sottofondo(app: Nucleo, attivo: bool) -> Esito<StatoLontanoIpc> {
     #[cfg(target_os = "android")]
     return in_disparte(move || {
         // La scelta più recente vince: un «Spegni» della notifica non ancora
@@ -455,7 +459,7 @@ pub async fn lontano_sottofondo(app: AppHandle, attivo: bool) -> Esito<StatoLont
 ///
 /// Fuori da Android è `internal.aborted`: la finestra non lo chiama.
 #[tauri::command]
-pub async fn lontano_parti_con_auto(app: AppHandle, attivo: bool) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_parti_con_auto(app: Nucleo, attivo: bool) -> Esito<StatoLontanoIpc> {
     #[cfg(target_os = "android")]
     return in_disparte(move || {
         scrivi_in_libreria(&app, |c| dispositivi::parti_con_auto(c, attivo))?;
@@ -475,7 +479,7 @@ pub async fn lontano_parti_con_auto(app: AppHandle, attivo: bool) -> Esito<Stato
 /// «Raggiungibile da internet» spento è `lontano.spento`: vedi
 /// [`attivo_per_collegare`].
 #[tauri::command]
-pub async fn lontano_qr_crea(app: AppHandle) -> Esito<InvitoIpc> {
+pub async fn lontano_qr_crea(app: Nucleo) -> Esito<InvitoIpc> {
     in_disparte(move || {
         let annullati = comune(&app)?.qr_annullati.load(Ordering::Acquire);
         acceso_per_collegare(&app)?;
@@ -503,7 +507,7 @@ pub async fn lontano_qr_crea(app: AppHandle) -> Esito<InvitoIpc> {
 
 /// Il QR mostrato non vale più.
 #[tauri::command]
-pub async fn lontano_qr_annulla(app: AppHandle) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_qr_annulla(app: Nucleo) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
         if let Some(nodo) = comune(&app)?.nodo() {
             nodo.annulla_invito();
@@ -520,7 +524,7 @@ pub async fn lontano_qr_annulla(app: AppHandle) -> Esito<StatoLontanoIpc> {
 /// Il QR letto, o il link
 /// incollato. Aspetta che dall'altra parte dicano di sì.
 #[tauri::command]
-pub async fn lontano_collega(app: AppHandle, link: String) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_collega(app: Nucleo, link: String) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
         // Prima di accendere niente: un testo che non è un link si dice
         // subito.
@@ -542,7 +546,7 @@ pub async fn lontano_collega(app: AppHandle, link: String) -> Esito<StatoLontano
 /// Smette di aspettare la conferma dell'altro dispositivo: [`lontano_collega`]
 /// torna con `internal.aborted`, e dall'altra parte la domanda sparisce.
 #[tauri::command]
-pub async fn lontano_collega_annulla(app: AppHandle) -> Esito<()> {
+pub async fn lontano_collega_annulla(app: Nucleo) -> Esito<()> {
     in_disparte(move || {
         let comune = comune(&app)?;
         comune.annulli.fetch_add(1, Ordering::AcqRel);
@@ -557,7 +561,7 @@ pub async fn lontano_collega_annulla(app: AppHandle) -> Esito<()> {
 /// I dispositivi che non rispondevano si riprovano adesso: la persona ha
 /// aperto la loro pagina, o quella dei dispositivi. Non aspetta.
 #[tauri::command]
-pub async fn lontano_cerca_ora(app: AppHandle) -> Esito<()> {
+pub async fn lontano_cerca_ora(app: Nucleo) -> Esito<()> {
     in_disparte(move || {
         if let Some(nodo) = comune(&app)?.nodo() {
             nodo.riprova_adesso();
@@ -569,7 +573,7 @@ pub async fn lontano_cerca_ora(app: AppHandle) -> Esito<()> {
 
 /// La risposta di chi mostra il QR a chi l'ha letto.
 #[tauri::command]
-pub async fn lontano_rispondi(app: AppHandle, id: u64, accetta: bool) -> Esito<()> {
+pub async fn lontano_rispondi(app: Nucleo, id: u64, accetta: bool) -> Esito<()> {
     in_disparte(move || {
         let comune = comune(&app)?;
         let richieste = prendi(&comune.richieste);
@@ -583,11 +587,7 @@ pub async fn lontano_rispondi(app: AppHandle, id: u64, accetta: bool) -> Esito<(
 
 /// Un nome nuovo per un dispositivo collegato, solo qui.
 #[tauri::command]
-pub async fn lontano_rinomina(
-    app: AppHandle,
-    chiave: String,
-    nome: String,
-) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_rinomina(app: Nucleo, chiave: String, nome: String) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
         scrivi_in_libreria(&app, |c| dispositivi::rinomina(c, &chiave, &nome))?;
         rileggi_e_aspetta(&app)
@@ -604,7 +604,7 @@ pub async fn lontano_rinomina(
 /// il comando diceva «occupato», e il dispositivo tornava dentro alla prima
 /// lettura riuscita (reperto R01-2).
 #[tauri::command]
-pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLontanoIpc> {
+pub async fn lontano_dimentica(app: Nucleo, chiave: String) -> Esito<StatoLontanoIpc> {
     in_disparte(move || {
         let comune = comune(&app)?;
         if let Some(nodo) = comune.nodo()
@@ -646,7 +646,7 @@ pub async fn lontano_dimentica(app: AppHandle, chiave: String) -> Esito<StatoLon
 /// occupata da una scansione, e una domanda già risolta non deve aspettarla.
 #[tauri::command]
 pub async fn lontano_specchio_lasciati(
-    app: AppHandle,
+    app: Nucleo,
 ) -> Esito<std::collections::BTreeMap<String, usize>> {
     in_disparte(move || leggi_a_parte(&app, dispositivi::righe_lasciate)).await
 }
@@ -664,7 +664,7 @@ pub async fn lontano_specchio_lasciati(
 /// `lontano.protocollo` per una chiave che non è di 64 cifre esadecimali.
 #[tauri::command]
 pub async fn lontano_specchio_lascia(
-    app: AppHandle,
+    app: Nucleo,
     chiave: String,
     quante: Option<usize>,
 ) -> Esito<()> {

@@ -8,11 +8,9 @@
 //! Fa parte di [`crate::riproduzione`]: la regola dei due lucchetti — prima il
 //! lettore, poi la libreria — è scritta là e vale anche qui.
 
+use crate::nucleo::Nucleo;
 use rymembra_app::playback;
 use serde::Serialize;
-
-use crate::spegnimento::Emette as _;
-use tauri::{Manager as _, State};
 
 use crate::errore::{Esito, errore};
 use crate::nota;
@@ -112,7 +110,7 @@ pub struct DispositivoAudio {
 /// il resto della sessione: cuffie staccate, e la musica non tornava più da
 /// sola. Adesso la passata caduta vale come una riapertura fallita — l'attesa
 /// raddoppia, e si riprova.
-pub fn avvia_sorveglianza(app: tauri::AppHandle, orecchio: std::sync::mpsc::Receiver<()>) {
+pub fn avvia_sorveglianza(app: Nucleo, orecchio: std::sync::mpsc::Receiver<()>) {
     let avviato = std::thread::Builder::new()
         .name(FILO_DISPOSITIVI.to_owned())
         .spawn(move || {
@@ -126,7 +124,7 @@ pub fn avvia_sorveglianza(app: tauri::AppHandle, orecchio: std::sync::mpsc::Rece
             let mut visti: Vec<rymembra_play::Dispositivo> = Vec::new();
             let mut attesa = PASSO_DISPOSITIVI;
             loop {
-                // Prima di qualunque cosa che tocchi l'`AppHandle`: se la
+                // Prima di qualunque cosa che tocchi l'`Nucleo`: se la
                 // finestra si sta chiudendo, un `emit` da qui fa panicare il
                 // ciclo degli eventi. Vedi `crate::spegnimento`.
                 if crate::spegnimento::in_uscita() {
@@ -174,10 +172,7 @@ enum Passo {
 }
 
 /// Una passata del sorvegliante. Non fallisce mai rumorosamente.
-fn passata_dispositivi(
-    app: &tauri::AppHandle,
-    visti: &mut Vec<rymembra_play::Dispositivo>,
-) -> Passo {
+fn passata_dispositivi(app: &Nucleo, visti: &mut Vec<rymembra_play::Dispositivo>) -> Passo {
     // `try_state` e non `state`: `state` panica se lo stato non c'è, e questo
     // filo gira anche mentre lo stato viene lasciato cadere.
     let Some(stato) = app.try_state::<StatoLettore>() else {
@@ -283,7 +278,7 @@ fn uscita_in_uso_sparita(
 /// anche quando le cuffie **arrivano**, e a fermarsi alle cuffie staccate ci
 /// pensa già `BECOMING_NOISY` nella sessione Android.
 fn pausa_se_l_uscita_e_sparita(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     stato: &StatoLettore,
     adesso: &[rymembra_play::Dispositivo],
 ) {
@@ -535,7 +530,7 @@ fn elenco_per_finestra(
 /// filo principale sarebbe la finestra ferma, su un worker del runtime gli
 /// altri comandi. Vedi `super::col_lettore_in_disparte`.
 #[tauri::command]
-pub async fn dispositivi_audio(app: tauri::AppHandle) -> Esito<Vec<DispositivoAudio>> {
+pub async fn dispositivi_audio(app: Nucleo) -> Esito<Vec<DispositivoAudio>> {
     super::col_lettore_in_disparte(app, "elenco delle uscite", |_, stato| {
         Ok(dispositivi_audio_ora(&stato))
     })
@@ -570,7 +565,7 @@ fn dispositivi_audio_ora(stato: &StatoLettore) -> Vec<DispositivoAudio> {
 /// Sul pool bloccante: scrive sul database e apre un dispositivo audio, due
 /// cose che si prendono il loro tempo. Vedi `super::col_lettore_in_disparte`.
 #[tauri::command]
-pub async fn scegli_dispositivo_audio(app: tauri::AppHandle, id: Option<String>) -> Esito<()> {
+pub async fn scegli_dispositivo_audio(app: Nucleo, id: Option<String>) -> Esito<()> {
     super::col_lettore_in_disparte(app, "scelta dell'uscita", move |app, stato| {
         scegli_dispositivo_audio_ora(app, stato, id)
     })
@@ -578,11 +573,7 @@ pub async fn scegli_dispositivo_audio(app: tauri::AppHandle, id: Option<String>)
 }
 
 /// Il lavoro di [`scegli_dispositivo_audio`], sincrono.
-fn scegli_dispositivo_audio_ora(
-    app: tauri::AppHandle,
-    stato: State<'_, StatoLettore>,
-    id: Option<String>,
-) -> Esito<()> {
+fn scegli_dispositivo_audio_ora(app: Nucleo, stato: StatoLettore, id: Option<String>) -> Esito<()> {
     let libreria = super::libreria_di(&app, "uscita audio").map_err(errore)?;
     con_libreria(&libreria, |db| {
         playback::save_uscita(&db.connection, id.as_deref())

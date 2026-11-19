@@ -33,6 +33,7 @@
 
 use std::time::Duration;
 
+use crate::nucleo::ComeNucleo;
 use rymembra_app::dispositivi::{SCADENZA_POSTA_MS, VocePosta};
 use rymembra_app::testi::Remoto;
 use rymembra_app::testi::condiviso::{
@@ -41,7 +42,6 @@ use rymembra_app::testi::condiviso::{
 use rymembra_domain::errors::{AppError, Domain, ErrorCode, ErrorCodeKind};
 use rymembra_lontano::protocollo::{CAPACITA_TESTI, ScritturaTesto};
 use rymembra_lontano::{Domanda, Risposta};
-use tauri::AppHandle;
 
 use super::specchio::{DallApp, Dati};
 use crate::nota;
@@ -160,7 +160,8 @@ pub(super) fn testo_del_proprietario<D: Dati>(
 
 /// Il testo del proprietario di una riga specchio, per chi ha un'app: vedi
 /// [`testo_del_proprietario`].
-pub(crate) fn dal_proprietario(app: &AppHandle, remoto: &Remoto) -> Option<DalProprietario> {
+pub(crate) fn dal_proprietario(app: &impl ComeNucleo, remoto: &Remoto) -> Option<DalProprietario> {
+    let app = &app.come_nucleo();
     let dati = DallApp::nuovo(app).ok()?;
     testo_del_proprietario(&dati, remoto)
 }

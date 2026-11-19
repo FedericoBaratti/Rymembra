@@ -36,11 +36,11 @@
 //! token in attesa del consenso. Le cause degli errori sì: sono i codici che i
 //! servizi restituiscono, e servono a capire cosa è successo.
 
+use crate::nucleo::Nucleo;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-use crate::spegnimento::Emette as _;
 use rymembra_app::scrobble::{self as coda, Voce};
 use rymembra_app::settings;
 use rymembra_domain::errors::{AppError, ErrorCode};
@@ -49,7 +49,6 @@ use rymembra_domain::scrobble::{Ascolto, Servizio};
 use rymembra_oauth::portachiavi::{DiSistema, Portachiavi};
 use rymembra_scrobble::{LastFm, ListenBrainz, per_richiesta};
 use serde::Serialize;
-use tauri::{AppHandle, Manager as _, State};
 
 use crate::corsia::LIBRERIA;
 use crate::disparte::in_disparte;
@@ -198,7 +197,7 @@ pub struct EsitoInvio {
 
 /// Lo stato dello scrobbling. Istantaneo: non tocca la rete.
 #[tauri::command]
-pub async fn scrobble_stato(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+pub async fn scrobble_stato(app: Nucleo) -> Esito<StatoScrobbleIpc> {
     in_disparte("stato dello scrobbling", move || {
         let (stato, scrobble) = stati(&app)?;
         stato_ipc(&stato, &scrobble)
@@ -214,7 +213,7 @@ pub async fn scrobble_stato(app: AppHandle) -> Esito<StatoScrobbleIpc> {
 /// mettere in pausa lo scrobbling e poi trovarsi tre giorni di ascolti spediti
 /// tutti insieme alla riaccensione sarebbe una sorpresa, non una comodità.
 #[tauri::command]
-pub async fn scrobble_attivo(app: AppHandle, attivo: bool) -> Esito<StatoScrobbleIpc> {
+pub async fn scrobble_attivo(app: Nucleo, attivo: bool) -> Esito<StatoScrobbleIpc> {
     // Un interruttore dove l'ultimo vince: sulla corsia della libreria.
     LIBRERIA
         .comanda("scrobbling attivo", move || {
@@ -234,10 +233,10 @@ pub async fn scrobble_attivo(app: AppHandle, attivo: bool) -> Esito<StatoScrobbl
 
 /// I due stati che servono ai comandi che lavorano in disparte.
 ///
-/// Un comando che gira sul pool bloccante riceve un `AppHandle` e non dei
+/// Un comando che gira sul pool bloccante riceve un `Nucleo` e non dei
 /// `State`: il lavoro va mosso dentro una chiusura `'static`. `try_state` e non
 /// `state`, perché alla chiusura gli stati se ne vanno e `state` panica.
-fn stati(app: &AppHandle) -> Result<(State<'_, Stato>, State<'_, StatoScrobble>), AppError> {
+fn stati(app: &Nucleo) -> Result<(Stato, StatoScrobble), AppError> {
     match (app.try_state::<Stato>(), app.try_state::<StatoScrobble>()) {
         (Some(stato), Some(scrobble)) => Ok((stato, scrobble)),
         _ => Err(AppError::new(ErrorCode::InternalAborted {
@@ -257,10 +256,7 @@ fn stati(app: &AppHandle) -> Result<(State<'_, Stato>, State<'_, StatoScrobble>)
 /// minuto: fino alla 2.4.0 era `(async)`, cioè quel tempo passato su un
 /// *worker* del runtime che serve a tutti gli altri comandi asincroni.
 #[tauri::command]
-pub async fn scrobble_listenbrainz_collega(
-    app: AppHandle,
-    token: String,
-) -> Esito<StatoScrobbleIpc> {
+pub async fn scrobble_listenbrainz_collega(app: Nucleo, token: String) -> Esito<StatoScrobbleIpc> {
     in_disparte("collegamento a ListenBrainz", move || {
         let (stato, scrobble) = stati(&app)?;
         let token = token.trim().to_owned();
@@ -290,7 +286,7 @@ pub async fn scrobble_listenbrainz_collega(
 /// di oggi — che sul servizio comparirebbero come ascolti di un mese fa mai
 /// avvenuti, ma che nel frattempo l'utente ha già ascoltato altrove.
 #[tauri::command]
-pub async fn scrobble_listenbrainz_scollega(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+pub async fn scrobble_listenbrainz_scollega(app: Nucleo) -> Esito<StatoScrobbleIpc> {
     // Il portachiavi: in disparte e non su una corsia, perché un portachiavi
     // che non risponde non deve tenere ferme le stelle.
     in_disparte("scollegamento da ListenBrainz", move || {
@@ -320,7 +316,7 @@ pub async fn scrobble_listenbrainz_scollega(app: AppHandle) -> Esito<StatoScrobb
 /// Last.fm, e allora vale [`scollega_lastfm`] intero.
 #[tauri::command]
 pub async fn scrobble_lastfm_credenziali(
-    app: AppHandle,
+    app: Nucleo,
     api_key: String,
     segreto: String,
 ) -> Esito<StatoScrobbleIpc> {
@@ -364,7 +360,7 @@ pub async fn scrobble_lastfm_credenziali(
 ///
 /// In disparte, come [`scrobble_listenbrainz_collega`]: va in rete.
 #[tauri::command]
-pub async fn scrobble_lastfm_collega(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+pub async fn scrobble_lastfm_collega(app: Nucleo) -> Esito<StatoScrobbleIpc> {
     in_disparte("consenso Last.fm", move || {
         let (stato, scrobble) = stati(&app)?;
         consenso_lastfm(&stato, &scrobble)?;
@@ -396,7 +392,7 @@ fn consenso_lastfm(stato: &Stato, scrobble: &StatoScrobble) -> Result<(), AppErr
 ///
 /// In disparte, come [`scrobble_listenbrainz_collega`]: va in rete.
 #[tauri::command]
-pub async fn scrobble_lastfm_completa(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+pub async fn scrobble_lastfm_completa(app: Nucleo) -> Esito<StatoScrobbleIpc> {
     in_disparte("sessione Last.fm", move || {
         let (stato, scrobble) = stati(&app)?;
         sessione_lastfm(&stato, &scrobble)?;
@@ -435,7 +431,7 @@ fn sessione_lastfm(stato: &Stato, scrobble: &StatoScrobble) -> Result<(), AppErr
 
 /// Scollega Last.fm.
 #[tauri::command]
-pub async fn scrobble_lastfm_scollega(app: AppHandle) -> Esito<StatoScrobbleIpc> {
+pub async fn scrobble_lastfm_scollega(app: Nucleo) -> Esito<StatoScrobbleIpc> {
     in_disparte("scollegamento da Last.fm", move || {
         let (stato, scrobble) = stati(&app)?;
         scollega_lastfm(&stato, &scrobble)?;
@@ -450,7 +446,7 @@ pub async fn scrobble_lastfm_scollega(app: AppHandle) -> Esito<StatoScrobbleIpc>
 ///
 /// In disparte: una passata sono minuti di HTTP su una coda lunga.
 #[tauri::command]
-pub async fn scrobble_invia(app: AppHandle) -> Esito<EsitoInvio> {
+pub async fn scrobble_invia(app: Nucleo) -> Esito<EsitoInvio> {
     in_disparte("invio degli ascolti", move || {
         let (_, scrobble) = stati(&app)?;
         let _turno = Turno::prendi(&scrobble.in_corso).ok_or_else(|| {
@@ -470,7 +466,7 @@ pub async fn scrobble_invia(app: AppHandle) -> Esito<EsitoInvio> {
 /// schermata ha i suoi pulsanti, e «Riprova» sotto ListenBrainz non deve
 /// rimettere in fila anche quel che Last.fm ha rifiutato.
 #[tauri::command]
-pub async fn scrobble_riprova(app: AppHandle, servizio: String) -> Esito<StatoScrobbleIpc> {
+pub async fn scrobble_riprova(app: Nucleo, servizio: String) -> Esito<StatoScrobbleIpc> {
     in_disparte("riprova degli ascolti", move || {
         let (stato, scrobble) = stati(&app)?;
         con_libreria(&stato, |libreria| {
@@ -486,7 +482,7 @@ pub async fn scrobble_riprova(app: AppHandle, servizio: String) -> Esito<StatoSc
 
 /// Butta gli ascolti abbandonati di un servizio: vedi [`scrobble_riprova`].
 #[tauri::command]
-pub async fn scrobble_dimentica(app: AppHandle, servizio: String) -> Esito<StatoScrobbleIpc> {
+pub async fn scrobble_dimentica(app: Nucleo, servizio: String) -> Esito<StatoScrobbleIpc> {
     in_disparte("ascolti dimenticati", move || {
         let (stato, scrobble) = stati(&app)?;
         con_libreria(&stato, |libreria| {
@@ -544,7 +540,7 @@ fn dimentica_abbandonati(
 /// sola, e un `(async)` su una funzione sincrona le scriveva su un *worker* del
 /// runtime, togliendo il posto a ogni altro comando asincrono.
 #[tauri::command]
-pub async fn scrobble_importa_cronologia(app: AppHandle, solo_importati: bool) -> Esito<i64> {
+pub async fn scrobble_importa_cronologia(app: Nucleo, solo_importati: bool) -> Esito<i64> {
     in_disparte("cronologia verso ListenBrainz", move || {
         let (stato, _) = stati(&app)?;
         let sorgente = if solo_importati {
@@ -570,7 +566,7 @@ pub async fn scrobble_importa_cronologia(app: AppHandle, solo_importati: bool) -
 /// La chiama `riproduzione::chiudi_ascolto` dopo `record_play`, e solo quando
 /// quello ha scritto davvero: la coda deve contenere le stesse righe della
 /// cronologia, non un insieme suo.
-pub fn dopo_un_ascolto(app: &AppHandle, ascolto: &Listen) {
+pub fn dopo_un_ascolto(app: &Nucleo, ascolto: &Listen) {
     // `try_state`: si chiama dai fili del lettore, che possono essere ancora
     // vivi mentre gli stati gestiti vengono lasciati cadere all'uscita.
     let Some(stato) = app.try_state::<Stato>() else {
@@ -625,7 +621,7 @@ pub fn dopo_un_ascolto(app: &AppHandle, ascolto: &Listen) {
 /// frattempo non escono, e le richieste partono una alla volta, in ordine.
 /// Prima di ogni servizio il filo guarda se il brano è ancora l'ultimo
 /// ([`manda_finche_vale`]).
-pub fn sta_suonando(app: &AppHandle, track_id: i64) {
+pub fn sta_suonando(app: &Nucleo, track_id: i64) {
     let Some(scrobble) = app.try_state::<StatoScrobble>() else {
         return;
     };
@@ -644,7 +640,7 @@ pub fn sta_suonando(app: &AppHandle, track_id: i64) {
 
 /// Il corpo del filo «rymembra-scrobble-adesso»: un brano alla volta, sempre
 /// l'ultimo chiesto.
-fn filo_adesso(manico: &AppHandle, casella: &Casella) {
+fn filo_adesso(manico: &Nucleo, casella: &Casella) {
     loop {
         let chiesto = casella.aspetta();
         // All'uscita se ne va e basta, come il filo della coda.
@@ -786,7 +782,7 @@ fn manda_finche_vale<S: Copy>(
 // ── il filo ─────────────────────────────────────────────────────────────────
 
 /// Avvia il filo che svuota la coda. Uno solo, per tutta la vita del processo.
-pub fn avvia(app: &AppHandle) {
+pub fn avvia(app: &Nucleo) {
     // Prima di tutto il resto, e una volta sola: la chiave Last.fm passa da
     // `settings` al portachiavi. Sta qui e non in `main` perché è materia di
     // questo modulo — è lui a sapere dove la chiave sta e chi la legge — e
@@ -850,7 +846,7 @@ pub fn avvia(app: &AppHandle) {
 }
 
 /// Dorme finché qualcuno non chiama, o al massimo [`RIPOSO`].
-fn aspetta(app: &AppHandle) {
+fn aspetta(app: &Nucleo) {
     let Some(scrobble) = app.try_state::<StatoScrobble>() else {
         std::thread::sleep(RIPOSO);
         return;
@@ -868,7 +864,7 @@ fn aspetta(app: &AppHandle) {
 }
 
 /// Sveglia il filo: c'è qualcosa da mandare.
-pub fn sveglia(app: &AppHandle) {
+pub fn sveglia(app: &Nucleo) {
     let Some(scrobble) = app.try_state::<StatoScrobble>() else {
         return;
     };
@@ -880,7 +876,7 @@ pub fn sveglia(app: &AppHandle) {
 }
 
 /// Una passata completa: per ogni servizio collegato, finché c'è coda.
-fn passata(app: &AppHandle) -> EsitoInvio {
+fn passata(app: &Nucleo) -> EsitoInvio {
     let Some(stato) = app.try_state::<Stato>() else {
         return EsitoInvio::default();
     };

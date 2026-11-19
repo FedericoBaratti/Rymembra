@@ -1,6 +1,7 @@
 //! I brani di questo PC come voci di sessione: le schede dalla libreria, e i file da mandare
 //! in rete letti dal database e dal disco, con una scadenza sola. Il lettore qui non si tocca.
 
+use crate::nucleo::Nucleo;
 use std::path::{Path, PathBuf};
 
 use rymembra_app::library::TrackSummary;
@@ -81,17 +82,14 @@ pub struct FileDellaVoce {
 /// # Errori
 ///
 /// Quelli della libreria.
-pub fn voci_da_libreria(app: &tauri::AppHandle, ids: &[i64]) -> Result<Vec<i64>, AppError> {
+pub fn voci_da_libreria(app: &Nucleo, ids: &[i64]) -> Result<Vec<i64>, AppError> {
     Ok(voci_allineate(app, ids)?.into_iter().flatten().collect())
 }
 
 /// Come [`voci_da_libreria`], ma allineate agli id chiesti: `None` dove la
 /// riga non c'è. Serve a chi deve ritrovare la voce di un posto preciso — il
 /// brano corrente, entrando.
-pub(super) fn voci_allineate(
-    app: &tauri::AppHandle,
-    ids: &[i64],
-) -> Result<Vec<Option<i64>>, AppError> {
+pub(super) fn voci_allineate(app: &Nucleo, ids: &[i64]) -> Result<Vec<Option<i64>>, AppError> {
     let ids = ids.get(..ids.len().min(MASSIMO_VOCI)).unwrap_or_default();
     let righe: Vec<i64> = ids
         .iter()
@@ -215,10 +213,7 @@ pub(super) fn scheda_da_riga(riga: &TrackSummary, livello: Option<&SchedaSorgent
 ///   [`Mancanza::Irraggiungibile`]. Anche il database che non risponde dà
 ///   questo, per tutte: è un «non adesso», non un «no».
 #[must_use]
-pub fn voci_di_questo(
-    app: &tauri::AppHandle,
-    uids: &[u64],
-) -> Vec<(u64, Result<BranoDiQuesto, Mancanza>)> {
+pub fn voci_di_questo(app: &Nucleo, uids: &[u64]) -> Vec<(u64, Result<BranoDiQuesto, Mancanza>)> {
     let righe = ospiti::con_registro(app, |registro| righe_dei_uid(registro, uids))
         .unwrap_or_else(|| uids.iter().map(|uid| (*uid, None)).collect());
     let da_leggere: Vec<i64> = righe.iter().filter_map(|(_, riga)| *riga).collect();
@@ -276,10 +271,7 @@ pub(super) fn righe_dei_uid(registro: &ospiti::Registro, uids: &[u64]) -> Vec<(u
 /// # Errori
 ///
 /// Quelli della libreria.
-pub fn brani_di_questo(
-    app: &tauri::AppHandle,
-    ids: &[i64],
-) -> Result<Vec<BranoDiQuesto>, AppError> {
+pub fn brani_di_questo(app: &Nucleo, ids: &[i64]) -> Result<Vec<BranoDiQuesto>, AppError> {
     let righe: Vec<i64> = ids
         .iter()
         .copied()
@@ -302,7 +294,7 @@ type Letta = (TrackSummary, SchedaSorgente);
 ///
 /// Quelli della libreria.
 fn leggi_brani(
-    app: &tauri::AppHandle,
+    app: &Nucleo,
     righe: &[i64],
 ) -> Result<Vec<Result<BranoDiQuesto, Mancanza>>, AppError> {
     if righe.is_empty() {

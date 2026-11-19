@@ -13,20 +13,19 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::nucleo::Nucleo;
 use rymembra_domain::errors::AppError;
 use rymembra_lontano::nodo::ATTESA_CONFERMA;
 use rymembra_lontano::{Domanda, Evento, Presentazione, Risposta};
-use tauri::AppHandle;
 
 use super::filo::{Collegato, Comune, Modifica, Posta, prendi, scrivi_il_registro};
 use super::ipc::RichiestaIpc;
 use crate::nota;
-use crate::spegnimento::Emette as _;
 use crate::stato::adesso_ms;
 
 /// L'ospite del nodo.
 pub struct Ospite {
-    app: AppHandle,
+    app: Nucleo,
     comune: Arc<Comune>,
     /// Le chiavi a cui chi guarda ha appena detto di sì: la loro associazione
     /// (`nuovo_pari`) si annuncia anche qui, dove si mostrava il QR. Chi l'ha
@@ -35,7 +34,7 @@ pub struct Ospite {
 }
 
 impl Ospite {
-    pub(super) fn nuovo(app: AppHandle, comune: Arc<Comune>) -> Self {
+    pub(super) fn nuovo(app: Nucleo, comune: Arc<Comune>) -> Self {
         Self {
             app,
             comune,
