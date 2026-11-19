@@ -5278,14 +5278,17 @@ export function App() {
                         corso col suo «Esci», che vale tutta la sessione. Si
                         disegna da sé, e quasi sempre non c'è. */}
                     <AvvisiInsieme onErrore={segnalaErrore} />
-                    {/* Col primo avvio aperto le notizie le mostra lui: qui
-                        sarebbero sotto la sua schermata, e due copie della stessa
-                        fascia d'errore si annuncerebbero due volte.
-                        Qui solo sul telefono: sul computer stanno nella pila
-                        dei toast (più sotto), perché nel flusso spingevano giù
-                        la pagina — titolo, indice, filtro — proprio mentre si
-                        stava per cliccarci (R18-17). */}
-                    {!primoVisibile && MOBILE && notizieDiFascia}
+                    {/* Le notizie, gli avvisi e i guasti della fascia non stanno
+                        più nel flusso della pagina, né sul computer né sul
+                        telefono: stanno nella pila dei toast (più sotto), perché
+                        nel flusso spingevano giù la pagina — titolo, indice,
+                        filtro — proprio mentre si stava per cliccarci (R18-17).
+                        Sul telefono c'era anche di peggio: nelle pagine d'album
+                        la tinta sale fin sotto la barra di stato, il contenuto
+                        parte dal bordo dello schermo e la fascia, prima di tutto,
+                        copriva l'orologio. La pila rispetta il riquadro di sotto
+                        (`--riquadro-basso`), e non ce n'è uno di sopra da
+                        rispettare. */}
                     {corpo()}
                   </div>
                 </PresenzaPagina>
@@ -5642,14 +5645,16 @@ export function App() {
                   ipc.annullaScansione().catch(segnalaErrore);
                 }}
               >
-                {/* Le fasce di notizia e d'errore, sul computer: galleggiano
-                    qui sopra il lettore invece di entrare nel flusso della
-                    pagina, che spingevano giù di una fascia (R18-17). Una copia
-                    viva sola: non col primo avvio, che le mostra da sé, né a
-                    schermo intero, che ha la sua (`avvisiGrande`); con lo
-                    Studio aperto questa è sotto di lui e inerte, e parla la
-                    sua. */}
-                {!MOBILE && !primoVisibile && !(grande && conBrano) && notizieDiFascia}
+                {/* Le fasce di notizia e d'errore, sul computer e sul telefono:
+                    galleggiano qui sopra il lettore (o sopra le schede)
+                    invece di entrare nel flusso della pagina, che spingevano
+                    giù di una fascia (R18-17), e sul telefono coprivano la
+                    barra di stato nelle pagine d'album (D7 del collaudo del
+                    18/11). Una copia viva sola: non col primo avvio, che le
+                    mostra da sé, né a schermo intero, che ha la sua
+                    (`avvisiGrande`); con lo Studio aperto questa è sotto di
+                    lui e inerte, e parla la sua. */}
+                {!primoVisibile && !(grande && conBrano) && notizieDiFascia}
                 {/* La coda segue chi se ne va, per la ragione scritta sopra — e a
                     maggior ragione: la scansione dura venti secondi, questa un'ora, e
                     sopravvive alla chiusura dell'applicazione. Sulla pagina stessa il
