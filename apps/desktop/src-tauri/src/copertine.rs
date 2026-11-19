@@ -220,40 +220,26 @@ pub fn servi(
     // Per la media vale il doppio: la prima volta è una decodifica e una
     // ricodifica, qualche millisecondo per copertina e trenta copertine per
     // schermata.
+    // Mai la rete: su Android questo gestore gira dentro `shouldInterceptRequest`,
+    // e il filo della WebView resta fermo finché si risponde. La copertina di una
+    // riga di un altro dispositivo che lo store non ha ancora si chiedeva qui,
+    // aspettando la rete — fino a quindici secondi per richiesta, e centinaia di
+    // richieste per pagina —: sul telefono vero le risposte dei comandi oltre gli
+    // 8 KiB, che Tauri consegna con una `fetch` sullo stesso protocollo, restavano
+    // in fila dietro di loro e non tornavano. Adesso si risponde subito, e la
+    // copertina si chiede in disparte: quando arriva, la pagina riceve
+    // `lontano:copertina` e la richiede. Vedi `media::lontane`.
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        match leggi(&copertine, &impronta, misura)
-            .or_else(|| dal_dispositivo(&app, &copertine, &impronta, misura))
-        {
+        let letta = leggi(&copertine, &impronta, misura);
+        crate::media::lontane::servi(&app, &impronta, letta, |bytes| match bytes {
             Some(bytes) => responder.respond(risposta(200, "image/jpeg", bytes)),
             // Una copertina che manca non è un guasto: è un album senza
-            // immagine, e l'interfaccia ha già un ripiego da mostrare.
-            None => responder.respond(risposta(404, "text/plain", Vec::new())),
-        }
+            // immagine, e l'interfaccia ha già un ripiego da mostrare. Ma non si
+            // ricorda: quella di un altro dispositivo può arrivare fra un attimo.
+            None => responder.respond(risposta_con(404, "text/plain", Vec::new(), "no-store")),
+        });
     });
-}
-
-/// La copertina di una riga della libreria unica che qui non c'è ancora: la si
-/// chiede a un dispositivo che risponde e la si tiene nello store sotto la sua
-/// impronta (`lontano::specchio::copertina_di_una_riga`); poi si rilegge nella
-/// misura chiesta. `None` se nessun dispositivo che risponde ce l'ha.
-fn dal_dispositivo(
-    app: &tauri::AppHandle,
-    copertine: &CoverStore,
-    impronta: &str,
-    misura: Misura,
-) -> Option<Vec<u8>> {
-    match crate::lontano::copertina_di_una_riga(app, impronta) {
-        Ok(Some(_)) => leggi(copertine, impronta, misura),
-        Ok(None) => None,
-        Err(guasto) => {
-            crate::nota!(
-                "[copertine] una copertina di un altro dispositivo non arriva codice={}",
-                guasto.code().kind().code()
-            );
-            None
-        }
-    }
 }
 
 /// I byte di una misura, o `None` se non ci sono.

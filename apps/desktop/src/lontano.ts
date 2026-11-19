@@ -577,6 +577,38 @@ export type AvanzamentiSpecchio = Readonly<Record<string, AvanzamentoSpecchio>>;
  */
 export const archivioSpecchio = creaArchivio<AvanzamentiSpecchio>({});
 
+/**
+ * Quante volte, da quando la finestra è aperta, è arrivata dall'altro
+ * dispositivo la copertina di una riga della libreria unica.
+ *
+ * Il protocollo `rymembra-cover` non aspetta la rete: una copertina che lo
+ * store non ha ancora riceve un «non c'è» subito, e il nucleo la chiede in
+ * disparte (`lontano:copertina` quando arriva). Un segnaposto che ha ricevuto
+ * quel «non c'è» si iscrive qui (`Copertina`) e, a ogni cambio, ci riprova.
+ */
+export const archivioCopertine = creaArchivio<number>(0);
+
+/** Per quanto si raccolgono gli arrivi prima di dirlo ai segnaposto. */
+export const RITARDO_COPERTINE_MS = 300;
+
+let copertineInAttesa: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Una copertina è arrivata (`lontano:copertina`): i segnaposto ci riprovano.
+ *
+ * Gli arrivi si raccolgono — una pagina con duecento righe specchio ne riceve
+ * duecento in pochi secondi, e duecento giri di richieste da ogni segnaposto
+ * sarebbero lo stesso carico che si voleva togliere — e il conto cambia una volta
+ * sola per raccolta.
+ */
+export function copertinaArrivata(): void {
+  if (copertineInAttesa !== undefined) return;
+  copertineInAttesa = setTimeout(() => {
+    copertineInAttesa = undefined;
+    archivioCopertine.scrivi((n) => n + 1);
+  }, RITARDO_COPERTINE_MS);
+}
+
 /** Gli avanzamenti con questo in più, o al posto di quello di prima. */
 export function conAvanzamento(
   prima: AvanzamentiSpecchio,

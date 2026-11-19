@@ -74,6 +74,7 @@ import {
   chiedeConfermaPerLoScarico,
   conAvanzamento,
   conIlSiDeiDatiMobili,
+  copertinaArrivata,
   daFotografia,
   domandaDelloScarico,
   inBlocchi,
@@ -1347,6 +1348,15 @@ export function App() {
         .catch(() => undefined);
     },
   );
+
+  /*
+   * La copertina di una riga di un altro dispositivo è arrivata nello store:
+   * `lontano:copertina`. Il protocollo `rymembra-cover` non aspetta la rete — a
+   * una copertina che lo store non ha ancora risponde «non c'è» subito, e il nucleo la
+   * chiede in disparte (`media/lontane.rs`) —, e i segnaposto (`Copertina`) ci
+   * riprovano quando arriva. Gli arrivi si raccolgono: vedi `copertinaArrivata`.
+   */
+  useAscolto<string>("lontano:copertina", () => copertinaArrivata());
 
   /*
    * Un brano saltato perché non si apriva: lo dice la fascia, con il titolo e

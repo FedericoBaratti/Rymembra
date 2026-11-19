@@ -80,7 +80,7 @@
 #[cfg_attr(mobile, path = "android.rs")]
 mod sistema;
 
-mod lontane;
+pub(crate) mod lontane;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
