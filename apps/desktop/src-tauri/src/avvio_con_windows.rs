@@ -26,6 +26,7 @@
 use rymembra_app::preferenze::{self, RispostaProposta};
 use rymembra_barra::{Impedimento, StatoAvvio};
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Manager as _, State};
 
 use crate::DatiAMano;
@@ -230,6 +231,45 @@ fn da_proporre_sul_telefono(risposta: Option<RispostaProposta>, sottofondo: bool
     }
 }
 
+/// «Più tardi» alla proposta, per il resto della sessione.
+///
+/// # Perché sta qui e non nella pagina
+///
+/// Perché la sessione è quella del **programma**. Con la X sul vassoio la pagina
+/// muore e «Mostra» ne fa nascere una nuova (`comparsa`): un rimando tenuto
+/// nella pagina — come il «Non ora» dell'aggiornamento, che sopravvive solo ai
+/// cambi di faccia dello Studio — tornava a ogni «Mostra», cioè proprio nel
+/// caso che il collaudo in Windows Sandbox ha provato. Sul telefono l'attività
+/// rinasce spesso e il processo no.
+///
+/// **Non è una risposta**: non si scrive niente nella libreria
+/// (`ui.proposta.sottofondo` resta com'è), e il prossimo avvio la rifà. Una
+/// risposta data è per sempre; questo no.
+#[derive(Debug, Default)]
+pub struct Rimando(AtomicBool);
+
+impl Rimando {
+    /// Nessun rimando: la proposta si fa, se c'è da farla.
+    #[must_use]
+    pub const fn nuovo() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// Da qui in poi la proposta non si rifà, finché il processo vive.
+    pub fn imposta(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// La proposta è stata rimandata in questa sessione?
+    #[must_use]
+    pub fn attivo(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Il rimando di questa sessione.
+static RIMANDO: Rimando = Rimando::nuovo();
+
 /// La risposta alla proposta, e com'è rimasto tutto: la pagina disegna da qui.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -248,6 +288,11 @@ pub struct RispostaPropostaIpc {
 /// ogni installazione ha la sua risposta.
 #[tauri::command(async)]
 pub fn proposta_sottofondo_da_fare(app: tauri::AppHandle, stato: State<'_, Stato>) -> Esito<bool> {
+    // «Più tardi» in questa sessione: prima di ogni lettura, che non costa né la
+    // libreria né il sistema. Non si ricorda niente: vedi [`Rimando`].
+    if RIMANDO.attivo() {
+        return Ok(false);
+    }
     #[cfg(desktop)]
     {
         if e_di_prova(&app) {
@@ -313,6 +358,13 @@ pub fn proposta_sottofondo_da_fare(app: tauri::AppHandle, stato: State<'_, Stato
             }
         }
     }
+}
+
+/// «Più tardi»: la proposta non si rifà per il resto della sessione del
+/// programma, e non si ricorda nessuna risposta. Vedi [`Rimando`].
+#[tauri::command]
+pub fn proposta_sottofondo_rimanda() {
+    RIMANDO.imposta();
 }
 
 /// Risponde alla proposta. «Sì» accende l'avvio con Windows e la X sul vassoio;
@@ -470,6 +522,53 @@ mod prove {
         ] {
             assert_eq!(da_proporre(Some(risposta), &spento, false), Proposta::No);
         }
+    }
+
+    /// «Più tardi» dura quanto il processo: la pagina può morire e rinascere (la X
+    /// col vassoio la distrugge, «Mostra» la ricrea) e la scheda non deve
+    /// tornare, perché «questa sessione» è quella del programma e non della
+    /// pagina. Una volta alzato non si abbassa.
+    #[test]
+    fn il_piu_tardi_dura_quanto_il_processo() {
+        let rimando = Rimando::nuovo();
+        assert!(!rimando.attivo(), "nasce spento: la proposta si fa");
+        rimando.imposta();
+        assert!(rimando.attivo(), "dopo «Più tardi» la proposta non si rifà");
+        rimando.imposta();
+        assert!(rimando.attivo(), "alzarlo due volte non lo abbassa");
+    }
+
+    /// La domanda guarda il rimando **prima** di ogni lettura (non costa né la
+    /// libreria né il sistema), e «Più tardi» non ricorda niente nel database: è
+    /// un rimando, non una risposta, e il prossimo avvio la rifà.
+    #[test]
+    fn il_piu_tardi_non_e_una_risposta_e_si_guarda_per_primo() {
+        let sorgente = include_str!("avvio_con_windows.rs");
+        let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
+        let da_fare = sorgente
+            .split("pub fn proposta_sottofondo_da_fare(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        let guardia = da_fare
+            .find("RIMANDO.attivo()")
+            .expect("la domanda guarda il rimando");
+        assert!(
+            guardia < da_fare.find("#[cfg(desktop)]").unwrap_or(usize::MAX)
+                && guardia < da_fare.find("#[cfg(mobile)]").unwrap_or(usize::MAX)
+                && guardia < da_fare.find("con_libreria(").unwrap_or(usize::MAX),
+            "il rimando si guarda prima di ogni lettura, sul computer e sul telefono"
+        );
+        let rimanda = sorgente
+            .split("pub fn proposta_sottofondo_rimanda(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .expect("il comando c'è");
+        assert!(rimanda.contains("RIMANDO.imposta()"));
+        assert!(
+            !rimanda.contains("imposta_proposta_sottofondo(") && !rimanda.contains("con_libreria("),
+            "«Più tardi» ricorda una risposta: la proposta non tornerebbe più"
+        );
     }
 
     #[test]

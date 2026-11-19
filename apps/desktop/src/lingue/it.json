@@ -2005,6 +2005,8 @@
   "background.proposal.desktop.yes": "Sì",
   "background.proposal.desktop.no": "No, grazie",
   "background.proposal.desktop.partial": "L'avvio con Windows non si è acceso. Puoi riprovare dalle Impostazioni.",
+  "background.proposal.later": "Più tardi",
+  "background.proposal.later.hint": "Nasconde la scheda finché Rymembra non riparte",
   "background.proposal.phone.text": "Vuoi che Rymembra resti attiva in sottofondo? Così Android Auto la trova sempre pronta e i dispositivi che colleghi la raggiungono sempre. Costa batteria: il telefono tiene aperta la connessione con i tuoi dispositivi invece di chiuderla due minuti dopo l'ultimo uso, e una notifica resta sempre visibile.",
   "background.proposal.phone.yes": "Sì",
   "background.proposal.phone.no": "No, grazie",

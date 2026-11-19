@@ -877,6 +877,7 @@ pub fn run() {
             avvio_con_windows::avvio_con_windows_imposta,
             avvio_con_windows::proposta_sottofondo_da_fare,
             avvio_con_windows::proposta_sottofondo_rispondi,
+            avvio_con_windows::proposta_sottofondo_rimanda,
             novita::novita_da_mostrare,
             novita::novita_viste,
             comandi::avvio,

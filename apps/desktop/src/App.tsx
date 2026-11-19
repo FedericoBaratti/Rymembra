@@ -123,7 +123,7 @@ import {
   unModaleAperto,
   type NomePasso,
 } from "./Giro";
-import { codaDaSvuotare, comeParteIlGiro } from "./guida";
+import { codaDaSvuotare, comeParteIlGiro, propostaPuoComparire } from "./guida";
 import { Impaginazione, type ContestoScafale } from "./Impaginazione";
 import { Importa, ImportaLink } from "./Importa";
 import { ImportaPlaylist } from "./ImportaPlaylist";
@@ -640,11 +640,19 @@ export function App() {
    * Mai durante `Primo`, né durante il giro — né quando il giro sta per
    * partire: chi comincia ha altro da guardare — e **dopo** la finestra delle
    * Novità: non solo «non aperta», ma «già risposta e chiusa», o la proposta
-   * comparirebbe per il tempo che il nucleo impiega a rispondere. **È il solo
-   * posto** in cui si decide quando aspettare: `PropostaSottofondo` non conosce
-   * né il giro né le Novità, e non deve.
+   * comparirebbe per il tempo che il nucleo impiega a rispondere. Il giro conta
+   * **dove esiste**: sul telefono non parte mai, e `giroDaFare` resta vero per
+   * sempre (vedi `propostaPuoComparire`). **È il solo posto** in cui si decide
+   * quando aspettare: `PropostaSottofondo` non conosce né il giro né le Novità,
+   * e non deve.
    */
-  const propostaPuoMostrarsi = !primoVisibile && !giroDaFare && !giroAperto && !novitaInAttesa;
+  const propostaPuoMostrarsi = propostaPuoComparire({
+    primoVisibile,
+    giroDaFare,
+    giroAperto,
+    novitaInAttesa,
+    telefono: MOBILE,
+  });
   const [codaAperta, setCodaAperta] = useStatoPresente(false);
   const [daImportare, setDaImportare] = useStatoPresente<string | null>(null);
   /**

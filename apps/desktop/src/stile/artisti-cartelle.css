@@ -563,6 +563,19 @@
 .pila-toast > .errore {
   background: linear-gradient(var(--danger-soft), var(--danger-soft)) var(--color-surface-1);
 }
+/* La proposta del sottofondo (`parti/PropostaSottofondo.tsx`): l'icona e la frase
+   sulla prima riga, i tre tasti sotto. Accanto a una frase che sul telefono è di
+   quattro righe ne facevano una colonna di parole. */
+.notizia.proposta-sottofondo {
+  flex-wrap: wrap;
+}
+.notizia.proposta-sottofondo > .tasti-proposta {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--spazio-2);
+}
 /* Nel toast la causa tecnica sta qui, in carattere a spaziatura fissa: si copia,
    per la stessa ragione di `.errore`. */
 .toast .cosa {

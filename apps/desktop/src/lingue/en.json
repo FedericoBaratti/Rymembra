@@ -2005,6 +2005,8 @@
   "background.proposal.desktop.yes": "Yes",
   "background.proposal.desktop.no": "No, thanks",
   "background.proposal.desktop.partial": "Starting with Windows didn’t turn on. You can try again in Settings.",
+  "background.proposal.later": "Later",
+  "background.proposal.later.hint": "Hides the card until Rymembra starts again",
   "background.proposal.phone.text": "Do you want Rymembra to stay active in the background? That way Android Auto always finds it ready, and the devices you link can always reach it. It costs battery: the phone keeps its connection to your devices open instead of closing it two minutes after you last used it, and a notification stays visible.",
   "background.proposal.phone.yes": "Yes",
   "background.proposal.phone.no": "No, thanks",

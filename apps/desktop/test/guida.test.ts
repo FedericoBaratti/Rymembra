@@ -8,7 +8,9 @@ import {
   codaDaSvuotare,
   comeParteIlGiro,
   posaFumetto,
+  propostaPuoComparire,
   type CondizioniDelGiro,
+  type CondizioniDellaProposta,
 } from "../src/guida";
 
 /** Le condizioni in cui il giro parte: ogni prova ne cambia una. */
@@ -232,4 +234,46 @@ test("il benvenuto conta i passi veri: il numero non è scritto a parole (R17-7)
   assert.match(giro, /const totale = COPIONE\.length - saltati\.size;/);
   assert.match(giro, /t\("tour\.progress", \{[^}]*\btotale,/s);
   assert.match(giro, /t\(`tour\.step\.\$\{passo\[0\]\}\.body`, \{ n: totale \}\)/);
+});
+
+// ── la proposta del sottofondo (FC2) ─────────────────────────────────────────
+
+/** Tutto a posto: la proposta può comparire. */
+const PROPOSTA_LIBERA: CondizioniDellaProposta = {
+  primoVisibile: false,
+  giroDaFare: false,
+  giroAperto: false,
+  novitaInAttesa: false,
+  telefono: false,
+};
+
+test("la proposta compare quando niente la trattiene", () => {
+  assert.equal(propostaPuoComparire(PROPOSTA_LIBERA), true);
+  assert.equal(propostaPuoComparire({ ...PROPOSTA_LIBERA, telefono: true }), true);
+});
+
+test("sul computer la proposta aspetta Primo, il giro e le Novità", () => {
+  for (const trattiene of [
+    { primoVisibile: true },
+    { giroDaFare: true },
+    { giroAperto: true },
+    { novitaInAttesa: true },
+  ]) {
+    assert.equal(
+      propostaPuoComparire({ ...PROPOSTA_LIBERA, ...trattiene }),
+      false,
+      JSON.stringify(trattiene),
+    );
+  }
+});
+
+test("sul telefono il giro non esiste, e la proposta non lo aspetta (collaudo sugli emulatori)", () => {
+  // `giroDaFare` resta vero per sempre, perché il giro lì non parte mai
+  // (`comeParteIlGiro`, D-37): era il motivo per cui la scheda non compariva.
+  const telefono = { ...PROPOSTA_LIBERA, telefono: true };
+  assert.equal(propostaPuoComparire({ ...telefono, giroDaFare: true }), true);
+  assert.equal(propostaPuoComparire({ ...telefono, giroDaFare: true, giroAperto: true }), true);
+  // Quel che c'è anche sul telefono la trattiene: Primo e le Novità.
+  assert.equal(propostaPuoComparire({ ...telefono, giroDaFare: true, primoVisibile: true }), false);
+  assert.equal(propostaPuoComparire({ ...telefono, giroDaFare: true, novitaInAttesa: true }), false);
 });
