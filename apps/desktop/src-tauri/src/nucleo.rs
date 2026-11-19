@@ -45,11 +45,6 @@
 //! Gli ascoltatori ([`Nucleo::ascolta`]) sono del nucleo, non di Tauri: chi
 //! ascolta `scansione:finita` lo sente anche quando la finestra non c'è.
 
-#![allow(
-    dead_code,
-    reason = "la fetta delle fondamenta (F8): gli usi arrivano con le fette dopo, e questa riga si toglie con l'ultima"
-)]
-
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
@@ -351,6 +346,13 @@ impl Nucleo {
 
     /// Chiama `ascoltatore` ogni volta che il nucleo emette `evento`, con o
     /// senza finestra. È il `listen_any` di Tauri, ma del nucleo.
+    #[cfg_attr(
+        not(target_os = "android"),
+        allow(
+            dead_code,
+            reason = "l'unico ascoltatore è la sessione multimediale di Android; le prove lo usano"
+        )
+    )]
     pub fn ascolta(&self, evento: &'static str, ascoltatore: impl Fn() + Send + Sync + 'static) {
         self.0
             .ascoltatori

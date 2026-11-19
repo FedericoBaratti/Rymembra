@@ -546,10 +546,6 @@ fn avvia_il_nucleo(nucleo: &Nucleo) {
     // agli altri dispositivi se la sessione è accesa. Spento di serie:
     // da spento il filo legge le impostazioni e basta.
     lontano::avvia_filo(nucleo);
-    // Una volta per avvio, **dopo** «Ascolta insieme» — che dice se c'è una
-    // sessione, e allora non si tocca niente —: via quel che le versioni di prima
-    // hanno lasciato in `copertine-lontane`. Su un filo suo.
-    lontano::ripulisci_le_copertine_di_prima(nucleo);
 
     // Sul telefono la scheda del sistema riceve subito il brano della coda di
     // ieri: a nucleo che parte da solo non arriverà nessuna finestra a
@@ -613,6 +609,11 @@ fn avvia_la_finestra(app: &tauri::AppHandle) {
     {
         insieme::avvia_filo(nucleo.clone(), orecchio);
     }
+    // Una volta per avvio, **dopo** «Ascolta insieme» — che dice se c'è una
+    // sessione, e allora non si tocca niente —: via quel che le versioni di prima
+    // hanno lasciato in `copertine-lontane`. Su un filo suo. Sta con la finestra
+    // perché dipende dal filo della sessione, che parte con lei.
+    lontano::ripulisci_le_copertine_di_prima(&nucleo);
 
     // I modelli di linguaggio: un lucchetto vuoto e un contatore, e
     // nessun filo. Qui non parte niente da solo — non c'e` niente da
@@ -742,6 +743,13 @@ fn avvia_dal_servizio(dati: PathBuf) {
             let stato = stato::Stato::in_apertura(data_dir.clone());
             nucleo.manage(stato.clone());
             apri_la_libreria(&nucleo, &stato, data_dir);
+            // Il cancello serve alla finestra, perché monti l'applicazione quando c'è
+            // tutto; ma i fili del nucleo lo aspettano per sapere che la libreria è
+            // aperta (`Stato::aspetta_l_apertura`, da `con_libreria`), e qui non c'è
+            // nessuna finestra che lo apra dopo: senza questa riga restano in attesa
+            // per sempre. La finestra che nasce dopo lo trova aperto, e il suo
+            // `finisci_l_avvio` lo riapre senza danno.
+            stato.apri_il_cancello();
             if stato.cartella_dati().is_some() {
                 avvia_il_nucleo(&nucleo);
             } else {
@@ -2786,6 +2794,19 @@ mod prove {
         assert!(
             processo < reclama && reclama < nucleo && nucleo < fine,
             "l'ordine del servizio non è processo, reclamo, nucleo, fine"
+        );
+        // I fili del nucleo aspettano il cancello della libreria (`con_libreria` →
+        // `aspetta_l_apertura`): senza una finestra che lo apra dopo, lo apre il
+        // servizio, subito dopo aver aperto la libreria e prima di avviare il nucleo.
+        let libreria = servizio
+            .find("apri_la_libreria(")
+            .expect("il servizio non apre la libreria");
+        let cancello = servizio.find("stato.apri_il_cancello()").expect(
+            "il servizio non apre il cancello: i fili del nucleo aspetterebbero per sempre",
+        );
+        assert!(
+            libreria < cancello && cancello < nucleo,
+            "il cancello si apre dopo la libreria e prima del nucleo"
         );
         assert!(
             include_str!("lib.rs")

@@ -26,9 +26,9 @@ function corpo(testo: string, firma: string): string {
 }
 
 test("la cartella delle copertine lontane si ripulisce una volta all'avvio, dopo «Ascolta insieme», e solo lei", () => {
-  const avvio = LIB.slice(LIB.indexOf("fn avvia_dopo_la_libreria("));
+  const avvio = LIB.slice(LIB.indexOf("fn avvia_la_finestra("));
   const insieme = avvio.indexOf("insieme::avvia_filo(");
-  const pulizia = avvio.indexOf("lontano::ripulisci_le_copertine_di_prima(app)");
+  const pulizia = avvio.indexOf("lontano::ripulisci_le_copertine_di_prima(&nucleo)");
   assert.ok(insieme > 0 && pulizia > insieme, "la pulizia viene dopo che la sessione c'è, per poterne chiedere");
   const fn = corpo(SFOGLIA, "pub(crate) fn ripulisci_le_copertine_di_prima(");
   assert.match(fn, /crate::insieme::ruolo\(app\) != crate::insieme::Ruolo::Fuori/);
