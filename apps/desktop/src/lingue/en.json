@@ -1974,6 +1974,8 @@
   "startup.updating": "Updating the library…",
   "startup.updating.detail": "Rymembra first tries to make a copy of it, {copia}, next to the database; if there isn’t enough free space it skips the copy and updates anyway. On a large library this can take a few minutes.",
   "startup.updating.detail.telefono": "Rymembra first tries to make a copy of it; if there isn’t enough free space it skips the copy and updates anyway. On a large library this can take a few minutes.",
+  "startup.failed": "Rymembra did not start properly",
+  "startup.failed.detail": "Something went wrong while it was starting in the background. Force stop it in your phone’s settings, then open it again; the log has the details.",
   "settings.data.devices": "Devices",
   "settings.update.title": "Updates",
   "settings.update.toggle": "Check for updates",

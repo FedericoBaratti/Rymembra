@@ -69,6 +69,8 @@
     <string name="presenza_titolo_avvio">Rymembra is starting</string>
     <string name="presenza_titolo_riposo">Rymembra is resting</string>
     <string name="presenza_testo_riposo">Open Rymembra so your devices can reach this phone again.</string>
+    <string name="presenza_titolo_rotto">Rymembra did not start properly</string>
+    <string name="presenza_testo_rotto">Force stop Rymembra in your phone’s settings, then open it again.</string>
     <string name="presenza_spegni">Turn off</string>
 
     <!-- La notifica «Pronto da installare» (vedi `AggiornamentoPronto`): solo

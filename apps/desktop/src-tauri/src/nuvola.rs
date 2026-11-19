@@ -844,8 +844,8 @@ fn ripristina(app: &AppHandle) -> Result<EsitoRipristinoIpc, AppError> {
 /// gratis, e dimenticarla è la ragione per cui una modifica non verrebbe mai
 /// salvata.
 pub fn sporca(app: &impl ComeNucleo) {
-    // Senza la finestra il filo del backup non c'Ã¨: parte con l'attivitÃ , e la
-    // sua passata periodica mette a posto quel che Ã¨ cambiato nel frattempo
+    // Senza la finestra il filo del backup non c'è: parte con l'attività, e la
+    // sua passata periodica mette a posto quel che è cambiato nel frattempo
     // (confronta l'impronta). Niente da svegliare, e niente da dire.
     let nucleo = app.come_nucleo();
     let Some(app) = nucleo.finestra() else {

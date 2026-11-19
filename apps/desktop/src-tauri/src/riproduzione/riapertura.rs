@@ -948,6 +948,53 @@ fn leggi_le_latenze(app: &Nucleo) -> Option<(i64, rymembra_app::playback::Latenz
 /// giro del sorvegliante che altrimenti toccherebbe aspettare.
 const SECONDO_TENTATIVO: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Un guasto d'apertura che un secondo tentativo, un attimo dopo, può non rivedere.
+///
+/// - `playback.deviceLost`: è come l'apertura dice «endpoint in transizione» (vedi
+///   `rymembra_play::uscita::errore_di_apertura`).
+/// - `internal.aborted`: su Android, la sola strada che lo produce qui è il
+///   `catch_unwind` attorno a `cpal` ([`apri_senza_cadere`]), caduto perché il
+///   contesto di Android è sparito **a metà** dell'apertura. Capita una volta per
+///   processo, quando la prima attività nasce dopo un nucleo avviato da un servizio
+///   e toglie il contesto del servizio (`rymembra_android::jvm`, «Il cancello»): al
+///   più mezzo secondo, e la seconda apertura aspetta il cancello — chiuso proprio
+///   da quel rilascio — prima di leggere il contesto. Senza questo secondo
+///   tentativo il guasto restava: `primo_guasto` lo conserva, il sorvegliante
+///   riapre solo se un'uscita va o viene, e il motore restava
+///   `playback.engineUnavailable` fino a un «Riapri» a mano.
+///
+/// **Non** per la scadenza dei venti secondi né per gli altri guasti: riprovarli subito
+/// vorrebbe dire raddoppiare un'attesa che è già stata lunga, o insistere su
+/// qualcosa che fra un quarto di secondo sarà identico.
+fn da_riprovare_subito(err: &AppError) -> bool {
+    matches!(
+        err.code().kind(),
+        ErrorCodeKind::PlaybackDeviceLost | ErrorCodeKind::InternalAborted
+    )
+}
+
+/// Esegue `apri` e, se il guasto è di quelli di [`da_riprovare_subito`], aspetta
+/// `pausa` e lo riprova **una** volta. Generico sul motore perché le prove non ne
+/// hanno uno.
+fn con_un_secondo_tentativo<T>(
+    mut apri: impl FnMut() -> Result<T, AppError>,
+    pausa: std::time::Duration,
+) -> Result<T, AppError> {
+    match apri() {
+        Err(err) if da_riprovare_subito(&err) => {
+            nota!(
+                "[riproduzione] apertura da riprovare ({}), si riprova fra {} ms: {}",
+                err.code().kind().code(),
+                pausa.as_millis(),
+                err.cause().unwrap_or("—")
+            );
+            std::thread::sleep(pausa);
+            apri()
+        }
+        esito => esito,
+    }
+}
+
 /// Apre il motore, e se il dispositivo era in transizione riprova una volta.
 ///
 /// # Perché qui e non dentro l'apertura
@@ -961,27 +1008,15 @@ const SECONDO_TENTATIVO: std::time::Duration = std::time::Duration::from_millis(
 /// consuma gli anelli del motore che sta costruendo, e il motore nuovo si
 /// costruisce da capo.
 ///
-/// Solo per `playback.deviceLost`, che è come l'apertura dice «endpoint in
-/// transizione» (vedi `rymembra_play::uscita::errore_di_apertura`). **Non** per
-/// la scadenza dei venti secondi né per gli altri guasti: riprovarli subito
-/// vorrebbe dire raddoppiare un'attesa che è già stata lunga, o insistere su
-/// qualcosa che fra un quarto di secondo sarà identico.
+/// Quali guasti si riprovano lo dice [`da_riprovare_subito`].
 fn apri_con_un_secondo_tentativo(
     app: &Nucleo,
     voluta: Option<&str>,
 ) -> Result<rymembra_play::Motore, AppError> {
-    match apri_motore(app, voluta.map(str::to_owned)) {
-        Err(err) if err.code().kind() == ErrorCodeKind::PlaybackDeviceLost => {
-            nota!(
-                "[riproduzione] dispositivo in transizione, si riprova fra {} ms: {}",
-                SECONDO_TENTATIVO.as_millis(),
-                err.cause().unwrap_or("—")
-            );
-            std::thread::sleep(SECONDO_TENTATIVO);
-            apri_motore(app, voluta.map(str::to_owned))
-        }
-        esito => esito,
-    }
+    con_un_secondo_tentativo(
+        || apri_motore(app, voluta.map(str::to_owned)),
+        SECONDO_TENTATIVO,
+    )
 }
 
 /// L'uscita su cui il lettore ha suonato l'ultima volta che si è aperta era fuori
@@ -1374,7 +1409,93 @@ pub fn riprova_corrente_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
 #[cfg(test)]
 mod prove {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// Un'apertura che fallisce con `primo` e poi riesce (o fallisce con `secondo`),
+    /// e il numero di volte che è stata tentata.
+    fn apertura_che_cade(
+        primo: AppError,
+        secondo: Option<AppError>,
+    ) -> (
+        impl FnMut() -> Result<&'static str, AppError>,
+        Arc<AtomicUsize>,
+    ) {
+        let tentativi = Arc::new(AtomicUsize::new(0));
+        let dentro = Arc::clone(&tentativi);
+        let apri = move || match dentro.fetch_add(1, Ordering::SeqCst) {
+            0 => Err(primo.clone()),
+            _ => secondo.clone().map_or(Ok("aperto"), Err),
+        };
+        (apri, tentativi)
+    }
+
+    fn guasto(codice: ErrorCode) -> AppError {
+        AppError::new(codice).with_cause("prova")
+    }
+
+    /// R4: il panico dell'apertura audio nella finestra del contesto vuoto
+    /// (`internal.aborted` dal `catch_unwind` di `apri_senza_cadere`) si ripara da
+    /// solo con un secondo tentativo, che aspetta il cancello e trova il contesto.
+    #[test]
+    fn un_apertura_caduta_nella_finestra_del_contesto_si_riprova_e_riesce() {
+        let (apri, tentativi) = apertura_che_cade(
+            guasto(ErrorCode::InternalAborted {
+                what: Some("apertura del motore audio".to_owned()),
+            }),
+            None,
+        );
+        let esito = con_un_secondo_tentativo(apri, std::time::Duration::ZERO);
+        assert_eq!(
+            esito.ok(),
+            Some("aperto"),
+            "il guasto restava fino a un «Riapri» a mano"
+        );
+        assert_eq!(tentativi.load(Ordering::SeqCst), 2);
+    }
+
+    /// E il dispositivo in transizione, com'era, si riprova allo stesso modo.
+    #[test]
+    fn un_dispositivo_in_transizione_si_riprova_una_volta() {
+        let (apri, tentativi) = apertura_che_cade(guasto(ErrorCode::PlaybackDeviceLost), None);
+        assert!(con_un_secondo_tentativo(apri, std::time::Duration::ZERO).is_ok());
+        assert_eq!(tentativi.load(Ordering::SeqCst), 2);
+    }
+
+    /// Una volta sola: un guasto che resta non si insegue, e il secondo errore è quello
+    /// che si vede.
+    #[test]
+    fn il_secondo_tentativo_e_uno_solo() {
+        let (apri, tentativi) = apertura_che_cade(
+            guasto(ErrorCode::InternalAborted { what: None }),
+            Some(guasto(ErrorCode::PlaybackEngineUnavailable)),
+        );
+        let errore =
+            con_un_secondo_tentativo(apri, std::time::Duration::ZERO).expect_err("il guasto resta");
+        assert_eq!(
+            errore.code().kind(),
+            ErrorCodeKind::PlaybackEngineUnavailable
+        );
+        assert_eq!(
+            tentativi.load(Ordering::SeqCst),
+            2,
+            "si è insistito oltre il secondo"
+        );
+    }
+
+    /// Gli altri guasti non si riprovano subito: riprovarli vorrebbe dire raddoppiare
+    /// un'attesa già lunga, o insistere su quel che fra un attimo sarà identico.
+    #[test]
+    fn gli_altri_guasti_non_si_riprovano_subito() {
+        for codice in [
+            ErrorCode::PlaybackEngineUnavailable,
+            ErrorCode::PlaybackEngineOpening,
+            ErrorCode::LibraryOpening,
+        ] {
+            let (apri, tentativi) = apertura_che_cade(guasto(codice), None);
+            assert!(con_un_secondo_tentativo(apri, std::time::Duration::ZERO).is_err());
+            assert_eq!(tentativi.load(Ordering::SeqCst), 1);
+        }
+    }
 
     /// La bandiera della riapertura si abbassa anche quando la riapertura cade.
     ///

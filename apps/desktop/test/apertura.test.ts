@@ -41,6 +41,35 @@ test("una fine non torna indietro, l'attesa segue l'ultima notizia", () => {
   assert.deepEqual(apertura.prossima(AGGIORNAMENTO, PRONTA), PRONTA);
 });
 
+test("un nucleo che non è partito intero non monta l'applicazione, e non si aspetta", () => {
+  const NON_PARTE: FaseLibreria = { fase: "nonParte" };
+  assert.equal(typeof apertura.nonParte, "function");
+  assert.equal(apertura.nonParte(NON_PARTE), true);
+  for (const altra of [null, APERTURA, AGGIORNAMENTO, PRONTA, GUASTO]) {
+    assert.equal(apertura.nonParte(altra), false);
+  }
+  // Non è una fine in cui montare: la pagina senza il lettore, lo scrobbling e il resto
+  // risponderebbe `internal.aborted` a ogni comando.
+  assert.equal(apertura.finita(NON_PARTE), false);
+  // E non torna indietro per una domanda partita prima, né si perde per una dopo.
+  assert.deepEqual(apertura.prossima(NON_PARTE, APERTURA), NON_PARTE);
+  assert.deepEqual(apertura.prossima(NON_PARTE, PRONTA), NON_PARTE);
+  assert.deepEqual(apertura.prossima(APERTURA, NON_PARTE), NON_PARTE);
+  assert.deepEqual(apertura.prossima(null, NON_PARTE), NON_PARTE);
+  // Il componente: i figli solo a fine avvio, e il «non parte» ha la sua frase invece.
+  const componente = leggi("../src/AttesaDellaLibreria.tsx");
+  const figli = componente.indexOf("if (finita(fase)) return <>{children}</>;");
+  const rotta = componente.indexOf("if (rotta) {");
+  assert.ok(figli > 0 && rotta > figli, "il nucleo rotto si controlla dopo i figli");
+  const ramo = componente.slice(rotta, componente.indexOf("return (", rotta + 20));
+  assert.ok(!ramo.includes("children"), "il ramo del nucleo rotto monta l'applicazione");
+  assert.ok(componente.includes('t("startup.failed")') && componente.includes('t("startup.failed.detail")'));
+  assert.ok(componente.includes("const aspetta = fase !== null && !finita(fase) && !rotta;"));
+  // Il tipo che Rust scrive (`stato::FaseLibreria::NonParte`, `nonParte`).
+  assert.ok(leggi("../src/ipc/libreria.ts").includes('| { fase: "nonParte" }'));
+  assert.ok(leggi("../src-tauri/src/stato.rs").includes('serde_json::json!({ "fase": "nonParte" })'));
+});
+
 test("la copia dell'aggiornamento ha il nome di `db::nome_istantanea`", () => {
   assert.equal(apertura.copiaDi(38), "rymembra.db.schema-038.bak");
   assert.equal(apertura.copiaDi(7), "rymembra.db.schema-007.bak");

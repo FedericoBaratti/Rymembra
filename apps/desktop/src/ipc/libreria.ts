@@ -344,13 +344,17 @@ export interface Trascinati {
  * subito e aspetta qui. `aggiornamento` porta la versione dello schema di
  * prima, che è anche il nome della copia fatta prima di migrare. `pronta` e
  * `guasto` sono le due fini: in tutte e due l'avvio è finito, e la finestra
- * vera si disegna — col guasto nella fascia, nel secondo caso.
+ * vera si disegna — col guasto nella fascia, nel secondo caso. `nonParte` è la
+ * terza, solo su Android: il nucleo avviato dal servizio senza attività è caduto a
+ * metà, e la finestra **non** si disegna — niente da montare su un nucleo senza
+ * pezzi — ma dice che l'avvio non è andato.
  */
 export type FaseLibreria =
   | { fase: "apertura" }
   | { fase: "aggiornamento"; da: number }
   | { fase: "pronta" }
-  | { fase: "guasto" };
+  | { fase: "guasto" }
+  | { fase: "nonParte" };
 
 export interface Avvio {
   dataDir: string;

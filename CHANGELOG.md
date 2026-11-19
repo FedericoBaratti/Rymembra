@@ -477,9 +477,16 @@ release:
   their own, and the Google Play review of the service type is not settled.
   The service now restarts after a reboot and starts the core by itself; the
   notification says “Rymembra is starting” until the core is up, and “Rymembra is
-  resting” only if the core does not start at all. A file that lives in a cloud
-  folder plays only after the app has been opened once in that run: the cloud
-  folders start with the app. The battery cost is not measured.
+  resting” only if the core does not start at all — the library could not be
+  opened, a full disk for example. Then opening the app starts the core again from
+  scratch, and if the problem is still there the app shows the library’s error as
+  after any other start, and the notification asks you to force stop Rymembra and
+  open it again once you have fixed it: a process that is already running does not
+  reopen the library by itself. If the core falls over halfway, the notification
+  says the same, and the app shows “Rymembra did not start properly” instead of
+  its screens. A file that lives in a cloud folder plays only after the app has
+  been opened once in that run: the cloud folders start with the app. The
+  battery cost is not measured.
 - **“Start with the car”** needs Android Auto and is not
   offered in the Google Play build, because Google’s quality rule for media apps
   in cars (MA-1) forbids starting playback without a user action. It has not

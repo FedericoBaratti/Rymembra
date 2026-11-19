@@ -25,10 +25,17 @@
  * domanda, fatta dopo che l'ascolto è aperto, lo copre (`poi` di
  * `useAscolto`). E finché si aspetta, ogni secondo si richiede: se un evento
  * si perde, la finestra non resta ferma su «Apro la libreria…».
+ *
+ * # Un nucleo che non è partito intero
+ *
+ * Solo su Android, dove un servizio avvia il nucleo prima dell'attività: se è caduto
+ * a metà (`nonParte`) l'applicazione **non** si monta — avrebbe comandi senza gli stati
+ * che li servono, e ogni schermata risponderebbe un errore senza una frase che dica
+ * perché — e la finestra dice che l'avvio non è andato, e cosa fare.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { copiaDi, finita, prossima } from "./apertura";
+import { copiaDi, finita, nonParte, prossima } from "./apertura";
 import { ipc, type FaseLibreria } from "./ipc";
 import { t } from "./lingue";
 import { useAscolto } from "./pagine";
@@ -52,7 +59,8 @@ export function AttesaDellaLibreria({ children }: { children: ReactNode }) {
   };
   useAscolto<FaseLibreria>("libreria:stato", adotta, true, chiedi);
 
-  const aspetta = fase !== null && !finita(fase);
+  const rotta = nonParte(fase);
+  const aspetta = fase !== null && !finita(fase) && !rotta;
   const mostrata = useRef(false);
   useEffect(() => {
     if (!aspetta) return;
@@ -70,8 +78,22 @@ export function AttesaDellaLibreria({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aspetta]);
 
+  // Una finestra che apre con la cosa già detta non ha niente da aspettare, e va mostrata
+  // lo stesso: dice che l'avvio non è andato.
+  useEffect(() => {
+    if (rotta) ipc.finestraMostra().catch(() => undefined);
+  }, [rotta]);
+
   if (finita(fase)) return <>{children}</>;
   if (fase === null) return null;
+  if (rotta) {
+    return (
+      <div className="vuoto" role="alert">
+        <h2>{t("startup.failed")}</h2>
+        <p>{t("startup.failed.detail")}</p>
+      </div>
+    );
+  }
   return (
     <div className="vuoto" role="status" aria-live="polite">
       {fase.fase === "aggiornamento" ? (

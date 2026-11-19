@@ -2141,7 +2141,7 @@ fn chiave_per_la_finestra(err: &AppError, ripiego: Option<ErrorCodeKind>) -> Opt
 /// Porta la finestra davanti se è nascosta nel vassoio — o se non c'è, perché
 /// la X sul vassoio l'ha chiusa: allora nasce di nuovo (`comparsa`).
 fn mostra_finestra(app: &Nucleo) {
-    // Senza la finestra â€” il nucleo che parte da solo â€” non c'Ã¨ niente da portare
+    // Senza la finestra — il nucleo che parte da solo — non c'è niente da portare
     // davanti.
     app.con_finestra(|app| {
         let nascosta = app

@@ -274,6 +274,8 @@ impl Stato {
             in_wal: OnceLock::new(),
             apertura: Apertura {
                 fase: Mutex::new(fase),
+                // Uno stato che nasce già finito (un rifiuto) non ha niente da aspettare.
+                fili: Mutex::new(fase.finita()),
                 finita: Condvar::new(),
             },
             libreria: Mutex::new(Err(in_apertura())),
@@ -318,6 +320,10 @@ impl Stato {
     /// L'avvio è finito: si apre il cancello, e chi aspettava la libreria la
     /// trova — aperta, o con l'errore con cui non si è aperta. Restituisce la
     /// fase a cui si è arrivati.
+    ///
+    /// Apre **tutti e due**: la fase che vede la pagina e il cancello dei fili (vedi
+    /// [`Apertura`]). La chiama la finestra, a fine avvio, quando tutti gli stati su
+    /// cui la pagina conta ci sono.
     pub fn apri_il_cancello(&self) -> FaseLibreria {
         let aperta = self
             .libreria
@@ -334,11 +340,97 @@ impl Stato {
             .fase
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = arrivata;
-        self.apertura.finita.notify_all();
+        self.apri_il_cancello_dei_fili();
         arrivata
     }
 
-    /// A che punto è l'apertura della libreria.
+    /// La libreria c'è — aperta, o con il suo errore — e i fili del nucleo che la
+    /// aspettavano possono andare. **Non** tocca la fase che vede la pagina: quella la
+    /// apre la finestra, con [`Stato::apri_il_cancello`], quando ha finito il suo avvio.
+    ///
+    /// La chiama il servizio che avvia il nucleo senza attività, subito dopo aver
+    /// aperto la libreria. Se la pagina diceva «aggiorno la libreria…» l'aggiornamento
+    /// ora è finito: torna a «apro la libreria…», che è quel che resta da fare.
+    pub fn apri_il_cancello_dei_fili(&self) {
+        {
+            let mut fase = self
+                .apertura
+                .fase
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if matches!(*fase, FaseLibreria::Aggiornamento { .. }) {
+                *fase = FaseLibreria::Apertura;
+            }
+        }
+        *self
+            .apertura
+            .fili
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = true;
+        self.apertura.finita.notify_all();
+    }
+
+    /// Rimette la libreria «in apertura», dopo un avvio che non l'aveva aperta: la
+    /// fase che vede la pagina torna a «apro la libreria…», il cancello dei fili si
+    /// richiude, e il guasto di prima lascia il posto a «sta aprendo».
+    ///
+    /// # Perché esiste
+    ///
+    /// Perché il nucleo tiene lo stato che ha registrato per primo
+    /// (`Nucleo::manage`), e Tauri anche: dopo un avvio fallito lo stato in guasto è
+    /// l'unico che le due parti conoscono, e un secondo tentativo che ne facesse uno
+    /// nuovo aprirebbe una libreria che nessuno vede. Si riapre **lo stesso oggetto**:
+    /// gli handle che il nucleo e Tauri hanno già (`Clone` su un `Arc`) vedono la
+    /// libreria nuova senza cambiare niente.
+    ///
+    /// È sicuro solo dopo un avvio [`crate::nucleo::Esito::Fallito`]: la libreria non
+    /// era aperta (le scorciatoie `store_copertine`, `cartella_dati` e `in_wal`, che si
+    /// scrivono una volta, sono ancora vuote) e nessun filo l'aveva ancora vista.
+    pub fn riapri(&self) {
+        *self.libreria.lock().unwrap_or_else(PoisonError::into_inner) = Err(in_apertura());
+        *self
+            .apertura
+            .fase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = FaseLibreria::Apertura;
+        *self
+            .apertura
+            .fili
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = false;
+    }
+
+    /// Il nucleo è caduto a metà ([`crate::nucleo::Esito::Rotto`]): la pagina non
+    /// monta, e dice che l'avvio non è andato. Restituisce la fase a cui si è arrivati.
+    ///
+    /// Non tocca la libreria: i fili del nucleo che sono nati continuano a usarla, e
+    /// toglierla da sotto non la rimette a posto. Il cancello dei fili si apre, perché
+    /// nessuno resti ad aspettarlo.
+    pub fn non_parte(&self) -> FaseLibreria {
+        *self
+            .apertura
+            .fase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = FaseLibreria::NonParte;
+        *self
+            .apertura
+            .fili
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = true;
+        self.apertura.finita.notify_all();
+        FaseLibreria::NonParte
+    }
+
+    /// Nessuno tiene il lucchetto della libreria, adesso. Una domanda e basta: non
+    /// aspetta, e non dice che resterà vera un attimo dopo.
+    pub fn e_libera(&self) -> bool {
+        !matches!(
+            self.libreria.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
+    }
+
+    /// A che punto è l'apertura della libreria, per la pagina.
     pub fn fase(&self) -> FaseLibreria {
         *self
             .apertura
@@ -347,8 +439,9 @@ impl Stato {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Aspetta che l'apertura della libreria finisca, ma non oltre `entro`
-    /// (`None`: senza scadenza) e non mentre l'applicazione esce.
+    /// Aspetta che il cancello dei fili si apra (la libreria c'è, o ha detto il suo
+    /// errore), ma non oltre `entro` (`None`: senza scadenza) e non mentre
+    /// l'applicazione esce.
     ///
     /// L'uscita conta: chi chiude Rymembra durante una migrazione lunga non
     /// deve trovarlo fermo ad aspettare la fine della migrazione — la
@@ -365,12 +458,12 @@ impl Stato {
         /// Ogni quanto chi aspetta guarda se si sta uscendo.
         const PASSO: Duration = Duration::from_millis(100);
         let inizio = Instant::now();
-        let mut fase = self
+        let mut aperto = self
             .apertura
-            .fase
+            .fili
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        while !fase.finita() && !uscendo() {
+        while !*aperto && !uscendo() {
             let passo = match entro {
                 Some(entro) => match entro.checked_sub(inizio.elapsed()) {
                     Some(resta) if !resta.is_zero() => resta.min(PASSO),
@@ -378,10 +471,10 @@ impl Stato {
                 },
                 None => PASSO,
             };
-            fase = self
+            aperto = self
                 .apertura
                 .finita
-                .wait_timeout(fase, passo)
+                .wait_timeout(aperto, passo)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
@@ -957,20 +1050,43 @@ pub enum FaseLibreria {
     /// Non si è aperta: il perché è l'errore della libreria. Anche dopo un
     /// rifiuto del trasloco.
     Guasto,
+    /// Il nucleo avviato da un servizio, senza finestra, è caduto a metà: la
+    /// libreria può anche essere aperta, ma il resto dell'applicazione no, e la
+    /// pagina **non monta** — niente da fare su un nucleo che manca di pezzi.
+    /// Solo su Android: sul computer il nucleo lo avvia la finestra.
+    NonParte,
 }
 
 impl FaseLibreria {
     /// L'avvio è finito, in un modo o nell'altro.
     fn finita(self) -> bool {
-        matches!(self, Self::Pronta | Self::Guasto)
+        matches!(self, Self::Pronta | Self::Guasto | Self::NonParte)
     }
 }
 
 /// La fase dell'apertura, e la condizione su cui chi la aspetta dorme.
+///
+/// # Due cose diverse, e perché
+///
+/// - La **fase** è quel che vede la pagina (`libreria_fase`): diventa «pronta» solo
+///   quando anche gli stati della finestra ci sono, cioè a fine avvio della finestra
+///   ([`Stato::apri_il_cancello`]).
+/// - Il **cancello dei fili** è quel che aspettano i fili del nucleo
+///   ([`Stato::aspetta_l_apertura`]): si apre quando la libreria c'è, o ha detto il
+///   suo errore. Sul computer le due cose si aprono insieme. Su Android il servizio
+///   che avvia il nucleo senza attività apre solo il cancello
+///   ([`Stato::apri_il_cancello_dei_fili`]): se aprisse anche la fase, l'attività
+///   che nasce mentre il nucleo si sta ancora avviando troverebbe la pagina «pronta»
+///   prima che esistano gli stati della finestra (`StatoNuvola`, `StatoSincronia`,
+///   `StatoAggiornamenti`…), e i suoi comandi riceverebbero `internal.aborted`.
 struct Apertura {
-    /// A che punto è.
+    /// A che punto è, per la pagina.
     fase: Mutex<FaseLibreria>,
-    /// Suona quando la fase diventa una fine: vedi [`Stato::apri_il_cancello`].
+    /// Il cancello dei fili: `true` quando la libreria c'è (aperta o con il suo
+    /// errore). Chi lo aspetta dorme su [`Apertura::finita`].
+    fili: Mutex<bool>,
+    /// Suona quando il cancello dei fili si apre: vedi
+    /// [`Stato::apri_il_cancello_dei_fili`].
     finita: Condvar,
 }
 
@@ -2291,6 +2407,159 @@ mod prove {
             scritta(FaseLibreria::Guasto),
             serde_json::json!({ "fase": "guasto" })
         );
+        assert_eq!(
+            scritta(FaseLibreria::NonParte),
+            serde_json::json!({ "fase": "nonParte" })
+        );
+    }
+
+    /// R2: il servizio che avvia il nucleo senza finestra ha la libreria e apre il
+    /// cancello dei fili; la pagina, se nasce adesso, deve ancora vedere «apro la
+    /// libreria…». Diventa «pronta» solo quando la finestra ha finito il suo avvio
+    /// (`apri_il_cancello`), cioè quando gli stati che la pagina chiede ci sono.
+    #[test]
+    fn la_pagina_non_vede_la_libreria_pronta_finche_la_finestra_non_ha_finito() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::in_apertura(dir.path().to_path_buf());
+        stato.completa(apri_libreria(dir.path().to_path_buf()));
+        // Il servizio: la libreria c'è, i fili vanno.
+        stato.apri_il_cancello_dei_fili();
+        assert_eq!(
+            stato.fase(),
+            FaseLibreria::Apertura,
+            "la pagina vede «pronta» prima che gli stati della finestra ci siano"
+        );
+        // I fili del nucleo passano: il loro cancello è aperto.
+        let inizio = Instant::now();
+        stato.aspetta_l_apertura_se(None, || false);
+        assert!(
+            inizio.elapsed() < Duration::from_secs(1),
+            "i fili del nucleo aspettano un cancello che il servizio ha aperto"
+        );
+        assert!(con_libreria(&stato, |l| Ok(l.data_dir.clone())).is_ok());
+        // La finestra, a fine avvio: adesso sì.
+        assert_eq!(stato.apri_il_cancello(), FaseLibreria::Pronta);
+        assert_eq!(stato.fase(), FaseLibreria::Pronta);
+    }
+
+    /// R2: un fil che aspettava il cancello lo vede aprirsi dal servizio, senza che
+    /// la fase della pagina si muova.
+    #[test]
+    fn il_cancello_dei_fili_sveglia_chi_aspetta_e_non_muove_la_pagina() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::in_apertura(dir.path().to_path_buf());
+        std::thread::scope(|filo| {
+            let in_attesa = filo.spawn(|| {
+                stato.aspetta_l_apertura_se(None, || false);
+                con_libreria(&stato, |l| Ok(l.data_dir.clone()))
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!in_attesa.is_finished(), "il filo aspetta il cancello");
+            stato.completa(apri_libreria(dir.path().to_path_buf()));
+            stato.apri_il_cancello_dei_fili();
+            assert_eq!(
+                in_attesa.join().expect("il filo").expect("la libreria"),
+                dir.path()
+            );
+        });
+        assert_eq!(stato.fase(), FaseLibreria::Apertura);
+    }
+
+    /// R2: «aggiorno la libreria…» finisce con l'aggiornamento: quando il servizio ha
+    /// la libreria, la pagina che nasce dopo non deve dire che sta ancora migrando.
+    #[test]
+    fn a_libreria_aperta_la_pagina_non_dice_piu_aggiorno() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::in_apertura(dir.path().to_path_buf());
+        stato.in_aggiornamento(38);
+        stato.completa(apri_libreria(dir.path().to_path_buf()));
+        stato.apri_il_cancello_dei_fili();
+        assert_eq!(stato.fase(), FaseLibreria::Apertura);
+    }
+
+    /// R1, caso A: dopo una libreria che non si è aperta, `riapri` rimette lo **stesso**
+    /// stato «in apertura» — gli handle di chi lo ha già (il nucleo, Tauri) vedono la
+    /// libreria nuova — e la riapertura, riuscita, porta alla libreria vera.
+    #[test]
+    fn una_libreria_che_non_si_apre_si_riapre_nello_stesso_stato() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::in_apertura(dir.path().to_path_buf());
+        let altro_handle = stato.clone();
+        stato.completa(Err(AppError::new(ErrorCode::DbOpenFailed {
+            path: Some(dir.path().display().to_string()),
+        })));
+        stato.apri_il_cancello_dei_fili();
+        assert_eq!(
+            con_libreria(&stato, |_| Ok(()))
+                .expect_err("non si è aperta")
+                .code()
+                .kind()
+                .code(),
+            "db.openFailed"
+        );
+        stato.riapri();
+        assert_eq!(stato.fase(), FaseLibreria::Apertura);
+        assert_eq!(
+            altro_handle.fase(),
+            FaseLibreria::Apertura,
+            "è lo stesso oggetto per chi ne ha un altro handle"
+        );
+        assert_eq!(
+            stato
+                .libreria
+                .lock()
+                .unwrap()
+                .as_ref()
+                .err()
+                .map(|e| e.code().kind().code()),
+            Some("library.opening"),
+            "il guasto di prima resta lì per tutta la vita del processo"
+        );
+        // Il cancello dei fili si è richiuso: chi aspetta ora aspetta la libreria nuova.
+        let inizio = Instant::now();
+        stato.aspetta_l_apertura_se(Some(Duration::from_millis(150)), || false);
+        assert!(inizio.elapsed() >= Duration::from_millis(100));
+        stato.completa(apri_libreria(dir.path().to_path_buf()));
+        stato.apri_il_cancello_dei_fili();
+        assert_eq!(stato.apri_il_cancello(), FaseLibreria::Pronta);
+        assert!(altro_handle.cartella_dati().is_some());
+        assert!(con_libreria(&altro_handle, |l| Ok(l.data_dir.clone())).is_ok());
+    }
+
+    /// R3: la domanda «la libreria è libera?» non aspetta e non si inganna.
+    #[test]
+    fn la_domanda_se_la_libreria_e_libera_non_aspetta() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        assert!(stato.e_libera());
+        let guardia = stato.libreria.lock().unwrap();
+        let inizio = Instant::now();
+        assert!(!stato.e_libera(), "con il lucchetto tenuto dice libera");
+        assert!(
+            inizio.elapsed() < Duration::from_millis(500),
+            "ha aspettato"
+        );
+        drop(guardia);
+        assert!(stato.e_libera());
+    }
+
+    /// R1, caso B: un nucleo a metà non porta la pagina a «pronta», nemmeno se la
+    /// libreria è aperta e chi aspetta il cancello dei fili è passato.
+    #[test]
+    fn un_nucleo_a_meta_non_porta_la_pagina_a_pronta() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::in_apertura(dir.path().to_path_buf());
+        stato.completa(apri_libreria(dir.path().to_path_buf()));
+        stato.apri_il_cancello_dei_fili();
+        assert_eq!(stato.non_parte(), FaseLibreria::NonParte);
+        assert_eq!(stato.fase(), FaseLibreria::NonParte);
+        assert!(
+            stato.fase().finita(),
+            "la fase di un nucleo che non parte è una fine: niente da aspettare"
+        );
+        // La fase non torna a «in aggiornamento» né a «pronta» per una chiamata di troppo.
+        stato.in_aggiornamento(12);
+        assert_eq!(stato.fase(), FaseLibreria::NonParte);
     }
 }
 

@@ -77,8 +77,14 @@ import java.util.concurrent.TimeUnit
  * ([AvvioAccensione]), dopo che la persona ha acceso il sottofondo con l'app
  * chiusa. Quando poi l'attività nasce, Tauri si aggancia al nucleo che c'è
  * già. Finché il nucleo non ha detto di esserci la notifica dice che si sta
- * avviando; «a riposo», con l'invito ad aprire l'app, resta solo per il caso
- * in cui il nucleo proprio non parte (vedi [titolo]).
+ * avviando; se non parte (vedi [titolo]) dice «a riposo», con l'invito ad aprire
+ * l'app — e aprirla **serve**: la libreria che non si apriva si riapre, e il
+ * nucleo si rifà da zero —, o, se è caduto a metà o la libreria non si apre
+ * nemmeno dall'attività, di chiudere l'app dalle impostazioni e riaprirla: un
+ * nucleo a pezzi non si rifà senza ripartire, e il processo che c'è già non
+ * riapre la libreria da sé.
+ * Niente si riprova da solo: un avvio che fallisce sempre (un disco pieno) non
+ * deve tenere il processo in un ciclo.
  *
  * # Chi lo accende e lo spegne
  *
@@ -439,14 +445,19 @@ class Presenza : Service() {
      * La frase della notifica, che dice la verità sul nucleo: finché non ha detto
      * di esserci («sessione.pronta», vedi [Nucleo.pronta]) si sta avviando; se
      * l'avvio da qui è fallito ([Ponte.nucleoNonParte]) è «a riposo», e toccare la
-     * notifica apre l'app, che il nucleo lo avvia da sé.
+     * notifica apre l'app, che il nucleo lo rifà da sé; se è caduto a metà
+     * ([Ponte.nucleoRotto]) aprire non serve, e la frase dice di chiudere l'app.
      */
     private fun titolo(contesto: Context): String {
       // Il nucleo che c'è vince su un tentativo fallito di prima: l'attività può
       // averlo avviato dopo che il servizio non c'era riuscito.
       if (!Nucleo.pronto) {
         return contesto.getString(
-          if (Ponte.nucleoNonParte) R.string.presenza_titolo_riposo else R.string.presenza_titolo_avvio,
+          when {
+            Ponte.nucleoRotto -> R.string.presenza_titolo_rotto
+            Ponte.nucleoNonParte -> R.string.presenza_titolo_riposo
+            else -> R.string.presenza_titolo_avvio
+          },
         )
       }
       val nomi = collegati
@@ -538,8 +549,11 @@ class Presenza : Service() {
             spegni,
           ).build(),
         )
-      if (Ponte.nucleoNonParte && !Nucleo.pronto) {
-        costruttore.setContentText(contesto.getString(R.string.presenza_testo_riposo))
+      if (!Nucleo.pronto) {
+        when {
+          Ponte.nucleoRotto -> costruttore.setContentText(contesto.getString(R.string.presenza_testo_rotto))
+          Ponte.nucleoNonParte -> costruttore.setContentText(contesto.getString(R.string.presenza_testo_riposo))
+        }
       }
       return costruttore.build()
     }

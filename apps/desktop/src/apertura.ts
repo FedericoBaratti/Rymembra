@@ -25,14 +25,24 @@ export function finita(fase: FaseLibreria | null): boolean {
 }
 
 /**
+ * Il nucleo non è partito intero (`nonParte`, solo Android): non è una fine in cui
+ * montare l'applicazione — `finita` dice no —, ma non c'è più niente da aspettare.
+ * La finestra lo dice e basta.
+ */
+export function nonParte(fase: FaseLibreria | null): boolean {
+  return fase !== null && fase.fase === "nonParte";
+}
+
+/**
  * La fase da tenere fra quella che c'è e una appena arrivata.
  *
  * La risposta di `libreriaFase` e l'evento `libreria:stato` possono incrociarsi:
  * una domanda partita durante l'apertura può tornare dopo l'evento che l'ha
- * chiusa. Una fine non torna indietro; fra le fasi d'attesa vince l'ultima.
+ * chiusa. Una fine non torna indietro, e nemmeno un nucleo che non parte; fra le
+ * fasi d'attesa vince l'ultima.
  */
 export function prossima(ora: FaseLibreria | null, arrivata: FaseLibreria): FaseLibreria {
-  if (ora !== null && finita(ora)) return ora;
+  if (ora !== null && (finita(ora) || nonParte(ora))) return ora;
   return arrivata;
 }
 
