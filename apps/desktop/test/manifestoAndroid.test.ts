@@ -600,8 +600,9 @@ test("un nucleo caduto a metà resta caduto: né un «pronto» né un «non part
   assert.ok(parte.length > 0, "segnaNucleoParte non si trova");
   assert.doesNotMatch(parte, /nucleoRotto = false/, "un nucleo che dice «pronto» cancella il «rotto»");
   assert.match(parte, /if \(nucleoRotto\) return/);
-  // E un «non parte» riprovabile che arriva dopo (un avvio in ritardo, o la finestra che
-  // rifà l'avvio) non lo declassa, né rimette in gioco il segno «già avviato».
+  // E un «non parte» riprovabile che arriva dopo — il «fallito» della guardia del servizio, che
+  // chiude l'avvio prima di avvisare (C2), dopo un «rotto» già detto dalla finestra — non lo
+  // declassa, né rimette in gioco il segno «già avviato».
   const segna = /fun segnaNucleoNonParte\([\s\S]*?\n  }\n/.exec(ponte)?.[0] ?? "";
   const salta = segna.indexOf("if (nucleoRotto) return");
   assert.ok(

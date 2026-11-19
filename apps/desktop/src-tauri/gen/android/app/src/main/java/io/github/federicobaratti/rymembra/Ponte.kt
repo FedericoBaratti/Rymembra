@@ -151,9 +151,12 @@ object Ponte {
    * il processo in un ciclo.
    */
   fun segnaNucleoNonParte(riprovabile: Boolean) {
-    // Un nucleo già rotto resta rotto: un «non parte» riprovabile che arriva dopo (un avvio in
-    // ritardo, o la finestra che rifà l'avvio) non lo declassa, né rimette in gioco il segno
-    // «già avviato».
+    // Un nucleo già rotto resta rotto: un «non parte» riprovabile che arriva dopo non lo
+    // declassa, né rimette in gioco il segno «già avviato». Arriva dopo davvero: la guardia del
+    // servizio chiude l'avvio **prima** di avvisare (`GuardiaDellAvvio`), e in quel
+    // frattempo la finestra, che aspettava la fine dell'avvio, può aver già detto «rotto»
+    // (`avvisa_se_la_libreria_manca`, `rifai_l_avvio`) prima che il «fallito» del servizio
+    // raggiunga Kotlin.
     if (nucleoRotto) return
     nucleoRotto = !riprovabile
     nucleoNonParte = true
