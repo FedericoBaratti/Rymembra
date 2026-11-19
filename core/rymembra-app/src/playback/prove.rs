@@ -1444,6 +1444,133 @@ fn la_coda_salvata_di_sfoglia_passa_alle_righe_specchio() {
     );
 }
 
+/// La coda di «Sfoglia» migrata all'avvio era vuota (D6 del collaudo del 18/11):
+/// `migra_coda_lontana` gira prima che il catalogo di un dispositivo sia arrivato,
+/// l'archivio specchio è ancora vuoto, e ogni voce lontana veniva scartata. Con un
+/// dispositivo collegato che il catalogo non l'ha ancora letto per intero la coda si
+/// **rimanda**: la chiave e la coda di righe restano come sono, e si riprova quando
+/// il catalogo c'è.
+#[test]
+fn la_coda_di_sfoglia_aspetta_il_catalogo_del_dispositivo_e_poi_si_porta() {
+    use crate::specchio::comuni::{ADESSO, chiave, giro, riga};
+    let c = db();
+    brano(&c, 1, 1000);
+    brano(&c, 2, 1000);
+    let pc = chiave('a');
+    // Il PC è collegato, ma il suo catalogo non è ancora arrivato.
+    c.execute(
+        "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+        [&pc],
+    )
+    .expect("dispositivo");
+    let intera = CodaIntera {
+        voci: vec![VoceSalvata::Riga(1), lontana(&pc, 10), VoceSalvata::Riga(2)],
+        order: vec![0, 1, 2],
+        order_pos: Some(1),
+        shuffle: false,
+        repeat: "off".to_owned(),
+    };
+    scrivi_come_prima(&c, &intera);
+    let righe = load_queue(&c).expect("righe");
+
+    // Prima del catalogo: rimandata, e niente è cambiato.
+    let rimandata = porta_la_coda_lontana(&c, righe.clone(), true).expect("migrazione");
+    assert_eq!(rimandata, CodaLontana::Rimandata);
+    assert!(
+        crate::settings::read(&c, CHIAVE_CODA_LONTANA)
+            .expect("lettura")
+            .is_some(),
+        "la chiave resta: serve alla prossima volta"
+    );
+    assert_eq!(load_queue(&c).expect("riletta"), righe);
+
+    // Rimessa la scena, arriva il catalogo: la voce trova la sua riga.
+    giro(&c, &pc, &[riga(10)], ADESSO);
+    let righe = load_queue(&c).expect("righe di nuovo");
+    let fatta = porta_la_coda_lontana(&c, righe, true).expect("dopo il catalogo");
+    let CodaLontana::Fatta(coda) = fatta else {
+        panic!("con il catalogo la coda si porta: {fatta:?}");
+    };
+    let specchio: i64 = c
+        .query_row(
+            "SELECT track_id FROM lontano_brani WHERE dispositivo = ?1 AND id_remoto = 10",
+            [&pc],
+            |r| r.get(0),
+        )
+        .expect("riga specchio");
+    assert_eq!(coda.tracks, vec![1, specchio, 2]);
+    assert_eq!(coda.order_pos, Some(1), "si era sulla voce lontana");
+    assert_eq!(
+        crate::settings::read(&c, CHIAVE_CODA_LONTANA).expect("lettura"),
+        None
+    );
+}
+
+/// Scaduto il tempo che si aspetta il catalogo, si porta quel che c'è: la voce
+/// di un dispositivo che non ha risposto si scarta, e la coda non resta mai
+/// sospesa.
+#[test]
+fn scaduta_l_attesa_la_coda_di_sfoglia_si_porta_con_quel_che_c_e() {
+    use crate::specchio::comuni::chiave;
+    let c = db();
+    brano(&c, 1, 1000);
+    brano(&c, 2, 1000);
+    let pc = chiave('a');
+    c.execute(
+        "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+        [&pc],
+    )
+    .expect("dispositivo");
+    let intera = CodaIntera {
+        voci: vec![VoceSalvata::Riga(1), lontana(&pc, 10), VoceSalvata::Riga(2)],
+        order: vec![0, 1, 2],
+        order_pos: Some(1),
+        shuffle: false,
+        repeat: "off".to_owned(),
+    };
+    scrivi_come_prima(&c, &intera);
+    let righe = load_queue(&c).expect("righe");
+    let scaduta = porta_la_coda_lontana(&c, righe, false).expect("scaduta");
+    let CodaLontana::Fatta(coda) = scaduta else {
+        panic!("scaduta l'attesa la coda si porta: {scaduta:?}");
+    };
+    assert_eq!(coda.tracks, vec![1, 2]);
+    assert_eq!(
+        crate::settings::read(&c, CHIAVE_CODA_LONTANA).expect("lettura"),
+        None
+    );
+}
+
+/// Un catalogo arrivato per intero che quel brano non lo ha più, o un
+/// dispositivo che non è più collegato, non si aspettano: la voce si scarta
+/// subito.
+#[test]
+fn una_voce_che_il_catalogo_completo_non_ha_o_di_un_dispositivo_scollegato_non_aspetta() {
+    use crate::specchio::comuni::{ADESSO, chiave, giro, riga};
+    let c = db();
+    brano(&c, 1, 1000);
+    let (pc, estraneo) = (chiave('a'), chiave('b'));
+    giro(&c, &pc, &[riga(11)], ADESSO);
+    let intera = CodaIntera {
+        voci: vec![
+            VoceSalvata::Riga(1),
+            lontana(&pc, 10),
+            lontana(&estraneo, 5),
+        ],
+        order: vec![0, 1, 2],
+        order_pos: Some(0),
+        shuffle: false,
+        repeat: "off".to_owned(),
+    };
+    scrivi_come_prima(&c, &intera);
+    let righe = load_queue(&c).expect("righe");
+    let esito = porta_la_coda_lontana(&c, righe, true).expect("migrazione");
+    let CodaLontana::Fatta(coda) = esito else {
+        panic!("niente da aspettare: {esito:?}");
+    };
+    assert_eq!(coda.tracks, vec![1]);
+}
+
 /// Una coda intera rimasta indietro — scritta prima di un guasto, o da una
 /// versione che non la teneva più d'accordo con quella di righe — non si usa, e
 /// la coda di righe resta com'è: ma la chiave non deve restare lì per sempre.

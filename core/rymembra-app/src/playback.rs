@@ -584,6 +584,9 @@ pub fn load_queue_remote(
 /// non si usa — resta `righe` com'è — ma la chiave si toglie lo stesso: non ha
 /// più chi la legga.
 ///
+/// Questa è la forma **senza attesa** di [`porta_la_coda_lontana`]: porta quel
+/// che c'è adesso.
+///
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
@@ -591,10 +594,72 @@ pub fn migra_coda_lontana(
     connection: &Connection,
     righe: QueueSnapshot,
 ) -> Result<QueueSnapshot, AppError> {
+    Ok(
+        match porta_la_coda_lontana(connection, righe.clone(), false)? {
+            CodaLontana::Niente(coda) | CodaLontana::Fatta(coda) => coda,
+            // Senza attesa non si rimanda mai; per non decidere qui, resta com'era.
+            CodaLontana::Rimandata => righe,
+        },
+    )
+}
+
+/// Com'è andata la mappatura della coda di «Sfoglia» ([`porta_la_coda_lontana`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodaLontana {
+    /// Non c'era niente da portare — la chiave non c'era, era illeggibile o
+    /// rimasta indietro rispetto alla coda di righe, che è cambiata —: la chiave
+    /// è tolta, e la coda è quella di righe com'era.
+    Niente(QueueSnapshot),
+    /// Portata: le voci con una riga specchio sono in coda, le altre scartate; la
+    /// coda è scritta in [`CHIAVE_CODA`] e la chiave vecchia tolta.
+    Fatta(QueueSnapshot),
+    /// Qualche voce è di un dispositivo collegato il cui catalogo non è ancora
+    /// arrivato per intero: non si è fatto niente — la chiave e la coda di righe
+    /// restano — e si riprova quando il catalogo c'è.
+    Rimandata,
+}
+
+/// [`migra_coda_lontana`], con l'attesa del catalogo (D6 del collaudo del 18/11).
+///
+/// # Il difetto che toglie
+///
+/// La migrazione gira all'avvio, e dopo un aggiornamento da 3.2.1 l'archivio
+/// specchio è ancora vuoto: il catalogo di un dispositivo arriva una decina di
+/// secondi dopo, e nel frattempo ogni voce lontana trovava «nessuna riga» e veniva
+/// scartata. La coda migrata era vuota, e la chiave se n'era andata.
+///
+/// # La regola
+///
+/// Con `aspetta`, una voce lontana senza riga che sta su un dispositivo ancora
+/// collegato **e** il cui catalogo non è stato letto per intero
+/// (`lontano_cataloghi.completo`) si aspetta: si ritorna [`CodaLontana::Rimandata`]
+/// senza scrivere niente. Quando il catalogo è completo la riga che non c'è è un
+/// brano che l'altro non ha più, e un dispositivo che non è più collegato non ne
+/// avrà: nessuno dei due si aspetta. Senza `aspetta` — il tempo è scaduto — si
+/// porta quel che c'è, e la coda non resta mai sospesa. Se la persona cambia la
+/// coda nel frattempo, la coda intera «rimane indietro» e la chiave si toglie da
+/// sola: è il limite di chi non ha toccato niente.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn porta_la_coda_lontana(
+    connection: &Connection,
+    righe: QueueSnapshot,
+    aspetta: bool,
+) -> Result<CodaLontana, AppError> {
     let Some(intera) = load_queue_remote(connection, &righe)? else {
         crate::settings::forget(connection, CHIAVE_CODA_LONTANA)?;
-        return Ok(righe);
+        return Ok(CodaLontana::Niente(righe));
     };
+    if aspetta
+        && intera.voci.iter().any(|voce| match voce {
+            VoceSalvata::Lontana(descrittore) => aspetta_il_catalogo(connection, descrittore),
+            VoceSalvata::Riga(_) => false,
+        })
+    {
+        return Ok(CodaLontana::Rimandata);
+    }
     let (tracks, order, order_pos) = intera.tenendo(|voce| match voce {
         VoceSalvata::Riga(id) => Some(*id),
         VoceSalvata::Lontana(descrittore) => riga_specchio_di(connection, descrittore),
@@ -602,7 +667,28 @@ pub fn migra_coda_lontana(
     let migrata = intera.snapshot(tracks, order, order_pos);
     save_queue(connection, &migrata)?;
     crate::settings::forget(connection, CHIAVE_CODA_LONTANA)?;
-    Ok(migrata)
+    Ok(CodaLontana::Fatta(migrata))
+}
+
+/// Una voce lontana che oggi non ha la sua riga **e** potrebbe averla fra poco:
+/// il dispositivo è ancora collegato, e il suo catalogo non è stato letto per
+/// intero.
+fn aspetta_il_catalogo(connection: &Connection, descrittore: &serde_json::Value) -> bool {
+    let Ok(suo) = serde_json::from_value::<Descrittore>(descrittore.clone()) else {
+        return false;
+    };
+    if riga_specchio_di(connection, descrittore).is_some() {
+        return false;
+    }
+    connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM dispositivi WHERE chiave = ?1 AND revocato = 0)
+                AND NOT EXISTS (SELECT 1 FROM lontano_cataloghi
+                                 WHERE dispositivo = ?1 AND completo = 1)",
+            [&suo.dispositivo],
+            |riga| riga.get(0),
+        )
+        .unwrap_or(false)
 }
 
 /// Come «Sfoglia» descriveva un brano nella coda intera: del dispositivo
