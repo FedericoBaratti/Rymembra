@@ -145,10 +145,16 @@ test("le frecce della tastiera sfogliano, e solo quelle", () => {
 test("App monta le Novità una volta, e la proposta del sottofondo aspetta che si chiudano", () => {
   assert.equal((app.match(/<NovitaAllAvvio\b/g) ?? []).length, 1, "le Novità non sono montate una volta sola");
   const riga = app.match(/const propostaPuoMostrarsi =[^;]+;/)?.[0] ?? "";
-  assert.match(riga, /!novitaInAttesa/, "la proposta non aspetta le Novità");
-  assert.match(riga, /!primoVisibile/);
-  assert.match(riga, /!giroDaFare/);
-  assert.match(riga, /!giroAperto/);
+  assert.match(riga, /propostaPuoComparire\(\{/);
+  assert.match(riga, /novitaInAttesa/, "App non dice alla proposta se le Novità sono in attesa");
+  // La regola sta in `guida.ts` (provata in `guida.test.ts`): le Novità, Primo
+  // e il giro, ciascuno con la sua attesa.
+  const regola = leggi("../src/guida.ts");
+  const corpoRegola = regola.slice(regola.indexOf("export function propostaPuoComparire("));
+  assert.match(corpoRegola, /!c\.novitaInAttesa/, "la proposta non aspetta le Novità");
+  assert.match(corpoRegola, /!c\.primoVisibile/);
+  assert.match(corpoRegola, /c\.giroDaFare/);
+  assert.match(corpoRegola, /c\.giroAperto/);
 });
 
 test("il giro aspetta che le Novità si siano chiuse, perché non ci siano due veli insieme", () => {

@@ -1780,6 +1780,11 @@ fn azzera_errore(aggiornamenti: &StatoAggiornamenti) {
 /// potuto controllare». Quel che invece va distinto è il **tipo**: una rete che
 /// non risponde si ritenta da sola fra mezz'ora, una firma che non torna no, e
 /// quella differenza è già dentro `retryable`.
+///
+/// Fanno eccezione i casi che hanno una frase vera da dire, e che altrimenti
+/// finivano nel ripiego «qualcosa è andato storto in un modo che non era
+/// previsto»: la release che non si trova (`net.releaseMissing`) e la **firma**
+/// che non torna (`update.signatureInvalid`).
 fn guasto(err: tauri_plugin_updater::Error) -> AppError {
     use tauri_plugin_updater::Error as Guasto;
     let dettaglio = err.to_string();
@@ -1827,15 +1832,24 @@ fn guasto(err: tauri_plugin_updater::Error) -> AppError {
             detail: Some(dettaglio.clone()),
         })
         .with_cause(dettaglio),
-        // La firma. Sta insieme al resto e non ha un codice suo, e quel che la
-        // distingue nel log è la causa: «The signature verification failed».
-        // La parola «minisign» lì dentro **non c'è** — la variante del plugin
-        // è `#[error(transparent)]` e lascia passare tale e quale il messaggio
-        // di `minisign_verify` — quindi cercare quella non darebbe niente, ed
-        // è l'errore che si farebbe proprio nel momento in cui si ha fretta.
-        // È questa riga che va guardata se un aggiornamento non si installa su
-        // una macchina sola: vuol dire che quel che è arrivato lì non l'abbiamo
-        // firmato noi.
+        // La firma: quel che è arrivato non è quel che abbiamo firmato noi — i
+        // byte cambiati, un'altra chiave, un'altra versione, una firma che non
+        // si legge. Aveva il ripiego «qualcosa è andato storto in un modo che
+        // non era previsto» (collaudo in Windows Sandbox, D3); adesso ha il suo
+        // codice e la sua frase, e non si ritenta da sé. La causa resta quella
+        // del plugin, ed è questa riga che va guardata nel diario se un
+        // aggiornamento non si installa su una macchina sola: «The signature
+        // verification failed». La parola «minisign» lì dentro **non c'è** — la
+        // variante del plugin è `#[error(transparent)]` e lascia passare tale e
+        // quale il messaggio di `minisign_verify` — quindi cercare quella non
+        // darebbe niente.
+        Guasto::Minisign(_)
+        | Guasto::Base64(_)
+        | Guasto::SignatureUtf8(_)
+        | Guasto::SignedVersionMismatch { .. }
+        | Guasto::MissingSignedVersion => {
+            AppError::new(ErrorCode::UpdateSignatureInvalid).with_cause(dettaglio)
+        }
         altro => AppError::new(ErrorCode::InternalUnexpected {
             detail: Some(altro.to_string()),
         })
@@ -2271,6 +2285,71 @@ mod prove {
                 .kind()
                 .code(),
             "net.badSchema"
+        );
+    }
+
+    /// Collaudo in Windows Sandbox, D3: una firma che non torna diventava
+    /// `internal.unexpected`, «qualcosa è andato storto in un modo che non era
+    /// previsto», per un caso previsto. Il diario diceva «The signature
+    /// verification failed» e la finestra niente. Ha un codice suo, e non si
+    /// ritenta da sé: la stessa firma darebbe lo stesso rifiuto.
+    #[test]
+    fn una_firma_che_non_torna_ha_il_suo_codice() {
+        use tauri_plugin_updater::Error as Guasto;
+        let firme = [
+            Guasto::Minisign(minisign_verify::Error::InvalidSignature),
+            // Una firma fatta con un'altra chiave.
+            Guasto::Minisign(minisign_verify::Error::UnexpectedKeyId),
+            Guasto::Minisign(minisign_verify::Error::InvalidEncoding),
+            Guasto::SignatureUtf8("????".to_owned()),
+            Guasto::SignedVersionMismatch {
+                signed: "3.2.0".to_owned(),
+                announced: "3.2.1".to_owned(),
+            },
+            Guasto::MissingSignedVersion,
+        ];
+        for firma in firme {
+            let testo = firma.to_string();
+            let err = guasto(firma);
+            assert_eq!(
+                err.code().kind().code(),
+                "update.signatureInvalid",
+                "{testo}: {err:?}"
+            );
+            assert!(
+                !err.is_retryable(),
+                "{testo}: una firma non si ritenta da sé"
+            );
+            // La causa resta quella del plugin, per il diario: è quella che si
+            // guarda quando un aggiornamento non si installa su una macchina sola.
+            assert_eq!(err.cause(), Some(testo.as_str()));
+        }
+        // Anche all'installazione, che passa per la stessa funzione.
+        let all_installazione = guasto_dell_installazione(
+            tauri_plugin_updater::Error::Minisign(minisign_verify::Error::InvalidSignature),
+            false,
+        );
+        assert_eq!(
+            all_installazione.code().kind().code(),
+            "update.signatureInvalid"
+        );
+        // E il resto non cambia: un manifesto storto è un manifesto storto, una
+        // rete che manca è una rete che manca.
+        assert_eq!(
+            guasto(tauri_plugin_updater::Error::EmptyEndpoints)
+                .code()
+                .kind()
+                .code(),
+            "net.badSchema"
+        );
+        assert_eq!(
+            guasto(tauri_plugin_updater::Error::Network(
+                "error sending request".to_owned()
+            ))
+            .code()
+            .kind()
+            .code(),
+            "net.offline"
         );
     }
 

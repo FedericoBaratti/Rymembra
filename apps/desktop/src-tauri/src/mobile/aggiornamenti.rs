@@ -98,7 +98,7 @@ use tauri::{AppHandle, Manager as _, State};
 use crate::errore::{ErroreIpc, Esito, errore};
 use crate::nota;
 use crate::rilasci::{
-    Rilascio, Trovato, copia_di_prova, non_installabile, note_dal_manifesto,
+    RifiutoDellaFirma, Rilascio, Trovato, copia_di_prova, non_installabile, note_dal_manifesto,
     passata_d_avvio_saltata, progetto_da, rimando_di_github, scegli, verifica_la_firma,
 };
 use crate::spegnimento::Emette as _;
@@ -1130,9 +1130,13 @@ fn scarica_la_firma(trovato: &Trovato) -> Result<String, AppError> {
 ///
 /// # Errori
 ///
-/// `internal.unexpected` con la causa, come il computer per un installer la
-/// cui firma non torna: è quel che si guarda se un aggiornamento non si
-/// installa su un telefono solo.
+/// `update.signatureInvalid` se la firma non torna — come il computer per un
+/// installer che non è firmato con la chiave di Rymembra: la finestra dice che
+/// non si è installato e che conviene riprovare più tardi. Con la causa, che è
+/// quel che si guarda se un aggiornamento non si installa su un telefono solo.
+/// `internal.unexpected` se non si è potuto verificare (la chiave dell'app non
+/// si legge, l'APK non si apre né si legge): lì non si sa niente dell'APK, e
+/// dire «non è firmato da noi» sarebbe falso ([`RifiutoDellaFirma`]).
 fn verifica(
     app: &AppHandle,
     trovato: &Trovato,
@@ -1148,14 +1152,14 @@ fn verifica(
     let chiave = chiave_pubblica(app)
         .ok_or_else(|| guasto("manca la chiave pubblica dell'updater".to_owned()))?;
     let esito = std::fs::File::open(percorso)
-        .map_err(|err| format!("l'APK non si apre: {err}"))
+        .map_err(|err| RifiutoDellaFirma::Guasto(format!("l'APK non si apre: {err}")))
         .and_then(|file| {
             let mut lettore = std::io::BufReader::new(file);
             verifica_la_firma(&chiave, firma, &trovato.versione, &mut lettore)
         });
-    if let Err(causa) = esito {
+    if let Err(rifiuto) = esito {
         let _ = std::fs::remove_file(percorso);
-        return Err(guasto(causa));
+        return Err(rifiuto.in_errore());
     }
     Ok(())
 }

@@ -214,6 +214,59 @@ fn niente_di_audio_viaggia_nel_profilo() {
 }
 
 #[test]
+fn la_geometria_della_finestra_non_viaggia_nel_profilo() {
+    // Posizione e misura sono pixel fisici dei monitor di questa macchina, con
+    // la loro scalatura: su un altro computer descrivono uno schermo che non
+    // c'è. Per prefisso, come `audio.` e `ui.folders.`: una seconda chiave
+    // scritta un giorno sotto `ui.window.` — la misura dell'Studio, per dire —
+    // resta qui senza che qualcuno si ricordi di questa prova.
+    assert!(
+        crate::preferenze::CHIAVE_GEOMETRIA_FINESTRA.starts_with("ui.window."),
+        "la chiave della geometria non è sotto il prefisso che la prova tiene fuori"
+    );
+    for (chiave, _) in CATALOGO {
+        assert!(
+            !chiave.starts_with("ui.window."),
+            "«{chiave}» è un fatto dei monitor di questa macchina e non deve viaggiare"
+        );
+    }
+    // Scritta davvero, non esce, e il manifesto dice che è rimasta qui.
+    let mut c = libreria();
+    settings::write(
+        &c,
+        crate::preferenze::CHIAVE_GEOMETRIA_FINESTRA,
+        r#"{"x":0,"y":0,"larghezza":1296,"altezza":829,"ingrandita":false}"#,
+    )
+    .expect("scrittura");
+    let raccolto = raccogli(
+        &mut c,
+        "qui",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        0,
+        &identita_fissa,
+    )
+    .expect("raccolta");
+    assert!(
+        !raccolto
+            .preferenze
+            .voci
+            .contains_key(crate::preferenze::CHIAVE_GEOMETRIA_FINESTRA)
+    );
+    assert!(
+        raccolto
+            .lasciate
+            .contains(&crate::preferenze::CHIAVE_GEOMETRIA_FINESTRA.to_owned())
+    );
+    assert!(
+        FUORI
+            .iter()
+            .any(|riga| riga.contains("posizione e la misura della finestra")),
+        "il manifesto del profilo non dichiara che la geometria della finestra resta fuori"
+    );
+}
+
+#[test]
 fn il_sottofondo_del_computer_non_viaggia_nel_profilo() {
     // Le etichette del vassoio sono nella lingua dell'ultima finestra di questa
     // macchina, e la risposta alla proposta di partire con Windows è la storia

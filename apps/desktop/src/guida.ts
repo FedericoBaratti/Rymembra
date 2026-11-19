@@ -192,6 +192,43 @@ export function comeParteIlGiro(
   return c.modaleAperto ? "aspetta" : "parti";
 }
 
+/** Quel che serve sapere per decidere se la proposta del sottofondo può comparire. */
+export interface CondizioniDellaProposta {
+  /** La schermata del primo avvio è a schermo. */
+  primoVisibile: boolean;
+  /** Il giro di questa versione non è ancora stato fatto (`giroDaFare`). */
+  giroDaFare: boolean;
+  /** Il giro è aperto adesso. */
+  giroAperto: boolean;
+  /** Le Novità dopo un aggiornamento sono ancora da mostrare. */
+  novitaInAttesa: boolean;
+  /** Si è sul telefono, dove il giro non esiste (D-37). */
+  telefono: boolean;
+}
+
+/**
+ * La proposta del sottofondo può comparire adesso?
+ *
+ * Mai durante `Primo`, mai dopo le Novità non ancora chiuse, e — **dove il giro
+ * esiste** — né quando il giro sta per partire né mentre è aperto: chi comincia
+ * ha altro da guardare.
+ *
+ * # Perché il giro conta solo sul computer
+ *
+ * Sul telefono il giro non parte mai (`comeParteIlGiro`: D-37), quindi
+ * `giroDaFare` — il permesso, `giro.visto` assente — resta **vero per sempre** e
+ * non diventa mai «fatto». Aspettarlo lì voleva dire una proposta che non
+ * compariva mai: il collaudo sugli emulatori la trovò con `proposta_sottofondo_da_fare`
+ * a `true` e nessuna scheda sullo schermo, né dopo le Novità né dopo un riavvio.
+ *
+ * È il solo posto in cui si decide quando aspettare: `PropostaSottofondo` non
+ * conosce né il giro né le Novità, e non deve.
+ */
+export function propostaPuoComparire(c: CondizioniDellaProposta): boolean {
+  const giroInAttesa = !c.telefono && (c.giroDaFare || c.giroAperto);
+  return !c.primoVisibile && !giroInAttesa && !c.novitaInAttesa;
+}
+
 /** Della riproduzione, quel che dice se la coda del giro è stata toccata. */
 export interface CodaAdesso {
   coda: readonly number[];

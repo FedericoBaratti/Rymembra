@@ -164,6 +164,11 @@ export interface ContestoScafale {
   onGrande: () => void;
   onPreferito: (brano: Brano) => void;
   onVoto: (brano: Brano, stelle: number) => void;
+  /**
+   * Il nome dell'artista del brano che suona, nella colonna: apre la sua pagina.
+   * Facoltativo: lo Studio disegna un brano finto, e lì il nome resta testo.
+   */
+  onArtista?: ((brano: Brano) => void) | undefined;
   onErrore: (e: unknown) => void;
   onSelezioneRiproduci: () => void;
   onSelezioneDopo: () => void;
@@ -395,6 +400,7 @@ const WIDGET: Record<string, ComponenteWidget> = {
         onEspandi={ctx.onGrande}
         onPreferito={ctx.onPreferito}
         onVoto={ctx.onVoto}
+        onArtista={ctx.onArtista}
         onErrore={ctx.onErrore}
       />
     ),

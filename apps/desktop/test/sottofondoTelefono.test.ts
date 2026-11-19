@@ -230,7 +230,12 @@ test("la proposta si monta anche sul telefono, e aspetta come sul computer", () 
   assert.doesNotMatch(app, /\{!MOBILE && \(\s*<PropostaSottofondo/);
   // Il punto in cui si decide quando aspettare è uno solo, e non è cambiato.
   const riga = /const propostaPuoMostrarsi = ([^;]+);/.exec(app)?.[1] ?? "";
-  for (const motivo of ["primoVisibile", "giroDaFare", "giroAperto"]) {
-    assert.ok(riga.includes(`!${motivo}`), `la proposta non aspetta «${motivo}»`);
+  assert.match(riga, /^propostaPuoComparire\(\{/);
+  for (const motivo of ["primoVisibile", "giroDaFare", "giroAperto", "novitaInAttesa"]) {
+    assert.ok(riga.includes(motivo), `la proposta non aspetta «${motivo}»`);
   }
+  // E sa dov'è: il giro sul telefono non esiste e non si aspetta (la regola è
+  // provata in `guida.test.ts`). Senza `telefono: MOBILE` la scheda non
+  // compariva mai (collaudo sugli emulatori, D3).
+  assert.ok(riga.includes("telefono: MOBILE"), "la proposta non sa di essere sul telefono");
 });

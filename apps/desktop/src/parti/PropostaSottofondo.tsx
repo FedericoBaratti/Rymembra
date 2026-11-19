@@ -34,17 +34,25 @@
  * computer: se l'accensione fallisce l'errore si dice, e la domanda non si
  * ripete a ogni avvio.
  *
- * Non c'è una terza risposta, né una X per chiuderla: lasciarla lì non è una
- * risposta, e la domanda torna al prossimo avvio finché non ne ha una.
+ * # «Più tardi»
+ *
+ * Non c'è una terza **risposta**, né una X per chiuderla: lasciarla lì non è una
+ * risposta, e la domanda torna al prossimo avvio finché non ne ha una. Ma una
+ * scheda che copre il fondo della colonna a ogni avvio, e che non si toglie
+ * senza decidere, era il difetto che il collaudo in Windows Sandbox ha trovato
+ * (D5). «Più tardi» la nasconde **per questa sessione** e non la chiude per
+ * sempre: il nucleo ricorda il rimando in memoria (`proposta_sottofondo_rimanda`),
+ * non nel database — la sessione è quella del programma, non della pagina, che
+ * con la X sul vassoio muore e rinasce — e al prossimo avvio la domanda si rifà.
  *
  * # Quando si può mostrare
  *
  * Non lo decide questo componente: lo dice `pronta`. Mai durante `Primo` né
- * durante il giro — chi sta cominciando ha altro da guardare — e, quando F9
- * porterà la finestra delle Novità, dopo di lei. Il punto in cui `pronta` si
- * calcola è uno solo, in `App.tsx` (`propostaPuoMostrarsi`), ed è lì che un
- * nuovo motivo per aspettare si aggiunge: questo componente non conosce né il
- * giro né le Novità, e non deve.
+ * durante il giro — chi sta cominciando ha altro da guardare — e dopo la
+ * finestra delle Novità. Il punto in cui `pronta` si calcola è uno solo,
+ * `propostaPuoComparire` (`guida.ts`), che `App.tsx` chiama in
+ * `propostaPuoMostrarsi`, ed è lì che un nuovo motivo per aspettare si
+ * aggiunge: questo componente non conosce né il giro né le Novità, e non deve.
  *
  * Una sola chiave per tutti e due (`ui.proposta.sottofondo`): un computer e un
  * telefono sono due installazioni, ognuna con la sua risposta.
@@ -90,6 +98,22 @@ export function PropostaSottofondo({
     };
   }, [pronta]);
 
+  /**
+   * «Più tardi»: la scheda se ne va per questa sessione, e non si ricorda
+   * nessuna risposta. Il nucleo tiene il rimando in memoria, così la pagina può
+   * rinascere (X sul vassoio, poi «Mostra») senza che la scheda torni.
+   */
+  const rimanda = () => {
+    setRispondendo(true);
+    ipc
+      .propostaSottofondoRimanda()
+      .catch(onErrore)
+      .finally(() => {
+        setDaFare(false);
+        setRispondendo(false);
+      });
+  };
+
   const risponde = (accetta: boolean) => {
     setRispondendo(true);
     ipc
@@ -126,25 +150,38 @@ export function PropostaSottofondo({
     <>
       <Annuncio testo={visibile ? frase : null} />
       {visibile && (
-        <div className="notizia toast-card" role="group" aria-label={frase}>
+        <div className="notizia toast-card proposta-sottofondo" role="group" aria-label={frase}>
           <Icona nome={MOBILE ? "i-telefono" : "i-computer"} dim={16} />
           <span>{frase}</span>
-          <button
-            type="button"
-            className="bottone minuto btn-ghost"
-            disabled={rispondendo}
-            onClick={() => risponde(true)}
-          >
-            {t(MOBILE ? "background.proposal.phone.yes" : "background.proposal.desktop.yes")}
-          </button>
-          <button
-            type="button"
-            className="bottone minuto btn-ghost"
-            disabled={rispondendo}
-            onClick={() => risponde(false)}
-          >
-            {t(MOBILE ? "background.proposal.phone.no" : "background.proposal.desktop.no")}
-          </button>
+          {/* I tasti sotto la frase: tre accanto a una frase lunga la
+              stringerebbero a una colonna di parole (`.proposta-sottofondo`). */}
+          <div className="tasti-proposta">
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              disabled={rispondendo}
+              onClick={() => risponde(true)}
+            >
+              {t(MOBILE ? "background.proposal.phone.yes" : "background.proposal.desktop.yes")}
+            </button>
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              disabled={rispondendo}
+              onClick={() => risponde(false)}
+            >
+              {t(MOBILE ? "background.proposal.phone.no" : "background.proposal.desktop.no")}
+            </button>
+            <button
+              type="button"
+              className="bottone minuto btn-ghost"
+              title={t("background.proposal.later.hint")}
+              disabled={rispondendo}
+              onClick={rimanda}
+            >
+              {t("background.proposal.later")}
+            </button>
+          </div>
         </div>
       )}
     </>

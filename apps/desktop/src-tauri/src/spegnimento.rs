@@ -138,6 +138,11 @@ pub fn spegni(mano: &tauri::AppHandle) {
     // chiudere: il filo dell'orologio, che di solito lo scrive, lo fa solo
     // mentre suona, ed è appena uscito per via della bandiera.
     crate::riproduzione::salva_uscendo(mano);
+    // Dov'era la finestra: «Esci» non passa dalla `CloseRequested`, e il
+    // giornale che segue dev'essere l'ultima scrittura. Dalla memoria, senza
+    // toccare la finestra, che qui può non esserci più.
+    #[cfg(desktop)]
+    crate::comparsa::ricorda_su_disco(mano);
     // L'ultimo `PRAGMA optimize`, che SQLite chiede prima di chiudere: una
     // volta sola, e al più un quarto di secondo d'attesa.
     crate::manutenzione::uscendo(mano);

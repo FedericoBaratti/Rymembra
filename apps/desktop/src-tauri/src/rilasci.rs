@@ -27,6 +27,8 @@
 //! insieme dicono che i byte sono quelli che abbiamo pubblicato noi, e che
 //! Android li installa sopra.
 
+#[cfg(any(target_os = "android", test))]
+use rymembra_domain::errors::{AppError, ErrorCode};
 use serde::Deserialize;
 
 /// Una release di GitHub, per quel che serve qui.
@@ -245,6 +247,53 @@ pub fn non_installabile(
 #[cfg(any(target_os = "android", test))]
 const PASSO_DI_LETTURA: usize = 64 * 1024;
 
+/// Perché la verifica della firma dice no.
+///
+/// Le due cose non si dicono allo stesso modo a chi legge. **Se la firma non
+/// torna** il pacchetto non è quello che Rymembra ha firmato, e la frase vera è
+/// `update.signatureInvalid`: non installato, riprova più tardi o scaricalo dal
+/// sito. **Se non si è potuto verificare** — la chiave compilata nell'app non si
+/// legge, il disco non risponde — non si sa niente dell'APK, e dire «non è
+/// firmato da noi» sarebbe falso: quello è un guasto, e resta
+/// `internal.unexpected`, che è quel che si guarda se un telefono solo non
+/// aggiorna.
+#[cfg(any(target_os = "android", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RifiutoDellaFirma {
+    /// L'APK non è quello firmato con la chiave di Rymembra, per questa
+    /// versione: la firma non si legge, non torna, o copre un'altra versione.
+    Firma(String),
+    /// Non si è potuto verificare: la chiave dell'app non si legge, o l'APK non
+    /// si apre né si legge.
+    Guasto(String),
+}
+
+#[cfg(any(target_os = "android", test))]
+impl std::fmt::Display for RifiutoDellaFirma {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::Firma(motivo) | Self::Guasto(motivo)) = self;
+        f.write_str(motivo)
+    }
+}
+
+#[cfg(any(target_os = "android", test))]
+impl RifiutoDellaFirma {
+    /// L'errore del catalogo, con il motivo per causa: è quel che si guarda se
+    /// un aggiornamento non si installa su un telefono solo.
+    #[must_use]
+    pub fn in_errore(self) -> AppError {
+        match self {
+            Self::Firma(motivo) => {
+                AppError::new(ErrorCode::UpdateSignatureInvalid).with_cause(motivo)
+            }
+            Self::Guasto(motivo) => AppError::new(ErrorCode::InternalUnexpected {
+                detail: Some("la firma dell'aggiornamento".to_owned()),
+            })
+            .with_cause(motivo),
+        }
+    }
+}
+
 /// I byte di `dati` sono quelli firmati con la chiave dell'updater, per
 /// `versione`.
 ///
@@ -263,25 +312,34 @@ const PASSO_DI_LETTURA: usize = 64 * 1024;
 ///
 /// # Errori
 ///
-/// Il motivo, in testo, per la causa dell'errore: la chiave o la firma che non
-/// si leggono, la firma che non torna, una versione diversa, una lettura che
-/// non riesce.
+/// [`RifiutoDellaFirma::Firma`] se la firma non si legge, non torna o copre
+/// un'altra versione; [`RifiutoDellaFirma::Guasto`] se la chiave dell'app non si
+/// legge o la lettura dell'APK non riesce. Il motivo, in testo, è la causa
+/// dell'errore.
 #[cfg(any(target_os = "android", test))]
 pub fn verifica_la_firma(
     chiave: &str,
     firma: &str,
     versione: &str,
     dati: &mut impl std::io::Read,
-) -> Result<(), String> {
+) -> Result<(), RifiutoDellaFirma> {
     use minisign_verify::{PublicKey, Signature};
 
-    let chiave = testo_da_base64(chiave).ok_or("la chiave pubblica dell'updater non è base64")?;
-    let chiave = PublicKey::decode(&chiave)
-        .map_err(|err| format!("la chiave pubblica dell'updater non si legge: {err}"))?;
-    let firma = testo_da_base64(firma).ok_or("la firma dell'APK non è base64")?;
+    let guasto = RifiutoDellaFirma::Guasto;
+    let rifiuto = RifiutoDellaFirma::Firma;
+
+    let chiave = testo_da_base64(chiave)
+        .ok_or_else(|| guasto("la chiave pubblica dell'updater non è base64".to_owned()))?;
+    let chiave = PublicKey::decode(&chiave).map_err(|err| {
+        guasto(format!(
+            "la chiave pubblica dell'updater non si legge: {err}"
+        ))
+    })?;
+    let firma = testo_da_base64(firma)
+        .ok_or_else(|| rifiuto("la firma dell'APK non è base64".to_owned()))?;
     let firma = Signature::decode(&firma)
-        .map_err(|err| format!("la firma dell'APK non si legge: {err}"))?;
-    let lettura = |err: std::io::Error| format!("l'APK non si legge: {err}");
+        .map_err(|err| rifiuto(format!("la firma dell'APK non si legge: {err}")))?;
+    let lettura = |err: std::io::Error| guasto(format!("l'APK non si legge: {err}"));
     match chiave.verify_stream(&firma) {
         Ok(mut verifica) => {
             let mut pezzo = vec![0_u8; PASSO_DI_LETTURA];
@@ -294,16 +352,16 @@ pub fn verifica_la_firma(
             }
             verifica
                 .finalize()
-                .map_err(|err| format!("la firma dell'APK non torna: {err}"))?;
+                .map_err(|err| rifiuto(format!("la firma dell'APK non torna: {err}")))?;
         }
         Err(minisign_verify::Error::UnsupportedLegacyMode) => {
             let mut tutti = Vec::new();
             dati.read_to_end(&mut tutti).map_err(lettura)?;
             chiave
                 .verify(&tutti, &firma, true)
-                .map_err(|err| format!("la firma dell'APK non torna: {err}"))?;
+                .map_err(|err| rifiuto(format!("la firma dell'APK non torna: {err}")))?;
         }
-        Err(err) => return Err(format!("la firma dell'APK non torna: {err}")),
+        Err(err) => return Err(rifiuto(format!("la firma dell'APK non torna: {err}"))),
     }
     // Solo adesso il commento fidato è fidato: la firma globale lo copre, e
     // l'ha appena verificata `finalize` (o `verify`).
@@ -313,10 +371,10 @@ pub fn verifica_la_firma(
         .find_map(|campo| campo.strip_prefix("version:"));
     match firmata {
         Some(firmata) if senza_v(firmata) == senza_v(versione) => Ok(()),
-        Some(firmata) => Err(format!(
+        Some(firmata) => Err(rifiuto(format!(
             "la firma copre la versione {firmata}, la release annuncia la {versione}"
-        )),
-        None => Err("la firma non dice quale versione copre".to_owned()),
+        ))),
+        None => Err(rifiuto("la firma non dice quale versione copre".to_owned())),
     }
 }
 
@@ -735,6 +793,27 @@ mod prove {
 
     fn verifica(chiave: &str, firma: &str, versione: &str, dati: &[u8]) -> Result<(), String> {
         verifica_la_firma(chiave, firma, versione, &mut std::io::Cursor::new(dati))
+            .map_err(|rifiuto| rifiuto.to_string())
+    }
+
+    /// Il rifiuto, con la sua specie: per le prove che distinguono la firma che
+    /// non torna dal guasto di chi verifica.
+    fn rifiuto(
+        chiave: &str,
+        firma: &str,
+        versione: &str,
+        dati: &mut impl std::io::Read,
+    ) -> RifiutoDellaFirma {
+        verifica_la_firma(chiave, firma, versione, dati).expect_err("doveva essere rifiutata")
+    }
+
+    /// Un disco che si ferma a metà: nessun byte, e un errore.
+    struct DiscoRotto;
+
+    impl std::io::Read for DiscoRotto {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("il disco non risponde"))
+        }
     }
 
     #[test]
@@ -749,6 +828,117 @@ mod prove {
             verifica(CHIAVE_DI_PROVA, &con_a_capo, "v3.3.0", DATI_DI_PROVA),
             Ok(())
         );
+    }
+
+    /// Collaudo in Windows Sandbox, D3, per il telefono: una firma che non torna
+    /// diventava `internal.unexpected`, come sul computer. Quel che dice «questo
+    /// pacchetto non è quello firmato da Rymembra» è un rifiuto della **firma**;
+    /// un guasto di chi verifica non lo dice.
+    #[test]
+    fn la_firma_che_non_torna_e_un_rifiuto_della_firma() {
+        let configurazione: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("la configurazione");
+        let vera = configurazione["plugins"]["updater"]["pubkey"]
+            .as_str()
+            .expect("la chiave dell'updater");
+        let mut cambiato = DATI_DI_PROVA.to_vec();
+        if let Some(primo) = cambiato.first_mut() {
+            *primo ^= 1;
+        }
+        let casi: [(&str, RifiutoDellaFirma); 6] = [
+            // I byte cambiati per strada.
+            (
+                "un APK cambiato",
+                rifiuto(
+                    CHIAVE_DI_PROVA,
+                    FIRMA_DI_PROVA,
+                    "3.3.0",
+                    &mut cambiato.as_slice(),
+                ),
+            ),
+            // La firma vera, accanto al numero di un'altra versione.
+            (
+                "un'altra versione",
+                rifiuto(
+                    CHIAVE_DI_PROVA,
+                    FIRMA_DI_PROVA,
+                    "3.4.0",
+                    &mut &DATI_DI_PROVA[..],
+                ),
+            ),
+            // La firma di un'altra chiave: la chiave vera dell'updater non è quella di prova.
+            (
+                "un'altra chiave",
+                rifiuto(vera, FIRMA_DI_PROVA, "3.3.0", &mut &DATI_DI_PROVA[..]),
+            ),
+            // Una firma che non è base64, e una che lo è ma non è minisign.
+            (
+                "una firma che non è base64",
+                rifiuto(
+                    CHIAVE_DI_PROVA,
+                    "non è base64!",
+                    "3.3.0",
+                    &mut &DATI_DI_PROVA[..],
+                ),
+            ),
+            (
+                "una firma che non si legge",
+                rifiuto(
+                    CHIAVE_DI_PROVA,
+                    "dGVzdG8=",
+                    "3.3.0",
+                    &mut &DATI_DI_PROVA[..],
+                ),
+            ),
+            (
+                "una firma vuota",
+                rifiuto(CHIAVE_DI_PROVA, "", "3.3.0", &mut &DATI_DI_PROVA[..]),
+            ),
+        ];
+        for (caso, esito) in casi {
+            assert!(
+                matches!(esito, RifiutoDellaFirma::Firma(_)),
+                "{caso}: {esito:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn un_guasto_di_chi_verifica_non_e_un_rifiuto_della_firma() {
+        // La chiave compilata nell'app che non si legge: non si sa niente
+        // dell'APK, e dire «non è firmato da Rymembra» sarebbe falso.
+        for chiave in ["", "non è base64!", "dGVzdG8="] {
+            let esito = rifiuto(chiave, FIRMA_DI_PROVA, "3.3.0", &mut &DATI_DI_PROVA[..]);
+            assert!(
+                matches!(esito, RifiutoDellaFirma::Guasto(_)),
+                "{chiave:?}: {esito:?}"
+            );
+        }
+        // E un disco che si ferma a metà della lettura.
+        let esito = rifiuto(CHIAVE_DI_PROVA, FIRMA_DI_PROVA, "3.3.0", &mut DiscoRotto);
+        assert!(matches!(esito, RifiutoDellaFirma::Guasto(_)), "{esito:?}");
+    }
+
+    #[test]
+    fn il_rifiuto_diventa_l_errore_giusto_con_il_motivo_per_causa() {
+        let firma =
+            RifiutoDellaFirma::Firma("la firma dell'APK non torna: x".to_owned()).in_errore();
+        assert_eq!(
+            firma.code().kind().code(),
+            "update.signatureInvalid",
+            "{firma:?}"
+        );
+        assert!(!firma.is_retryable(), "una firma non si ritenta da sé");
+        assert_eq!(firma.cause(), Some("la firma dell'APK non torna: x"));
+        // Il guasto di chi verifica resta quel che era: è quel che si guarda se
+        // un telefono solo non aggiorna.
+        let guasto = RifiutoDellaFirma::Guasto("l'APK non si legge: y".to_owned()).in_errore();
+        assert_eq!(
+            guasto.code().kind().code(),
+            "internal.unexpected",
+            "{guasto:?}"
+        );
+        assert_eq!(guasto.cause(), Some("l'APK non si legge: y"));
     }
 
     #[test]

@@ -35,6 +35,7 @@ import { Cronologia } from "./Cronologia";
 import { Giudizio } from "./Giudizio";
 import { Icona } from "./Icone";
 import { SegnoInsieme, TastoInsieme } from "./Insieme";
+import { NomeArtista } from "./NomeArtista";
 import { Scrubber } from "./Scrubber";
 import { Segmentato } from "./Segmentato";
 import { Trasporto } from "./Trasporto";
@@ -50,6 +51,7 @@ export const Colonna = memo(function Colonna({
   onEspandi,
   onPreferito,
   onVoto,
+  onArtista,
   onErrore,
 }: {
   stato: StatoRiproduzione;
@@ -57,6 +59,12 @@ export const Colonna = memo(function Colonna({
   onEspandi: () => void;
   onPreferito: (brano: Brano) => void;
   onVoto: (brano: Brano, stelle: number) => void;
+  /**
+   * Apre la pagina dell'artista del brano: il nome è lo stesso pulsante della
+   * schermata intera (`NomeArtista`). Assente — lo Studio disegna un brano
+   * finto — il nome resta testo.
+   */
+  onArtista?: ((brano: Brano) => void) | undefined;
   onErrore: (e: unknown) => void;
 }) {
   // Sotto `memo` (vedi «I widget sotto `memo`» in `Impaginazione.tsx`): si
@@ -174,7 +182,11 @@ export const Colonna = memo(function Colonna({
                 className="meta np-meta"
                 title={`${nomeArtista(brano.artist)} · ${titoloAlbum(brano.album)}`}
               >
-                <bdi>{nomeArtista(brano.artist)}</bdi> · <bdi>{titoloAlbum(brano.album)}</bdi>
+                {/* Un pulsante e non più testo (collaudo in Windows Sandbox): è lo
+                    stesso della schermata intera, e dalla colonna — che resta
+                    accanto alla pagina — Indietro è quello di sempre, come per
+                    «Vai all'artista» del menù. */}
+                <NomeArtista brano={brano} onApri={onArtista} /> · <bdi>{titoloAlbum(brano.album)}</bdi>
               </div>
               <SegnoInsieme insieme={stato.insieme} dove="colonna" />
             </div>

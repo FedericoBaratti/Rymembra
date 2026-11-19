@@ -89,6 +89,7 @@ test("i comandi dell'avvio sono quelli che il nucleo registra", () => {
     ["avvioConWindowsImposta", "avvio_con_windows_imposta"],
     ["propostaSottofondoDaFare", "proposta_sottofondo_da_fare"],
     ["propostaSottofondoRispondi", "proposta_sottofondo_rispondi"],
+    ["propostaSottofondoRimanda", "proposta_sottofondo_rimanda"],
   ] as const) {
     assert.ok(IPC.includes(`${metodo}:`), `ipc.ts non ha ${metodo}`);
     assert.ok(IPC.includes(`"${comando}"`), `ipc.ts non chiama «${comando}»`);
@@ -104,9 +105,18 @@ test("le parole della X dicono che la finestra si chiude e il programma resta", 
 });
 
 test("la proposta non compare durante Primo né durante il giro", () => {
+  // Il punto in cui si decide è una funzione pura (`propostaPuoComparire`,
+  // `guida.ts`, provata in `guida.test.ts`): qui si guarda che `App` le dia
+  // tutti i motivi, e che lei li usi tutti.
   const riga = APP.match(/const propostaPuoMostrarsi = ([^;]+);/)?.[1] ?? "";
-  for (const motivo of ["primoVisibile", "giroDaFare", "giroAperto"]) {
-    assert.ok(riga.includes(`!${motivo}`), `la proposta non aspetta «${motivo}»`);
+  assert.match(riga, /^propostaPuoComparire\(\{/);
+  for (const motivo of ["primoVisibile", "giroDaFare", "giroAperto", "novitaInAttesa"]) {
+    assert.ok(riga.includes(motivo), `App non passa «${motivo}» alla proposta`);
+  }
+  assert.ok(riga.includes("telefono: MOBILE"), "la proposta non sa dov'è");
+  const regola = corpo(leggi("../src/guida.ts"), "export function propostaPuoComparire(");
+  for (const motivo of ["primoVisibile", "giroDaFare", "giroAperto", "novitaInAttesa"]) {
+    assert.ok(regola.includes(`c.${motivo}`), `la proposta non aspetta «${motivo}»`);
   }
   // Una volta sola, sul computer e sul telefono: il componente ha le parole di
   // tutti e due (F7), e il punto di montaggio non li distingue.
@@ -117,12 +127,28 @@ test("la proposta non compare durante Primo né durante il giro", () => {
   assert.ok(pila.includes("<PropostaSottofondo"));
 });
 
-test("la proposta ha due risposte e nessuna via d'uscita fra le due", () => {
+test("la proposta ha due risposte, e un «Più tardi» che non è una risposta", () => {
   assert.match(PROPOSTA, /propostaSottofondoRispondi\(accetta\)/);
   assert.match(PROPOSTA, /risponde\(true\)/);
   assert.match(PROPOSTA, /risponde\(false\)/);
-  // Niente tasto «chiudi»: lasciarla lì non è una risposta.
+  // Niente tasto «chiudi»: lasciarla lì non è una risposta. «Più tardi» sì, ma
+  // dice che torna (D5 del collaudo in Windows Sandbox: senza, copriva il fondo
+  // della colonna a ogni avvio e non c'era modo di toglierla senza rispondere).
   assert.ok(!PROPOSTA.includes('"common.close"'));
+  const codice = PROPOSTA.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+  const rimanda = codice.slice(codice.indexOf("const rimanda"), codice.indexOf("const risponde"));
+  assert.match(rimanda, /ipc\s*\.propostaSottofondoRimanda\(\)/);
+  // La nasconde, e **non** ricorda una risposta: il database non lo vede, e il
+  // prossimo avvio la rifà (una risposta data è per sempre).
+  assert.doesNotMatch(rimanda, /propostaSottofondoRispondi/);
+  assert.match(rimanda, /setDaFare\(false\)/);
+  assert.match(codice, /onClick=\{rimanda\}/);
+  for (const chiave of ["background.proposal.later", "background.proposal.later.hint"]) {
+    assert.ok(codice.includes(`"${chiave}"`), `il componente non usa «${chiave}»`);
+    assert.ok(IT[chiave] && EN[chiave], `«${chiave}» manca in una delle lingue`);
+  }
+  assert.equal(IT["background.proposal.later"], "Più tardi");
+  assert.equal(EN["background.proposal.later"], "Later");
   // Si decide quando mostrarla solo dopo `pronta`, e il nucleo dice se c'è da farla.
   assert.match(PROPOSTA, /if \(!pronta\) return;/);
   assert.match(PROPOSTA, /propostaSottofondoDaFare\(\)/);

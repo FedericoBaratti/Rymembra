@@ -118,12 +118,16 @@ export const ipc = {
   // avvio che un criterio ha tolto.
   avvioConWindowsImposta: (acceso: boolean) =>
     invoke<AvvioConWindows>("avvio_con_windows_imposta", { acceso }),
-  // La proposta «parti con Windows e resta nel vassoio», una volta sola: il
-  // nucleo ricorda la risposta (`ui.proposta.sottofondo`) e dice se c'è da
-  // farla. Sul telefono risponde sempre di no.
+  // La proposta «parti con Windows e resta nel vassoio» (sul telefono, «resta
+  // attiva in sottofondo»), una volta sola: il nucleo ricorda la risposta
+  // (`ui.proposta.sottofondo`) e dice se c'è da farla.
   propostaSottofondoDaFare: () => invoke<boolean>("proposta_sottofondo_da_fare"),
   propostaSottofondoRispondi: (accetta: boolean) =>
     invoke<RispostaProposta>("proposta_sottofondo_rispondi", { accetta }),
+  // «Più tardi»: la scheda non si rifà per il resto della sessione del
+  // **programma** — non della pagina, che con la X sul vassoio muore e rinasce —
+  // e non ricorda nessuna risposta: il prossimo avvio la rifà.
+  propostaSottofondoRimanda: () => invoke<void>("proposta_sottofondo_rimanda"),
 
   avvio: () => invoke<Avvio>("avvio"),
   // Scrive le cartelle sorvegliate e dice cosa ne ha fatto: le annidate si
