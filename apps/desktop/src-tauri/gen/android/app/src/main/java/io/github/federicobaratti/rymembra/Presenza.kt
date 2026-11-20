@@ -442,16 +442,28 @@ class Presenza : Service() {
     }
 
     /**
+     * Il nucleo, per la notifica, non c'è: non ha ancora detto di esserci, o è caduto a
+     * metà. Il «rotto» sta **prima** di [Nucleo.pronto]: `sessione.pronta` parte a metà di
+     * `avvia_il_nucleo` (`media::avvia`), e un panico dopo — lo scrobbling, «Ascolta
+     * insieme», il collegamento via internet — lascia un nucleo rotto che «pronto» lo ha già
+     * detto. Senza questa precedenza la notifica resterebbe «è attiva» su un nucleo che la
+     * pagina dice non partito, e il «pronto» ancora in coda non può cancellarlo
+     * ([Ponte.segnaNucleoParte]).
+     */
+    private fun nucleoManca(): Boolean = Ponte.nucleoRotto || !Nucleo.pronto
+
+    /**
      * La frase della notifica, che dice la verità sul nucleo: finché non ha detto
      * di esserci («sessione.pronta», vedi [Nucleo.pronta]) si sta avviando; se
      * l'avvio da qui è fallito ([Ponte.nucleoNonParte]) è «a riposo», e toccare la
      * notifica apre l'app, che il nucleo lo rifà da sé; se è caduto a metà
-     * ([Ponte.nucleoRotto]) aprire non serve, e la frase dice di chiudere l'app.
+     * ([Ponte.nucleoRotto]) aprire non serve, e la frase dice di chiudere l'app — anche se
+     * aveva già detto di esserci: vedi [nucleoManca].
      */
     private fun titolo(contesto: Context): String {
       // Il nucleo che c'è vince su un tentativo fallito di prima: l'attività può
       // averlo avviato dopo che il servizio non c'era riuscito.
-      if (!Nucleo.pronto) {
+      if (nucleoManca()) {
         return contesto.getString(
           when {
             Ponte.nucleoRotto -> R.string.presenza_titolo_rotto
@@ -549,7 +561,7 @@ class Presenza : Service() {
             spegni,
           ).build(),
         )
-      if (!Nucleo.pronto) {
+      if (nucleoManca()) {
         when {
           Ponte.nucleoRotto -> costruttore.setContentText(contesto.getString(R.string.presenza_testo_rotto))
           Ponte.nucleoNonParte -> costruttore.setContentText(contesto.getString(R.string.presenza_testo_riposo))

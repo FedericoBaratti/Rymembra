@@ -627,10 +627,11 @@ mod prove {
         (
             "stato.rs",
             "libreria_fase",
-            "copia la fase di apertura (`Stato::fase`): chi aspetta l'apertura \
-             (`aspetta_l_apertura_se`) la lascia dentro `Condvar::wait_timeout`, e \
-             gli altri punti la assegnano. Serve proprio alla finestra appena nata, \
-             mentre la libreria si apre: non deve aspettarla",
+            "copia la fase di apertura (`Stato::fase`), un `Mutex` suo (`Apertura::fase`) \
+             che nessuno tiene oltre una copia o un'assegnazione: chi aspetta l'apertura \
+             (`aspetta_l_apertura_se`) dorme in `Condvar::wait_timeout` tenendo l'altro, \
+             `Apertura::fili`, che questo comando non prende. Serve proprio alla \
+             finestra appena nata, mentre la libreria si apre: non deve aspettarla",
         ),
         // ── la finestra ─────────────────────────────────────────────────────
         // Le API della finestra: sul filo principale `send_user_message`

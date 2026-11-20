@@ -2526,6 +2526,44 @@ mod prove {
         assert!(con_libreria(&altro_handle, |l| Ok(l.data_dir.clone())).is_ok());
     }
 
+    /// FC5, C3: lo stato di un avvio fallito, a cui il nuovo tentativo dice di no (un
+    /// rifiuto della cartella dati), prende **il motivo nuovo** senza muovere la fase
+    /// che vede la pagina: quella arriva al guasto solo con `apri_il_cancello`, quando
+    /// gli stati della finestra ci sono. Il cancello dei fili, aperto dal servizio, resta
+    /// aperto: nessun filo aspetta una libreria che non verrà.
+    #[test]
+    fn un_nuovo_guasto_non_apre_la_pagina_prima_del_suo_cancello() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::in_apertura(dir.path().to_path_buf());
+        stato.completa(Err(AppError::new(ErrorCode::DbOpenFailed { path: None })));
+        stato.apri_il_cancello_dei_fili();
+        stato.completa(Err(AppError::new(ErrorCode::InternalUnexpected {
+            detail: Some("cartella dati rifiutata all'avvio".to_owned()),
+        })));
+        stato.apri_il_cancello_dei_fili();
+        assert_eq!(
+            stato.fase(),
+            FaseLibreria::Apertura,
+            "la pagina arriva al guasto prima degli stati della finestra"
+        );
+        let inizio = Instant::now();
+        stato.aspetta_l_apertura_se(Some(Duration::from_secs(5)), || false);
+        assert!(
+            inizio.elapsed() < Duration::from_millis(500),
+            "il cancello dei fili è chiuso"
+        );
+        assert_eq!(
+            con_libreria(&stato, |_| Ok(()))
+                .expect_err("non si è aperta")
+                .code()
+                .kind()
+                .code(),
+            "internal.unexpected",
+            "la pagina legge il guasto di prima, non il rifiuto"
+        );
+        assert_eq!(stato.apri_il_cancello(), FaseLibreria::Guasto);
+    }
+
     /// R3: la domanda «la libreria è libera?» non aspetta e non si inganna.
     #[test]
     fn la_domanda_se_la_libreria_e_libera_non_aspetta() {

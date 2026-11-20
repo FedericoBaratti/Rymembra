@@ -802,16 +802,27 @@ fn avvia_da_capo(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
             // l'unica traccia che resta quando la finestra mostra solo
             // l'errore.
             stato::riga_di_avvio(&stato);
+            let mut da_aprire = None;
             if !nucleo.manage(stato) {
                 // C'era già uno stato, di un avvio fallito prima: è quello che la
                 // finestra e i comandi trovano, e va al guasto invece di restare «in
                 // apertura» per sempre. Il dialogo del rifiuto chiude comunque il
-                // programma.
+                // programma. Prende il motivo di **questo** rifiuto — il guasto di prima
+                // è un'altra storia — e ai fili del nucleo si apre il loro cancello; la
+                // fase che vede la pagina, invece, qui sotto, dopo gli stati della finestra.
                 if let Some(vecchio) = nucleo.try_state::<stato::Stato>() {
-                    vecchio.apri_il_cancello();
+                    vecchio.completa(Err(guasto_del_rifiuto(&errore)));
+                    vecchio.apri_il_cancello_dei_fili();
+                    da_aprire = Some(vecchio);
                 }
             }
             avvia_dopo_la_libreria(app);
+            // Come `finisci_l_avvio`: la pagina arriva al guasto quando gli stati su cui
+            // conta ci sono, o `finita("guasto")` la monterebbe prima di `StatoNuvola`.
+            // Uno stato nato rifiutato nasce già finito, e non ha niente da aprire.
+            if let Some(vecchio) = da_aprire {
+                app.emetti("libreria:stato", vecchio.apri_il_cancello());
+            }
         }
     }
     Ok(())
@@ -846,10 +857,20 @@ fn registra_la_libreria(nucleo: &Nucleo, data_dir: PathBuf) -> stato::Stato {
 /// ([`segui_l_esito`]): se è riuscito, il resto sul filo della finestra, gli stessi
 /// passi di [`finisci_l_avvio`], che salta il nucleo perché c'è.
 ///
-/// Il `setup` ritorna subito, come sempre: la finestra compare e dice «Apro la
-/// libreria…» finché la finestra non ha finito il suo avvio (`Stato::apri_il_cancello`):
-/// il cancello che il servizio ha già aperto è quello dei fili del nucleo, non
-/// questo.
+/// La finestra compare e dice «Apro la libreria…» finché non ha finito il suo avvio
+/// (`Stato::apri_il_cancello`): il cancello che il servizio ha già aperto è quello dei
+/// fili del nucleo, non questo.
+///
+/// # Quando il `setup` ritorna
+///
+/// Subito, se il nucleo sta ancora partendo: il lavoro si accoda e lo fa il filo che
+/// chiude l'avvio. **Non** subito se il nucleo ha già chiuso il suo: [`Nucleo::dopo_l_avvio`]
+/// fa il lavoro sul posto, e `run_on_main_thread` chiamata dal filo principale non
+/// mette niente in coda — `send_user_message` esegue il messaggio direttamente
+/// (`tauri-runtime-wry` 2.12.0, `src/lib.rs:263-273`) —, quindi [`segui_l_esito`] gira
+/// **dentro** il `setup`, e con essa [`finisci_l_aggancio`], fino a [`finisci_l_avvio`]
+/// se la libreria è libera. Se è occupata si rimette in coda (con un filo) e il `setup`
+/// ritorna. In ogni caso [`rete_di_sicurezza`] si arma solo dopo.
 fn aggancia_al_nucleo(
     app: &tauri::AppHandle,
     nucleo: &Nucleo,
@@ -908,8 +929,17 @@ fn rifai_l_avvio(app: &tauri::AppHandle) {
     nota!("[avvio] il nucleo del servizio non è partito: la finestra lo avvia da capo");
     if let Err(err) = avvia_da_capo(app) {
         nota!("[avvio] il nucleo non parte, i dati non si trovano: {err}");
-        // Niente è nato: un secondo tentativo, da dove sia, può ancora riuscire.
+        // Niente è nato: per Rust un secondo tentativo, da dove sia, può ancora riuscire.
         nucleo.avvio_chiuso(Esito::Fallito);
+        // Ma la notifica del sottofondo — che dopo l'avvio fallito del servizio dice «a
+        // riposo, apri Rymembra» — lo dice a Kotlin **non riprovabile**, come
+        // [`avvisa_se_la_libreria_manca`]: la finestra c'è già, e riaprirla non rifà
+        // niente. Nessuno può chiedere un altro avvio: il `setup` gira una volta per
+        // processo, e `Ponte.avviaIlNucleo` non rientra dopo la prima attività
+        // (`attivitaGiaNata`). Chiudere l'app del tutto, invece, sì. Dopo
+        // `avvio_chiuso`, perché Kotlin può rientrare subito.
+        #[cfg(target_os = "android")]
+        dillo_a_kotlin(Esito::Rotto);
         finisci_senza_nucleo(app);
     }
 }
@@ -967,6 +997,12 @@ fn finisci_l_aggancio(app: &tauri::AppHandle) {
 }
 
 fn finisci_l_aggancio_al_tentativo(app: &tauri::AppHandle, tentativo: u32) {
+    // Chi chiude Rymembra mentre si aspetta la libreria non vuole altri giri: ognuno è un
+    // filo breve e una richiesta al filo della finestra, cioè toccare l'`AppHandle` mentre
+    // lo si smonta (vedi [`finisci_l_avvio`], che per questo guarda lo stesso).
+    if spegnimento::in_uscita() {
+        return;
+    }
     let nucleo = Nucleo::di(app);
     // La libreria c'è sempre: il nucleo è partito intero, e la libreria è il primo dei suoi passi.
     let Some(stato) = nucleo.try_state::<stato::Stato>() else {
@@ -979,6 +1015,11 @@ fn finisci_l_aggancio_al_tentativo(app: &tauri::AppHandle, tentativo: u32) {
             .name("rymembra-aggancio".to_owned())
             .spawn(move || {
                 std::thread::sleep(PASSO_DELLA_LIBRERIA);
+                // L'uscita può cominciare durante l'attesa: niente altra richiesta al filo
+                // della finestra (come `rete_di_sicurezza`, dopo il suo sonno).
+                if spegnimento::in_uscita() {
+                    return;
+                }
                 let sul_filo = mano.clone();
                 if let Err(err) = mano.run_on_main_thread(move || {
                     finisci_l_aggancio_al_tentativo(&sul_filo, tentativo + 1);
@@ -2247,6 +2288,16 @@ fn annota_il_rifiuto(errore: &trasloco::Errore) {
     ));
 }
 
+/// L'errore che la libreria porta dopo un rifiuto: lo stato nato rifiutato
+/// ([`rifiuta`]) e, se il nucleo ne aveva già uno di un avvio fallito prima, quello
+/// ([`avvia_da_capo`]) — la finestra mostra il motivo vero, non quello di prima.
+fn guasto_del_rifiuto(errore: &trasloco::Errore) -> AppError {
+    AppError::new(ErrorCode::InternalUnexpected {
+        detail: Some("cartella dati rifiutata all'avvio".to_owned()),
+    })
+    .with_cause(errore.to_string())
+}
+
 /// Il trasloco ha detto di no, o la variabile dei dati indica una cartella
 /// relativa: lo si dice all'utente, e lo stato non apre niente.
 ///
@@ -2299,12 +2350,7 @@ fn rifiuta(app: &tauri::AppHandle, errore: &trasloco::Errore) -> stato::Stato {
         .kind(MessageDialogKind::Error)
         .title("Rymembra")
         .show(|_| std::process::exit(1));
-    stato::Stato::rifiutato(
-        AppError::new(ErrorCode::InternalUnexpected {
-            detail: Some("cartella dati rifiutata all'avvio".to_owned()),
-        })
-        .with_cause(errore.to_string()),
-    )
+    stato::Stato::rifiutato(guasto_del_rifiuto(errore))
 }
 
 #[cfg(test)]
@@ -3211,6 +3257,107 @@ mod prove {
         assert!(
             aggancio.contains("run_on_main_thread("),
             "si riprova bloccando il filo della finestra invece di rimettersi in coda"
+        );
+    }
+
+    /// FC5, C3: nel ramo del rifiuto di `avvia_da_capo`, lo stato di un avvio fallito prima
+    /// (quello che il nucleo ha già, in guasto) **prende il motivo del rifiuto** — la pagina
+    /// mostra il guasto vero, non `db.openFailed` di prima —, e la fase che vede la pagina si
+    /// apre **dopo** `avvia_dopo_la_libreria`, come in [`finisci_l_avvio`]: un cancello aperto
+    /// prima farebbe montare la pagina (`finita("guasto")`) prima di `StatoNuvola` e degli
+    /// altri stati della finestra. Ai fili del nucleo si apre subito il cancello loro.
+    #[test]
+    fn il_rifiuto_dopo_un_avvio_fallito_apre_la_pagina_dopo_gli_stati_e_dice_il_motivo_vero() {
+        let da_capo = corpo_di("fn avvia_da_capo(");
+        let ramo = da_capo
+            .split("Err(errore) => {")
+            .nth(1)
+            .expect("l'avvio da zero non ha il ramo del rifiuto");
+        let stati = ramo
+            .find("avvia_dopo_la_libreria(app)")
+            .expect("il rifiuto non fa il resto dell'avvio");
+        let fili = ramo
+            .find("apri_il_cancello_dei_fili()")
+            .expect("i fili del nucleo non hanno il loro cancello");
+        let pagina = ramo
+            .find(".apri_il_cancello()")
+            .expect("la fase della pagina non si apre");
+        assert!(
+            fili < stati && stati < pagina,
+            "la fase della pagina si apre prima degli stati della finestra"
+        );
+        let motivo = ramo
+            .find("completa(Err(guasto_del_rifiuto(&errore)))")
+            .expect("lo stato di prima non prende il motivo del rifiuto");
+        assert!(
+            motivo < stati,
+            "il motivo arriva dopo che la pagina può leggerlo"
+        );
+        assert!(
+            ramo.contains("emetti(\"libreria:stato\""),
+            "la pagina, ferma su «Apro la libreria…», non sa che la fase è cambiata"
+        );
+    }
+
+    /// FC5, C4: se la finestra non riesce a rifare l'avvio nemmeno da zero (Tauri non sa
+    /// dire dove stanno i dati), la notifica del sottofondo lo sa, **non riprovabile**: la
+    /// finestra c'è già, e «apri Rymembra» non servirebbe a niente. Come
+    /// [`avvisa_se_la_libreria_manca`], e dopo aver chiuso l'avvio (C2).
+    #[test]
+    fn se_la_finestra_non_rifa_l_avvio_la_notifica_dice_di_chiudere_l_app() {
+        let rifai = corpo_di("fn rifai_l_avvio(");
+        let ramo = rifai
+            .split("if let Err(err) = avvia_da_capo(app) {")
+            .nth(1)
+            .expect("rifare l'avvio non ha il ramo dell'errore");
+        let chiuso = ramo
+            .find("nucleo.avvio_chiuso(Esito::Fallito)")
+            .expect("il ramo dell'errore non chiude l'avvio");
+        let avvisa = ramo
+            .find("dillo_a_kotlin(Esito::Rotto)")
+            .expect("il ramo dell'errore non lo dice a Kotlin, o lo dice «riprovabile»");
+        assert!(
+            chiuso < avvisa,
+            "Kotlin si avvisa prima di aver chiuso l'avvio"
+        );
+        assert!(
+            ramo[..avvisa].contains("#[cfg(target_os = \"android\")]"),
+            "l'avviso a Kotlin non è solo di Android: `dillo_a_kotlin` non esiste altrove"
+        );
+    }
+
+    /// FC5, C5: chi chiude Rymembra mentre l'aggancio aspetta la libreria non vuole altri
+    /// giri: ogni riaccodamento è un filo breve e una richiesta al filo della finestra,
+    /// cioè toccare l'`AppHandle` mentre lo si smonta (vedi [`rete_di_sicurezza`] e
+    /// [`apri_e_avvia`], che fanno la stessa domanda). Si guarda in testa, e di nuovo dopo
+    /// l'attesa — il momento in cui l'uscita può essere cominciata — prima di rimettersi
+    /// in coda.
+    #[test]
+    fn l_aggancio_non_si_rimette_in_coda_mentre_si_esce() {
+        let aggancio = corpo_di("fn finisci_l_aggancio_al_tentativo(");
+        let in_testa = aggancio
+            .find("spegnimento::in_uscita()")
+            .expect("l'aggancio non guarda se si sta uscendo");
+        let riprova = aggancio
+            .find("da_riprovare_piu_tardi(")
+            .expect("l'aggancio non decide se riprovare");
+        assert!(
+            in_testa < riprova,
+            "si decide di riprovare prima di guardare l'uscita"
+        );
+        let dorme = aggancio
+            .find("std::thread::sleep(PASSO_DELLA_LIBRERIA)")
+            .expect("l'aggancio non aspetta fra un tentativo e l'altro");
+        let rimette = aggancio
+            .find("mano.run_on_main_thread(")
+            .expect("l'aggancio non si rimette in coda");
+        let dopo_l_attesa = aggancio[dorme..]
+            .find("spegnimento::in_uscita()")
+            .map(|posto| posto + dorme)
+            .expect("dopo l'attesa non si guarda se si sta uscendo");
+        assert!(
+            dorme < dopo_l_attesa && dopo_l_attesa < rimette,
+            "dopo l'attesa si chiede al filo della finestra un altro giro senza guardare l'uscita"
         );
     }
 

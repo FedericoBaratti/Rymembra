@@ -126,6 +126,12 @@ object Ponte {
    * processo. La notifica lo dice, e dice cosa fare; la pagina non monta (`nonParte` in
    * `libreria_fase`). Se è falso e [nucleoNonParte] è vero, l'avvio non ha lasciato niente
    * e si può rifare.
+   *
+   * **Non guarisce**: una volta alzato non si abbassa per tutta la vita del processo — né un
+   * [segnaNucleoParte] né un [segnaNucleoNonParte] riprovabile arrivati dopo lo toccano. Il
+   * «pronto» può essere arrivato **prima** (`sessione.pronta` parte a metà di
+   * `avvia_il_nucleo`, da `media::avvia`, e un panico dopo dà un nucleo rotto che ha già
+   * detto di esserci), e [Presenza] lo guarda prima di [Nucleo.pronto].
    */
   @Volatile var nucleoRotto = false
     private set
@@ -145,15 +151,27 @@ object Ponte {
    * il processo in un ciclo.
    */
   fun segnaNucleoNonParte(riprovabile: Boolean) {
+    // Un nucleo già rotto resta rotto: un «non parte» riprovabile che arriva dopo non lo
+    // declassa, né rimette in gioco il segno «già avviato». Arriva dopo davvero: la guardia del
+    // servizio chiude l'avvio **prima** di avvisare (`GuardiaDellAvvio`), e in quel
+    // frattempo la finestra, che aspettava la fine dell'avvio, può aver già detto «rotto»
+    // (`avvisa_se_la_libreria_manca`, `rifai_l_avvio`) prima che il «fallito» del servizio
+    // raggiunga Kotlin.
+    if (nucleoRotto) return
     nucleoRotto = !riprovabile
     nucleoNonParte = true
     if (riprovabile) principale.post { nucleoAvviatoDalServizio = false }
   }
 
-  /** Il nucleo c'è ([Nucleo.pronta]): niente più «non parte», né «rotto». */
+  /**
+   * Il nucleo c'è ([Nucleo.pronta]): niente più «non parte» di un tentativo fallito. Un
+   * nucleo **rotto** no: ha detto «pronto» a metà del suo avvio e poi è caduto, e il
+   * «pronto» ancora in coda sul filo principale non deve cancellare quel che la caduta ha
+   * già detto ([nucleoRotto]).
+   */
   fun segnaNucleoParte() {
+    if (nucleoRotto) return
     nucleoNonParte = false
-    nucleoRotto = false
   }
 
   /**
