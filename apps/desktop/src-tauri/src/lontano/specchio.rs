@@ -552,13 +552,22 @@ fn chiedi_il_secchio<D: Dati>(
 
 // ── la posta ────────────────────────────────────────────────────────────────
 
+/// Una voce di posta è in attesa da oltre [`SCADENZA_POSTA_MS`]: se l'altro la
+/// rifiuta ancora, si lascia.
+fn scaduta(voce: &dispositivi::VocePosta) -> bool {
+    adesso_ms().saturating_sub(voce.quando_ms) > SCADENZA_POSTA_MS
+}
+
 /// Manda a `chiave` la posta che aspetta, dalla più vecchia: un voto o un mi
 /// piace (`valuta`) o la correzione di un testo (`testo`, vedi [`super::testo`])
-/// per volta. Si ferma alla prima che non parte — il dispositivo non risponde —
-/// e la lascia lì per il giro dopo. Una voce che il dispositivo rifiuta per
-/// sempre (il brano non c'è più, o una versione che non la capisce da oltre
-/// [`SCADENZA_POSTA_MS`]) si butta. Quante ne ha consegnate **fra i voti**: sono
-/// loro che cambiano le righe del proprietario, e fanno rileggere il catalogo.
+/// per volta. Si ferma alla prima che non parte perché il dispositivo non
+/// risponde, e la lascia lì per il giro dopo. Una voce che il dispositivo
+/// **rifiuta lui** — con un errore che non è «non risponde» — non ferma le
+/// altre: resta, e quando è in attesa da oltre [`SCADENZA_POSTA_MS`] si lascia.
+/// Si butta anche il voto di un brano che non c'è più, e quello che una versione
+/// che non lo capisce rifiuta da altrettanto. Quante ne ha consegnate **fra i
+/// voti**: sono loro che cambiano le righe del proprietario, e fanno rileggere il
+/// catalogo.
 ///
 /// # Errori
 ///
@@ -617,14 +626,37 @@ pub(super) fn manda_la_posta<D: Dati>(dati: &D, chiave: &str) -> Result<usize, A
                     toglila(dati)?;
                 }
                 // Una versione che non la capisce (o non lo dichiara ancora):
-                // si tiene un po', poi si lascia.
+                // si tiene un po', poi si lascia. Finché si tiene, le altre non
+                // la capirebbero nemmeno, e si aspetta il giro dopo.
                 ErrorCodeKind::LontanoProtocollo => {
-                    if adesso_ms().saturating_sub(voce.quando_ms) > SCADENZA_POSTA_MS {
+                    if scaduta(&voce) {
                         toglila(dati)?;
+                        continue;
                     }
                     break;
                 }
-                _ => break,
+                // L'altro non c'è, non risponde a nessuno, o ha detto di no a
+                // noi: le voci dopo non partirebbero nemmeno, e restano per il
+                // giro dopo.
+                ErrorCodeKind::LontanoIrraggiungibile
+                | ErrorCodeKind::NetTimeout
+                | ErrorCodeKind::LontanoNonAssociato
+                | ErrorCodeKind::LontanoRifiutato
+                | ErrorCodeKind::LontanoSpento
+                | ErrorCodeKind::LontanoReteAConsumo
+                | ErrorCodeKind::LontanoGettoneScaduto
+                | ErrorCodeKind::LontanoIdentitaPersa => break,
+                // L'altro c'è e risponde, e **questa** voce non la prende — un
+                // errore suo, di una versione con un difetto o di un pari
+                // ostile —: le altre non dipendono da lei. Prima ogni errore
+                // fermava tutta la posta, per sempre (S2-12). Si tiene finché
+                // non scade, come per un protocollo che non la capisce, e si
+                // passa alla prossima.
+                _ => {
+                    if scaduta(&voce) {
+                        toglila(dati)?;
+                    }
+                }
             },
         }
     }
@@ -2212,6 +2244,11 @@ mod prove {
         /// libreria, e dentro `scrivi` si bloccherebbe da solo.
         sgombrato_dentro_la_scrittura: Mutex<bool>,
         dentro_la_scrittura: Mutex<bool>,
+        /// Il brano a cui l'altro risponde con questo errore: gli altri vanno
+        /// a buon fine. Senza, l'altro non risponde a niente.
+        rifiuta: Mutex<Option<(i64, fn() -> AppError)>>,
+        /// I brani per cui `chiedi` ha avuto una `Valuta`, nell'ordine.
+        chiesti: Mutex<Vec<i64>>,
     }
 
     impl ConLibreria {
@@ -2221,6 +2258,8 @@ mod prove {
                 sgombrati: Mutex::new(Vec::new()),
                 sgombrato_dentro_la_scrittura: Mutex::new(false),
                 dentro_la_scrittura: Mutex::new(false),
+                rifiuta: Mutex::new(None),
+                chiesti: Mutex::new(Vec::new()),
             }
         }
     }
@@ -2241,10 +2280,18 @@ mod prove {
         fn chiedi(
             &self,
             _chiave: &str,
-            _domanda: Domanda,
+            domanda: Domanda,
             _scadenza: Duration,
         ) -> Result<Risposta, AppError> {
-            Err(AppError::new(ErrorCode::LontanoIrraggiungibile))
+            let Domanda::Valuta { brano, .. } = domanda else {
+                return Err(AppError::new(ErrorCode::LontanoIrraggiungibile));
+            };
+            self.chiesti.lock().unwrap().push(brano);
+            match *self.rifiuta.lock().unwrap() {
+                Some((rifiutato, errore)) if rifiutato == brano => Err(errore()),
+                Some(_) => Ok(Risposta::Fatto),
+                None => Err(AppError::new(ErrorCode::LontanoIrraggiungibile)),
+            }
         }
 
         fn leggi<T>(
@@ -2417,5 +2464,88 @@ mod prove {
         let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
         sgombrati.sort_unstable();
         assert_eq!(sgombrati, vec![1, 2, 3, 4, 5]);
+    }
+
+    // ── la posta in uscita non si blocca su una voce (S2-12) ─────────────────────
+
+    /// Tre voti in posta per il PC, uno per brano, con `quando_ms` crescente: la
+    /// posta parte nell'ordine in cui è stata decisa, quindi il brano 1 per primo.
+    fn tre_voti_in_posta(dati: &ConLibreria, chiave: &str, il_primo_quando_ms: i64) {
+        let db = dati.db.lock().unwrap();
+        for brano in 1..=3_i64 {
+            let quando = il_primo_quando_ms + (brano - 1) * 1_000;
+            dispositivi::metti_in_posta(
+                &db,
+                chiave,
+                POSTA_VALUTA,
+                &brano.to_string(),
+                &format!(r#"{{"brano":{brano},"liked":true}}"#),
+                quando,
+            )
+            .unwrap();
+        }
+    }
+
+    fn in_posta_ancora(dati: &ConLibreria, chiave: &str) -> Vec<String> {
+        let db = dati.db.lock().unwrap();
+        dispositivi::posta_da_mandare(&db, chiave)
+            .unwrap()
+            .into_iter()
+            .map(|voce| voce.chiave)
+            .collect()
+    }
+
+    fn rifiuto_della_voce() -> AppError {
+        AppError::new(ErrorCode::IpcPayloadInvalid {
+            channel: "lontano".to_owned(),
+            detail: Some("una voce che l'altro non prende".to_owned()),
+        })
+    }
+
+    #[test]
+    fn una_voce_rifiutata_con_un_errore_diverso_non_ferma_le_altre_per_sempre() {
+        let pc = "d".repeat(64);
+        let dati = ConLibreria::nuova();
+        // Voti recenti: il primo è rifiutato dall'altro con un errore che non è
+        // «il brano non c'è», e gli altri due vanno a buon fine.
+        tre_voti_in_posta(&dati, &pc, adesso_ms() - 1_000);
+        *dati.rifiuta.lock().unwrap() = Some((1, rifiuto_della_voce));
+        assert_eq!(manda_la_posta(&dati, &pc).unwrap(), 2);
+        assert_eq!(
+            *dati.chiesti.lock().unwrap(),
+            vec![1, 2, 3],
+            "le ha provate tutte"
+        );
+        assert_eq!(
+            in_posta_ancora(&dati, &pc),
+            vec!["1"],
+            "la rifiutata resta, e le altre sono arrivate"
+        );
+    }
+
+    #[test]
+    fn una_voce_rifiutata_con_un_errore_diverso_scade_come_le_altre() {
+        let pc = "d".repeat(64);
+        let dati = ConLibreria::nuova();
+        // La prima è in posta da più di trenta giorni: un altro rifiuto, e si lascia.
+        tre_voti_in_posta(&dati, &pc, 1);
+        *dati.rifiuta.lock().unwrap() = Some((1, rifiuto_della_voce));
+        assert_eq!(manda_la_posta(&dati, &pc).unwrap(), 2);
+        assert!(in_posta_ancora(&dati, &pc).is_empty(), "scaduta e buttata");
+    }
+
+    #[test]
+    fn se_l_altro_non_risponde_la_posta_non_riprova_voce_per_voce() {
+        let pc = "d".repeat(64);
+        let dati = ConLibreria::nuova();
+        tre_voti_in_posta(&dati, &pc, adesso_ms() - 1_000);
+        // L'altro non c'è: senza una `rifiuta`, ogni risposta è «irraggiungibile».
+        assert_eq!(manda_la_posta(&dati, &pc).unwrap(), 0);
+        assert_eq!(
+            *dati.chiesti.lock().unwrap(),
+            vec![1],
+            "si ferma alla prima: le altre non partirebbero nemmeno"
+        );
+        assert_eq!(in_posta_ancora(&dati, &pc).len(), 3, "nessuna si butta");
     }
 }
