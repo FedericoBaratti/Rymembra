@@ -439,3 +439,120 @@ test("una native che il mapping non elenca è un avviso, non un errore: R8 non d
   // Il mapping non ha nemmeno `Ponte`: lo dice già `problemiMapping`, qui non si ripete.
   assert.deepEqual(avvisiMapping("# compiler: R8\r\n"), []);
 });
+
+/* ── S10-3: i segreti di Android, prima delle compilazioni lunghe ─────── */
+
+const os = require("node:os");
+const { spawnSync } = require("node:child_process");
+const crypto = require("node:crypto");
+
+/** `keytool` del JDK (da JAVA_HOME o dal PATH), o `null`: le prove che lo usano si saltano. */
+function keytoolOppureNull() {
+  const { cercaKeytool } = require("./apk.js");
+  const k = cercaKeytool();
+  return spawnSync(k, ["-help"], { encoding: "utf8" }).error ? null : k;
+}
+
+/** Un keystore PKCS12 vero, in una cartella nuova: file, password, alias e impronta del suo certificato (da `keytool -exportcert`, indipendente dall'uscita di `-list`). */
+function keystoreVero(keytool) {
+  const cartella = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-ks-prova-"));
+  const file = path.join(cartella, "prova.jks");
+  const password = `pw-${crypto.randomBytes(6).toString("hex")}`;
+  const alias = "chiave-di-prova";
+  const env = { ...process.env, KS_PROVA: password };
+  const genera = spawnSync(keytool, ["-genkeypair", "-keystore", file, "-storetype", "PKCS12", "-alias", alias, "-storepass:env", "KS_PROVA", "-keyalg", "RSA", "-keysize", "2048", "-dname", "CN=Prova", "-validity", "2"], { env, encoding: "utf8" });
+  assert.equal(genera.status, 0, genera.stdout + genera.stderr);
+  const pem = spawnSync(keytool, ["-exportcert", "-rfc", "-keystore", file, "-storepass:env", "KS_PROVA", "-alias", alias], { env, encoding: "utf8" });
+  assert.equal(pem.status, 0, pem.stdout + pem.stderr);
+  const impronta = new crypto.X509Certificate(pem.stdout.slice(pem.stdout.indexOf("-----BEGIN"))).fingerprint256;
+  return { keystore: fs.readFileSync(file), password, alias, impronta };
+}
+
+test("la forma dei segreti di Android: ci sono tutti e tre, e il keystore è base64 di un keystore", () => {
+  const { formaDeiSegretiAndroid } = require("./apk.js");
+  const pkcs12 = Buffer.concat([Buffer.from([0x30, 0x82, 0x0a, 0x22]), crypto.randomBytes(40)]);
+  const jks = Buffer.concat([Buffer.from([0xfe, 0xed, 0xfe, 0xed]), crypto.randomBytes(40)]);
+  const buono = { ANDROID_KEYSTORE_BASE64: pkcs12.toString("base64"), ANDROID_KEYSTORE_PASSWORD: "una password", ANDROID_KEY_ALIAS: "rymembra" };
+  assert.deepEqual(formaDeiSegretiAndroid(buono).problemi, []);
+  assert.deepEqual(formaDeiSegretiAndroid(buono).keystore, pkcs12);
+  assert.deepEqual(formaDeiSegretiAndroid({ ...buono, ANDROID_KEYSTORE_BASE64: jks.toString("base64") }).problemi, []);
+  // `base64` senza `-w0` va a capo ogni 76 colonne, e `base64 -d` di `firma-apk` lo tollera: il controllo non è più severo.
+  const aCapo = pkcs12.toString("base64").replace(/(.{76})/g, "$1\n");
+  assert.deepEqual(formaDeiSegretiAndroid({ ...buono, ANDROID_KEYSTORE_BASE64: `${aCapo}\n` }).problemi, []);
+  // Un ambiente `release` creato al volo da GitHub, senza segreti: tutti e tre mancano, e si dicono per nome.
+  const nessuno = formaDeiSegretiAndroid({}).problemi.join("\n");
+  for (const nome of ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS"]) assert.match(nessuno, new RegExp(nome));
+  assert.match(nessuno, /Environments → release/);
+  assert.match(formaDeiSegretiAndroid({ ...buono, ANDROID_KEY_ALIAS: "" }).problemi.join("\n"), /ANDROID_KEY_ALIAS/);
+  // Né base64, né un keystore: si dice, senza mai stampare il valore.
+  const storto = formaDeiSegretiAndroid({ ...buono, ANDROID_KEYSTORE_BASE64: "questo non è base64 e ha spazi" });
+  assert.match(storto.problemi.join("\n"), /ANDROID_KEYSTORE_BASE64 non è base64/);
+  assert.ok(!storto.problemi.join("\n").includes("spazi"));
+  const altro = formaDeiSegretiAndroid({ ...buono, ANDROID_KEYSTORE_BASE64: crypto.randomBytes(64).fill(1).toString("base64") });
+  assert.match(altro.problemi.join("\n"), /non è un keystore/);
+});
+
+test("keytool apre il keystore con la password e l'alias, e l'impronta è quella dei rilasci (S10-3)", { skip: keytoolOppureNull() ? false : "keytool non c'è (JAVA_HOME o PATH)" }, () => {
+  const { problemiKeystore, cercaKeytool } = require("./apk.js");
+  const keytool = cercaKeytool();
+  const k = keystoreVero(keytool);
+  const dati = { keystore: k.keystore, password: k.password, alias: k.alias };
+  // La cartella temporanea è quella che dice RUNNER_TEMP: dopo il controllo non deve restare niente, il keystore è una chiave.
+  const runner = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-runner-"));
+  const prima = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = runner;
+  try {
+    assert.deepEqual(problemiKeystore(dati, { impronta: k.impronta, keytool }), []);
+    assert.deepEqual(fs.readdirSync(runner), [], "il keystore è rimasto su disco");
+    // Una password sbagliata: la dice per nome e non la stampa, né la nuova né quella vera.
+    const password = problemiKeystore({ ...dati, password: "sbagliata-1234" }, { impronta: k.impronta, keytool }).join("\n");
+    assert.match(password, /ANDROID_KEYSTORE_PASSWORD/);
+    assert.ok(!password.includes("sbagliata-1234") && !password.includes(k.password), password);
+    // Un alias che non c'è.
+    const alias = problemiKeystore({ ...dati, alias: "non-esiste" }, { impronta: k.impronta, keytool }).join("\n");
+    assert.match(alias, /ANDROID_KEY_ALIAS/);
+    assert.ok(!alias.includes("non-esiste"), alias);
+    // Un certificato che non è quello inchiodato: nessun telefono si aggiornerebbe.
+    const altra = problemiKeystore(dati, { impronta: IMPRONTA, keytool }).join("\n");
+    assert.match(altra, /non quello dei rilasci/);
+    // Byte che cominciano come un PKCS12 ma non lo sono.
+    const finto = problemiKeystore({ ...dati, keystore: Buffer.concat([Buffer.from([0x30, 0x82]), crypto.randomBytes(80)]) }, { impronta: k.impronta, keytool }).join("\n");
+    assert.match(finto, /non è un keystore che keytool apra/);
+    assert.deepEqual(fs.readdirSync(runner), []);
+  } finally {
+    if (prima === undefined) delete process.env.RUNNER_TEMP;
+    else process.env.RUNNER_TEMP = prima;
+  }
+});
+
+test("senza keytool il controllo lo dice, e non passa per buono", () => {
+  const { problemiKeystore } = require("./apk.js");
+  const dati = { keystore: Buffer.from([0x30, 0x82, 1, 2, 3]), password: "x", alias: "y" };
+  const esito = problemiKeystore(dati, { impronta: IMPRONTA, keytool: path.join(os.tmpdir(), "keytool-che-non-esiste") }).join("\n");
+  assert.match(esito, /keytool non è partito/);
+});
+
+test("`apk.js segreti` dall'ambiente: senza segreti esce con 1 e li nomina, con un'altra chiave dice che non è quella dei rilasci", () => {
+  const lancia = (extra) => {
+    const env = { ...process.env };
+    for (const nome of Object.keys(env)) if (/^ANDROID_KEY/i.test(nome)) delete env[nome];
+    const esito = spawnSync(process.execPath, [path.join(__dirname, "apk.js"), "segreti"], { env: { ...env, ...extra }, encoding: "utf8" });
+    return { codice: esito.status, uscita: `${esito.stdout}${esito.stderr}` };
+  };
+  const vuoto = lancia({});
+  assert.equal(vuoto.codice, 1, vuoto.uscita);
+  for (const nome of ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS"]) assert.match(vuoto.uscita, new RegExp(nome));
+  const keytool = keytoolOppureNull();
+  if (!keytool) return;
+  // Un keystore vero ma di un'altra chiave: la CI lo direbbe dopo novanta minuti, qui dopo due.
+  const k = keystoreVero(keytool);
+  const altra = lancia({
+    ANDROID_KEYSTORE_BASE64: k.keystore.toString("base64"),
+    ANDROID_KEYSTORE_PASSWORD: k.password,
+    ANDROID_KEY_ALIAS: k.alias,
+    JAVA_HOME: path.dirname(path.dirname(keytool)),
+  });
+  assert.equal(altra.codice, 1, altra.uscita);
+  assert.match(altra.uscita, /non quello dei rilasci/);
+  assert.ok(!altra.uscita.includes(k.password) && !altra.uscita.includes(k.keystore.toString("base64").slice(0, 40)), "un segreto in uscita");
+});

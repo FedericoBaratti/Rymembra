@@ -52,17 +52,27 @@
  *     la prova che il file firmato è quello che si carica, e che il telefono
  *     lo riconoscerà.
  *
- * # Tre modi
+ * # E prima di tutto, i segreti (lavoro `segreti`, nell'ambiente `release`)
+ *
+ * `segreti` guarda dall'ambiente i tre segreti di Android **prima** delle
+ * compilazioni lunghe: ci sono, il keystore è base64 di un keystore, `keytool`
+ * lo apre con quella password e quell'alias, e il certificato ha l'impronta
+ * inchiodata. Sono i tre modi in cui `firma-apk` morirebbe dopo novanta minuti
+ * di build (S10-3). Non stampa mai un valore.
+ *
+ * # Quattro modi
  *
  *   node strumenti/apk.js nome                     il nome dell'asset, dalla versione
+ *   node strumenti/apk.js segreti                  i segreti di Android, dall'ambiente
  *   node strumenti/apk.js controlla <apk> --mapping <mapping.txt>
  *   node strumenti/apk.js verifica <apk-firmato>   (il .sig accanto, <apk>.sig)
  *
  * Gli strumenti di Android si cercano in `ANDROID_BUILD_TOOLS` (la cartella
- * `build-tools/<versione>` dell'SDK).
+ * `build-tools/<versione>` dell'SDK); `keytool`, per `segreti`, in `JAVA_HOME`.
  */
 const { spawnSync } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 
@@ -451,6 +461,117 @@ function problemiSig(sig, { pubkey, versione: v, file, byte }) {
   return problemi;
 }
 
+/* ── i segreti di Android, prima delle compilazioni lunghe (S10-3) ───── */
+
+/** I tre segreti dell'ambiente `release` con cui `firma-apk` firma l'APK. */
+const SEGRETI_ANDROID = ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS"];
+
+/**
+ * La forma dei segreti di Android, senza aprire niente: ci sono tutti e tre, e il
+ * keystore è base64 di un keystore (un PKCS12 comincia con la `SEQUENCE` DER,
+ * `0x30`; un JKS con `0xFEEDFEED`). Ritorna i problemi e i byte del keystore,
+ * se si sono potuti ricavare.
+ *
+ * **Non più severo del passo che anticipa**: `firma-apk` decodifica con
+ * `base64 -d`, che tollera gli a capo (`base64` senza `-w0` ne mette uno ogni
+ * 76 colonne), e questo controllo li tollera. Gli spazi ai bordi di password e
+ * alias non si guardano qui: se la password non è quella giusta lo dice
+ * `keytool`, che è l'unico a saperlo, e non una regola nostra che potrebbe
+ * fermare una password legittima. **Non stampa mai un valore**, solo i nomi.
+ */
+function formaDeiSegretiAndroid(env) {
+  const problemi = [];
+  for (const nome of SEGRETI_ANDROID) {
+    if (env[nome] === undefined || env[nome] === "") {
+      problemi.push(`${nome} manca o è vuoto: i segreti stanno nell'ambiente release (Settings → Environments → release), e se l'ambiente non c'era GitHub l'ha creato vuoto`);
+    }
+  }
+  let keystore = null;
+  const grezzo = env.ANDROID_KEYSTORE_BASE64;
+  if (grezzo) {
+    const pulito = grezzo.replace(/\r?\n/g, "");
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(pulito) || pulito.length % 4 !== 0) {
+      problemi.push("ANDROID_KEYSTORE_BASE64 non è base64: va il file .jks codificato, per intero (base64 -w0 rilascio.jks)");
+    } else {
+      const byte = Buffer.from(pulito, "base64");
+      const pkcs12 = byte.length > 4 && byte[0] === 0x30;
+      const jks = byte.length > 4 && byte.readUInt32BE(0) === 0xfeedfeed;
+      if (pkcs12 || jks) keystore = byte;
+      else problemi.push("ANDROID_KEYSTORE_BASE64 è base64, ma non è un keystore: non comincia come un PKCS12 né come un JKS");
+    }
+  }
+  return { problemi, keystore };
+}
+
+/** `keytool` del JDK: quello di `JAVA_HOME` se c'è, altrimenti dal `PATH`. */
+function cercaKeytool(env = process.env) {
+  const nome = process.platform === "win32" ? "keytool.exe" : "keytool";
+  if (env.JAVA_HOME) {
+    const dentro = path.join(env.JAVA_HOME, "bin", nome);
+    if (fs.existsSync(dentro)) return dentro;
+  }
+  return nome;
+}
+
+/**
+ * Il keystore si apre con quella password e quell'alias, e il certificato è
+ * quello dei rilasci. Sono i tre modi in cui `firma-apk` morirebbe dopo
+ * novanta minuti di compilazione: password sbagliata (`apksigner` non apre il
+ * keystore), alias sbagliato, o una chiave che non è quella dell'app — e in
+ * quest'ultimo caso la firma riuscirebbe, e nessun telefono con l'app
+ * installata potrebbe aggiornarsi (`problemiFirma` lo ferma, ma sull'APK).
+ *
+ * Il keystore passa da un file temporaneo leggibile solo da chi lo scrive, in
+ * `RUNNER_TEMP`, cancellato comunque vada. La password arriva a `keytool` dall'
+ * ambiente (`-storepass:env`) e non dalla riga di comando; l'alias sì, come in
+ * `apksigner`, ma non è un segreto. **Non si stampa mai l'uscita di `keytool`**:
+ * contiene l'alias e il soggetto del certificato, e un errore generico la
+ * riporta con alias e password coperti.
+ */
+function problemiKeystore({ keystore, password, alias }, { impronta, keytool = cercaKeytool() }) {
+  const cartella = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), "rymembra-ks-"));
+  try {
+    const file = path.join(cartella, "controllo.jks");
+    fs.writeFileSync(file, keystore, { mode: 0o600 });
+    // Inglese di serie: le frasi che si riconoscono sotto sono le sue.
+    const esito = spawnSync(
+      keytool,
+      ["-J-Duser.language=en", "-J-Duser.country=US", "-list", "-v", "-keystore", file, "-storepass:env", "ANDROID_KEYSTORE_PASSWORD", "-alias", alias],
+      { env: { ...process.env, ANDROID_KEYSTORE_PASSWORD: password }, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+    );
+    if (esito.error) {
+      return [`keytool non è partito (${esito.error.code ?? esito.error.message}): serve il JDK, in JAVA_HOME o nel PATH`];
+    }
+    const uscita = `${esito.stdout ?? ""}${esito.stderr ?? ""}`;
+    if (esito.status !== 0) {
+      if (/keystore password was incorrect/i.test(uscita)) {
+        return ["ANDROID_KEYSTORE_PASSWORD non apre il keystore: la password è sbagliata, o ha un a capo o uno spazio ai bordi che non è parte della password"];
+      }
+      if (/Alias <.*> does not exist/i.test(uscita)) return ["ANDROID_KEY_ALIAS non c'è nel keystore: l'alias è un altro"];
+      if (/Unrecognized keystore format|Invalid keystore format|keystore was tampered/i.test(uscita)) {
+        return ["ANDROID_KEYSTORE_BASE64 non è un keystore che keytool apra: il file è rotto o è stato codificato male"];
+      }
+      let coperta = uscita.split(/\r?\n/).find((r) => r.trim() !== "") ?? "(nessun messaggio)";
+      for (const segreto of [password, alias]) if (segreto) coperta = coperta.split(segreto).join("***");
+      return [`keytool non è riuscito (uscita ${esito.status}): ${coperta}`];
+    }
+    const problemi = [];
+    if (!/^Entry type: PrivateKeyEntry/m.test(uscita)) problemi.push("ANDROID_KEY_ALIAS non è una chiave privata del keystore: apksigner non potrebbe firmare");
+    // Il primo certificato della catena è quello che firma.
+    const sha = /^\s+SHA256:\s*([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){31})\s*$/m.exec(uscita);
+    if (!sha) problemi.push("keytool non ha detto l'impronta SHA-256 del certificato");
+    else if (normalizzaImpronta(sha[1]) !== normalizzaImpronta(impronta)) {
+      problemi.push(
+        `il certificato dell'alias è ${normalizzaImpronta(sha[1])}, non quello dei rilasci (${normalizzaImpronta(impronta)}, strumenti/android-certificato.sha256): ` +
+          "nessuna copia installata potrebbe aggiornarsi con un APK firmato così",
+      );
+    }
+    return problemi;
+  } finally {
+    fs.rmSync(cartella, { recursive: true, force: true });
+  }
+}
+
 /* ── il comando ───────────────────────────────────────────────────────── */
 
 /** Uno strumento di `ANDROID_BUILD_TOOLS`, con il suo esito. */
@@ -490,8 +611,26 @@ function main() {
     console.log(nomeAsset(v));
     return;
   }
+  if (a.comando === "segreti") {
+    // Dall'ambiente: i tre segreti di Android, quelli di `firma-apk`.
+    const { problemi, keystore } = formaDeiSegretiAndroid(process.env);
+    if (problemi.length === 0) {
+      problemi.push(
+        ...problemiKeystore(
+          { keystore, password: process.env.ANDROID_KEYSTORE_PASSWORD, alias: process.env.ANDROID_KEY_ALIAS },
+          { impronta: improntaInchiodata() },
+        ),
+      );
+    }
+    if (problemi.length) {
+      console.error(`I segreti di Android: ${problemi.length} problemi\n` + problemi.map((p) => `  - ${p}`).join("\n"));
+      process.exit(1);
+    }
+    console.log("I segreti di Android ci sono, il keystore si apre con quella password e quell'alias, e il certificato è quello dei rilasci.");
+    return;
+  }
   if ((a.comando !== "controlla" && a.comando !== "verifica") || !a.file) {
-    console.error("uso: apk.js nome | controlla <apk> --mapping <mapping.txt> | verifica <apk-firmato>");
+    console.error("uso: apk.js nome | segreti | controlla <apk> --mapping <mapping.txt> | verifica <apk-firmato>");
     process.exit(2);
   }
   const apk = fs.readFileSync(a.file);
@@ -552,5 +691,8 @@ module.exports = {
   iconeDellAuto,
   problemiFirma,
   problemiSig,
+  formaDeiSegretiAndroid,
+  cercaKeytool,
+  problemiKeystore,
   argomenti,
 };

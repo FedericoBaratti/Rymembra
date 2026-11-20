@@ -235,3 +235,46 @@ test("il lavoro tag pretende le Novità per una minor o una major, e le lascia l
   assert.match(corsa, /node strumenti\/novita\.js --se-minor/);
   assert.ok(!/node strumenti\/novita\.js\s*$/m.test(corsa), "novita.js nudo: la minor senza novità passerebbe con un avviso");
 });
+
+/* ── S10-3: i segreti si guardano prima delle compilazioni lunghe ─────── */
+
+/** I lavori da cui `nome` dipende, anche per interposta persona (`needs:`). */
+function dipendeDa(workflow, nome, visti = new Set()) {
+  const m = /^\s+needs:\s*(?:\[([^\]]*)\]|(\S+))\s*$/m.exec(workflow[nome] ?? "");
+  for (const d of (m?.[1] ?? m?.[2] ?? "").split(",").map((x) => x.trim()).filter(Boolean)) {
+    if (!visti.has(d)) {
+      visti.add(d);
+      dipendeDa(workflow, d, visti);
+    }
+  }
+  return visti;
+}
+
+test("un lavoro iniziale guarda i segreti dell'ambiente release, e ogni compilazione dipende da lui", () => {
+  const s = R.segreti;
+  assert.ok(s, "manca il lavoro segreti");
+  // Nell'ambiente `release`, dove stanno i segreti: se non c'è, GitHub lo crea vuoto, e qui lo si vede in due minuti.
+  assert.match(s, /environment: release/);
+  assert.match(s, /needs: tag/);
+  assert.match(s, /permissions:\n\s+contents: read/);
+  assert.match(s, /timeout-minutes: (?:[1-9]|10)\n/);
+  // Gli stessi controlli di `firma`, e non una copia: `firma.js` per la minisign, `apk.js` per Android.
+  assert.match(s, /run: node strumenti\/firma\.js/);
+  assert.match(s, /node strumenti\/apk\.js segreti/);
+  // Accanto alle chiavi non gira codice di terzi: né dipendenze di npm né compilazioni.
+  assert.ok(!/npm (?:ci|install)|cargo|gradlew|tauri /.test(s), "il lavoro dei segreti non installa né compila niente");
+  for (const run of blocchiRun(s)) {
+    assert.ok(!/\$\{\{/.test(run), `un'espressione dentro run:\n${run}`);
+    assert.ok(!/set -x/.test(run));
+  }
+  // Tutti i segreti che il workflow nomina stanno qui: uno aggiunto a `firma` e dimenticato in `segreti` non si vedrebbe.
+  const nomi = (testo) => [...new Set([...testo.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]))].sort();
+  assert.deepEqual(nomi(s), nomi(RELEASE));
+  assert.equal(nomi(s).length, 5, nomi(s).join(" "));
+  // Ogni altro lavoro dipende da `segreti`, direttamente o attraverso un altro: niente parte prima.
+  for (const nome of Object.keys(R).filter((n) => n !== "tag" && n !== "segreti")) {
+    assert.ok(dipendeDa(R, nome).has("segreti"), `${nome} non dipende da segreti`);
+  }
+  // E le due compilazioni lunghe lo dicono apertamente, senza fidarsi di `verifica`.
+  for (const nome of ["verifica", "costruisci", "apk"]) assert.match(R[nome], /needs: \[[^\]]*\bsegreti\b/, nome);
+});

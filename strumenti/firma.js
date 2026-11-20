@@ -13,8 +13,11 @@
  *   Missing comment in secret key
  *
  * Adesso la firma ha un lavoro suo, dopo la compilazione (`firma` e
- * `firma-apk` in `release.yml`), e il tempo che questo passo fa risparmiare è
- * poco. Resta la ragione che conta: `tauri signer sign` un segreto incollato
+ * `firma-apk` in `release.yml`), e in quei due il tempo che questo passo fa
+ * risparmiare è poco. Per questo gira **anche** nel lavoro `segreti`, in testa
+ * alla release, prima di ogni compilazione: lì un segreto incollato male si
+ * scopre dopo due minuti invece che dopo un'ora e mezza. Resta la ragione che
+ * conta: `tauri signer sign` un segreto incollato
  * male lo rifiuta con un messaggio che non nomina l'incollatura, e qui lo si
  * dice per nome, prima, senza mai stampare il valore.
  *
