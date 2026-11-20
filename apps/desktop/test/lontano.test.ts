@@ -435,6 +435,11 @@ test("S11-4: con «Chiedi» la frase dell'errore non dice «Solo Wi-Fi è attivo
     assert.ok(chiedi, `${lingua}: manca la frase per «Chiedi»`);
     assert.doesNotMatch(chiedi, /Solo Wi-Fi|Wi-Fi only/, `${lingua}: dice un'impostazione che non è quella`);
     assert.match(testi[chiave] ?? "", /Solo Wi-Fi|Wi-Fi only/, `${lingua}: «No» dice ancora il suo nome`);
+    // La frase si legge **dentro** Rymembra (fascia, avviso del brano saltato):
+    // l'azione che dice è quella di qui — premere play, che adesso chiede il sì —
+    // e non «apri Rymembra» o «da qui», che sono falsi dove si legge.
+    assert.doesNotMatch(chiedi, /apri Rymembra|open Rymembra|da qui|from here/i, `${lingua}: manda fuori dall'app`);
+    assert.match(chiedi, /play/i, `${lingua}: dice di premere play`);
   }
 });
 
