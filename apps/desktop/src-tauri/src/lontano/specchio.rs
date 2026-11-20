@@ -168,6 +168,11 @@ pub(super) trait Dati {
     ) -> Result<T, AppError>;
     /// Dice alla finestra a che punto si è.
     fn emetti(&self, avanzamento: &AvanzamentoSpecchio);
+    /// Righe appena tolte dalla libreria: la coda del lettore non le nomina più
+    /// (S11-1). Si chiama dopo la scrittura, **mai** dentro `scrivi`: sgomberare
+    /// prende il lucchetto del lettore e poi quello della libreria. Per le prove
+    /// che non hanno un lettore non fa niente.
+    fn sgombera(&self, _ids: &[i64]) {}
 }
 
 /// L'app vera.
@@ -231,6 +236,10 @@ impl Dati for DallApp {
 
     fn emetti(&self, avanzamento: &AvanzamentoSpecchio) {
         self.app.emetti("lontano:specchio", avanzamento.clone());
+    }
+
+    fn sgombera(&self, ids: &[i64]) {
+        crate::cancellazione::sgombera_dal_nucleo(&self.app, ids, false);
     }
 }
 
@@ -396,7 +405,12 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
     let da_svuotare = lavoro.da_svuotare.clone();
     let chiusura = dati.scrivi(|c| in_corso.chiudi(c, &da_svuotare, completo, generazione, quando));
     let chiusura = match chiusura {
-        Ok(chiusura) => chiusura,
+        Ok(chiusura) => {
+            // La coda del lettore non nomina più le righe tolte: dopo la scrittura,
+            // a lucchetto lasciato (S11-1).
+            dati.sgombera(&chiusura.ids_tolti);
+            chiusura
+        }
         Err(err) => {
             avanza(
                 dati,
@@ -473,6 +487,7 @@ fn togli_le_scadute<D: Dati>(
         da_guardare = false;
         match dati.scrivi(|c| archivio::togli_un_blocco(c, chiave, adesso_ms())) {
             Ok(blocco) => {
+                dati.sgombera(&blocco.ids_tolti);
                 tolte = tolte.saturating_add(blocco.tolte);
                 restano = blocco.restano;
                 da_nascondere = blocco.da_nascondere;
@@ -1007,22 +1022,33 @@ pub async fn lontano_specchio_ora(app: Nucleo, chiave: String) -> Esito<()> {
     .await
 }
 
+/// Le righe che `chiave` non manda più se ne vanno, **tutte** — la grazia non
+/// conta più —, a blocchi: ogni blocco in una presa sua del lucchetto, perché la
+/// conferma di centomila righe non lo tenga fermo per quanto dura. Dopo ogni
+/// blocco la coda del lettore smette di nominare le righe tolte (S11-1). Quante.
+///
+/// # Errori
+///
+/// Quelli del database.
+fn conferma_a_blocchi<D: Dati>(dati: &D, chiave: &str) -> Result<usize, AppError> {
+    let mut tolte = 0_usize;
+    loop {
+        let blocco = dati.scrivi(|c| archivio::conferma_un_blocco(c, chiave))?;
+        dati.sgombera(&blocco.ids_tolti);
+        tolte = tolte.saturating_add(blocco.tolte);
+        if blocco.restano == 0 || blocco.tolte == 0 {
+            return Ok(tolte);
+        }
+    }
+}
+
 /// La persona ha detto di sì: le righe che il dispositivo non manda più se ne
 /// vanno. Quante.
 #[tauri::command]
 pub async fn lontano_specchio_conferma(app: Nucleo, chiave: String) -> Esito<usize> {
     in_disparte(move || {
-        // A blocchi, e ogni blocco in una presa sua del lucchetto: la conferma di
-        // centomila righe non deve tenerlo fermo per quanto dura.
-        let mut tolte = 0_usize;
-        loop {
-            let blocco = scrivi_in_libreria(&app, |c| archivio::conferma_un_blocco(c, &chiave))?;
-            tolte = tolte.saturating_add(blocco.tolte);
-            if blocco.restano == 0 || blocco.tolte == 0 {
-                break;
-            }
-        }
         let dati = DallApp::nuovo(&app)?;
+        let tolte = conferma_a_blocchi(&dati, &chiave)?;
         let mut a = avanzamenti().get(&chiave).cloned().unwrap_or_default();
         a.dispositivo = chiave.clone();
         a.in_attesa = 0;
@@ -2049,5 +2075,144 @@ mod prove {
             Some(Fase::Errore),
             "e la finestra l'ha saputo"
         );
+    }
+
+    /// Una libreria sola, senza rete e senza lettore: quel che serve a vedere cosa
+    /// una rimozione di righe specchio dice, dopo la scrittura, a chi tiene la
+    /// coda (S11-1).
+    struct ConLibreria {
+        db: Mutex<rusqlite::Connection>,
+        /// Gli identificativi che `sgombera` ha ricevuto, nell'ordine.
+        sgombrati: Mutex<Vec<i64>>,
+        /// Il lucchetto della libreria era preso quando `sgombera` è stato
+        /// chiamato: sgomberare prende quello del lettore e poi quello della
+        /// libreria, e dentro `scrivi` si bloccherebbe da solo.
+        sgombrato_dentro_la_scrittura: Mutex<bool>,
+        dentro_la_scrittura: Mutex<bool>,
+    }
+
+    impl ConLibreria {
+        fn nuova() -> Self {
+            Self {
+                db: Mutex::new(libreria()),
+                sgombrati: Mutex::new(Vec::new()),
+                sgombrato_dentro_la_scrittura: Mutex::new(false),
+                dentro_la_scrittura: Mutex::new(false),
+            }
+        }
+    }
+
+    impl Dati for ConLibreria {
+        fn associato(&self, _chiave: &str) -> bool {
+            true
+        }
+
+        fn dichiara(&self, _chiave: &str, _sigla: &str) -> bool {
+            true
+        }
+
+        fn risponde(&self, _chiave: &str) -> bool {
+            false
+        }
+
+        fn chiedi(
+            &self,
+            _chiave: &str,
+            _domanda: Domanda,
+            _scadenza: Duration,
+        ) -> Result<Risposta, AppError> {
+            Err(AppError::new(ErrorCode::LontanoIrraggiungibile))
+        }
+
+        fn leggi<T>(
+            &self,
+            azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+        ) -> Result<T, AppError> {
+            azione(&self.db.lock().unwrap())
+        }
+
+        fn scrivi<T>(
+            &self,
+            azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+        ) -> Result<T, AppError> {
+            *self.dentro_la_scrittura.lock().unwrap() = true;
+            let esito = azione(&self.db.lock().unwrap());
+            *self.dentro_la_scrittura.lock().unwrap() = false;
+            esito
+        }
+
+        fn emetti(&self, _avanzamento: &AvanzamentoSpecchio) {}
+
+        fn sgombera(&self, ids: &[i64]) {
+            if *self.dentro_la_scrittura.lock().unwrap() {
+                *self.sgombrato_dentro_la_scrittura.lock().unwrap() = true;
+            }
+            self.sgombrati.lock().unwrap().extend_from_slice(ids);
+        }
+    }
+
+    /// Una riga specchio di `dispositivo`, segnata sparita da `sparita_da`.
+    fn riga_specchio(c: &rusqlite::Connection, id: i64, dispositivo: &str, sparita_da: i64) {
+        c.execute(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size, date_added,
+                                 date_modified, source)
+             VALUES (?1, ?2, ?3, 'T', 'A', 'B', 1, 1, 1, 'lontano')",
+            rusqlite::params![
+                id,
+                rymembra_app::specchio::percorso(dispositivo, id),
+                format!("a|t{id}|b")
+            ],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO lontano_brani (track_id, dispositivo, id_remoto, sparito_ms)
+             VALUES (?1, ?2, ?1, ?3)",
+            rusqlite::params![id, dispositivo, sparita_da],
+        )
+        .unwrap();
+    }
+
+    /// Le righe che la conferma di una strage toglie, a blocchi, le sa anche chi
+    /// tiene la coda: dopo ogni blocco e fuori dalla scrittura.
+    #[test]
+    fn la_conferma_di_una_strage_dice_alla_coda_quali_righe_ha_tolto() {
+        let chiave = "b".repeat(64);
+        let dati = ConLibreria::nuova();
+        {
+            let db = dati.db.lock().unwrap();
+            for id in 1..=60 {
+                riga_specchio(&db, id, &chiave, 1_000);
+            }
+        }
+        let tolte = conferma_a_blocchi(&dati, &chiave).unwrap();
+        assert_eq!(tolte, 60);
+        let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
+        sgombrati.sort_unstable();
+        assert_eq!(sgombrati, (1..=60).collect::<Vec<i64>>());
+        assert!(
+            !*dati.sgombrato_dentro_la_scrittura.lock().unwrap(),
+            "si sgombera a lucchetto lasciato"
+        );
+    }
+
+    /// Lo stesso per la grazia scaduta: `togli_le_scadute` toglie, e dice quali.
+    #[test]
+    fn la_grazia_scaduta_dice_alla_coda_quali_righe_ha_tolto() {
+        let chiave = "b".repeat(64);
+        let dati = ConLibreria::nuova();
+        {
+            let db = dati.db.lock().unwrap();
+            // Sparite da sempre (1 ms dopo il 1970): più della grazia; e una
+            // sparita adesso, che resta.
+            for id in 1..=3 {
+                riga_specchio(&db, id, &chiave, 1);
+            }
+            riga_specchio(&db, 4, &chiave, adesso_ms());
+        }
+        togli_le_scadute(&dati, &chiave, 0, 0, false, true);
+        let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
+        sgombrati.sort_unstable();
+        assert_eq!(sgombrati, vec![1, 2, 3], "la quarta è ancora in grazia");
+        assert!(!*dati.sgombrato_dentro_la_scrittura.lock().unwrap());
     }
 }

@@ -802,6 +802,7 @@ impl Giro {
                 BLOCCO_RIMOZIONI,
             )?;
             chiusura.tolte = blocco.tolte;
+            chiusura.ids_tolti = blocco.ids_tolti;
             chiusura.in_attesa = blocco.in_attesa;
             chiusura.in_grazia = blocco.in_grazia;
             chiusura.da_togliere = blocco.restano;
@@ -899,13 +900,15 @@ impl Giro {
 }
 
 /// Com'è andato il giro.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Chiusura {
     /// Righe riabbinate a un id nuovo, sul posto.
     pub riabbinate: usize,
     /// Righe tolte (in questa presa: i blocchi dopo il primo li conta chi li
     /// chiede).
     pub tolte: usize,
+    /// I loro identificativi, per sgomberare la coda del lettore ([`Blocco::ids_tolti`]).
+    pub ids_tolti: Vec<i64>,
     /// Righe sparite che aspettano una conferma: una rimozione di massa, sopra
     /// la soglia.
     pub in_attesa: usize,
@@ -1328,11 +1331,19 @@ fn sposta_la_cronologia(tx: &Connection, da_togliere: &[i64]) -> Result<usize, A
 /// la riga nel frattempo è un'altra, non si tocca. Prima, le voci di playlist
 /// ([`sposta_le_voci`]) e la cronologia d'ascolto ([`sposta_la_cronologia`])
 /// passano a un'altra copia del brano, se c'è.
+///
+/// E la coda salvata, con il segno di «dov'eri rimasto», smette di nominarle
+/// ([`crate::playback::sgombra_il_salvato`]): `tracks.id` non è `AUTOINCREMENT`,
+/// e l'id di una riga tolta lo prende il primo brano nuovo (S11-1). Chi tiene la
+/// coda in memoria, il lettore, la sgombera dopo la scrittura con gli
+/// identificativi che questa restituisce: stanno nello strato che lo possiede.
+///
+/// Gli identificativi delle righe tolte davvero.
 fn togli(
     tx: &Connection,
     righe: &[(i64, String)],
     toccati: &mut Toccati,
-) -> Result<usize, AppError> {
+) -> Result<Vec<i64>, AppError> {
     let ids: Vec<i64> = righe.iter().map(|(id, _)| *id).collect();
     toccati.segna_brani(tx, &ids)?;
     sposta_le_voci(tx, &ids, true)?;
@@ -1340,18 +1351,22 @@ fn togli(
     let mut st = tx
         .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND path = ?2")
         .map_err(|err| db_error("rimozione di una riga specchio", &err))?;
-    let mut tolte = 0;
+    let mut tolte = Vec::with_capacity(righe.len());
     for (id, path) in righe {
-        tolte += st
+        let cancellate = st
             .execute(params![id, path])
             .map_err(|err| db_error("rimozione di una riga specchio", &err))?;
+        if cancellate > 0 {
+            tolte.push(*id);
+        }
     }
-    if tolte > 0 {
+    if !tolte.is_empty() {
         // La sincronia ricorda adesso quali brani le playlist nominano e qui non
         // ci sono: se il proprietario li rimette prima del prossimo allineamento,
         // le loro voci tornano al loro posto invece di sembrare tolte dall'utente
         // (FSYNC).
         crate::sincronia::ricorda_i_brani_assenti(tx)?;
+        crate::playback::sgombra_il_salvato(tx, &tolte)?;
     }
     Ok(tolte)
 }
@@ -1484,10 +1499,13 @@ struct Nascoste {
 }
 
 /// Quel che un blocco di rimozioni ha fatto.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Blocco {
     /// Righe tolte in questo blocco.
     pub tolte: usize,
+    /// Gli identificativi delle righe tolte: chi tiene la coda del lettore la
+    /// sgombera con questi, dopo la scrittura (S11-1).
+    pub ids_tolti: Vec<i64>,
     /// Righe da togliere che restano: se non sono zero, si chiede un altro
     /// blocco, in un'altra presa del lucchetto.
     pub restano: usize,
@@ -1590,9 +1608,11 @@ fn togli_un_blocco_in(
             non_nascoste,
         )
     };
-    let tolte = togli(tx, &da_togliere, toccati)?;
+    let ids_tolti = togli(tx, &da_togliere, toccati)?;
+    let tolte = ids_tolti.len();
     Ok(Blocco {
         tolte,
+        ids_tolti,
         restano: scadute.saturating_sub(tolte),
         in_attesa: 0,
         in_grazia: sparite.saturating_sub(scadute),
@@ -1708,7 +1728,8 @@ pub fn conferma_un_blocco_di(
         )
     };
     let mut toccati = Toccati::nessuno();
-    let tolte = togli(&tx, &da_togliere, &mut toccati)?;
+    let ids_tolti = togli(&tx, &da_togliere, &mut toccati)?;
+    let tolte = ids_tolti.len();
     if tolte > 0 {
         // Le righe segnate sparite sono nascoste dal giro che le ha segnate, e
         // fuori dalla scelta dei doppioni: se lo sono tutte, non c'è niente da
@@ -1723,6 +1744,7 @@ pub fn conferma_un_blocco_di(
         .map_err(|err| db_error("chiusura della transazione dello specchio", &err))?;
     Ok(Blocco {
         tolte,
+        ids_tolti,
         restano,
         doppioni_da_rifare: non_nascoste,
         ..Blocco::default()
@@ -2245,7 +2267,7 @@ pub fn dimentica_dispositivo(
             .map_err(|err| db_error(cosa, &err))?
     };
     let mut toccati = Toccati::nessuno();
-    let tolte = togli(&tx, &righe, &mut toccati)?;
+    let tolte = togli(&tx, &righe, &mut toccati)?.len();
     for tabella in ["lontano_secchi", "lontano_cataloghi", "dispositivi_posta"] {
         tx.execute(
             &format!("DELETE FROM {tabella} WHERE dispositivo = ?1"),

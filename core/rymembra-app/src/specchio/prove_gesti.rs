@@ -1363,3 +1363,126 @@ fn l_anteprima_di_dimentica_conta_gli_ascolti_che_si_perdono() {
         specchio::archivio::anteprima_dimentica(&senza, &chiave(PC)).expect("anteprima");
     assert_eq!(anteprima.ascolti_persi, 0, "{anteprima:?}");
 }
+
+// ── la coda salvata non nomina righe che non ci sono (S11-1) ─────────────────────
+
+/// Il telefono ha il brano 1 di qui e la riga specchio `m` (brano 2 del PC), e la
+/// coda di ieri li ha tutti e due: la riga specchio è quella che suonava, e il
+/// segno di «dov'eri rimasto» è dentro di lei.
+fn coda_con_una_riga_specchio(c: &Connection, m: i64) {
+    use rymembra_domain::queue::{QueueSnapshot, RepeatMode};
+    crate::playback::save_queue(
+        c,
+        &QueueSnapshot {
+            tracks: vec![1, m],
+            order: vec![0, 1],
+            order_pos: Some(1),
+            shuffle: false,
+            repeat: RepeatMode::Off,
+        },
+    )
+    .expect("coda salvata");
+    crate::playback::save_posizione(c, m, 42_000).expect("posizione");
+}
+
+/// La coda e il segno com'è adesso: i brani, e dove si riprenderebbe `m`.
+fn coda_e_segno(c: &Connection, m: i64) -> (Vec<i64>, u64) {
+    (
+        crate::playback::load_queue(c).expect("coda").tracks,
+        crate::playback::load_posizione(c, m).expect("posizione"),
+    )
+}
+
+/// `tracks.id` non è `AUTOINCREMENT`: un id tolto lo prende il brano nuovo.
+fn riusa_l_id(c: &Connection, m: i64) {
+    c.execute(
+        "INSERT INTO tracks (id, path, track_key, content_key, title, artist, album, file_size,
+                             date_added, date_modified)
+         VALUES (?1, '/musica/nuovo.mp3', 'nuovo|brano|album', 'nuovo|brano|album', 'Nuovo',
+                 'Artista', 'Album', 1000, 1, 1)",
+        [m],
+    )
+    .expect("un brano nuovo prende l'id");
+}
+
+#[test]
+fn dimenticare_un_dispositivo_toglie_le_sue_righe_dalla_coda_salvata() {
+    let c = libreria();
+    locale(&c, 1, 1);
+    giro(&c, &chiave(PC), &[riga(2)], ADESSO);
+    let m = id_specchio(&c, PC, 2);
+    coda_con_una_riga_specchio(&c, m);
+    specchio::archivio::dimentica_dispositivo(&c, &chiave(PC)).expect("dimenticato");
+    // Il brano nuovo prende l'id: la coda non lo deve ritrovare, e nemmeno il segno.
+    riusa_l_id(&c, m);
+    assert_eq!(coda_e_segno(&c, m), (vec![1], 0));
+}
+
+#[test]
+fn la_grazia_scaduta_toglie_le_righe_dalla_coda_salvata() {
+    let c = libreria();
+    locale(&c, 1, 1);
+    giro(&c, &chiave(PC), &[riga(2), riga(3)], ADESSO);
+    let m = id_specchio(&c, PC, 2);
+    coda_con_una_riga_specchio(&c, m);
+    giro(&c, &chiave(PC), &[riga(3)], ADESSO + 10_000);
+    let chiusura = giro(
+        &c,
+        &chiave(PC),
+        &[riga(3)],
+        ADESSO + 10_000 + specchio::archivio::GRAZIA_MS + 1_000,
+    );
+    assert_eq!(chiusura.tolte, 1, "{chiusura:?}");
+    riusa_l_id(&c, m);
+    assert_eq!(coda_e_segno(&c, m), (vec![1], 0));
+}
+
+#[test]
+fn la_conferma_di_massa_toglie_le_righe_dalla_coda_salvata() {
+    let c = libreria();
+    locale(&c, 1, 1);
+    let righe: Vec<_> = (2..=61).map(riga).collect();
+    giro(&c, &chiave(PC), &righe, ADESSO);
+    let m = id_specchio(&c, PC, 2);
+    coda_con_una_riga_specchio(&c, m);
+    let chiusura = giro(&c, &chiave(PC), &[riga(1000)], ADESSO + 10_000);
+    assert!(chiusura.in_attesa >= 60, "{chiusura:?}");
+    specchio::archivio::conferma_rimozioni(&c, &chiave(PC)).expect("conferma");
+    riusa_l_id(&c, m);
+    assert_eq!(coda_e_segno(&c, m), (vec![1], 0));
+}
+
+#[test]
+fn togliere_righe_non_tocca_la_coda_che_non_le_nomina() {
+    // Una coda fatta solo di brani di qui, e un segno di posizione che è di un
+    // altro brano: restano come sono (e il segno non si riscrive).
+    let c = libreria();
+    locale(&c, 1, 1);
+    locale(&c, 2, 2);
+    giro(&c, &chiave(PC), &[riga(3)], ADESSO);
+    {
+        use rymembra_domain::queue::{QueueSnapshot, RepeatMode};
+        crate::playback::save_queue(
+            &c,
+            &QueueSnapshot {
+                tracks: vec![2, 1],
+                order: vec![1, 0],
+                order_pos: Some(0),
+                shuffle: true,
+                repeat: RepeatMode::All,
+            },
+        )
+        .expect("coda");
+    }
+    crate::playback::save_posizione(&c, 1, 7_000).expect("posizione");
+    specchio::archivio::dimentica_dispositivo(&c, &chiave(PC)).expect("dimenticato");
+    let coda = crate::playback::load_queue(&c).expect("coda");
+    assert_eq!(
+        (coda.tracks, coda.order, coda.shuffle),
+        (vec![2, 1], vec![1, 0], true)
+    );
+    assert_eq!(
+        crate::playback::load_posizione(&c, 1).expect("posizione"),
+        7_000
+    );
+}

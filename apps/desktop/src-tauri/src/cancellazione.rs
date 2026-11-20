@@ -120,12 +120,42 @@ fn sorvegliate(stato: &Stato) -> Result<Vec<String>, AppError> {
 /// il posto dove si va a cercarlo, invece di diventare un errore rosso sopra un
 /// gesto che è andato a buon fine.
 pub(crate) fn sgombera(app: &tauri::AppHandle, brani: &[i64], ferma: bool) {
-    let Some(lettore) = app.try_state::<StatoLettore>() else {
+    sgombera_dal_nucleo(&crate::nucleo::Nucleo::di(app), brani, ferma);
+}
+
+/// [`sgombera`] per chi ha il nucleo e non una finestra: lo specchio, che toglie
+/// righe dalla libreria — la grazia scaduta, la conferma, «Dimentica» — dal suo
+/// filo, e deve sgomberare la coda come ogni altra rimozione (S11-1).
+///
+/// **Mai col lucchetto della libreria in mano**: sgomberare prende quello del
+/// lettore e, dopo, quello della libreria (il segno di «dov'eri rimasto»). Si
+/// chiama dopo che la scrittura è riuscita e ha lasciato il lucchetto.
+///
+/// Oltre alla coda — e a quella che l'«Annulla» rimetterebbe — se ne va il segno
+/// di «dov'eri rimasto» che stava dentro uno di questi brani: l'identificativo,
+/// riusato da un brano nuovo, lo farebbe partire dal mezzo
+/// (`rymembra_app::playback::dimentica_la_posizione_di`).
+pub(crate) fn sgombera_dal_nucleo(app: &crate::nucleo::Nucleo, brani: &[i64], ferma: bool) {
+    if brani.is_empty() {
         return;
-    };
-    if let Err(err) = sgombra_dalla_coda(&crate::nucleo::Nucleo::di(app), &lettore, brani, ferma) {
+    }
+    if let Some(lettore) = app.try_state::<StatoLettore>()
+        && let Err(err) = sgombra_dalla_coda(app, &lettore, brani, ferma)
+    {
         nota!(
             "[cancellazione] la coda non si è potuta sgomberare: {} causa={}",
+            err.code().kind().code(),
+            err.cause().unwrap_or("—")
+        );
+    }
+    // Dopo il lettore, e senza il suo lucchetto: la libreria si prende da sola.
+    if let Some(stato) = app.try_state::<Stato>()
+        && let Err(err) = con_libreria(&stato, |libreria| {
+            rymembra_app::playback::dimentica_la_posizione_di(&libreria.connection, brani)
+        })
+    {
+        nota!(
+            "[cancellazione] il segno di dov'eri rimasto non si è potuto togliere: {} causa={}",
             err.code().kind().code(),
             err.cause().unwrap_or("—")
         );
