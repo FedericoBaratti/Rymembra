@@ -397,6 +397,13 @@ jobs:
       # posto in tutta la catena in cui quel disallineamento si può ancora
       # scoprire senza che lo racconti un utente. Si ferma anche se le note
       # dell'aggiornamento sarebbero vuote.
+      #
+      # E la firma si verifica **contro i byte**, non solo nell'id e nella
+      # versione (`strumenti/minisign.js`, BLAKE2b-512 e Ed25519 come il
+      # client): sull'installer firmato, su quello che si carica in `uscita/`
+      # e, riletta da disco, sulla firma dentro `latest.json`. Un `.sig` che non
+      # è di questo file passerebbe tutti gli altri cancelli, e ogni copia
+      # installata scaricherebbe l'installer per buttarlo.
       - name: Il manifesto dell'updater
         shell: bash
         run: |
@@ -662,9 +669,11 @@ jobs:
       # `apksigner` può aver cambiato), un firmatario solo, non la chiave di
       # debug, l'impronta del certificato uguale a quella inchiodata in
       # `strumenti/android-certificato.sha256`, e il `.apk.sig` della chiave
-      # dell'updater per questa versione. È il gemello di `manifesto.js`: una
-      # chiave sbagliata qui vuol dire che nessun telefono si aggiornerà, e lo
-      # scoprirebbe solo chi prova.
+      # dell'updater per questa versione, **valido per i byte dell'APK**
+      # (`strumenti/minisign.js`: è quel che l'app sul telefono verifica prima
+      # di consegnarlo ad Android). È il gemello di `manifesto.js`: una chiave
+      # sbagliata, o un `.apk.sig` di un altro file, vuol dire che nessun
+      # telefono si aggiornerà, e lo scoprirebbe solo chi prova.
       - name: L'APK firmato, controllato
         shell: bash
         run: |

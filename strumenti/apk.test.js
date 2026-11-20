@@ -29,6 +29,7 @@ const {
   problemiRisorse,
   iconeDellAuto,
 } = require("./apk.js");
+const { nuovaChiave, commentoDi } = require("./firma-di-prova.js");
 
 const IMPRONTA = "24:85:94:2C:0F:5D:73:42:97:CD:96:A6:65:19:C7:2E:49:22:C7:05:37:E8:F3:9A:B2:D9:80:60:24:18:2A:C1";
 
@@ -246,27 +247,27 @@ test("una libreria a 4 KB, un'altra ABI o nessuna libreria fermano la release", 
 
 /* ── il .sig di minisign ──────────────────────────────────────────────── */
 
-/** Una firma con l'identificativo della chiave dell'updater vera, e un commento fidato a scelta. */
-function sig(commento, conAltraChiave = false) {
-  const pubkey = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/src-tauri/tauri.conf.json"), "utf8")).plugins.updater.pubkey;
-  const riga = Buffer.from(pubkey, "base64").toString("utf8").split("\n")[1].trim();
-  const testa = Buffer.from(riga, "base64").subarray(0, 10);
-  if (conAltraChiave) testa[9] ^= 0xff;
-  const firma = Buffer.concat([testa, Buffer.alloc(64, 7)]).toString("base64");
-  const testo = ["untrusted comment: signature from tauri secret key", firma, `trusted comment: ${commento}`, "y".repeat(88), ""].join("\n");
-  return { sig: Buffer.from(testo, "utf8").toString("base64"), pubkey };
+/**
+ * Una firma vera (chiave usa e getta, `firma-di-prova.js`) dei byte `APK`, con
+ * un commento fidato a scelta. `altraChiave`: la firma è di una chiave che non è
+ * quella della `pubkey` data.
+ */
+const APK = Buffer.from("un apk firmato");
+function sig(commento, altraChiave = false) {
+  const chiave = nuovaChiave();
+  return { sig: (altraChiave ? nuovaChiave() : chiave).firma(APK, commento), pubkey: chiave.pubkey };
 }
 
 test("il .apk.sig è della chiave dell'updater, per quella versione e quel file", () => {
   const file = "Rymembra_3.2.1_android-arm64.apk";
-  const buono = sig(`timestamp:1790000000\tfile:${file}\tversion:3.2.1`);
-  assert.deepEqual(problemiSig(buono.sig, { pubkey: buono.pubkey, versione: "3.2.1", file }), []);
-  const altra = sig(`timestamp:1790000000\tfile:${file}\tversion:3.2.1`, true);
-  assert.match(problemiSig(altra.sig, { pubkey: altra.pubkey, versione: "3.2.1", file }).join("\n"), /non con quella dell'updater/);
+  const buono = sig(commentoDi(file, "3.2.1"));
+  assert.deepEqual(problemiSig(buono.sig, { pubkey: buono.pubkey, versione: "3.2.1", file, byte: APK }), []);
+  const altra = sig(commentoDi(file, "3.2.1"), true);
+  assert.match(problemiSig(altra.sig, { pubkey: altra.pubkey, versione: "3.2.1", file, byte: APK }).join("\n"), /non con quella dell'updater/);
   const senzaVersione = sig(`timestamp:1790000000\tfile:${file}`);
-  assert.match(problemiSig(senzaVersione.sig, { pubkey: senzaVersione.pubkey, versione: "3.2.1", file }).join("\n"), /\(nessuna\)/);
-  const altroFile = sig("timestamp:1790000000\tfile:app-arm64-release-unsigned.apk\tversion:3.2.1");
-  assert.match(problemiSig(altroFile.sig, { pubkey: altroFile.pubkey, versione: "3.2.1", file }).join("\n"), /un altro file/);
+  assert.match(problemiSig(senzaVersione.sig, { pubkey: senzaVersione.pubkey, versione: "3.2.1", file, byte: APK }).join("\n"), /\(nessuna\)/);
+  const altroFile = sig(commentoDi("app-arm64-release-unsigned.apk", "3.2.1"));
+  assert.match(problemiSig(altroFile.sig, { pubkey: altroFile.pubkey, versione: "3.2.1", file, byte: APK }).join("\n"), /un altro file/);
 });
 
 /* ── aapt2 dump resources ─────────────────────────────────────────────── */
@@ -325,4 +326,21 @@ test("un APK senza le icone di Android Auto ferma la release (R11-5)", () => {
   assert.deepEqual(problemiRisorse(risorseCon(cinque), iconeDellAuto()).length, 1);
   // Un'uscita che non è quella di aapt2 non passa per buona.
   assert.match(problemiRisorse("", iconeDellAuto()).join("\n"), /non ha descritto/);
+});
+
+/* ── S5-2: il .apk.sig contro i byte dell'APK ─────────────────────────── */
+
+test("il .apk.sig con i byte cambiati non passa (S5-2)", () => {
+  const file = "Rymembra_3.2.1_android-arm64.apk";
+  const chiave = nuovaChiave();
+  const firma = chiave.firma(APK, commentoDi(file, "3.2.1"));
+  const dati = { pubkey: chiave.pubkey, versione: "3.2.1", file };
+  assert.deepEqual(problemiSig(firma, { ...dati, byte: APK }), []);
+  // Un `zipalign` o una ricompressione dopo la firma: stessa chiave, stessa
+  // versione, stesso nome nel commento, altri byte.
+  const cambiato = Buffer.from(APK);
+  cambiato[0] ^= 1;
+  assert.match(problemiSig(firma, { ...dati, byte: cambiato }).join("\n"), /non è valida per i byte/);
+  // Senza i byte non c'è niente da verificare, e non passa per buono in silenzio.
+  assert.throws(() => problemiSig(firma, dati), /byte/);
 });

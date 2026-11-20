@@ -30,6 +30,14 @@
  * identificativo che minisign mette sia nella chiave sia nella firma, e la
  * release non parte se non coincidono.
  *
+ * Non basta, e non da solo: un id uguale non dice che la firma sia **di quei
+ * byte**. Un `.sig` copiato da un'altra release, o un installer riconfezionato
+ * dopo la firma, ha lo stesso id e la stessa versione e fa fallire ogni copia
+ * installata. Per questo `main` verifica anche la firma contro i byte
+ * (`minisign.js`: BLAKE2b-512 e Ed25519, come il client) — sull'installer che
+ * il bundler ha lasciato, su quello che si sta per caricare in `<cartella>` e,
+ * riletto da disco, sul `latest.json` appena scritto.
+ *
  * # Un modo
  *
  *   node strumenti/manifesto.js [cartella]     scrive <cartella>/latest.json
@@ -38,6 +46,8 @@
  */
 const fs = require("fs");
 const path = require("path");
+
+const { verificaFirma } = require("./minisign.js");
 
 // I percorsi si risolvono rispetto a **questo file**: la stessa ragione per cui
 // lo fanno `versione.js` e `lingue.js`.
@@ -153,6 +163,25 @@ function versioneFirmata(base64DelFile) {
     if (chiave === "version") return resto.join(":");
   }
   return null;
+}
+
+/**
+ * La firma dentro un `latest.json` è valida per i byte dell'installer?
+ *
+ * Sull'oggetto riletto da disco e non su quello costruito in memoria: è il file
+ * che si carica, e un errore nello scriverlo (o un campo preso dalla riga
+ * sbagliata) lo vede solo chi lo rilegge. Vuota se va bene.
+ *
+ * @param {object} manifesto il contenuto di `latest.json`
+ * @param {Buffer} byte l'installer
+ * @param {string} chiave `plugins.updater.pubkey`
+ * @returns {string[]} i problemi
+ */
+function verificaManifesto(manifesto, byte, chiave) {
+  const voce = manifesto?.platforms?.[BERSAGLIO];
+  if (!voce || typeof voce.signature !== "string") return [`latest.json: manca platforms.${BERSAGLIO}.signature`];
+  const esito = verificaFirma(byte, voce.signature, chiave);
+  return esito.ok ? [] : [`latest.json: la firma di platforms.${BERSAGLIO} non vale per l'installer: ${esito.motivo}`];
 }
 
 /** La versione, dal file che `versione.js` tiene allineato agli altri due. */
@@ -311,6 +340,28 @@ function main() {
     );
   }
 
+  // La firma contro i byte, e non solo l'id e la versione che il testo dice:
+  // vedi il preambolo e `minisign.js`. Sia sul file che ha lasciato il bundler
+  // (quello che si è firmato) sia su quello in `<cartella>`, che è l'artefatto
+  // che `pubblica` consegna: se un passo in mezzo l'avesse toccato, le due
+  // firme sarebbero buone e l'installer pubblicato no.
+  const percorsi = [path.join(BUNDLE, nome)];
+  const caricato = path.join(dove, nome);
+  if (fs.existsSync(caricato)) percorsi.push(caricato);
+  for (const percorso of percorsi) {
+    const esito = verificaFirma(fs.readFileSync(percorso), firma, chiave);
+    if (!esito.ok) {
+      basta(
+        `${nome}.sig: ${esito.motivo}.\n` +
+          `  il file controllato: ${percorso}\n\n` +
+          "Pubblicare così vuol dire che ogni copia installata scaricherebbe l'installer\n" +
+          "e lo scarterebbe con «The signature verification failed»: il guasto sta sul\n" +
+          "computer di altri e non lo racconta nessuno. Controllare che il file firmato\n" +
+          "sia quello che si carica, e la chiave in TAURI_SIGNING_PRIVATE_KEY.",
+      );
+    }
+  }
+
   // Vuote non partono: l'avviso nella finestra si aprirebbe su una tendina
   // senza niente dentro, su ogni copia installata. La prova in
   // `manifesto.test.js` lo dice a ogni push; questo è l'ultimo cancello.
@@ -341,6 +392,12 @@ function main() {
   fs.mkdirSync(dove, { recursive: true });
   const uscita = path.join(dove, "latest.json");
   fs.writeFileSync(uscita, `${JSON.stringify(manifesto, null, 2)}\n`);
+  // Riletto da disco: il file che si carica, non l'oggetto da cui nasce.
+  const riletto = verificaManifesto(JSON.parse(fs.readFileSync(uscita, "utf8")), fs.readFileSync(path.join(BUNDLE, nome)), chiave);
+  if (riletto.length > 0) {
+    fs.rmSync(uscita);
+    basta(riletto.join("\n"));
+  }
   console.log(`${uscita}: Rymembra ${v}, firmato con ${dellaChiave}`);
   console.log(`  ${manifesto.platforms[BERSAGLIO].url}`);
 }
@@ -362,6 +419,7 @@ module.exports = {
   installer,
   note,
   noteDa,
+  verificaManifesto,
   versione,
   versioneFirmata,
 };

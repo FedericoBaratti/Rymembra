@@ -184,3 +184,29 @@ test("ogni azione è inchiodata a un hash", () => {
     }
   }
 });
+
+/* ── S5-2: la firma si verifica contro i byte, prima di pubblicare ────── */
+
+test("l'installer e l'APK si verificano contro i byte dopo la firma e prima di caricare l'artefatto", () => {
+  const dopo = (testo, prima, poi) => {
+    const a = testo.indexOf(prima);
+    const b = testo.indexOf(poi);
+    assert.ok(a >= 0, `manca «${prima}»`);
+    assert.ok(b >= 0, `manca «${poi}»`);
+    assert.ok(a < b, `«${prima}» deve venire prima di «${poi}»`);
+  };
+  // Il computer: firma, poi `manifesto.js` (che verifica le firme), poi l'artefatto che `pubblica` scarica.
+  dopo(R.firma, "tauri signer sign", "node strumenti/manifesto.js");
+  dopo(R.firma, "node strumenti/manifesto.js", "actions/upload-artifact");
+  // Il telefono: firma minisign, poi `apk.js verifica`, poi l'artefatto.
+  dopo(R["firma-apk"], "tauri signer sign", "node strumenti/apk.js verifica");
+  dopo(R["firma-apk"], "node strumenti/apk.js verifica", "actions/upload-artifact");
+  // E `pubblica` non parte senza che tutti e due siano passati.
+  assert.match(R.pubblica, /needs: \[tag, verifica, firma, firma-apk\]/);
+  // I due script fanno davvero la verifica: la prova è nel codice, non nel nome del passo.
+  for (const script of ["manifesto.js", "apk.js"]) {
+    assert.match(leggi(`strumenti/${script}`), /require\("\.\/minisign\.js"\)/, `${script} non usa minisign.js`);
+  }
+  assert.match(leggi("strumenti/manifesto.js"), /verificaFirma\(fs\.readFileSync/);
+  assert.match(leggi("strumenti/apk.js"), /verificaFirma\(byte, sig, pubkey\)/);
+});

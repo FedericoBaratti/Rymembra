@@ -44,7 +44,10 @@
  *     vuol dire che nessun telefono con l'app installata potrà aggiornarsi, e
  *     se ne accorgerebbe solo chi prova;
  *   - il `.apk.sig` (minisign, la chiave dell'updater): firmato con la chiave
- *     che gli eseguibili conoscono, per quella versione e per quel file.
+ *     che gli eseguibili conoscono, per quella versione e per quel file, **e
+ *     valido per i byte dell'APK** (BLAKE2b-512 e Ed25519, `minisign.js`): è
+ *     la prova che il file firmato è quello che si carica, e che il telefono
+ *     lo riconoscerà.
  *
  * # Tre modi
  *
@@ -61,6 +64,7 @@ const path = require("path");
 const zlib = require("zlib");
 
 const { codiceAndroid } = require("./versione.js");
+const { verificaFirma } = require("./minisign.js");
 
 const REPO = path.dirname(__dirname);
 const PACCHETTO = path.join(REPO, "apps/desktop/package.json");
@@ -329,16 +333,25 @@ function problemiFirma(testo, impronta) {
 
 /**
  * Il `.apk.sig` di minisign: la stessa chiave dell'updater del computer, la
- * versione e il nome del file nel commento fidato. Gli identificativi e il
- * commento si leggono con le funzioni di `manifesto.js`.
+ * versione e il nome del file nel commento fidato, **e la firma valida per i
+ * byte dell'APK** (`minisign.js`, S5-2). Gli identificativi e il commento si
+ * leggono con le funzioni di `manifesto.js`; i byte sono quelli del file che si
+ * carica, e senza non si verifica niente: un controllo che si salta in silenzio
+ * è peggio di nessun controllo, quindi mancano i byte è un errore.
  */
-function problemiSig(sig, { pubkey, versione: v, file }) {
+function problemiSig(sig, { pubkey, versione: v, file, byte }) {
+  if (!Buffer.isBuffer(byte)) throw new Error("problemiSig: servono i byte dell'APK firmato, per verificare la firma contro di loro");
   const { identificativo, versioneFirmata } = require("./manifesto.js");
   const problemi = [];
   const dellaChiave = identificativo(pubkey, "plugins.updater.pubkey");
   const dellaFirma = identificativo(sig, `${file}.sig`);
   if (dellaChiave !== dellaFirma) {
     problemi.push(`${file}.sig è firmato con la chiave ${dellaFirma}, non con quella dell'updater (${dellaChiave})`);
+  } else {
+    // Con la chiave giusta resta da vedere se la firma è **di questi byte**: è
+    // quel che l'app sul telefono controlla prima di passare l'APK ad Android.
+    const esito = verificaFirma(byte, sig, pubkey);
+    if (!esito.ok) problemi.push(`${file}.sig: ${esito.motivo}`);
   }
   const firmata = versioneFirmata(sig);
   if (firmata !== v) problemi.push(`${file}.sig copre la versione ${firmata ?? "(nessuna)"} invece della ${v}`);
@@ -414,7 +427,7 @@ function main() {
     if (!fs.existsSync(sig)) problemi.push(`manca ${path.basename(sig)}: senza, l'app non può verificare l'APK come fa il computer`);
     else {
       const pubkey = configurazione().plugins?.updater?.pubkey ?? "";
-      problemi.push(...problemiSig(fs.readFileSync(sig, "utf8").trim(), { pubkey, versione: v, file: path.basename(a.file) }));
+      problemi.push(...problemiSig(fs.readFileSync(sig, "utf8").trim(), { pubkey, versione: v, file: path.basename(a.file), byte: apk }));
     }
   }
   if (problemi.length) {
