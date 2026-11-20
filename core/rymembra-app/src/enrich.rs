@@ -405,19 +405,32 @@ pub fn candidati(
 
 /// Legge un gruppo per intero, brani compresi.
 ///
+/// # Le righe specchio non sono del gruppo
+///
+/// [`candidato_where`] tiene fuori una riga specchio dai **candidati**, ma il
+/// disco candidato si rilegge per `album_key`, e le righe specchio di un disco
+/// che sta anche qui hanno proprio la chiave d'album di qui
+/// (`specchio::archivio::riallinea_le_chiavi_d_album`: è come il disco è una
+/// scheda sola in «Tutti»). Senza il filtro qui, titolo e artista di un altro
+/// dispositivo entravano nel conto delle tracce che parte per MusicBrainz, o
+/// nelle richieste per brano, e la riga veniva riscritta: il riconciliatore non
+/// la rimette a posto, perché confronta l'impronta in arrivo con quella
+/// memorizzata, che non è cambiata (S12-1; `specchio::invarianti`).
+///
 /// # Errori
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn leggi_gruppo(connection: &Connection, album_key: &str) -> Result<Option<Gruppo>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT id, path, title, artist, album, album_artist, duration_ms,
                     track_number, disc_number, year, genre, cover_art_hash,
                     mb_recording_id, enrich_status, mb_release_id, mb_release_group_id
              FROM tracks
-             WHERE album_key = ?1 AND path IS NOT NULL
+             WHERE album_key = ?1 AND path IS NOT NULL AND {non_specchio}
              ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 0), id",
-        )
+            non_specchio = crate::specchio::SQL_NON_SPECCHIO_SENZA_ALIAS,
+        ))
         .map_err(|err| db_error("lettura di un gruppo da arricchire", &err))?;
     let righe = statement
         .query_map([album_key], |row| {
@@ -898,6 +911,13 @@ pub fn registra(
         let Some(scrittura) = scritture.iter().find(|s| s.track_id == esito.track_id) else {
             continue;
         };
+        // Una riga specchio non si riscrive mai, nemmeno se una scrittura per
+        // lei è arrivata fin qui (un gruppo letto prima di un giro che ha
+        // riallineato le chiavi d'album): è la copia di quel che dice il
+        // proprietario, e il riconciliatore non la rimetterebbe a posto.
+        if e_una_riga_specchio(tx, scrittura.track_id)? {
+            continue;
+        }
         // Una riga che l'utente ha dimenticato nel frattempo non si tocca, e
         // si salta **tutto** il blocco, non solo l'`UPDATE`: annotarla
         // lascerebbe un'annotazione orfana che «Dimentica» conterebbe, e
@@ -945,11 +965,24 @@ pub fn registra(
     }
 
     for (track_id, verdetto) in &decisione.astensioni {
+        if e_una_riga_specchio(tx, *track_id)? {
+            continue;
+        }
         segna_astensione(tx, *track_id, *verdetto, adesso)?;
         conto.astenuti = conto.astenuti.saturating_add(1);
     }
 
     Ok(conto)
+}
+
+/// La riga è una riga specchio, la copia di un brano di un altro dispositivo?
+fn e_una_riga_specchio(tx: &Transaction<'_>, track_id: i64) -> Result<bool, AppError> {
+    tx.prepare_cached(&format!(
+        "SELECT 1 FROM tracks WHERE id = ?1 AND {}",
+        crate::specchio::SQL_SPECCHIO_SENZA_ALIAS
+    ))
+    .and_then(|mut statement| statement.exists([track_id]))
+    .map_err(|err| db_error("riga specchio da arricchire", &err))
 }
 
 /// La riga è stata riportata ai tag del file da [`dimentica`]?
@@ -1753,12 +1786,20 @@ pub fn da_dimenticare(connection: &Connection) -> Result<DaDimenticare, AppError
             .prepare(&format!(
                 // Un brano del cloud va con quelli d'immagine: non si apre da
                 // qui (si aprirebbe col disco), lo rilegge la scansione.
+                //
+                // Una riga specchio non c'è: `FUORI_DALLA_NUVOLA` la tiene
+                // fuori da «ha un file qui», e `NOT` la metterebbe fra quelle
+                // d'immagine, che `registra_dimenticati` non aggiorna — un
+                // «fallito» per sempre. Non si arricchisce (vedi
+                // [`leggi_gruppo`]), e se una build di prima ne ha lasciata
+                // un'annotazione, questa non la riporta da nessun file.
                 "SELECT m.track_id, t.path, t.immagine IS NOT NULL OR NOT ({fuori})
                  FROM track_meta_arricchita m
                  JOIN tracks t ON t.id = m.track_id
-                 WHERE t.path IS NOT NULL
+                 WHERE t.path IS NOT NULL AND {non_specchio}
                  ORDER BY m.set_at DESC",
                 fuori = crate::nuvola::FUORI_DALLA_NUVOLA,
+                non_specchio = crate::specchio::SQL_NON_SPECCHIO,
             ))
             .map_err(|err| db_error("elenco dei brani arricchiti", &err))?;
         let righe = statement
