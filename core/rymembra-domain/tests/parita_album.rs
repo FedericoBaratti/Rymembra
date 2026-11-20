@@ -138,6 +138,8 @@ impl RigaJson {
             mb_release_group_id: self.mb_release_group_id.clone(),
             mb_release_id: self.mb_release_id.clone(),
             spotify_album_id: self.spotify_album_id.clone(),
+            // Il vecchio albero non conosceva altri dispositivi.
+            da_pari: false,
         }
     }
 }

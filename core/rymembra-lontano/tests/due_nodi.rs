@@ -909,6 +909,8 @@ fn nuove_domande() -> Vec<Domanda> {
             liked: Some(true),
             rating: Some(5),
             quando_ms: 1,
+            liked_ms: None,
+            rating_ms: None,
             chiave: "v".to_owned(),
         },
         Domanda::Testo { brano: 1 },
@@ -1010,6 +1012,8 @@ fn fra_due_pari_che_dichiarano_il_catalogo_le_domande_nuove_passano() {
                 liked: Some(true),
                 rating: Some(4),
                 quando_ms: 10,
+                liked_ms: None,
+                rating_ms: None,
                 chiave: "v1".to_owned()
             },
             Duration::from_secs(10)
@@ -1066,6 +1070,8 @@ fn le_scritture_di_un_pari_hanno_un_tetto_al_minuto_e_gli_altri_non_ne_risentono
         liked: Some(n.is_multiple_of(2)),
         rating: Some(3),
         quando_ms: i64::try_from(n).unwrap(),
+        liked_ms: None,
+        rating_ms: None,
         chiave: format!("v{n}"),
     };
     for n in 0..SCRITTURE_AL_MINUTO {

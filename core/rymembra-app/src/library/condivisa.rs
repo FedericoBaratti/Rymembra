@@ -881,6 +881,21 @@ const COLONNE_CATALOGO: &str = "t.id, t.title, t.artist, t.album, t.album_key, t
      t.stats_updated_at, t.bitrate, t.sample_rate, t.channels, t.codec, t.track_key,
      t.content_key, t.mb_recording_id, t.mb_release_group_id, t.mb_release_id";
 
+/// Le righe condivise ([`CONDIVISO`]) che il **catalogo** manda: quelle la cui
+/// `track_key` sta nel tetto che chi riceve accetta
+/// (`specchio::convalida::MAX_CHIAVE`, in **byte**: `length` su un blob, che su
+/// un testo conta i caratteri).
+///
+/// Una chiave d'identità non si taglia — tagliata direbbe un altro brano —, e chi
+/// riceve scarta la riga che non ci sta: mandarla tagliata, com'era, faceva
+/// diventare lo stesso brano due brani con lo stesso inizio di chiave (S2-8). Lo
+/// stesso filtro serve il riassunto e le pagine: se contassero righe diverse, i
+/// secchi non coinciderebbero con le loro impronte e chi legge non si fermerebbe.
+const NEL_CATALOGO: &str = "length(CAST(t.track_key AS BLOB)) <= 300";
+
+/// Il tetto di [`NEL_CATALOGO`] è quello di chi riceve.
+const _: () = assert!(crate::specchio::convalida::MAX_CHIAVE == 300);
+
 /// Le colonne di [`COLONNE_REMOTO`] seguite da quelle del catalogo, nei limiti
 /// della cornice.
 fn catalogo_da_riga(row: &Row<'_>) -> rusqlite::Result<BranoCatalogo> {
@@ -913,8 +928,15 @@ fn catalogo_da_riga(row: &Row<'_>) -> rusqlite::Result<BranoCatalogo> {
         sample_rate: row.get(26)?,
         channels: row.get(27)?,
         codec: tronca_opz(row.get(28)?, MAX_CODEC),
-        track_key: tronca(&row.get::<_, String>(29)?, MAX_CHIAVE),
-        content_key: tronca_opz(row.get(30)?, MAX_CHIAVE),
+        // Mai tagliate: una chiave tagliata direbbe un altro brano (S2-8). Le righe la
+        // cui `track_key` non sta nel tetto non arrivano qui ([`NEL_CATALOGO`]), e
+        // una chiave di contenuto troppo lunga si manda assente: chi riceve fa a
+        // meno di lei, e il brano ripiega su `track_key`, come per ogni chiave che
+        // non sta nel tetto (`specchio::convalida::convalida_riga`).
+        track_key: row.get::<_, String>(29)?,
+        content_key: row
+            .get::<_, Option<String>>(30)?
+            .filter(|chiave| chiave.len() <= MAX_CHIAVE),
         mb_recording_id: tronca_opz(row.get(31)?, MAX_ID_MB),
         mb_release_group_id: tronca_opz(row.get(32)?, MAX_ID_MB),
         mb_release_id: tronca_opz(row.get(33)?, MAX_ID_MB),
@@ -974,7 +996,7 @@ fn calcola_il_riassunto(
     let cosa = "riassunto del catalogo condiviso";
     let mut statement = connection
         .prepare_cached(&format!(
-            "SELECT {COLONNE_CATALOGO} FROM tracks t WHERE {CONDIVISO} ORDER BY t.id"
+            "SELECT {COLONNE_CATALOGO} FROM tracks t WHERE {CONDIVISO} AND {NEL_CATALOGO} ORDER BY t.id"
         ))
         .map_err(|err| db_error(cosa, &err))?;
     let mut righe = statement.query([]).map_err(|err| db_error(cosa, &err))?;
@@ -1042,7 +1064,7 @@ pub fn pagina_catalogo(
     let mut statement = connection
         .prepare_cached(&format!(
             "SELECT {COLONNE_CATALOGO} FROM tracks t
-              WHERE t.id BETWEEN ?1 AND ?2 AND {CONDIVISO}
+              WHERE t.id BETWEEN ?1 AND ?2 AND {CONDIVISO} AND {NEL_CATALOGO}
               ORDER BY t.id LIMIT ?3"
         ))
         .map_err(|err| db_error(cosa, &err))?;
@@ -1060,6 +1082,37 @@ pub fn pagina_catalogo(
         a_id,
         brani,
     })
+}
+
+/// Quando si è deciso ogni campo di una valutazione che arriva da un altro
+/// dispositivo (S2-9).
+///
+/// Un cuore a un istante e le stelle a uno dopo viaggiano in una voce sola, che
+/// ha per orologio il più recente dei due: se bastasse quello, il cuore deciso
+/// prima si «ringiovanirebbe» con le stelle date dopo, e batterebbe un cuore che
+/// il proprietario ha tolto in mezzo. Con un orologio per campo vince il più
+/// recente **di ognuno**. Una build di prima non manda i due campi, e vale
+/// `quando_ms` per tutti e due: com'era.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrologiValutazione {
+    /// L'orologio della voce, e di tutti i campi che non ne hanno uno proprio.
+    pub quando_ms: i64,
+    /// Quando si è deciso il mi piace, se è un momento diverso.
+    pub liked_ms: Option<i64>,
+    /// Quando si sono decise le stelle, se è un momento diverso.
+    pub rating_ms: Option<i64>,
+}
+
+impl OrologiValutazione {
+    /// Un orologio solo, per tutti e due i campi.
+    #[must_use]
+    pub const fn unico(quando_ms: i64) -> Self {
+        Self {
+            quando_ms,
+            liked_ms: None,
+            rating_ms: None,
+        }
+    }
 }
 
 /// Un mi piace o un voto arrivato da un altro dispositivo per un brano di qui:
@@ -1085,7 +1138,39 @@ pub fn valuta(
     quando_ms: i64,
     adesso_ms: i64,
 ) -> Result<bool, AppError> {
-    if quando_ms <= 0 || rating.is_some_and(|r| !(0..=5).contains(&r)) {
+    valuta_con_orologi(
+        connection,
+        brano,
+        liked,
+        rating,
+        OrologiValutazione::unico(quando_ms),
+        adesso_ms,
+    )
+}
+
+/// [`valuta`] con un orologio per ogni campo ([`OrologiValutazione`]).
+///
+/// # Errori
+///
+/// Quelli di [`valuta`]; anche per un orologio di un campo che non è un istante.
+pub fn valuta_con_orologi(
+    connection: &Connection,
+    brano: i64,
+    liked: Option<bool>,
+    rating: Option<i64>,
+    orologi: OrologiValutazione,
+    adesso_ms: i64,
+) -> Result<bool, AppError> {
+    let OrologiValutazione {
+        quando_ms,
+        liked_ms,
+        rating_ms,
+    } = orologi;
+    if quando_ms <= 0
+        || liked_ms.is_some_and(|ms| ms <= 0)
+        || rating_ms.is_some_and(|ms| ms <= 0)
+        || rating.is_some_and(|r| !(0..=5).contains(&r))
+    {
         return Err(AppError::new(ErrorCode::LontanoProtocollo)
             .with_cause("una valutazione con un voto o un orologio che non stanno"));
     }
@@ -1094,7 +1179,8 @@ pub fn valuta(
             .with_cause("il brano non è più condiviso"));
     }
     // Un orologio avanti non fissa un voto che nessun gesto vero scavalcherebbe.
-    let quando = quando_ms.min(adesso_ms);
+    let quando_liked = liked_ms.unwrap_or(quando_ms).min(adesso_ms);
+    let quando_rating = rating_ms.unwrap_or(quando_ms).min(adesso_ms);
     let toccate = connection
         .execute(
             &format!(
@@ -1103,16 +1189,18 @@ pub fn valuta(
                                 THEN ?2 ELSE liked END,
                    liked_at = CASE WHEN ?2 IS NOT NULL AND ?4 > COALESCE(liked_at, -1)
                                    THEN ?4 ELSE liked_at END,
-                   rating = CASE WHEN ?3 IS NOT NULL AND ?4 > COALESCE(rating_at, -1)
+                   rating = CASE WHEN ?3 IS NOT NULL AND ?5 > COALESCE(rating_at, -1)
                                  THEN ?3 ELSE rating END,
-                   rating_at = CASE WHEN ?3 IS NOT NULL AND ?4 > COALESCE(rating_at, -1)
-                                    THEN ?4 ELSE rating_at END,
-                   stats_updated_at = MAX(stats_updated_at, ?4)
+                   rating_at = CASE WHEN ?3 IS NOT NULL AND ?5 > COALESCE(rating_at, -1)
+                                    THEN ?5 ELSE rating_at END,
+                   stats_updated_at = MAX(stats_updated_at,
+                                          CASE WHEN ?2 IS NOT NULL THEN ?4 ELSE 0 END,
+                                          CASE WHEN ?3 IS NOT NULL THEN ?5 ELSE 0 END)
                  WHERE id = ?1 AND {CONDIVISO_SENZA_ALIAS}
                    AND ((?2 IS NOT NULL AND ?4 > COALESCE(liked_at, -1))
-                     OR (?3 IS NOT NULL AND ?4 > COALESCE(rating_at, -1)))"
+                     OR (?3 IS NOT NULL AND ?5 > COALESCE(rating_at, -1)))"
             ),
-            rusqlite::params![brano, liked, rating, quando],
+            rusqlite::params![brano, liked, rating, quando_liked, quando_rating],
         )
         .map_err(|err| db_error("valutazione di un brano condiviso", &err))?;
     Ok(toccate > 0)

@@ -119,11 +119,48 @@ fn sorvegliate(stato: &Stato) -> Result<Vec<String>, AppError> {
 /// riuscire lo stesso. Quel che non si è potuto fare finisce nel diario, che è
 /// il posto dove si va a cercarlo, invece di diventare un errore rosso sopra un
 /// gesto che è andato a buon fine.
+///
+/// Oltre alla coda — e a quella che l'«Annulla» rimetterebbe — se ne va il segno
+/// di «dov'eri rimasto» che stava dentro uno di questi brani: l'identificativo,
+/// riusato da un brano nuovo, lo farebbe partire dal mezzo
+/// (`rymembra_app::playback::dimentica_la_posizione_di`). Per questo prende, in
+/// fondo, il lucchetto della libreria: **chi chiama non deve averlo in mano**, e
+/// lo guardano tutti i punti di chiamata (si chiama dopo la scrittura, a lucchetto
+/// lasciato). Lo specchio, che nella sua transazione ha già tolto il segno
+/// (`playback::sgombra_il_salvato`), usa [`sgombera_dal_nucleo`] e non lo prende.
 pub(crate) fn sgombera(app: &tauri::AppHandle, brani: &[i64], ferma: bool) {
-    let Some(lettore) = app.try_state::<StatoLettore>() else {
+    let nucleo = crate::nucleo::Nucleo::di(app);
+    sgombera_dal_nucleo(&nucleo, brani, ferma);
+    if brani.is_empty() {
         return;
-    };
-    if let Err(err) = sgombra_dalla_coda(&crate::nucleo::Nucleo::di(app), &lettore, brani, ferma) {
+    }
+    // Dopo il lettore, e senza il suo lucchetto: la libreria si prende da sola.
+    if let Some(stato) = nucleo.try_state::<Stato>()
+        && let Err(err) = con_libreria(&stato, |libreria| {
+            rymembra_app::playback::dimentica_la_posizione_di(&libreria.connection, brani)
+        })
+    {
+        nota!(
+            "[cancellazione] il segno di dov'eri rimasto non si è potuto togliere: {} causa={}",
+            err.code().kind().code(),
+            err.cause().unwrap_or("—")
+        );
+    }
+}
+
+/// La coda del lettore — e quella che l'«Annulla» rimetterebbe — senza questi
+/// brani, per chi ha il nucleo e non una finestra: lo specchio, che toglie righe
+/// dalla libreria — la grazia scaduta, la conferma, «Dimentica» — dal suo filo
+/// (S11-1). Non prende il lucchetto della libreria, solo quello del lettore: la
+/// transazione che ha tolto le righe ha già tolto anche la coda salvata e il segno
+/// di posizione.
+pub(crate) fn sgombera_dal_nucleo(app: &crate::nucleo::Nucleo, brani: &[i64], ferma: bool) {
+    if brani.is_empty() {
+        return;
+    }
+    if let Some(lettore) = app.try_state::<StatoLettore>()
+        && let Err(err) = sgombra_dalla_coda(app, &lettore, brani, ferma)
+    {
         nota!(
             "[cancellazione] la coda non si è potuta sgomberare: {} causa={}",
             err.code().kind().code(),

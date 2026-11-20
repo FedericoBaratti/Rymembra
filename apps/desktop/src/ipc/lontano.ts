@@ -176,6 +176,11 @@ export interface AnteprimaDimentica {
   perse: number;
   /** In quante playlist si perde qualcosa: il numero da dire a chi conferma. */
   playlistChePerdono: number;
+  /**
+   * Quanti ascolti, in «Cronologia», si perdono: quelli dei brani che non hanno
+   * un'altra copia. Gli altri passano alla copia di qui.
+   */
+  ascoltiPersi: number;
 }
 
 /** L'esito dello scanner del QR (solo telefono). */

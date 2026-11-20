@@ -1647,6 +1647,8 @@
   "devices.mirror.forget.loses.uno": "One playlist would lose tracks you have nowhere else.",
   "devices.mirror.forget.unknown": "Couldn’t check how many playlists would lose tracks.",
   "devices.mirror.forget.history": "You’ll lose the listening history of tracks that exist only on that device.",
+  "devices.mirror.forget.listens": "You’ll lose {n} listens from your history: they’re of tracks that exist only on that device.",
+  "devices.mirror.forget.listens.uno": "You’ll lose one listen from your history: it’s of a track that exists only on that device.",
   "devices.tag.together": "Listen together",
   "devices.via.relay": "via relay",
   "devices.tag.sync": "sync",

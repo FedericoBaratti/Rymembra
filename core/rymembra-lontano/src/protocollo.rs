@@ -198,8 +198,19 @@ pub enum Domanda {
         liked: Option<bool>,
         /// Le stelle, da 0 a 5; `None` se non le ha cambiate.
         rating: Option<i64>,
-        /// Quando si è deciso, ms: l'orologio con cui l'altro sceglie.
+        /// Quando si è deciso, ms: l'orologio con cui l'altro sceglie. Per una voce
+        /// che porta due decisioni di momenti diversi — un cuore a un istante, le
+        /// stelle a uno dopo — è il più recente dei due, e per chi non conosce i
+        /// campi qui sotto vale per tutti e due.
         quando_ms: i64,
+        /// Quando si è deciso il mi piace, ms, se è un momento diverso da
+        /// `quando_ms`. Una build di prima non lo manda, e non lo legge: usa
+        /// `quando_ms` (S2-9).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        liked_ms: Option<i64>,
+        /// Lo stesso per le stelle.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rating_ms: Option<i64>,
         /// Distingue questo invio dall'altro per lo stesso brano.
         chiave: String,
     },
@@ -778,6 +789,8 @@ mod prove {
                 liked: Some(true),
                 rating: Some(4),
                 quando_ms: 1_700_000_000_000,
+                liked_ms: None,
+                rating_ms: None,
                 chiave: "v1".to_owned(),
             },
             Domanda::Valuta {
@@ -785,6 +798,8 @@ mod prove {
                 liked: None,
                 rating: Some(0),
                 quando_ms: 1_700_000_000_001,
+                liked_ms: None,
+                rating_ms: None,
                 chiave: "v2".to_owned(),
             },
             Domanda::Testo { brano: 3 },
@@ -908,6 +923,8 @@ mod prove {
                 liked: Some(false),
                 rating: None,
                 quando_ms: 0,
+                liked_ms: None,
+                rating_ms: None,
                 chiave: String::new(),
             },
         ] {
@@ -963,6 +980,53 @@ mod prove {
     }
 
     #[test]
+    fn la_valutazione_con_un_orologio_per_campo_si_capisce_anche_dalla_build_di_prima() {
+        // S2-9. Un cuore a un istante e le stelle a uno dopo viaggiano con due
+        // orologi, in campi **facoltativi**: la build di oggi sul telefono vero
+        // ignora quel che non conosce (`deny_unknown_fields` non c'è) e usa
+        // `quandoMs`; e la build di prima, che non li manda, si legge come prima.
+        let con_i_campi = Domanda::Valuta {
+            brano: 3,
+            liked: Some(true),
+            rating: Some(3),
+            quando_ms: 200,
+            liked_ms: Some(100),
+            rating_ms: Some(200),
+            chiave: "3-200".to_owned(),
+        };
+        let json = serde_json::to_value(&con_i_campi).unwrap();
+        assert_eq!(json["likedMs"], 100);
+        assert_eq!(json["ratingMs"], 200);
+        assert_eq!(andata_e_ritorno(&con_i_campi), con_i_campi);
+        // Una voce che non ha niente da dire sui campi non li scrive.
+        let senza = Domanda::Valuta {
+            brano: 3,
+            liked: Some(true),
+            rating: Some(3),
+            quando_ms: 200,
+            liked_ms: None,
+            rating_ms: None,
+            chiave: "3-200".to_owned(),
+        };
+        let json = serde_json::to_value(&senza).unwrap();
+        assert!(json.get("likedMs").is_none() && json.get("ratingMs").is_none());
+        // Il messaggio di una build di prima, senza i due campi.
+        let di_prima = serde_json::json!({
+            "tipo": "valuta", "brano": 3, "liked": true, "rating": 3,
+            "quandoMs": 200, "chiave": "3-200"
+        });
+        assert_eq!(serde_json::from_value::<Domanda>(di_prima).unwrap(), senza);
+        // E la build di prima, che ne ignora i campi nuovi: lo stesso messaggio con
+        // un campo che non conosce si legge lo stesso.
+        let mut con_uno_sconosciuto = serde_json::to_value(&con_i_campi).unwrap();
+        con_uno_sconosciuto["campoDiDomani"] = serde_json::json!(1);
+        assert_eq!(
+            serde_json::from_value::<Domanda>(con_uno_sconosciuto).unwrap(),
+            con_i_campi
+        );
+    }
+
+    #[test]
     fn valuta_e_la_correzione_di_un_testo_sono_le_scritture_verso_il_proprietario() {
         // Gli ascolti hanno il loro tetto (all'ora, e dura quanto la
         // ricezione); `Valuta` e `TestoScrivi` sono le scritture che si
@@ -973,6 +1037,8 @@ mod prove {
                 liked: Some(true),
                 rating: Some(5),
                 quando_ms: 1,
+                liked_ms: None,
+                rating_ms: None,
                 chiave: "k".to_owned(),
             }
             .e_una_scrittura()

@@ -168,6 +168,12 @@ pub(super) trait Dati {
     ) -> Result<T, AppError>;
     /// Dice alla finestra a che punto si è.
     fn emetti(&self, avanzamento: &AvanzamentoSpecchio);
+    /// Righe appena tolte dalla libreria: la coda del lettore non le nomina più
+    /// (S11-1). Si chiama dopo la scrittura, **mai** dentro `scrivi`: sgomberare
+    /// prende il lucchetto del lettore, e quello della libreria non si deve avere
+    /// in mano mentre lo si aspetta (prima il lettore, poi la libreria). Per le prove
+    /// che non hanno un lettore non fa niente.
+    fn sgombera(&self, _ids: &[i64]) {}
 }
 
 /// L'app vera.
@@ -231,6 +237,10 @@ impl Dati for DallApp {
 
     fn emetti(&self, avanzamento: &AvanzamentoSpecchio) {
         self.app.emetti("lontano:specchio", avanzamento.clone());
+    }
+
+    fn sgombera(&self, ids: &[i64]) {
+        crate::cancellazione::sgombera_dal_nucleo(&self.app, ids, false);
     }
 }
 
@@ -396,7 +406,12 @@ pub(super) fn giro<D: Dati>(dati: &D, chiave: &str) -> Result<EsitoGiro, AppErro
     let da_svuotare = lavoro.da_svuotare.clone();
     let chiusura = dati.scrivi(|c| in_corso.chiudi(c, &da_svuotare, completo, generazione, quando));
     let chiusura = match chiusura {
-        Ok(chiusura) => chiusura,
+        Ok(chiusura) => {
+            // La coda del lettore non nomina più le righe tolte: dopo la scrittura,
+            // a lucchetto lasciato (S11-1).
+            dati.sgombera(&chiusura.ids_tolti);
+            chiusura
+        }
         Err(err) => {
             avanza(
                 dati,
@@ -473,6 +488,7 @@ fn togli_le_scadute<D: Dati>(
         da_guardare = false;
         match dati.scrivi(|c| archivio::togli_un_blocco(c, chiave, adesso_ms())) {
             Ok(blocco) => {
+                dati.sgombera(&blocco.ids_tolti);
                 tolte = tolte.saturating_add(blocco.tolte);
                 restano = blocco.restano;
                 da_nascondere = blocco.da_nascondere;
@@ -537,13 +553,22 @@ fn chiedi_il_secchio<D: Dati>(
 
 // ── la posta ────────────────────────────────────────────────────────────────
 
+/// Una voce di posta è in attesa da oltre [`SCADENZA_POSTA_MS`]: se l'altro la
+/// rifiuta ancora, si lascia.
+fn scaduta(voce: &dispositivi::VocePosta) -> bool {
+    adesso_ms().saturating_sub(voce.quando_ms) > SCADENZA_POSTA_MS
+}
+
 /// Manda a `chiave` la posta che aspetta, dalla più vecchia: un voto o un mi
 /// piace (`valuta`) o la correzione di un testo (`testo`, vedi [`super::testo`])
-/// per volta. Si ferma alla prima che non parte — il dispositivo non risponde —
-/// e la lascia lì per il giro dopo. Una voce che il dispositivo rifiuta per
-/// sempre (il brano non c'è più, o una versione che non la capisce da oltre
-/// [`SCADENZA_POSTA_MS`]) si butta. Quante ne ha consegnate **fra i voti**: sono
-/// loro che cambiano le righe del proprietario, e fanno rileggere il catalogo.
+/// per volta. Si ferma alla prima che non parte perché il dispositivo non
+/// risponde, e la lascia lì per il giro dopo. Una voce che il dispositivo
+/// **rifiuta lui** — con un errore che non è «non risponde» — non ferma le
+/// altre: resta, e quando è in attesa da oltre [`SCADENZA_POSTA_MS`] si lascia.
+/// Si butta anche il voto di un brano che non c'è più, e quello che una versione
+/// che non lo capisce rifiuta da altrettanto. Quante ne ha consegnate **fra i
+/// voti**: sono loro che cambiano le righe del proprietario, e fanno rileggere il
+/// catalogo.
 ///
 /// # Errori
 ///
@@ -583,6 +608,11 @@ pub(super) fn manda_la_posta<D: Dati>(dati: &D, chiave: &str) -> Result<usize, A
             liked: valutazione.liked,
             rating: valutazione.rating,
             quando_ms: voce.quando_ms,
+            // Ogni decisione col suo orologio: il proprietario sceglie per campo, e
+            // il cuore di prima non si ringiovanisce con le stelle di dopo (S2-9).
+            // Una build di prima non li legge, e usa `quando_ms`.
+            liked_ms: valutazione.liked_ms,
+            rating_ms: valutazione.rating_ms,
             chiave: format!("{}-{}", valutazione.brano, voce.quando_ms),
         };
         match dati.chiedi(chiave, domanda, ATTESA_POSTA) {
@@ -597,14 +627,37 @@ pub(super) fn manda_la_posta<D: Dati>(dati: &D, chiave: &str) -> Result<usize, A
                     toglila(dati)?;
                 }
                 // Una versione che non la capisce (o non lo dichiara ancora):
-                // si tiene un po', poi si lascia.
+                // si tiene un po', poi si lascia. Finché si tiene, le altre non
+                // la capirebbero nemmeno, e si aspetta il giro dopo.
                 ErrorCodeKind::LontanoProtocollo => {
-                    if adesso_ms().saturating_sub(voce.quando_ms) > SCADENZA_POSTA_MS {
+                    if scaduta(&voce) {
                         toglila(dati)?;
+                        continue;
                     }
                     break;
                 }
-                _ => break,
+                // L'altro non c'è, non risponde a nessuno, o ha detto di no a
+                // noi: le voci dopo non partirebbero nemmeno, e restano per il
+                // giro dopo.
+                ErrorCodeKind::LontanoIrraggiungibile
+                | ErrorCodeKind::NetTimeout
+                | ErrorCodeKind::LontanoNonAssociato
+                | ErrorCodeKind::LontanoRifiutato
+                | ErrorCodeKind::LontanoSpento
+                | ErrorCodeKind::LontanoReteAConsumo
+                | ErrorCodeKind::LontanoGettoneScaduto
+                | ErrorCodeKind::LontanoIdentitaPersa => break,
+                // L'altro c'è e risponde, e **questa** voce non la prende — un
+                // errore suo, di una versione con un difetto o di un pari
+                // ostile —: le altre non dipendono da lei. Prima ogni errore
+                // fermava tutta la posta, per sempre (S2-12). Si tiene finché
+                // non scade, come per un protocollo che non la capisce, e si
+                // passa alla prossima.
+                _ => {
+                    if scaduta(&voce) {
+                        toglila(dati)?;
+                    }
+                }
             },
         }
     }
@@ -1007,22 +1060,138 @@ pub async fn lontano_specchio_ora(app: Nucleo, chiave: String) -> Esito<()> {
     .await
 }
 
+/// Le righe che `chiave` non manda più se ne vanno, **tutte** — la grazia non
+/// conta più —, a blocchi: ogni blocco in una presa sua del lucchetto, perché la
+/// conferma di centomila righe non lo tenga fermo per quanto dura. Dopo ogni
+/// blocco la coda del lettore smette di nominare le righe tolte (S11-1). Quante.
+///
+/// # Errori
+///
+/// Quelli del database.
+fn conferma_a_blocchi<D: Dati>(dati: &D, chiave: &str) -> Result<usize, AppError> {
+    let mut tolte = 0_usize;
+    loop {
+        let blocco = dati.scrivi(|c| archivio::conferma_un_blocco(c, chiave))?;
+        dati.sgombera(&blocco.ids_tolti);
+        tolte = tolte.saturating_add(blocco.tolte);
+        if blocco.restano == 0 || blocco.tolte == 0 {
+            return Ok(tolte);
+        }
+    }
+}
+
+/// Il secondo tempo di «Dimentica»: le righe di un dispositivo che non è più
+/// collegato se ne vanno **a blocchi**, ognuno in una presa sua del lucchetto, e
+/// dopo ogni blocco la coda del lettore smette di nominare le righe tolte
+/// (S11-1). Il primo tempo — le righe nascoste, la riga di `dispositivi` tolta —
+/// l'ha già fatto chi ha scritto il registro ([`super::filo`]): da lì il
+/// dispositivo non serve più niente, e le sue righe non si vedono.
+///
+/// Si ferma se il dispositivo si è ricollegato nel frattempo (le righe sono di
+/// nuovo sue), se un blocco non ha tolto niente, o se la libreria non risponde:
+/// quel che resta lo finisce lo spazzino dell'avvio ([`riprendi_le_dimenticanze`]).
+/// Quante righe ha tolto.
+fn dimentica_a_blocchi<D: Dati>(dati: &D, chiave: &str) -> usize {
+    // Alla finestra, subito: il dispositivo non ha più righe da vedere, e gli
+    // elenchi si rileggono senza aspettare la fine dei blocchi.
+    dati.emetti(&AvanzamentoSpecchio {
+        dispositivo: chiave.to_owned(),
+        fase: Fase::Fine,
+        ..AvanzamentoSpecchio::default()
+    });
+    let mut tolte = 0_usize;
+    loop {
+        let blocco = dati.scrivi(|c| {
+            archivio::dimentica_un_blocco(c, chiave, adesso_ms(), archivio::BLOCCO_RIMOZIONI)
+        });
+        match blocco {
+            Ok(blocco) => {
+                dati.sgombera(&blocco.ids_tolti);
+                tolte = tolte.saturating_add(blocco.tolte);
+                if blocco.finito || blocco.tolte == 0 {
+                    break;
+                }
+            }
+            Err(err) => {
+                nota!(
+                    "[lontano] «Dimentica» non finisce codice={}: si riprende all'avvio",
+                    err.code().kind().code()
+                );
+                break;
+            }
+        }
+    }
+    tolte
+}
+
+/// [`dimentica_a_blocchi`] su un filo suo, per il filo che ha scritto il registro:
+/// non aspetta.
+pub(super) fn dimentica_in_disparte(app: Nucleo, chiave: String) {
+    let partito = std::thread::Builder::new()
+        .name("rymembra-lontano-dimentica".to_owned())
+        .spawn(move || match DallApp::nuovo(&app) {
+            Ok(dati) => {
+                dimentica_a_blocchi(&dati, &chiave);
+            }
+            Err(err) => nota!(
+                "[lontano] «Dimentica» non può finire ora codice={}: si riprende all'avvio",
+                err.code().kind().code()
+            ),
+        });
+    if let Err(err) = partito {
+        nota!("[lontano] il filo di «Dimentica» non parte: {err}");
+    }
+}
+
+/// Lo spazzino dell'avvio: i dispositivi che non sono più collegati e hanno
+/// ancora righe — un «Dimentica» che un arresto ha lasciato a metà, la chiusura
+/// dalla barra, Windows che spegne — si finiscono ([`dimentica_a_blocchi`]). Le
+/// loro righe, se il primo tempo non c'era stato, si nascondono lì prima di
+/// cancellarle.
+fn riprendi_le_dimenticanze<D: Dati>(dati: &D) {
+    let a_meta = match dati.leggi(archivio::dispositivi_a_meta) {
+        Ok(a_meta) => a_meta,
+        Err(err) => {
+            nota!(
+                "[lontano] i «Dimentica» rimasti a metà non si cercano codice={}",
+                err.code().kind().code()
+            );
+            return;
+        }
+    };
+    for chiave in a_meta {
+        let tolte = dimentica_a_blocchi(dati, &chiave);
+        nota!(
+            "[lontano] un «Dimentica» rimasto a metà è finito: {tolte} righe tolte, dispositivo {}",
+            chiave.chars().take(8).collect::<String>()
+        );
+    }
+}
+
+/// [`riprendi_le_dimenticanze`] su un filo suo: parte con il nucleo, anche senza
+/// finestra e con «Raggiungibile da internet» spento, e non aspetta.
+pub(super) fn riprendi_le_dimenticanze_in_disparte(app: Nucleo) {
+    let partito = std::thread::Builder::new()
+        .name("rymembra-lontano-spazzino".to_owned())
+        .spawn(move || match DallApp::nuovo(&app) {
+            Ok(dati) => riprendi_le_dimenticanze(&dati),
+            Err(err) => nota!(
+                "[lontano] lo spazzino dei «Dimentica» non parte codice={}",
+                err.code().kind().code()
+            ),
+        });
+    if let Err(err) = partito {
+        nota!("[lontano] il filo dello spazzino non parte: {err}");
+    }
+}
+
 /// La persona ha detto di sì: le righe che il dispositivo non manda più se ne
 /// vanno. Quante.
 #[tauri::command]
 pub async fn lontano_specchio_conferma(app: Nucleo, chiave: String) -> Esito<usize> {
     in_disparte(move || {
-        // A blocchi, e ogni blocco in una presa sua del lucchetto: la conferma di
-        // centomila righe non deve tenerlo fermo per quanto dura.
-        let mut tolte = 0_usize;
-        loop {
-            let blocco = scrivi_in_libreria(&app, |c| archivio::conferma_un_blocco(c, &chiave))?;
-            tolte = tolte.saturating_add(blocco.tolte);
-            if blocco.restano == 0 || blocco.tolte == 0 {
-                break;
-            }
-        }
         let dati = DallApp::nuovo(&app)?;
+        let tolte = conferma_a_blocchi(&dati, &chiave)?;
         let mut a = avanzamenti().get(&chiave).cloned().unwrap_or_default();
         a.dispositivo = chiave.clone();
         a.in_attesa = 0;
@@ -1113,9 +1282,22 @@ mod prove {
                     liked,
                     rating,
                     quando_ms,
+                    liked_ms,
+                    rating_ms,
                     ..
                 } => {
-                    condivisa::valuta(&db, brano, liked, rating, quando_ms, adesso_ms())?;
+                    condivisa::valuta_con_orologi(
+                        &db,
+                        brano,
+                        liked,
+                        rating,
+                        condivisa::OrologiValutazione {
+                            quando_ms,
+                            liked_ms,
+                            rating_ms,
+                        },
+                        adesso_ms(),
+                    )?;
                     Ok(Risposta::Fatto)
                 }
                 // Il testo, con le stesse funzioni di `servizio`: solo un brano
@@ -2049,5 +2231,325 @@ mod prove {
             Some(Fase::Errore),
             "e la finestra l'ha saputo"
         );
+    }
+
+    /// Una libreria sola, senza rete e senza lettore: quel che serve a vedere cosa
+    /// una rimozione di righe specchio dice, dopo la scrittura, a chi tiene la
+    /// coda (S11-1).
+    /// Un brano, e l'errore con cui l'altro lo rifiuta.
+    type Rifiuto = (i64, fn() -> AppError);
+
+    struct ConLibreria {
+        db: Mutex<rusqlite::Connection>,
+        /// Gli identificativi che `sgombera` ha ricevuto, nell'ordine.
+        sgombrati: Mutex<Vec<i64>>,
+        /// Il lucchetto della libreria era preso quando `sgombera` è stato
+        /// chiamato: sgomberare prende quello del lettore, e chi tiene la
+        /// libreria non deve aspettarlo.
+        sgombrato_dentro_la_scrittura: Mutex<bool>,
+        dentro_la_scrittura: Mutex<bool>,
+        /// Il brano a cui l'altro risponde con questo errore: gli altri vanno
+        /// a buon fine. Senza, l'altro non risponde a niente.
+        rifiuta: Mutex<Option<Rifiuto>>,
+        /// I brani per cui `chiedi` ha avuto una `Valuta`, nell'ordine.
+        chiesti: Mutex<Vec<i64>>,
+    }
+
+    impl ConLibreria {
+        fn nuova() -> Self {
+            Self {
+                db: Mutex::new(libreria()),
+                sgombrati: Mutex::new(Vec::new()),
+                sgombrato_dentro_la_scrittura: Mutex::new(false),
+                dentro_la_scrittura: Mutex::new(false),
+                rifiuta: Mutex::new(None),
+                chiesti: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Dati for ConLibreria {
+        fn associato(&self, _chiave: &str) -> bool {
+            true
+        }
+
+        fn dichiara(&self, _chiave: &str, _sigla: &str) -> bool {
+            true
+        }
+
+        fn risponde(&self, _chiave: &str) -> bool {
+            false
+        }
+
+        fn chiedi(
+            &self,
+            _chiave: &str,
+            domanda: Domanda,
+            _scadenza: Duration,
+        ) -> Result<Risposta, AppError> {
+            let Domanda::Valuta { brano, .. } = domanda else {
+                return Err(AppError::new(ErrorCode::LontanoIrraggiungibile));
+            };
+            self.chiesti.lock().unwrap().push(brano);
+            match *self.rifiuta.lock().unwrap() {
+                Some((rifiutato, errore)) if rifiutato == brano => Err(errore()),
+                Some(_) => Ok(Risposta::Fatto),
+                None => Err(AppError::new(ErrorCode::LontanoIrraggiungibile)),
+            }
+        }
+
+        fn leggi<T>(
+            &self,
+            azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+        ) -> Result<T, AppError> {
+            azione(&self.db.lock().unwrap())
+        }
+
+        fn scrivi<T>(
+            &self,
+            azione: impl FnOnce(&rusqlite::Connection) -> Result<T, AppError>,
+        ) -> Result<T, AppError> {
+            *self.dentro_la_scrittura.lock().unwrap() = true;
+            let esito = azione(&self.db.lock().unwrap());
+            *self.dentro_la_scrittura.lock().unwrap() = false;
+            esito
+        }
+
+        fn emetti(&self, _avanzamento: &AvanzamentoSpecchio) {}
+
+        fn sgombera(&self, ids: &[i64]) {
+            if *self.dentro_la_scrittura.lock().unwrap() {
+                *self.sgombrato_dentro_la_scrittura.lock().unwrap() = true;
+            }
+            self.sgombrati.lock().unwrap().extend_from_slice(ids);
+        }
+    }
+
+    /// Una riga specchio di `dispositivo`, segnata sparita da `sparita_da`.
+    fn riga_specchio(
+        c: &rusqlite::Connection,
+        id: i64,
+        dispositivo: &str,
+        sparita_da: Option<i64>,
+    ) {
+        c.execute(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size, date_added,
+                                 date_modified, source)
+             VALUES (?1, ?2, ?3, 'T', 'A', 'B', 1, 1, 1, 'lontano')",
+            rusqlite::params![
+                id,
+                rymembra_app::specchio::percorso(dispositivo, id),
+                format!("a|t{id}|b")
+            ],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO lontano_brani (track_id, dispositivo, id_remoto, sparito_ms)
+             VALUES (?1, ?2, ?1, ?3)",
+            rusqlite::params![id, dispositivo, sparita_da],
+        )
+        .unwrap();
+    }
+
+    /// Le righe che la conferma di una strage toglie, a blocchi, le sa anche chi
+    /// tiene la coda: dopo ogni blocco e fuori dalla scrittura.
+    #[test]
+    fn la_conferma_di_una_strage_dice_alla_coda_quali_righe_ha_tolto() {
+        let chiave = "b".repeat(64);
+        let dati = ConLibreria::nuova();
+        {
+            let db = dati.db.lock().unwrap();
+            for id in 1..=60 {
+                riga_specchio(&db, id, &chiave, Some(1_000));
+            }
+        }
+        let tolte = conferma_a_blocchi(&dati, &chiave).unwrap();
+        assert_eq!(tolte, 60);
+        let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
+        sgombrati.sort_unstable();
+        assert_eq!(sgombrati, (1..=60).collect::<Vec<i64>>());
+        assert!(
+            !*dati.sgombrato_dentro_la_scrittura.lock().unwrap(),
+            "si sgombera a lucchetto lasciato"
+        );
+    }
+
+    /// Lo stesso per la grazia scaduta: `togli_le_scadute` toglie, e dice quali.
+    #[test]
+    fn la_grazia_scaduta_dice_alla_coda_quali_righe_ha_tolto() {
+        let chiave = "b".repeat(64);
+        let dati = ConLibreria::nuova();
+        {
+            let db = dati.db.lock().unwrap();
+            // Sparite da sempre (1 ms dopo il 1970): più della grazia; e una
+            // sparita adesso, che resta.
+            for id in 1..=3 {
+                riga_specchio(&db, id, &chiave, Some(1));
+            }
+            riga_specchio(&db, 4, &chiave, Some(adesso_ms()));
+        }
+        togli_le_scadute(&dati, &chiave, 0, 0, false, true);
+        let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
+        sgombrati.sort_unstable();
+        assert_eq!(sgombrati, vec![1, 2, 3], "la quarta è ancora in grazia");
+        assert!(!*dati.sgombrato_dentro_la_scrittura.lock().unwrap());
+    }
+
+    /// «Dimentica» a blocchi: le righe se ne vanno più di un blocco alla volta, e
+    /// dopo ognuno la coda lo sa — a lucchetto lasciato.
+    #[test]
+    fn dimenticare_a_blocchi_dice_alla_coda_quali_righe_ha_tolto() {
+        let chiave = "b".repeat(64);
+        let dati = ConLibreria::nuova();
+        let quante = i64::try_from(archivio::BLOCCO_RIMOZIONI).unwrap() + 500;
+        {
+            let db = dati.db.lock().unwrap();
+            let tx = db.unchecked_transaction().unwrap();
+            for id in 1..=quante {
+                riga_specchio(&tx, id, &chiave, None);
+            }
+            tx.commit().unwrap();
+        }
+        // Il dispositivo non è in `dispositivi`: il registro l'ha già tolto.
+        let tolte = dimentica_a_blocchi(&dati, &chiave);
+        assert_eq!(i64::try_from(tolte).unwrap(), quante);
+        let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
+        sgombrati.sort_unstable();
+        assert_eq!(sgombrati, (1..=quante).collect::<Vec<i64>>());
+        assert!(!*dati.sgombrato_dentro_la_scrittura.lock().unwrap());
+        let db = dati.db.lock().unwrap();
+        assert_eq!(quante_righe(&db, "lontano_brani"), 0);
+        assert_eq!(quante_righe(&db, "tracks"), 0);
+    }
+
+    fn quante_righe(c: &rusqlite::Connection, tabella: &str) -> i64 {
+        c.query_row(&format!("SELECT COUNT(*) FROM {tabella}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Lo spazzino dell'avvio finisce un «Dimentica» rimasto a metà, e lascia stare
+    /// un dispositivo collegato.
+    #[test]
+    fn lo_spazzino_finisce_i_dimentica_rimasti_a_meta_e_non_tocca_i_collegati() {
+        let a_meta = "b".repeat(64);
+        let collegato = "c".repeat(64);
+        let dati = ConLibreria::nuova();
+        {
+            let db = dati.db.lock().unwrap();
+            for id in 1..=5 {
+                riga_specchio(&db, id, &a_meta, None);
+            }
+            for id in 6..=8 {
+                riga_specchio(&db, id, &collegato, None);
+            }
+            db.execute(
+                "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+                [&collegato],
+            )
+            .unwrap();
+        }
+        riprendi_le_dimenticanze(&dati);
+        let db = dati.db.lock().unwrap();
+        assert_eq!(
+            quante(
+                &db,
+                &format!("SELECT COUNT(*) FROM lontano_brani WHERE dispositivo = '{a_meta}'")
+            ),
+            0
+        );
+        assert_eq!(
+            quante(
+                &db,
+                &format!("SELECT COUNT(*) FROM lontano_brani WHERE dispositivo = '{collegato}'")
+            ),
+            3,
+            "il collegato resta com'è"
+        );
+        let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
+        sgombrati.sort_unstable();
+        assert_eq!(sgombrati, vec![1, 2, 3, 4, 5]);
+    }
+
+    // ── la posta in uscita non si blocca su una voce (S2-12) ─────────────────────
+
+    /// Tre voti in posta per il PC, uno per brano, con `quando_ms` crescente: la
+    /// posta parte nell'ordine in cui è stata decisa, quindi il brano 1 per primo.
+    fn tre_voti_in_posta(dati: &ConLibreria, chiave: &str, il_primo_quando_ms: i64) {
+        let db = dati.db.lock().unwrap();
+        for brano in 1..=3_i64 {
+            let quando = il_primo_quando_ms + (brano - 1) * 1_000;
+            dispositivi::metti_in_posta(
+                &db,
+                chiave,
+                POSTA_VALUTA,
+                &brano.to_string(),
+                &format!(r#"{{"brano":{brano},"liked":true}}"#),
+                quando,
+            )
+            .unwrap();
+        }
+    }
+
+    fn in_posta_ancora(dati: &ConLibreria, chiave: &str) -> Vec<String> {
+        let db = dati.db.lock().unwrap();
+        dispositivi::posta_da_mandare(&db, chiave)
+            .unwrap()
+            .into_iter()
+            .map(|voce| voce.chiave)
+            .collect()
+    }
+
+    fn rifiuto_della_voce() -> AppError {
+        AppError::new(ErrorCode::IpcPayloadInvalid {
+            channel: "lontano".to_owned(),
+            detail: Some("una voce che l'altro non prende".to_owned()),
+        })
+    }
+
+    #[test]
+    fn una_voce_rifiutata_con_un_errore_diverso_non_ferma_le_altre_per_sempre() {
+        let pc = "d".repeat(64);
+        let dati = ConLibreria::nuova();
+        // Voti recenti: il primo è rifiutato dall'altro con un errore che non è
+        // «il brano non c'è», e gli altri due vanno a buon fine.
+        tre_voti_in_posta(&dati, &pc, adesso_ms() - 1_000);
+        *dati.rifiuta.lock().unwrap() = Some((1, rifiuto_della_voce));
+        assert_eq!(manda_la_posta(&dati, &pc).unwrap(), 2);
+        assert_eq!(
+            *dati.chiesti.lock().unwrap(),
+            vec![1, 2, 3],
+            "le ha provate tutte"
+        );
+        assert_eq!(
+            in_posta_ancora(&dati, &pc),
+            vec!["1"],
+            "la rifiutata resta, e le altre sono arrivate"
+        );
+    }
+
+    #[test]
+    fn una_voce_rifiutata_con_un_errore_diverso_scade_come_le_altre() {
+        let pc = "d".repeat(64);
+        let dati = ConLibreria::nuova();
+        // La prima è in posta da più di trenta giorni: un altro rifiuto, e si lascia.
+        tre_voti_in_posta(&dati, &pc, 1);
+        *dati.rifiuta.lock().unwrap() = Some((1, rifiuto_della_voce));
+        assert_eq!(manda_la_posta(&dati, &pc).unwrap(), 2);
+        assert!(in_posta_ancora(&dati, &pc).is_empty(), "scaduta e buttata");
+    }
+
+    #[test]
+    fn se_l_altro_non_risponde_la_posta_non_riprova_voce_per_voce() {
+        let pc = "d".repeat(64);
+        let dati = ConLibreria::nuova();
+        tre_voti_in_posta(&dati, &pc, adesso_ms() - 1_000);
+        // L'altro non c'è: senza una `rifiuta`, ogni risposta è «irraggiungibile».
+        assert_eq!(manda_la_posta(&dati, &pc).unwrap(), 0);
+        assert_eq!(
+            *dati.chiesti.lock().unwrap(),
+            vec![1],
+            "si ferma alla prima: le altre non partirebbero nemmeno"
+        );
+        assert_eq!(in_posta_ancora(&dati, &pc).len(), 3, "nessuna si butta");
     }
 }

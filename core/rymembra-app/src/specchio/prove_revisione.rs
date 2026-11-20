@@ -1059,3 +1059,151 @@ fn rev2_11_raggiungibili_senza_alias_ripiega_sulla_copia_di_qui_come_con_l_alias
         "senza alias la copia di qui non torna"
     );
 }
+
+// ── «Dimentica» con un catalogo al tetto: quanto tiene il lucchetto ──────────────
+
+/// Un telefono con cinquantamila brani suoi e un PC al tetto dei duecentomila:
+/// ventimila dei brani del PC sono lo stesso brano di uno di qui (la copia
+/// migliore è del PC, e quella di qui sta nascosta), 3.000 voci di playlist e
+/// 5.000 ascolti su righe del PC — la metà con una copia di qui, la metà no.
+/// Le righe si scrivono con un'`INSERT … SELECT`: le stesse tabelle e gli stessi
+/// trigger di un giro vero, senza duecentomila passate per `Giro`.
+fn telefono_con_un_pc_al_tetto() -> Connection {
+    const DEL_PC: i64 = 200_000;
+    let c = libreria();
+    tanti_locali(&c, 1, 50_000);
+    let pc = chiave(PC);
+    c.execute(
+        "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'Prova', 1)",
+        [&pc],
+    )
+    .expect("dispositivo");
+    let t = Instant::now();
+    c.execute(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+         INSERT INTO tracks (path, track_key, title, artist, album, album_key, file_size,
+                             date_added, date_modified, codec, bitrate, sample_rate,
+                             duration_ms, source)
+         SELECT 'lontano://' || ?1 || '/' || i,
+                CASE WHEN i <= 20000
+                     THEN 'artista ' || (i % 900) || '|titolo ' || i || '|album ' || (i / 12)
+                     ELSE 'artista ' || (i % 900) || '|solo pc ' || i || '|album ' || (i / 12) END,
+                'Titolo ' || i, 'Artista ' || (i % 900), 'Album ' || (i / 12),
+                'lontano:/' || ?1 || '/album-' || (i / 12),
+                24000000, i, 1, 'flac', 900, 96000, 200000, 'lontano'
+           FROM n",
+        params![pc, DEL_PC],
+    )
+    .expect("righe del PC");
+    c.execute(
+        "INSERT INTO lontano_brani (track_id, dispositivo, id_remoto, estensione, versione,
+                                    content_key, impronta)
+         SELECT id, ?1, CAST(substr(path, length(?1) + 12) AS INTEGER), 'flac', '24000000-1',
+                track_key, 'x'
+           FROM tracks WHERE source = 'lontano'",
+        [&pc],
+    )
+    .expect("lontano_brani");
+    eprintln!(
+        "preparazione: {} righe del PC scritte in {} ms",
+        DEL_PC,
+        t.elapsed().as_millis()
+    );
+    // Gli aggregati e i doppioni, come li lascia un giro.
+    let t = Instant::now();
+    {
+        let tx = c.unchecked_transaction().expect("transazione");
+        crate::library::rebuild_aggregates(&tx).expect("aggregati");
+        tx.commit().expect("commit");
+    }
+    crate::specchio::archivio::ricalcola_doppioni(&c).expect("doppioni");
+    eprintln!(
+        "preparazione: aggregati e doppioni in {} ms",
+        t.elapsed().as_millis()
+    );
+    // 3.000 voci e 5.000 ascolti: righe con una copia di qui (id remoto 1..=1500,
+    // 2.500) e senza (25.001..).
+    let riga_del_pc = |remoto: i64| -> i64 {
+        c.query_row(
+            "SELECT track_id FROM lontano_brani WHERE id_remoto = ?1",
+            [remoto],
+            |r| r.get(0),
+        )
+        .expect("riga")
+    };
+    let voci: Vec<i64> = (1..=1_500)
+        .chain(25_001..=26_500)
+        .map(riga_del_pc)
+        .collect();
+    for (p, pezzo) in voci.chunks(100).enumerate() {
+        playlist_con(&c, &format!("p{p}"), pezzo);
+    }
+    for (n, remoto) in (1..=2_500).chain(25_001..=27_500).enumerate() {
+        c.execute(
+            "INSERT INTO play_history (track_id, played_at, ms_played) VALUES (?1, ?2, 90000)",
+            params![
+                riga_del_pc(remoto),
+                1_700_000_000_000_i64 + i64::try_from(n).expect("n")
+            ],
+        )
+        .expect("ascolto");
+    }
+    c
+}
+
+#[test]
+#[ignore = "misura"]
+fn misura_dimenticare_un_pc_da_duecentomila_righe() {
+    let c = telefono_con_un_pc_al_tetto();
+    let pc = chiave(PC);
+    let t = Instant::now();
+    let fatto = dimentica_dispositivo(&c, &pc).expect("dimenticato");
+    eprintln!(
+        "MISURA dimentica_dispositivo (200.000 righe, 3.000 voci, 5.000 ascolti, 50.000 brani di qui): {} ms {fatto:?}",
+        t.elapsed().as_millis()
+    );
+    eprintln!(
+        "righe del PC rimaste: {}",
+        n(&c, "SELECT COUNT(*) FROM tracks WHERE source = 'lontano'")
+    );
+}
+
+#[test]
+#[ignore = "misura"]
+fn misura_dimenticare_un_pc_da_duecentomila_righe_a_blocchi() {
+    // La stessa scena della misura sopra, col codice di adesso: il lucchetto non
+    // lo tiene «Dimentica» per intero ma il primo tempo e poi un blocco alla
+    // volta, e quel che conta è il più lungo di loro. `dispositivi::dimentica`
+    // ha già tolto la riga, come nel nucleo.
+    use crate::specchio::archivio::{
+        BLOCCO_RIMOZIONI, comincia_a_dimenticare, dimentica_un_blocco,
+    };
+    let c = telefono_con_un_pc_al_tetto();
+    let pc = chiave(PC);
+    crate::dispositivi::dimentica(&c, &pc).expect("dimenticato dal registro");
+    let t = Instant::now();
+    assert!(comincia_a_dimenticare(&c, &pc, ADESSO).expect("primo tempo"));
+    let primo_ms = t.elapsed().as_millis();
+    eprintln!("MISURA primo tempo (segna sparite, nasconde, rifà i doppioni): {primo_ms} ms");
+    let (mut blocchi, mut piu_lungo_ms, mut totale_ms, mut tolte) = (0, 0_u128, 0_u128, 0);
+    loop {
+        let t = Instant::now();
+        let blocco = dimentica_un_blocco(&c, &pc, ADESSO, BLOCCO_RIMOZIONI).expect("blocco");
+        let ms = t.elapsed().as_millis();
+        blocchi += 1;
+        piu_lungo_ms = piu_lungo_ms.max(ms);
+        totale_ms += ms;
+        tolte += blocco.tolte;
+        if blocco.finito || blocco.tolte == 0 {
+            break;
+        }
+    }
+    eprintln!(
+        "MISURA a blocchi: {tolte} righe in {blocchi} blocchi da {BLOCCO_RIMOZIONI}, il piu' lungo {piu_lungo_ms} ms (totale dei blocchi {totale_ms} ms); lucchetto piu' lungo in tutto: {} ms",
+        piu_lungo_ms.max(primo_ms)
+    );
+    eprintln!(
+        "righe del PC rimaste: {}",
+        n(&c, "SELECT COUNT(*) FROM tracks WHERE source = 'lontano'")
+    );
+}

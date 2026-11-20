@@ -107,8 +107,20 @@ pub fn rispondi(app: &Nucleo, da: &str, domanda: Domanda) -> Result<Risposta, Ap
             liked,
             rating,
             quando_ms,
+            liked_ms,
+            rating_ms,
             chiave: _,
-        } => valuta(app, brano, liked, rating, quando_ms),
+        } => valuta(
+            app,
+            brano,
+            liked,
+            rating,
+            condivisa::OrologiValutazione {
+                quando_ms,
+                liked_ms,
+                rating_ms,
+            },
+        ),
         // Il testo della canzone, e le sue correzioni: sempre da un brano
         // condiviso (`condiviso::brano_condiviso`), mai da un brano del cloud,
         // di catalogo o di un terzo dispositivo.
@@ -299,7 +311,7 @@ fn valuta(
     brano: i64,
     liked: Option<bool>,
     rating: Option<i64>,
-    quando_ms: i64,
+    orologi: condivisa::OrologiValutazione,
 ) -> Result<Risposta, AppError> {
     let stato = app.try_state::<Stato>().ok_or_else(|| {
         AppError::new(ErrorCode::InternalAborted {
@@ -307,12 +319,12 @@ fn valuta(
         })
     })?;
     let cambiato = crate::stato::con_libreria_entro(&stato, ATTESA_LETTURA, |libreria| {
-        condivisa::valuta(
+        condivisa::valuta_con_orologi(
             &libreria.connection,
             brano,
             liked,
             rating,
-            quando_ms,
+            orologi,
             adesso_ms(),
         )
     })

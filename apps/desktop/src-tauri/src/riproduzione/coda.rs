@@ -859,6 +859,15 @@ pub fn coda_togli_ora(
     Ok(())
 }
 
+/// La fotografia di una coda senza questi brani, se ne nominava qualcuno.
+///
+/// Per la coda che l'«Annulla» rimetterebbe ([`CodaDiPrima`]): `None` se non
+/// cambia niente. Con `Queue::remove_tracks`, la regola della coda vera.
+fn senza_i_brani(istantanea: &QueueSnapshot, brani: &[i64]) -> Option<QueueSnapshot> {
+    let mut coda = Queue::restore(istantanea.clone());
+    (coda.remove_tracks(brani).quante > 0).then(|| coda.snapshot())
+}
+
 /// Toglie dalla coda dei brani che la libreria sta per non avere più.
 ///
 /// # Perché la coda va sgomberata a mano
@@ -909,6 +918,15 @@ pub(crate) fn sgombra_dalla_coda(
     brani.extend(ospiti::maniglie_di_righe(app, &brani));
     let brani = brani.as_slice();
     let partenza = con_lettore(stato, |lettore| {
+        // La coda che l'«Annulla» rimetterebbe nomina gli stessi identificativi:
+        // rimessa dopo che il brano non c'è più — e il suo id è di un altro —,
+        // suonerebbe quello (S11-1). Prima del resto: il ritorno anticipato più
+        // sotto parla della coda di adesso, non di quella di prima.
+        if let Some(prima) = lettore.coda_di_prima.as_mut()
+            && let Some(senza) = senza_i_brani(&prima.istantanea, brani)
+        {
+            prima.istantanea = senza;
+        }
         let c_e_un_dopo = lettore.coda.position().is_some_and(|posizione| {
             lettore
                 .coda
@@ -1407,6 +1425,29 @@ mod prove {
     }
 
     // ── la coda di prima: vedi `ricorda_coda_di_prima` ──
+
+    /// L'«Annulla» non rimette nella coda un brano che la libreria non ha più:
+    /// `tracks.id` non è `AUTOINCREMENT`, e il suo id lo prende un brano nuovo
+    /// (S11-1).
+    #[test]
+    fn la_coda_di_prima_non_nomina_i_brani_tolti() {
+        let prima = QueueSnapshot {
+            tracks: vec![1, 30_001, 2],
+            order: vec![2, 0, 1],
+            order_pos: Some(1),
+            shuffle: true,
+            repeat: RepeatMode::All,
+        };
+        let senza = senza_i_brani(&prima, &[30_001]).expect("ne nominava uno");
+        assert_eq!(senza.tracks, vec![1, 2]);
+        assert_eq!(senza.repeat, RepeatMode::All, "il resto non cambia");
+        assert!(senza.shuffle);
+        let mut ordine = senza.order.clone();
+        ordine.sort_unstable();
+        assert_eq!(ordine, vec![0, 1], "l'ordine resta una permutazione");
+        // Una coda che non li nominava resta com'è: niente da riscrivere.
+        assert_eq!(senza_i_brani(&prima, &[99]), None);
+    }
 
     #[test]
     fn svuota_ha_sempre_l_avviso() {

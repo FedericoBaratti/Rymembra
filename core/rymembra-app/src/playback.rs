@@ -426,6 +426,62 @@ pub fn load_queue(connection: &Connection) -> Result<QueueSnapshot, AppError> {
     })
 }
 
+/// Toglie dalla coda **salvata**, e dal segno di «dov'eri rimasto», le righe che
+/// stanno per non esserci più. Quante voci della coda ha tolto.
+///
+/// # Perché sta nella stessa transazione che le cancella
+///
+/// Perché la coda è un JSON di identificativi dentro `settings` e nessuna chiave
+/// esterna la ripulisce, e `tracks.id` non è `AUTOINCREMENT`: SQLite assegna
+/// `max(rowid) + 1`, quindi l'identificativo di una riga appena tolta — di norma
+/// l'ultima arrivata, cioè una riga specchio — lo prende il primo brano nuovo.
+/// Una coda che ancora lo nomina, alla riapertura, suona **un altro brano**
+/// senza dire niente (S11-1). Lo stesso per il segno, che col brano accanto
+/// vale «a 0:42 di quello»: quel numero, riferito al brano nuovo, lo farebbe
+/// partire dal mezzo.
+///
+/// Se il lettore ha già la coda in memoria — la rilegge solo all'avvio — resta
+/// da sgomberare anche quella: lo fa `sgombra_dalla_coda`, dopo la scrittura,
+/// nello strato che possiede il lettore. Questa è la metà che non dipende da
+/// lui, e che regge anche quando il lettore non c'è ancora: all'avvio, prima che
+/// la coda di ieri sia stata ripresa.
+///
+/// Si fida di `Queue::remove_tracks`, la stessa regola del lettore: il cursore
+/// scivola sul brano seguente, e l'ordine resta una permutazione.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn sgombra_il_salvato(connection: &Connection, brani: &[i64]) -> Result<usize, AppError> {
+    if brani.is_empty() {
+        return Ok(0);
+    }
+    let mut coda = rymembra_domain::queue::Queue::restore(load_queue(connection)?);
+    let tolti = coda.remove_tracks(brani);
+    if tolti.quante > 0 {
+        save_queue(connection, &coda.snapshot())?;
+    }
+    dimentica_la_posizione_di(connection, brani)?;
+    Ok(tolti.quante)
+}
+
+/// Il segno di «dov'eri rimasto» smette di valere se è dentro uno di questi brani:
+/// l'identificativo, riusato da un brano nuovo, lo farebbe partire dal mezzo.
+/// `true` se l'ha tolto. Vedi [`sgombra_il_salvato`].
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn dimentica_la_posizione_di(connection: &Connection, brani: &[i64]) -> Result<bool, AppError> {
+    if let Some(SegnoPosizione::DelBrano { brano, .. }) =
+        crate::settings::read_json::<SegnoPosizione>(connection, CHIAVE_POSIZIONE)?
+        && brani.contains(&brano)
+    {
+        return crate::settings::forget(connection, CHIAVE_POSIZIONE);
+    }
+    Ok(false)
+}
+
 // ── la coda con i brani degli altri dispositivi ─────────────────────────────
 
 /// La chiave con cui stava la coda **intera**, quando aveva anche brani di un

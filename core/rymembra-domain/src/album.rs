@@ -345,6 +345,10 @@ pub struct AlbumMember {
     pub mb_release_id: Option<String>,
     /// Identificativo Spotify dell'album.
     pub spotify_album_id: Option<String>,
+    /// Il brano è di un altro dispositivo collegato (una riga specchio), non di
+    /// questa macchina. Un disco che sta anche qui lo descrivono le righe di qui:
+    /// vedi [`aggregate_group`].
+    pub da_pari: bool,
 }
 
 /// Una riga di album, ricostruita dai brani che la compongono.
@@ -519,7 +523,22 @@ pub fn pick_album_cover(members: &[AlbumMember]) -> Option<String> {
         .map(|(hash, _)| hash.to_owned())
 }
 
-fn aggregate_group(album_key: String, members: &[AlbumMember]) -> AlbumRow {
+fn aggregate_group(album_key: String, tutti: &[AlbumMember]) -> AlbumRow {
+    // Un disco che sta anche qui lo descrivono le righe di qui. Un altro
+    // dispositivo che dichiara lo stesso identificativo MusicBrainz — gli
+    // identificativi «uniscono» — manda magari venti righe contro le tre di
+    // questa macchina, con un altro titolo e un altro artista: contate alla pari,
+    // sarebbero loro il titolo e l'artista del disco di qui (S2-11). Il conto dei
+    // brani, invece, li tiene tutti: la scheda dice quanti ne ha l'album, di
+    // dovunque siano.
+    let di_qui: Vec<AlbumMember>;
+    let members: &[AlbumMember] =
+        if tutti.iter().any(|m| m.da_pari) && tutti.iter().any(|m| !m.da_pari) {
+            di_qui = tutti.iter().filter(|m| !m.da_pari).cloned().collect();
+            &di_qui
+        } else {
+            tutti
+        };
     // Il titolo più frequente; a pari merito il più corto, poi alfabetico.
     let mut title_counts: HashMap<&str, usize> = HashMap::new();
     for member in members {
@@ -562,7 +581,7 @@ fn aggregate_group(album_key: String, members: &[AlbumMember]) -> AlbumRow {
         // a mano capita che una traccia porti «Rock» e le altre «Alternative
         // Rock», e la scheda dell'album mostrerebbe il genere di quella sola.
         genre: dominant(members, |m| m.genre.as_deref()),
-        total_tracks: members.len(),
+        total_tracks: tutti.len(),
         cover_art_hash: pick_album_cover(members),
         // L'identificativo della pubblicazione quando c'è, altrimenti quello del
         // gruppo: la colonna resta popolata in entrambi i casi.
@@ -848,6 +867,49 @@ mod tests {
             artist: Some("Art".to_owned()),
             ..AlbumMember::default()
         }
+    }
+
+    #[test]
+    fn un_pari_non_decide_il_titolo_e_l_artista_di_un_disco_di_qui() {
+        // S2-11. Tre brani di qui e venti di un altro dispositivo, con lo stesso
+        // identificativo MusicBrainz — che «unisce» — ma un altro titolo e un altro
+        // artista: il disco è uno, ma lo descrivono i tre di qui.
+        let con_id = |album: &str, artista: &str, da_pari: bool| AlbumMember {
+            album_key: if da_pari {
+                "lontano:/pc/a"
+            } else {
+                "/musica/a"
+            }
+            .to_owned(),
+            album: album.to_owned(),
+            artist: Some(artista.to_owned()),
+            mb_release_group_id: Some("g1".to_owned()),
+            da_pari,
+            ..AlbumMember::default()
+        };
+        let mut membri: Vec<AlbumMember> = (0..3)
+            .map(|_| con_id("Formati", "Artista", false))
+            .collect();
+        membri.extend((0..20).map(|_| con_id("Un altro disco", "Un altro artista", true)));
+        let gruppi = build_album_groups(&membri);
+        assert_eq!(
+            gruppi.albums.len(),
+            1,
+            "il disco è uno solo: {:?}",
+            gruppi.albums
+        );
+        let disco = &gruppi.albums[0];
+        assert_eq!(
+            (disco.title.as_str(), disco.artist.as_str()),
+            ("Formati", "Artista")
+        );
+        assert_eq!(disco.total_tracks, 23, "il conto li tiene tutti");
+        // Senza righe di qui il disco è del pari, com'è sempre stato.
+        let solo_pari: Vec<AlbumMember> = (0..20)
+            .map(|_| con_id("Un altro disco", "Un altro artista", true))
+            .collect();
+        let gruppi = build_album_groups(&solo_pari);
+        assert_eq!(gruppi.albums[0].title, "Un altro disco");
     }
 
     #[test]

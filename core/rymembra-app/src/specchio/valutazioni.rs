@@ -32,6 +32,14 @@ pub struct Valutazione {
     /// Le stelle decise, se sono cambiate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rating: Option<i64>,
+    /// Quando si è deciso il mi piace, ms: ogni campo tiene il suo orologio, e
+    /// la voce intera ha quello del più recente (`quando_ms` di `dispositivi_posta`).
+    /// Senza, di una voce scritta da una build di prima, vale quello della voce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liked_ms: Option<i64>,
+    /// Quando si sono decise le stelle, ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_ms: Option<i64>,
 }
 
 impl Valutazione {
@@ -54,10 +62,22 @@ impl Valutazione {
         let Some(prima) = prima.filter(|p| p.brano == self.brano) else {
             return self;
         };
+        // Ogni campo porta il suo orologio con sé: un cuore deciso prima non si
+        // «ringiovanisce» con le stelle date dopo (S2-9).
         Self {
             brano: self.brano,
             liked: self.liked.or(prima.liked),
             rating: self.rating.or(prima.rating),
+            liked_ms: if self.liked.is_some() {
+                self.liked_ms
+            } else {
+                prima.liked_ms
+            },
+            rating_ms: if self.rating.is_some() {
+                self.rating_ms
+            } else {
+                prima.rating_ms
+            },
         }
     }
 }
@@ -137,6 +157,10 @@ pub fn dai_al_gruppo(
             brano: remoto,
             liked,
             rating: rating.map(|s| s.clamp(0, 5)),
+            // Ogni decisione col suo orologio: la voce intera ha il più recente,
+            // e il proprietario sceglie per campo (S2-9).
+            liked_ms: liked.map(|_| adesso_ms),
+            rating_ms: rating.map(|_| adesso_ms),
         }
         .dopo(prima)
         .in_corpo();
@@ -243,7 +267,9 @@ mod prove {
             Some(Valutazione {
                 brano: 77,
                 liked: Some(true),
-                rating: None
+                rating: None,
+                liked_ms: Some(ADESSO),
+                rating_ms: None,
             })
         );
     }
@@ -272,7 +298,9 @@ mod prove {
             Some(Valutazione {
                 brano: 5,
                 liked: None,
-                rating: Some(4)
+                rating: Some(4),
+                liked_ms: None,
+                rating_ms: Some(ADESSO),
             })
         );
     }
@@ -294,12 +322,16 @@ mod prove {
             .unwrap()
             .unwrap();
         assert_eq!(voce.quando_ms, ADESSO + 10, "la più nuova");
+        // Ogni campo tiene il suo orologio (S2-9): il cuore è di ADESSO, le stelle
+        // di dopo, e il cuore non si «ringiovanisce» viaggiando con le stelle.
         assert_eq!(
             Valutazione::da_corpo(&voce.corpo),
             Some(Valutazione {
                 brano: 5,
                 liked: Some(true),
-                rating: Some(3)
+                rating: Some(3),
+                liked_ms: Some(ADESSO),
+                rating_ms: Some(ADESSO + 10),
             })
         );
         // E un mi piace tolto dopo vince sul mi piace di prima.
@@ -312,9 +344,36 @@ mod prove {
             Some(Valutazione {
                 brano: 5,
                 liked: Some(false),
-                rating: Some(3)
+                rating: Some(3),
+                liked_ms: Some(ADESSO + 20),
+                rating_ms: Some(ADESSO + 10),
             })
         );
+    }
+
+    #[test]
+    fn una_voce_di_posta_di_una_build_di_prima_non_ha_orologi_per_campo_e_si_legge() {
+        let vecchia =
+            Valutazione::da_corpo(r#"{"brano":5,"liked":true,"rating":3}"#).expect("si legge");
+        assert_eq!(
+            (
+                vecchia.liked,
+                vecchia.rating,
+                vecchia.liked_ms,
+                vecchia.rating_ms
+            ),
+            (Some(true), Some(3), None, None)
+        );
+        // E la forma di adesso non riempie il corpo di campi vuoti.
+        let corpo = Valutazione {
+            brano: 5,
+            liked: Some(true),
+            rating: None,
+            liked_ms: Some(1),
+            rating_ms: None,
+        }
+        .in_corpo();
+        assert_eq!(corpo, r#"{"brano":5,"liked":true,"liked_ms":1}"#);
     }
 
     #[test]

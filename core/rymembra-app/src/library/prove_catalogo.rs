@@ -328,3 +328,113 @@ fn la_scansione_dello_stesso_originale_prende_il_posto_della_copertina_nata_da_f
         "una già di qui non si tocca"
     );
 }
+
+#[test]
+fn un_cuore_vecchio_non_vince_su_un_cuore_del_proprietario_piu_nuovo_se_le_stelle_sono_dopo() {
+    // S2-9. Il telefono, col PC spento: a 100 mette il cuore, a 200 dà tre stelle
+    // allo stesso brano. La voce di posta porta i due campi con **un** orologio, il
+    // più recente (200). Nel frattempo, a 150, sul PC la persona ha tolto il cuore.
+    // Con l'orologio unico il cuore del telefono (deciso a 100) vince su quello del
+    // PC (150) perché viaggia con il 200 delle stelle: «vince il più recente, per
+    // campo» non valeva.
+    let c = libreria();
+    locali(&c, [1]);
+    c.execute(
+        "UPDATE tracks SET liked = 0, liked_at = 150, stats_updated_at = 150 WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let stato = |c: &Connection| -> (i64, i64) {
+        c.query_row("SELECT liked, rating FROM tracks WHERE id = 1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+    };
+    // Una build di prima manda un orologio solo, per tutti e due i campi, e
+    // continua a valere cosÃ¬: il cuore Â«ringiovanitoÂ» Ã¨ il suo limite.
+    condivisa::valuta(&c, 1, Some(true), Some(3), 200, ADESSO).unwrap();
+    assert_eq!(stato(&c), (1, 3), "con un orologio solo, com'era");
+    c.execute(
+        "UPDATE tracks SET liked = 0, liked_at = 150, rating = 0, rating_at = NULL WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    // Una di adesso porta un orologio per campo: il cuore Ã¨ di 100, le stelle di 200.
+    condivisa::valuta_con_orologi(
+        &c,
+        1,
+        Some(true),
+        Some(3),
+        condivisa::OrologiValutazione {
+            quando_ms: 200,
+            liked_ms: Some(100),
+            rating_ms: Some(200),
+        },
+        ADESSO,
+    )
+    .unwrap();
+    assert_eq!(
+        stato(&c),
+        (0, 3),
+        "il cuore tolto sul PC a 150 batte quello del telefono, deciso a 100; le stelle entrano"
+    );
+    // Un orologio di campo che non Ã¨ un istante si rifiuta, come quello della voce.
+    assert!(
+        condivisa::valuta_con_orologi(
+            &c,
+            1,
+            Some(true),
+            None,
+            condivisa::OrologiValutazione {
+                quando_ms: 200,
+                liked_ms: Some(0),
+                rating_ms: None,
+            },
+            ADESSO,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn una_chiave_troppo_lunga_non_si_taglia_nel_catalogo() {
+    // S2-8. Chi riceve il catalogo non taglia una chiave d'identità («tagliata
+    // direbbe un altro brano»: `specchio::convalida`), e rifiuta la riga se non sta
+    // nel tetto. Chi lo serve la tagliava a quel tetto lo stesso, e due brani con
+    // lo stesso inizio di chiave — titoli in giapponese a tre byte a carattere,
+    // due album con lo stesso inizio di nome — diventavano lo stesso brano.
+    use crate::specchio::convalida::{MAX_CHIAVE, convalida_riga};
+    let c = libreria();
+    locali(&c, [1, 2, 3]);
+    let lunga = format!("artista|{}|album", "x".repeat(MAX_CHIAVE));
+    // Il brano 2 ha la `track_key` oltre il tetto; il 3 ha solo la chiave di
+    // contenuto oltre il tetto.
+    c.execute("UPDATE tracks SET track_key = ?1 WHERE id = 2", [&lunga])
+        .unwrap();
+    c.execute("UPDATE tracks SET content_key = ?1 WHERE id = 3", [&lunga])
+        .unwrap();
+    let pagina = condivisa::pagina_catalogo(&c, 0, ID_PER_SECCHIO - 1).unwrap();
+    assert_eq!(
+        pagina.brani.iter().map(|b| b.id).collect::<Vec<_>>(),
+        vec![1, 3],
+        "una riga la cui chiave non sta nel tetto non si manda: l'altro la rifiuterebbe, o peggio la prenderebbe tagliata"
+    );
+    let tre = pagina.brani.iter().find(|b| b.id == 3).unwrap();
+    assert_eq!(
+        (tre.track_key.as_str(), tre.content_key.as_deref()),
+        ("k3", None),
+        "la chiave di contenuto troppo lunga non si manda tagliata: il brano ripiega su `track_key`"
+    );
+    // Quel che si manda, chi riceve lo prende com'è.
+    for brano in &pagina.brani {
+        assert_eq!(
+            convalida_riga(brano.clone(), ADESSO).as_ref(),
+            Ok(brano),
+            "{brano:?}"
+        );
+    }
+    // E il riassunto conta le righe della pagina, nient'altro: se contasse anche
+    // quella che la pagina non manda, chi legge i secchi non si fermerebbe.
+    let riassunto = condivisa::riassunto_catalogo(&c).unwrap();
+    assert_eq!(riassunto.secchi.iter().map(|s| s.righe).sum::<i64>(), 2);
+}
