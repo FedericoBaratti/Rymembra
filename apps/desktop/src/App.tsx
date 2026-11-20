@@ -156,7 +156,7 @@ import {
   type VistaBrani,
   type VoceSkin,
 } from "./ipc";
-import { conteggiDi, creaLibreria, dopoLaLettura } from "./libreria";
+import { conteggiDelFiltro, conteggiDi, creaLibreria, dopoLaLettura } from "./libreria";
 import { nomeDiFile } from "./nomeDiFile";
 import { t, tSe } from "./lingue";
 import { Trans } from "./lingue/Trans";
@@ -3462,7 +3462,22 @@ export function App() {
   // dipendenze di `contesto`, e un `avvio` riletto dopo ogni gesto — con gli
   // stessi conteggi — ne faceva uno nuovo, e con lui una navigazione
   // ridisegnata per niente. Vedi `conteggiDi` in `libreria.ts`.
-  const conteggi = useArchivio(libreria.avvio, conteggiDi, ugualiInSuperficie);
+  const conteggiDiTutti = useArchivio(libreria.avvio, conteggiDi, ugualiInSuperficie);
+  // Col filtro per dispositivo acceso la barra conta quel che la lista mostra (S9-6).
+  // Con la stessa identità finché i numeri sono gli stessi, per la stessa ragione.
+  const conteggi = useMemo(
+    () => conteggiDelFiltro(conteggiDiTutti, numeriDelFiltro, origine.tipo !== "tutti"),
+    // `numeriDelFiltro` è un oggetto nuovo a ogni rilettura: contano i quattro numeri.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      conteggiDiTutti,
+      origine.tipo,
+      numeriDelFiltro?.tracks,
+      numeriDelFiltro?.albums,
+      numeriDelFiltro?.artists,
+      numeriDelFiltro?.liked,
+    ],
+  );
 
   const etichettaOrdine =
     ordinamenti().find(([c]) => c === ordine)?.[1] ?? t("sort.shelf");
@@ -4226,7 +4241,8 @@ export function App() {
       <Intestazione
         {...testaLibreria({
           vista: pagina.vista,
-          numeri,
+          // Col filtro acceso, la lista che sta sotto (S9-6).
+          numeri: numeriDelFiltro,
           cartelle: avvio?.cartelle.length ?? 0,
           ordinamento: { etichetta: etichettaOrdine, onApri: menuOrdine },
         })}
