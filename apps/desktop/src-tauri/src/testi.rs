@@ -708,12 +708,23 @@ pub struct CandidatoIpc {
     pub anteprima: Option<String>,
 }
 
+/// Quanti byte, al più, del testo di un candidato si leggono per l'anteprima.
+///
+/// L'anteprima sono due righe, e l'elenco ne ha fino a venti: si leggeva ogni
+/// testo per intero — fino a un quarto di mebibyte l'uno — per prenderne due
+/// righe. Basta l'inizio; il testo intero resta nel nucleo finché qualcuno non
+/// lo sceglie.
+pub(crate) const ANTEPRIMA_BYTE: usize = 8 * 1024;
+
 impl From<&rymembra_meta::lrclib::Voce> for CandidatoIpc {
     fn from(voce: &rymembra_meta::lrclib::Voce) -> Self {
-        let grezzo = voce
+        let intero = voce
             .sincronizzato
             .as_deref()
             .or(voce.piatto.as_deref())
+            .unwrap_or_default();
+        let grezzo = intero
+            .get(..intero.floor_char_boundary(ANTEPRIMA_BYTE))
             .unwrap_or_default();
         let letto = rymembra_domain::testo::leggi(grezzo);
         let anteprima: Vec<String> = letto
@@ -1365,8 +1376,40 @@ impl Sequenza {
 #[cfg(test)]
 mod prove {
     use super::{
-        GUASTI_DI_FILA, ParolaSalvata, Reazione, RigaSalvata, Sequenza, componi, gemello_esteso,
+        ANTEPRIMA_BYTE, CandidatoIpc, GUASTI_DI_FILA, ParolaSalvata, Reazione, RigaSalvata,
+        Sequenza, componi, gemello_esteso,
     };
+
+    /// L'anteprima di un candidato si ricava dall'inizio del suo testo, non da
+    /// tutto: venti candidati da un quarto di mebibyte ciascuno non si leggono
+    /// per prenderne due righe l'uno.
+    #[test]
+    fn l_anteprima_di_un_candidato_legge_solo_l_inizio() {
+        let voce = |testo: String| rymembra_meta::lrclib::Voce {
+            candidato: rymembra_domain::testo::Candidato {
+                id: 1,
+                titolo: "T".to_owned(),
+                artista: "A".to_owned(),
+                ..Default::default()
+            },
+            piatto: Some(testo),
+            sincronizzato: None,
+        };
+        // Un testo normale ha la sua anteprima: due righe, senza tempi.
+        let normale = CandidatoIpc::from(&voce("prima\nseconda\nterza".to_owned()));
+        assert_eq!(normale.anteprima.as_deref(), Some("prima\nseconda"));
+
+        // Le righe che stanno dopo l'inizio non entrano: qui il testo comincia
+        // dopo ottanta kibibyte di righe vuote, ed è oltre quel che si legge.
+        let lontano = format!("{}ciao", "\n".repeat(10 * ANTEPRIMA_BYTE));
+        assert!(
+            CandidatoIpc::from(&voce(lontano)).anteprima.is_none(),
+            "l'anteprima ha letto oltre l'inizio"
+        );
+        // E un taglio in mezzo a un carattere non fa un panico.
+        let accenti = "è".repeat(ANTEPRIMA_BYTE);
+        assert!(CandidatoIpc::from(&voce(accenti)).anteprima.is_some());
+    }
 
     /// Nessun comando `(async)` legge il disco accanto al brano, decodifica il
     /// brano o chiede al catalogo.

@@ -230,6 +230,16 @@ pub enum Domanda {
     Sconosciuta,
 }
 
+/// Quanti byte, al più, ha ogni testo dentro una correzione
+/// ([`ScritturaTesto::Mano`], e i due testi di [`ScritturaTesto::Scelta`]).
+///
+/// È il tetto di chi **scrive** (`MASSIMO_TESTO` in
+/// `rymembra_app::testi::condiviso`, che l'applicazione prova uguale a questo) e
+/// sta qui perché chi risponde lo guardi **prima** di passare il testo a
+/// qualunque altra cosa — il parser compreso. Nei 64 KiB aperti di una
+/// [`Domanda`] ci sta con margine anche con tutti gli escape.
+pub const MASSIMO_TESTO_SCRITTURA: usize = 48_000;
+
 /// Una correzione al testo di un brano, come arriva a chi lo possiede.
 ///
 /// Una per domanda: chi ha messo in posta più gesti per lo stesso brano li
@@ -325,6 +335,38 @@ impl Domanda {
                 quanti: quanti.min(MASSIMO_PEZZO),
             },
             Self::Annuncio(presenza) => Self::Annuncio(presenza.nei_tetti()),
+            Self::TestoScrivi { brano, cosa } => Self::TestoScrivi {
+                brano,
+                cosa: cosa.nei_tetti(),
+            },
+            altra => altra,
+        }
+    }
+}
+
+impl ScritturaTesto {
+    /// La stessa correzione coi tetti di questo protocollo: un testo più lungo di
+    /// [`MASSIMO_TESTO_SCRITTURA`] diventa [`ScritturaTesto::Sconosciuta`].
+    ///
+    /// **Non si taglia.** Un LRC accorciato di colpo è un altro testo, e chi lo
+    /// riceve — con un tetto suo uguale a questo — lo troverebbe nei tetti e lo
+    /// scriverebbe. Come `Sconosciuta` chi risponde lo rifiuta con
+    /// `lontano.protocollo`, che è quel che si dice a una correzione che non si
+    /// può applicare, e non lo passa al parser né al database.
+    #[must_use]
+    pub fn nei_tetti(self) -> Self {
+        let sta = |testo: &str| testo.len() <= MASSIMO_TESTO_SCRITTURA;
+        match self {
+            Self::Mano { lrc } if !sta(&lrc) => Self::Sconosciuta,
+            Self::Scelta {
+                piatto,
+                sincronizzato,
+                ..
+            } if !piatto.as_deref().is_none_or(sta)
+                || !sincronizzato.as_deref().is_none_or(sta) =>
+            {
+                Self::Sconosciuta
+            }
             altra => altra,
         }
     }
@@ -889,6 +931,60 @@ mod prove {
         assert!(json.contains(r#""capacita":["catalogo"]"#), "{json}");
         assert!(nuova.dichiara(CAPACITA_CATALOGO));
         assert_eq!(serde_json::from_str::<Presenza>(&json).unwrap(), nuova);
+    }
+
+    #[test]
+    fn un_testo_oltre_il_tetto_non_arriva_a_chi_lo_legge() {
+        // Il tetto in byte prima di ogni altro: chi risponde non deve nemmeno
+        // arrivare a passare a qualcosa un testo che nessuno scrive così lungo.
+        //
+        // Con `assert!` e non `assert_eq!`: un'asserzione che fallisce stampa le
+        // due metà, e queste sono da quarantottomila byte.
+        let troppo = "a".repeat(MASSIMO_TESTO_SCRITTURA + 1);
+        let giusto = "a".repeat(MASSIMO_TESTO_SCRITTURA);
+        let scrittura = |cosa| Domanda::TestoScrivi { brano: 3, cosa }.nei_tetti();
+        let e_sconosciuta = |domanda: &Domanda| {
+            matches!(
+                domanda,
+                Domanda::TestoScrivi {
+                    brano: 3,
+                    cosa: ScritturaTesto::Sconosciuta
+                }
+            )
+        };
+
+        assert!(e_sconosciuta(&scrittura(ScritturaTesto::Mano {
+            lrc: troppo.clone()
+        })));
+        // Una scelta con un testo troppo lungo, nell'uno o nell'altro campo.
+        for (piatto, sincronizzato) in [
+            (Some(troppo.clone()), None),
+            (None, Some(troppo.clone())),
+            (Some(giusto.clone()), Some(troppo.clone())),
+        ] {
+            assert!(e_sconosciuta(&scrittura(ScritturaTesto::Scelta {
+                id_catalogo: 1,
+                piatto,
+                sincronizzato,
+                strumentale: false,
+            })));
+        }
+        // Quel che sta nel tetto passa com'è.
+        let sta = Domanda::TestoScrivi {
+            brano: 3,
+            cosa: ScritturaTesto::Mano { lrc: giusto },
+        };
+        assert!(sta.clone().nei_tetti() == sta);
+        for senza_testo in [
+            ScritturaTesto::Scarto { scarto_ms: 5 },
+            ScritturaTesto::Rifiuta,
+        ] {
+            let domanda = Domanda::TestoScrivi {
+                brano: 3,
+                cosa: senza_testo,
+            };
+            assert_eq!(domanda.clone().nei_tetti(), domanda);
+        }
     }
 
     #[test]

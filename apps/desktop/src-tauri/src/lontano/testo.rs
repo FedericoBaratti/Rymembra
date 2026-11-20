@@ -219,3 +219,22 @@ pub(super) fn consegna<D: Dati>(dati: &D, chiave: &str, voce: &VocePosta) -> Con
     }
     Consegna::Fatta
 }
+
+#[cfg(test)]
+mod prove {
+    use rymembra_app::testi::condiviso::MASSIMO_TESTO;
+    use rymembra_lontano::protocollo::MASSIMO_TESTO_SCRITTURA;
+
+    /// Chi scrive e chi risponde guardano lo stesso tetto.
+    ///
+    /// Il protocollo non conosce `rymembra_app`, e il nucleo non conosce il
+    /// protocollo: i due numeri stanno in due crate, e questa prova — l'unico
+    /// posto che li vede entrambi — è quel che li tiene uguali. Se il tetto del
+    /// protocollo fosse più basso, un testo che chi scrive accetta arriverebbe
+    /// a chi risponde come `Sconosciuta` e resterebbe in posta per trenta
+    /// giorni; più alto, chi risponde leggerebbe quel che chi scrive non manda.
+    #[test]
+    fn il_tetto_del_protocollo_e_quello_di_chi_scrive() {
+        assert_eq!(MASSIMO_TESTO_SCRITTURA, MASSIMO_TESTO);
+    }
+}

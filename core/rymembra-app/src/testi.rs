@@ -58,7 +58,7 @@ use rusqlite::{Connection, OptionalExtension as _};
 use rymembra_domain::enrich::GRAZIA_MS;
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_domain::indizi::e_segnaposto;
-use rymembra_domain::testo::{self, Aderenza, Testo};
+use rymembra_domain::testo::{self, Aderenza, MASSIMO_TESTO_BYTE, Testo};
 use rymembra_meta::Fornitori;
 use rymembra_meta::lrclib;
 
@@ -562,7 +562,13 @@ pub(crate) fn componi_con(
     }
 
     // ── 4. il tag piatto ────────────────────────────────────────────────────
-    if let Some(grezzo) = brano.lyrics.as_deref().filter(|t| !t.trim().is_empty()) {
+    // La scansione scrive il tag in `tracks.lyrics` com'è, senza tetto: un tag
+    // più lungo di un testo vero non si interpreta, come un sidecar.
+    if let Some(grezzo) = brano
+        .lyrics
+        .as_deref()
+        .filter(|t| !t.trim().is_empty() && t.len() <= MASSIMO_TESTO_BYTE)
+    {
         let testo = testo::leggi(grezzo);
         if !testo.vuoto() {
             ricordalo(grezzo, &testo, Fonte::Tag);

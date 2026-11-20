@@ -1438,3 +1438,118 @@ fn una_voce_di_sessione_non_scrive_testi_nella_libreria() {
     let _ = per_questo_brano(&connection, &vero);
     assert!(leggi_riga(&connection, "chiave-di-sessione").is_some());
 }
+
+// ── i tetti di ingresso ─────────────────────────────────────────────────────
+//
+// Un testo che viene da fuori — il `.lrc` accanto al brano, un tag, il tag piatto
+// — non arriva al lettore se è più lungo di `MASSIMO_TESTO_BYTE`. Il lettore ha i
+// suoi tetti sul lavoro (`rymembra_domain::testo`), ma un file di dieci
+// megabyte non va nemmeno letto per intero in memoria.
+//
+// Le prove usano `assert!` con un messaggio e non `assert_eq!` sulle stringhe: un
+// fallimento stamperebbe un quarto di mebibyte.
+
+use rymembra_domain::testo::MASSIMO_TESTO_BYTE;
+
+/// Un LRC valido lungo esattamente `byte`.
+fn lrc_lungo(byte: usize) -> String {
+    let mut lrc = String::from(LRC);
+    lrc.push_str("[00:03.00]");
+    let manca = byte.saturating_sub(lrc.len());
+    lrc.push_str(&"a".repeat(manca));
+    assert_eq!(lrc.len(), byte);
+    lrc
+}
+
+#[test]
+fn un_sidecar_oltre_il_tetto_non_si_legge() {
+    let (dir, connection) = libreria();
+    let brano = dir.path().join("brano.mp3");
+    std::fs::write(&brano, b"finto").expect("file");
+    std::fs::write(
+        brano.with_extension("lrc"),
+        lrc_lungo(MASSIMO_TESTO_BYTE + 1),
+    )
+    .expect("sidecar");
+    assert!(
+        leggi_sidecar(&brano).is_none(),
+        "un sidecar più lungo del tetto si è letto"
+    );
+
+    // E la catena lo salta come ogni fonte che non c'è.
+    let id = inserisci(&connection, &brano, None);
+    let esito = per_brano(&connection, id).expect("testo");
+    assert_eq!(esito.fonte, Fonte::Nessuna);
+}
+
+#[test]
+fn un_sidecar_al_tetto_si_legge_e_uno_oltre_lascia_il_posto_all_altro() {
+    let (dir, _connection) = libreria();
+    let brano = dir.path().join("brano.mp3");
+    std::fs::write(&brano, b"finto").expect("file");
+    std::fs::write(brano.with_extension("lrc"), lrc_lungo(MASSIMO_TESTO_BYTE)).expect("sidecar");
+    assert!(leggi_sidecar(&brano).is_some_and(|t| t.len() == MASSIMO_TESTO_BYTE));
+
+    // Un `.a2.lrc` oltre il tetto non copre il `.lrc` che sta nel tetto.
+    std::fs::write(
+        brano.with_extension("a2.lrc"),
+        lrc_lungo(MASSIMO_TESTO_BYTE + 1),
+    )
+    .expect("sidecar esteso");
+    assert!(leggi_sidecar(&brano).is_some_and(|t| t.len() == MASSIMO_TESTO_BYTE));
+}
+
+#[test]
+fn un_tag_sincronizzato_oltre_il_tetto_non_si_usa() {
+    use lofty::id3::v2::{SyncTextContentType, SynchronizedTextFrame, TimestampFormat};
+
+    let grande = lrc_lungo(MASSIMO_TESTO_BYTE + 1);
+    let mut vorbis = lofty::ogg::tag::VorbisComments::default();
+    vorbis.push(CHIAVE_SINCRONIZZATA.to_owned(), grande.clone());
+    assert!(
+        da_vorbis(Some(&vorbis)).is_none(),
+        "un SYNCEDLYRICS oltre il tetto si è letto"
+    );
+    let mut dentro = lofty::ogg::tag::VorbisComments::default();
+    dentro.push(
+        CHIAVE_SINCRONIZZATA.to_owned(),
+        lrc_lungo(MASSIMO_TESTO_BYTE),
+    );
+    assert!(da_vorbis(Some(&dentro)).is_some());
+
+    // Un `SYLT` con una voce sola, lunga: ricomposto da `scrivi` sarebbe oltre.
+    let sylt = SynchronizedTextFrame::new(
+        lofty::TextEncoding::UTF8,
+        *b"ita",
+        TimestampFormat::MS,
+        SyncTextContentType::Lyrics,
+        None,
+        vec![(1_000, "a".repeat(MASSIMO_TESTO_BYTE))],
+    );
+    assert!(
+        lrc_da_sylt(&sylt).is_none(),
+        "un SYLT oltre il tetto si è ricomposto"
+    );
+}
+
+#[test]
+fn il_tag_piatto_oltre_il_tetto_non_si_usa() {
+    let (dir, connection) = libreria();
+    let brano = dir.path().join("brano.mp3");
+    std::fs::write(&brano, b"finto").expect("file");
+    let id = inserisci(
+        &connection,
+        &brano,
+        Some(&lrc_lungo(MASSIMO_TESTO_BYTE + 1)),
+    );
+    let esito = per_brano(&connection, id).expect("testo");
+    assert_eq!(esito.fonte, Fonte::Nessuna);
+    assert!(esito.testo.vuoto());
+
+    // Dentro il tetto è la fonte di sempre.
+    let (dir, connection) = libreria();
+    let brano = dir.path().join("brano.mp3");
+    std::fs::write(&brano, b"finto").expect("file");
+    let id = inserisci(&connection, &brano, Some(&lrc_lungo(MASSIMO_TESTO_BYTE)));
+    assert_eq!(per_brano(&connection, id).expect("testo").fonte, Fonte::Tag);
+}

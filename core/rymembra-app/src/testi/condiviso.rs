@@ -56,8 +56,10 @@ pub const MASSIMO_TESTO: usize = 48_000;
 
 /// Quanti byte, al più, ha un testo che arriva da un altro dispositivo. Una
 /// risposta può essere più lunga di una domanda (il suo tetto è quello della
-/// cornice), ma un testo di canzone non arriva a un quarto di megabyte.
-pub const MASSIMO_TESTO_RICEVUTO: usize = 256 * 1024;
+/// cornice), ma un testo di canzone non arriva a un quarto di megabyte: è lo
+/// stesso tetto di ogni testo che si legge da fuori
+/// ([`rymembra_domain::testo::MASSIMO_TESTO_BYTE`]).
+pub const MASSIMO_TESTO_RICEVUTO: usize = rymembra_domain::testo::MASSIMO_TESTO_BYTE;
 
 /// Quante righe con un tempo, al più, ha un testo.
 pub const MASSIME_RIGHE: usize = 4_000;
@@ -68,8 +70,11 @@ pub const MASSIME_PAROLE: usize = 40_000;
 /// Il tempo più lontano che una riga o una parola può avere: dodici ore.
 pub const MASSIMO_TEMPO_MS: u32 = 12 * 3_600 * 1_000;
 
-/// Lo scarto più lontano che si accetta, in ms: un'ora.
-pub const MASSIMO_SCARTO_MS: i32 = 3_600_000;
+/// Lo scarto più lontano che si accetta, in ms: un'ora. Lo stesso tetto del
+/// `[offset:]` che un LRC dichiara
+/// ([`rymembra_domain::testo::MASSIMO_OFFSET_MS`]): quello che il lettore trova
+/// dentro il testo oltre un'ora vale zero, e non serve ripeterlo qui.
+pub const MASSIMO_SCARTO_MS: i32 = rymembra_domain::testo::MASSIMO_OFFSET_MS;
 
 /// Il proprietario di un brano, come lo dice la riga specchio: il suo
 /// dispositivo e l'id che il brano ha nella sua libreria.
