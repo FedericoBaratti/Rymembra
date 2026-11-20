@@ -485,8 +485,11 @@ pub(crate) fn applica_correzioni(
             Salute::Ok.as_str(),
         ],
     )
-    .map(|_| ())
-    .map_err(|err| db_error("scrittura del brano corretto", &err))
+    .map_err(|err| db_error("scrittura del brano corretto", &err))?;
+    // Una correzione a mano cambia chiave e disco di una riga di qui, fuori da
+    // una scansione: i doppioni e i dischi di chi sta anche su un altro
+    // dispositivo si rifanno al giro dopo (S2-5).
+    crate::specchio::archivio::doppioni_da_rifare(tx)
 }
 
 /// Rimette sopra la riga la correzione che l'utente aveva salvato.
@@ -572,9 +575,15 @@ pub(crate) fn riapplica_sopra_i_tag(
     if riapplica(tx, track_id)? {
         return Ok(true);
     }
-    tx.prepare_cached("UPDATE tracks SET track_key = ?2 WHERE id = ?1 AND track_key <> ?2")
+    let cambiate = tx
+        .prepare_cached("UPDATE tracks SET track_key = ?2 WHERE id = ?1 AND track_key <> ?2")
         .and_then(|mut statement| statement.execute(rusqlite::params![track_id, chiave_dei_tag]))
         .map_err(|err| db_error("chiave di un brano senza correzione", &err))?;
+    if cambiate > 0 {
+        // La chiave di un brano è cambiata fuori da una scansione: doppioni e
+        // dischi si rifanno al giro dopo (S2-5).
+        crate::specchio::archivio::doppioni_da_rifare(tx)?;
+    }
     Ok(false)
 }
 

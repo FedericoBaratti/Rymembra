@@ -2005,6 +2005,27 @@ fn segna_da_rifare(tx: &Connection) -> Result<(), AppError> {
     crate::settings::write(tx, DA_RIFARE, "1")
 }
 
+/// Chi riscrive **di qui**, fuori da una scansione e da un giro, quel che decide
+/// doppioni e dischi di una riga — l'arricchimento che dà un album a un brano
+/// senza, una correzione a mano dei tag, il ritorno ai tag del file — lo dice
+/// qui, nella sua transazione. Senza, una chiusura che porta solo ascolti non
+/// rifà niente (S2-5), e il disco di qui e quello del PC restano due finché non
+/// arriva una novità vera.
+///
+/// Senza dispositivi collegati né copie nascoste non c'è niente da scegliere, e
+/// il segno non si scrive: chi non ha un altro dispositivo non paga niente.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub(crate) fn doppioni_da_rifare(tx: &Connection) -> Result<(), AppError> {
+    if servono_i_doppioni(tx)? {
+        segna_da_rifare(tx)
+    } else {
+        Ok(())
+    }
+}
+
 /// Doppioni e chiavi d'album sono da rifare?
 fn e_da_rifare(tx: &Connection) -> Result<bool, AppError> {
     Ok(crate::settings::read(tx, DA_RIFARE)?.is_some())

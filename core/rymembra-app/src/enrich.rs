@@ -972,6 +972,12 @@ pub fn registra(
         conto.astenuti = conto.astenuti.saturating_add(1);
     }
 
+    // Un brano arricchito può cambiare album e chiavi: i doppioni e i dischi di
+    // chi sta anche su un altro dispositivo si rifanno al giro dopo (S2-5).
+    if conto.applicati > 0 {
+        crate::specchio::archivio::doppioni_da_rifare(tx)?;
+    }
+
     Ok(conto)
 }
 
@@ -1968,6 +1974,11 @@ pub fn registra_dimenticati(
         conto.riportati = conto.riportati.saturating_add(1);
     }
     toccati.segna_brani(&tx, &ids)?;
+    // Un brano riportato ai tag del file può cambiare disco: i doppioni e le chiavi
+    // d'album si rifanno al giro dopo (S2-5).
+    if conto.riportati > 0 {
+        crate::specchio::archivio::doppioni_da_rifare(&tx)?;
+    }
     ricostruisci_aggregati(&tx, &toccati)?;
     tx.commit()
         .map_err(|err| db_error("chiusura della transazione di ritorno", &err))?;

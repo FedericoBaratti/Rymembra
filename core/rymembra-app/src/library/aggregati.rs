@@ -266,13 +266,20 @@ fn rifai_le_chiavi_di_base(tx: &Transaction<'_>) -> Result<(), AppError> {
     let mut scrivi = tx
         .prepare_cached("UPDATE tracks SET album_key = ?2 WHERE id = ?1")
         .map_err(|err| fallito(&err))?;
+    let mut riscritte = 0_usize;
     for (id, album, dove, adesso) in righe {
         let di_base = album_group_key(&album, &dove);
         if di_base != adesso {
             scrivi
                 .execute(rusqlite::params![id, di_base])
                 .map_err(|err| fallito(&err))?;
+            riscritte = riscritte.saturating_add(1);
         }
+    }
+    // Le chiavi d'album di base sono cambiate (una regola nuova): le righe degli
+    // altri dispositivi allineate a quelle di qui si riallineano al giro dopo (S2-5).
+    if riscritte > 0 {
+        crate::specchio::archivio::doppioni_da_rifare(tx)?;
     }
     Ok(())
 }

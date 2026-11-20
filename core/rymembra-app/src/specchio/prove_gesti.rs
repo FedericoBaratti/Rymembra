@@ -1971,3 +1971,83 @@ fn la_voce_di_una_copia_di_qui_che_se_ne_va_segue_la_chiave_di_contenuto() {
         "la voce è passata alla riga del PC, con la chiave di contenuto"
     );
 }
+
+#[test]
+fn l_arricchimento_di_una_riga_di_qui_fa_rifare_i_dischi_al_giro_dopo() {
+    // S2-5: la chiusura di un giro rifà doppioni e dischi solo se qualcosa è
+    // cambiato — e prima li rifaceva a ogni giro, **anche** quando a cambiare era
+    // una riga di qui fuori da una scansione. L'arricchimento dà un album vero a
+    // un brano senza: il disco di qui adesso ha lo stesso titolo e artista di
+    // quello del PC, e le righe del PC devono prenderne la chiave. Un giro che
+    // porta solo ascolti non lo vede come novità: il segno lo lascia chi ha
+    // riscritto la riga.
+    use rymembra_domain::album::{UNKNOWN_ALBUM, album_group_key};
+    use rymembra_domain::enrich::Fields;
+    let mut c = libreria();
+    let percorso = "/musica/1.mp3";
+    let k = riga(1).track_key;
+    c.execute(
+        "INSERT INTO tracks (id, path, track_key, content_key, title, artist, album, album_key,
+                             file_size, date_added, date_modified)
+         VALUES (1, ?1, ?2, ?2, 'Titolo 1', 'Artista', ?3, ?4, 1000, 1, 1)",
+        rusqlite::params![
+            percorso,
+            k,
+            UNKNOWN_ALBUM,
+            album_group_key(UNKNOWN_ALBUM, percorso)
+        ],
+    )
+    .expect("brano di qui senza album");
+    giro(&c, &chiave(PC), &[riga(1)], ADESSO);
+    let remoto = id_specchio(&c, PC, 1);
+    let chiave_di_album = |c: &Connection, id: i64| -> String {
+        c.query_row("SELECT album_key FROM tracks WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("album_key")
+    };
+    assert_ne!(
+        chiave_di_album(&c, remoto),
+        chiave_di_album(&c, 1),
+        "il controllo: senza un album vero i due dischi non si uniscono"
+    );
+
+    // L'arricchimento dà al brano di qui l'album del PC.
+    let scrittura = crate::enrich::Scrittura {
+        track_id: 1,
+        path: percorso.to_owned(),
+        campi: Fields {
+            album: Some("Album".to_owned()),
+            ..Fields::default()
+        },
+        copertina: None,
+        fonte: "mb-release",
+        confidenza: 0.95,
+        originali: crate::enrich::TagOriginali::default(),
+    };
+    let esiti = [crate::enrich::EsitoFile {
+        track_id: 1,
+        copertina: None,
+        copertina_da: None,
+        applicato: true,
+    }];
+    let decisione = crate::enrich::Decisione::default();
+    let tx = c.transaction().expect("transazione");
+    crate::enrich::registra(&tx, &decisione, &[scrittura], &esiti, ADESSO).expect("registrazione");
+    tx.commit().expect("commit");
+
+    // Un giro con soli ascolti: il disco di qui e quello del PC si uniscono lo stesso.
+    let mut con_ascolti = riga(1);
+    con_ascolti.play_count = 9;
+    con_ascolti.stats_updated_at = 1_700_000_000_000;
+    let (_, conti) = giro_con(&c, &chiave(PC), &[con_ascolti], ADESSO + 1);
+    assert_eq!(
+        conti.aggiornate, 1,
+        "il giro riscrive la riga per gli ascolti"
+    );
+    assert_eq!(
+        chiave_di_album(&c, remoto),
+        chiave_di_album(&c, 1),
+        "la riga del PC ha preso la chiave d'album di qui"
+    );
+}
