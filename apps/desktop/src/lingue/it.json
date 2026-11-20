@@ -1666,6 +1666,7 @@
   "devices.download.confirm.bodyAtLeast": "Occupano almeno {spazio} nella cartella dei download di questo dispositivo: di alcuni non si sa la dimensione. Lo scaricamento va avanti in sottofondo e puoi fermarlo quando vuoi.",
   "devices.download.confirm.bodyUnknown": "Non si sa quanto spazio occupano: finiscono nella cartella dei download di questo dispositivo. Lo scaricamento va avanti in sottofondo e puoi fermarlo quando vuoi.",
   "devices.download.confirm.go": "Scarica",
+  "devices.download.counting": "Conto i brani da scaricare…",
   "devices.download.running": "Scaricamento di «{titolo}» · {percento}%",
   "devices.download.queued": "altri {n} in coda",
   "devices.download.queued.uno": "un altro in coda",

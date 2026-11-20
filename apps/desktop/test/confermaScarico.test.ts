@@ -106,7 +106,9 @@ test("«Scarica qui» chiede prima di accodare, e dopo aver tolto i dispositivi 
     assert.ok(inizio > 0, `App non ha più ${nome}`);
     return APP.slice(inizio, APP.indexOf("\n  );\n", inizio));
   };
-  const corpo = corpoDi("scaricaQui");
+  // Il lavoro sta in `preparaLoScarico`; `scaricaQui` lo mette dietro la guardia
+  // «una alla volta» (S9-9).
+  const corpo = corpoDi("preparaLoScarico");
   const filtro = corpo.indexOf("avvisaNonRaggiungibile(primoSpento(lontani, pannello))");
   const chiede = corpo.indexOf("ipc.lontanoScaricaAnteprima(");
   const accoda = corpo.indexOf("await accodaRighe(ids)");

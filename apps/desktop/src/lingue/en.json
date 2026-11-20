@@ -1666,6 +1666,7 @@
   "devices.download.confirm.bodyAtLeast": "They take up at least {spazio} in this device’s downloads folder: the size of some of them is not known. The download keeps going in the background, and you can stop it at any time.",
   "devices.download.confirm.bodyUnknown": "There is no way to tell how much space they take up: they go in this device’s downloads folder. The download keeps going in the background, and you can stop it at any time.",
   "devices.download.confirm.go": "Download",
+  "devices.download.counting": "Counting the tracks to download…",
   "devices.download.running": "Downloading “{titolo}” · {percento}%",
   "devices.download.queued": "{n} more queued",
   "devices.download.queued.uno": "one more queued",

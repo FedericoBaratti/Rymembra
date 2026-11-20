@@ -40,6 +40,7 @@ import {
   scaricoConNonAudio,
   scaricoFinito,
   serveAccendere,
+  unaAllaVolta,
   unisciDispositivi,
 } from "../src/lontano";
 
@@ -637,4 +638,56 @@ test("S9-13: la fotografia dello specchio passa da un posto solo, e un guasto si
   const conferma = readFileSync(new URL("../src/ConfermaSpecchio.tsx", import.meta.url), "utf8");
   assert.match(conferma, /chiediLaFotografiaDelloSpecchio\(\)/);
   assert.doesNotMatch(conferma, /daFotografia\(/);
+});
+
+// ── S9-9: «Scarica qui» una volta alla volta ────────────────────────────────
+
+test("S9-9: un secondo «Scarica qui» mentre il primo prepara non parte", async () => {
+  // Il difetto: fra il clic e la domanda di conferma passano 1-3 secondi o più
+  // (le righe intere in pagina, poi l'anteprima del nucleo), senza un segno di
+  // lavoro: un secondo clic apriva una seconda anteprima e, a conferma data, una
+  // seconda coda.
+  const una = unaAllaVolta();
+  let fatti = 0;
+  let finisci!: () => void;
+  const lungo = una(async () => {
+    fatti += 1;
+    await new Promise<void>((r) => {
+      finisci = r;
+    });
+  });
+  // Mentre il primo lavora, il secondo si scarta e dice di essere stato scartato.
+  assert.equal(await una(async () => void (fatti += 1)), false);
+  assert.equal(fatti, 1);
+  finisci();
+  assert.equal(await lungo, true);
+  // Finito il primo, si può rifare.
+  assert.equal(await una(async () => void (fatti += 1)), true);
+  assert.equal(fatti, 2);
+  // Un lavoro che fallisce rilascia, e l'errore sale a chi ha chiamato.
+  await assert.rejects(
+    una(async () => {
+      throw new Error("no");
+    }),
+  );
+  assert.equal(await una(async () => void (fatti += 1)), true, "dopo un guasto si riparte");
+});
+
+test("S9-9: «Scarica qui» passa dalla guardia, dal menù e dagli altri punti, e dice che sta contando", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /const \[unoScarico\] = useState\(\(\) => unaAllaVolta\(\)\);/);
+  // Il menù di una selezione grande: la guardia copre anche le righe intere in pagina.
+  const menu = app.slice(app.indexOf("scaricaQui: (ids) => {"), app.indexOf("vaiAlDisco: conBrano"));
+  assert.match(menu, /unoScarico\(/);
+  assert.match(menu, /setNotizia\(t\("devices\.download\.counting"\)\)/);
+  assert.match(menu, /ipc\.braniPerId\(ids\)/);
+  // Gli altri punti passano da `scaricaQui`, che ha la stessa guardia.
+  const scarica = app.slice(app.indexOf("const scaricaQui = useCallback("), app.indexOf("/**\n   * Fa partire **un** brano, da solo."));
+  assert.match(scarica, /unoScarico\(\(\) => preparaLoScarico\(brani\)\)/);
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    assert.ok(testi["devices.download.counting"], lingua);
+  }
 });

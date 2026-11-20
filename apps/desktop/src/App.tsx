@@ -80,6 +80,7 @@ import {
   eventoDelloSpecchio,
   inBlocchi,
   rileggereDopo,
+  unaAllaVolta,
 } from "./lontano";
 import { useArtisti } from "./artisti";
 import {
@@ -2162,7 +2163,9 @@ export function App() {
    * non conta le righe che il proprietario non manda più né le tracce di un CD:
    * se a conti fatti sono meno della soglia, non si chiede.
    */
-  const scaricaQui = useCallback(
+  // Una preparazione alla volta (S9-9): vedi `unaAllaVolta`.
+  const [unoScarico] = useState(() => unaAllaVolta());
+  const preparaLoScarico = useCallback(
     async (brani: readonly Brano[]) => {
       const pannello = archivioLontano.leggi();
       const lontani = brani.filter(
@@ -2201,6 +2204,12 @@ export function App() {
       await accodaRighe(ids);
     },
     [avvisaNonRaggiungibile, setNotizia, setConfermaScarico, accodaRighe, segnalaErrore],
+  );
+  const scaricaQui = useCallback(
+    async (brani: readonly Brano[]) => {
+      await unoScarico(() => preparaLoScarico(brani));
+    },
+    [unoScarico, preparaLoScarico],
   );
 
   /**
@@ -2469,10 +2478,13 @@ export function App() {
         },
         aggiungiAPlaylist: (brani) => setDaAggiungere(brani),
         scaricaQui: (ids) => {
-          ipc
-            .braniPerId(ids)
-            .then(scaricaQui)
-            .catch(segnalaErrore);
+          // La guardia copre anche le righe intere che `braniPerId` porta in
+          // pagina — con una selezione grande, secondi — e dice che sta
+          // contando: senza, un secondo clic apriva una seconda anteprima (S9-9).
+          unoScarico(async () => {
+            setNotizia(t("devices.download.counting"));
+            await preparaLoScarico(await ipc.braniPerId(ids));
+          }).catch(segnalaErrore);
         },
         vaiAlDisco: conBrano(async (brano) => {
           // Sul telefono «In riproduzione» copre la pagina, schede comprese:
@@ -2558,7 +2570,14 @@ export function App() {
         ),
       });
     },
-    [segnalaErrore, apriArtistaDelBrano, riproduzione.archivio, scaricaQui],
+    [
+      segnalaErrore,
+      apriArtistaDelBrano,
+      riproduzione.archivio,
+      unoScarico,
+      preparaLoScarico,
+      setNotizia,
+    ],
   );
 
   /** Il menù di una playlist nella barra di navigazione: vedi `vociPlaylist`. */

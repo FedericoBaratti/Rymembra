@@ -349,6 +349,30 @@ export function percentualeScarico(stato: ScaricoLontano): number {
 }
 
 /**
+ * Una cosa alla volta: un lavoro che parte mentre un altro è in corso si scarta.
+ *
+ * Restituisce `true` se il lavoro è partito (e finito), `false` se se n'era già
+ * uno e questo non è partito; un guasto sale a chi ha chiamato e rilascia, così
+ * si può riprovare. Serve a «Scarica qui»: fra il clic e la domanda di conferma
+ * passano uno o tre secondi (le righe in pagina, poi l'anteprima del nucleo), e un
+ * secondo clic apriva una seconda anteprima e, a conferma data, una seconda coda
+ * (S9-9).
+ */
+export function unaAllaVolta(): (lavoro: () => Promise<void>) => Promise<boolean> {
+  let inCorso = false;
+  return async (lavoro) => {
+    if (inCorso) return false;
+    inCorso = true;
+    try {
+      await lavoro();
+      return true;
+    } finally {
+      inCorso = false;
+    }
+  };
+}
+
+/**
  * Le frasi della domanda «Dimenticare questo dispositivo?», in ordine.
  *
  * Dimenticare un dispositivo toglie le sue righe dalla libreria, e con esse — la
