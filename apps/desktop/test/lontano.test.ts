@@ -691,3 +691,21 @@ test("S9-9: «Scarica qui» passa dalla guardia, dal menù e dagli altri punti, 
     assert.ok(testi["devices.download.counting"], lingua);
   }
 });
+
+// ── S9-16: la domanda sulle righe tolte aspetta le Novità e il giro ─────────
+
+test("S9-16: «Lasciali / Togli» non si apre sopra le Novità, il giro o il primo avvio", () => {
+  // `Novita` e il giro guardavano `unModaleAperto()` prima di aprirsi, ma
+  // `DomandaSpecchio` no: a lettura finita con righe in attesa apriva il suo
+  // `alertdialog` sopra le Novità o sopra il giro, due modali impilati (il
+  // fuoco rubato due volte, Escape alla cima e il fuoco che torna alla prima).
+  // Aspetta la stessa condizione della proposta del sottofondo, che si decide
+  // in un posto solo (`propostaPuoComparire`).
+  const conferma = readFileSync(new URL("../src/ConfermaSpecchio.tsx", import.meta.url), "utf8");
+  const dom = conferma.slice(conferma.indexOf("export function DomandaSpecchio"));
+  assert.match(dom, /pronta,\s*onErrore,/);
+  assert.match(dom, /pronta: boolean;/);
+  assert.match(dom, /if \(domanda === undefined \|\| !pronta\) return null;/);
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /<DomandaSpecchio\s+pronta=\{propostaPuoMostrarsi\}/);
+});

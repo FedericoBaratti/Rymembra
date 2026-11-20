@@ -5887,6 +5887,7 @@ export function App() {
         {/* Le righe che un dispositivo non manda più, e che aspettano un sì per
             andarsene: vedi `ConfermaSpecchio.tsx`. */}
         <DomandaSpecchio
+          pronta={propostaPuoMostrarsi}
           onErrore={segnalaErrore}
           onNotizia={setNotizia}
           onRilegge={() => chiediRilettura(true)}

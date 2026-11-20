@@ -89,12 +89,21 @@ export function ConfermaSpecchio({
  * prima era solo qui, in memoria, e il riavvio lo scordava — la domanda tornava
  * alla stessa cifra. Finché il nucleo non ha risposto non si chiede niente
  * (`domandaSullePerdite`). Uno solo in tutto il programma, in `App`.
+ *
+ * Non si apre sopra altro: `pronta` dice che non c'è il primo avvio, né il giro,
+ * né le Novità da mostrare — la stessa condizione della proposta del sottofondo
+ * (`propostaPuoComparire`, che si decide in un posto solo). Le Novità e il giro
+ * aspettano un modale aperto, ma non è reciproco: senza `pronta` due finestrelle
+ * si impilavano, col fuoco rubato due volte (S9-16).
  */
 export function DomandaSpecchio({
+  pronta,
   onErrore,
   onNotizia,
   onRilegge,
 }: {
+  /** Può aprirsi adesso: nessun altro modale di avvio ha la precedenza. */
+  pronta: boolean;
   onErrore: (errore: unknown) => void;
   onNotizia: (testo: string) => void;
   /** La libreria è cambiata: rilegge gli elenchi. */
@@ -129,7 +138,7 @@ export function DomandaSpecchio({
   }, []);
   const nomi = new Map(dispositiviDiLibreria(stato).map((d) => [d.chiave, d.nome]));
   const domanda = domandaSullePerdite(avanzamenti, nomi, lasciate);
-  if (domanda === undefined) return null;
+  if (domanda === undefined || !pronta) return null;
   const nome = nomi.get(domanda.dispositivo) ?? "";
   const ricorda = () =>
     setLasciate((prima) => new Map(prima).set(domanda.dispositivo, domanda.inAttesa));
