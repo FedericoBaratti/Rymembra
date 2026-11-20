@@ -877,42 +877,17 @@ pub(super) fn remove_tracks(
             |riga| riga.get(0),
         )
         .map_err(|err| db_error("righe specchio da tenere", &err))?;
-    let mut passa_allo_specchio = if ce_uno_specchio {
-        Some(
-            tx.prepare_cached(
-                "UPDATE playlist_tracks
-                    SET track_id = (SELECT m.id FROM tracks m
-                                     WHERE m.track_key = (SELECT t.track_key FROM tracks t
-                                                           WHERE t.id = ?1)
-                                       AND m.id <> ?1
-                                       AND m.path >= 'lontano://' AND m.path < 'lontano:/0'
-                                       AND NOT EXISTS (SELECT 1 FROM lontano_brani l
-                                                        WHERE l.track_id = m.id
-                                                          AND l.sparito_ms IS NOT NULL)
-                                     ORDER BY m.id LIMIT 1)
-                  WHERE track_id = ?1
-                    AND EXISTS (SELECT 1 FROM tracks m
-                                 WHERE m.track_key = (SELECT t.track_key FROM tracks t
-                                                       WHERE t.id = ?1)
-                                   AND m.id <> ?1
-                                   AND m.path >= 'lontano://' AND m.path < 'lontano:/0'
-                                   AND NOT EXISTS (SELECT 1 FROM lontano_brani l
-                                                    WHERE l.track_id = m.id
-                                                      AND l.sparito_ms IS NOT NULL))",
-            )
-            .map_err(|err| db_error("voci di playlist verso la riga specchio", &err))?,
-        )
-    } else {
-        None
-    };
-    let mut statement = tx
-        .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND COALESCE(path, fonte_url) = ?2")
-        .map_err(|err| db_error("rimozione di un brano", &err))?;
-    let mut removed = 0;
-    for (id, path) in righe {
-        if let Some(passa) = passa_allo_specchio.as_mut() {
-            // Solo se la riga che si toglie è quella che il piano ha visto:
-            // stessa guardia della `DELETE`, sul percorso.
+    // Le voci di quelle che si tolgono davvero — le righe che il piano ha visto,
+    // con lo stesso percorso: la guardia della `DELETE` — passano a un'altra copia
+    // dello stesso brano, con **la stessa regola** di quando se ne va una riga
+    // specchio (`specchio::archivio::sposta_le_voci`, `altre_copie`): per
+    // `track_key`, e per chi non la trova con la chiave di contenuto del
+    // proprietario, che ha corretto un tag (S2-1, la direzione opposta). Una
+    // regola detta due volte è una regola che un giorno diverge. Mai una copia che
+    // se ne va insieme a lei, né una riga specchio sparita.
+    if ce_uno_specchio {
+        let mut ancora_loro = Vec::with_capacity(righe.len());
+        for (id, path) in righe {
             let e_quella: bool = tx
                 .query_row(
                     "SELECT EXISTS (SELECT 1 FROM tracks
@@ -922,11 +897,16 @@ pub(super) fn remove_tracks(
                 )
                 .map_err(|err| db_error("riga da togliere", &err))?;
             if e_quella {
-                passa
-                    .execute([id])
-                    .map_err(|err| db_error("voci di playlist verso la riga specchio", &err))?;
+                ancora_loro.push(*id);
             }
         }
+        crate::specchio::archivio::sposta_le_voci(tx, &ancora_loro, true)?;
+    }
+    let mut statement = tx
+        .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND COALESCE(path, fonte_url) = ?2")
+        .map_err(|err| db_error("rimozione di un brano", &err))?;
+    let mut removed = 0;
+    for (id, path) in righe {
         removed += statement
             .execute(rusqlite::params![id, path])
             .map_err(|err| db_error("rimozione di un brano", &err))?;

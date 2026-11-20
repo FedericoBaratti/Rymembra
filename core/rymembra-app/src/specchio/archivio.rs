@@ -1213,8 +1213,8 @@ struct Ricerca<'a> {
 /// una voce che in grazia seguiva la chiave di contenuto e alla scadenza no
 /// (S2-1) è proprio una regola detta due volte.
 ///
-/// Si cerca per **`track_key`**, come la sincronia, il riaggancio e
-/// `remove_tracks`; e solo per chi così non trova niente, e se `Ricerca::
+/// Si cerca per **`track_key`**, come la sincronia e il riaggancio;
+/// e solo per chi così non trova niente, e se `Ricerca::
 /// anche_per_contenuto`, per **chiave di contenuto**: quella del proprietario
 /// quando ha corretto un tag e le due chiavi divergono (`lontano_brani.
 /// content_key`; per le righe di qui, `tracks.content_key`). L'altra riga è, nell'
@@ -1349,7 +1349,7 @@ fn altre_copie(
 /// sincronia la voce che manca non è un brano assente ma un brano **tolto
 /// dalla playlist**, e la lapide partirebbe verso il dispositivo che il brano
 /// ce l'ha. Il caso comune: lo stesso brano su due dispositivi, e quello che si
-/// ritira. È lo stesso gesto che `remove_tracks` fa nel verso opposto, per la
+/// ritira. `remove_tracks` lo fa nel verso opposto, con questa stessa funzione, per la
 /// copia di qui che se ne va.
 ///
 /// `per_contenuto`: se per `track_key` non c'è niente si prova con la chiave di

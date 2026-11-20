@@ -1927,3 +1927,47 @@ fn dimenticare_un_dispositivo_rifa_i_doppioni_solo_se_dietro_di_lui_c_e_qualcosa
         .expect("copia_di");
     assert_eq!(dopo, None, "il brano di qui è tornato in vista");
 }
+
+// ── S2-1, la direzione opposta: una copia di qui che se ne va ───────────────
+
+#[test]
+fn la_voce_di_una_copia_di_qui_che_se_ne_va_segue_la_chiave_di_contenuto() {
+    // Il PC ha corretto un tag: la sua `track_key` non è più quella di qui, ma la
+    // chiave di contenuto sì (`lontano_brani.content_key`). Quando la copia di qui
+    // se ne va — «Togli dalla libreria», un file sparito — le sue voci di
+    // playlist passano alla riga del PC, con la stessa regola di quando se ne va
+    // una riga specchio (`altre_copie`); cercandola per `track_key` soltanto non
+    // la trovavano, e la cascata le portava via: per la sincronia, un brano che
+    // c'è ancora e non sta più nella playlist è un brano che l'utente ha tolto.
+    let mut c = libreria();
+    c.execute(
+        "INSERT INTO tracks (id, path, track_key, content_key, title, artist, album, file_size,
+                             date_added, date_modified)
+         VALUES (1, '/musica/1.mp3', 'artista|vecchio titolo|album', 'artista|vecchio titolo|album',
+                 'Vecchio titolo', 'Artista', 'Album', 1000, 1, 1)",
+        [],
+    )
+    .expect("brano di qui");
+    let mut corretta = riga(2);
+    corretta.track_key = "artista|titolo corretto|album".to_owned();
+    corretta.content_key = Some("artista|vecchio titolo|album".to_owned());
+    giro(&c, &chiave(PC), &[corretta], ADESSO);
+    let remoto = id_specchio(&c, PC, 2);
+    let sera = playlist_con(&c, "sera", &[1]);
+
+    let regole = rymembra_domain::paths::PathRules::for_current_platform();
+    let fatto = crate::library::cancella_brani(&mut c, &[1], &[], regole).expect("cancellazione");
+    assert_eq!(fatto.tolti, 1);
+    let voci: Vec<i64> = c
+        .prepare("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position")
+        .expect("voci")
+        .query_map([sera], |r| r.get(0))
+        .expect("voci")
+        .map(|r| r.expect("voce"))
+        .collect();
+    assert_eq!(
+        voci,
+        vec![remoto],
+        "la voce è passata alla riga del PC, con la chiave di contenuto"
+    );
+}
