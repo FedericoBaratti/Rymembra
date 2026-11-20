@@ -26,6 +26,9 @@
  *     attraverso JNI devono esserci, col loro nome. Senza `Ponte.chiama` ogni
  *     ponte verso Kotlin (portachiavi, sessione multimediale, selettore delle
  *     cartelle) fallisce; senza i costruttori di wry la finestra non nasce.
+ *     Le funzioni `native` di `Ponte` (il nucleo che parte dal servizio) non
+ *     sono in un elenco: si leggono dai `external fun` di `Ponte.kt`, e R8 non
+ *     deve averle rinominate (JNI le cerca per nome).
  *   - **Le icone di Android Auto** (`aapt2 dump resources`): ogni
  *     `res/drawable/auto_*.xml` del progetto c'è ancora nella tabella delle
  *     risorse. Arrivano all'auto per nome, come stringa, e la riduzione delle
@@ -44,23 +47,37 @@
  *     vuol dire che nessun telefono con l'app installata potrà aggiornarsi, e
  *     se ne accorgerebbe solo chi prova;
  *   - il `.apk.sig` (minisign, la chiave dell'updater): firmato con la chiave
- *     che gli eseguibili conoscono, per quella versione e per quel file.
+ *     che gli eseguibili conoscono, per quella versione e per quel file, **e
+ *     valido per i byte dell'APK** (BLAKE2b-512 e Ed25519, `minisign.js`): è
+ *     la prova che il file firmato è quello che si carica, e che il telefono
+ *     lo riconoscerà.
  *
- * # Tre modi
+ * # E prima di tutto, i segreti (lavoro `segreti`, nell'ambiente `release`)
+ *
+ * `segreti` guarda dall'ambiente i tre segreti di Android **prima** delle
+ * compilazioni lunghe: ci sono, il keystore è base64 di un keystore, `keytool`
+ * lo apre con quella password e quell'alias, e il certificato ha l'impronta
+ * inchiodata. Sono i tre modi in cui `firma-apk` morirebbe dopo novanta minuti
+ * di build (S10-3). Non stampa mai un valore.
+ *
+ * # Quattro modi
  *
  *   node strumenti/apk.js nome                     il nome dell'asset, dalla versione
+ *   node strumenti/apk.js segreti                  i segreti di Android, dall'ambiente
  *   node strumenti/apk.js controlla <apk> --mapping <mapping.txt>
  *   node strumenti/apk.js verifica <apk-firmato>   (il .sig accanto, <apk>.sig)
  *
  * Gli strumenti di Android si cercano in `ANDROID_BUILD_TOOLS` (la cartella
- * `build-tools/<versione>` dell'SDK).
+ * `build-tools/<versione>` dell'SDK); `keytool`, per `segreti`, in `JAVA_HOME`.
  */
 const { spawnSync } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 
 const { codiceAndroid } = require("./versione.js");
+const { verificaFirma } = require("./minisign.js");
 
 const REPO = path.dirname(__dirname);
 const PACCHETTO = path.join(REPO, "apps/desktop/package.json");
@@ -85,14 +102,25 @@ const ABI = "arm64-v8a";
 /** Sedici kilobyte: la pagina più grande che Android ammette. */
 const PAGINA = 0x4000;
 
+/** La classe del ponte: Rust la cerca per nome, e le sue native sono di Rust. */
+const CLASSE_PONTE = "io.github.federicobaratti.rymembra.Ponte";
+
+/** Il sorgente di `Ponte`: da qui si ricavano le native, vedi [`nativiDelPonte`]. */
+const PONTE_KT = path.join(REPO, "apps/desktop/src-tauri/gen/android/app/src/main/java/io/github/federicobaratti/rymembra/Ponte.kt");
+
 /**
  * I nomi che passano il confine con Rust per nome, e che R8 deve lasciare
  * dove sono. Classe, e il membro come lo scrive `mapping.txt` (tipo di
  * ritorno, nome, parametri). Vedi l'inventario di R11 e `proguard-*.pro`.
+ *
+ * Le funzioni `native` di `Ponte` (il nucleo che parte dal servizio, F8) non
+ * stanno qui: si ricavano dai `external fun` del Kotlin ([`nativiDelPonte`]),
+ * così una nuova entra nel controllo da sé invece di essere dimenticata in una
+ * lista a mano (S6-5).
  */
 const TENUTI = [
-  // `rymembra-android/src/jvm.rs`: tutto il ponte verso Kotlin passa di qui.
-  ["io.github.federicobaratti.rymembra.Ponte", "java.lang.String chiama(java.lang.String,java.lang.String)"],
+  // `rymembra-android/src/jvm.rs`: il ponte verso Kotlin passa di qui (`chiama`).
+  [CLASSE_PONTE, "java.lang.String chiama(java.lang.String,java.lang.String)"],
   // wry crea la finestra con questi costruttori, da Rust.
   ["io.github.federicobaratti.rymembra.RustWebView", "void <init>(android.content.Context,java.lang.String[],java.lang.String)"],
   ["io.github.federicobaratti.rymembra.Ipc", "void <init>(io.github.federicobaratti.rymembra.RustWebView,io.github.federicobaratti.rymembra.RustWebViewClient)"],
@@ -238,29 +266,79 @@ function problemiBadging(testo, { pacchetto, versione: v }) {
 }
 
 /**
- * `mapping.txt` di R8: ogni membro di `TENUTI` nella sua classe, col suo nome.
+ * I nomi delle funzioni `native` di un sorgente Kotlin: i `external fun`.
+ *
+ * Una riga per dichiarazione, con le annotazioni e i modificatori in qualunque
+ * ordine (`@JvmStatic private external fun`, `private external @JvmStatic fun`);
+ * le righe di commento non contano, perché i commenti di `Ponte.kt` parlano di
+ * queste funzioni per nome.
+ */
+function nativiDi(kotlin) {
+  const nomi = [];
+  for (const riga of kotlin.split(/\r?\n/)) {
+    if (/^\s*(?:\/\/|\/?\*)/.test(riga)) continue;
+    const m = /^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:\w+\s+)*?external\s+(?:@\w+\s+)*(?:\w+\s+)*?fun\s+(?:<[^>]*>\s+)?(\w+)\s*\(/.exec(riga);
+    if (m) nomi.push(m[1]);
+  }
+  return nomi;
+}
+
+/**
+ * Le native di `Ponte`, lette da `Ponte.kt`: `avviaNucleo`,
+ * `rilasciaIlContestoDelServizio`, `contestoDiTaoPronto` (F8). Rust le esporta
+ * come `Java_…_Ponte_<nome>` e JNI le cerca per **nome**: se R8 le rinomina, il
+ * servizio non avvia il nucleo (boot, Android Auto senza attività) e l'errore è
+ * un `UnsatisfiedLinkError` che si vede solo sul telefono.
+ */
+function nativiDelPonte() {
+  return nativiDi(fs.readFileSync(PONTE_KT, "utf8"));
+}
+
+/**
+ * Le classi di un `mapping.txt` di R8, coi loro membri.
  * Una riga di membro è `    [a:b:]<ritorno> <nome>(<parametri>)[:c[:d]] -> <nome dopo R8>`;
  * le righe con un nome qualificato davanti sono quelle dei metodi incorporati.
+ * `membri`: «ritorno nome(parametri)» → nome dopo R8; `nomi`: il nome → i nomi
+ * che ha dopo R8, qualunque sia la firma (le native si cercano per nome).
  */
-function problemiMapping(testo, tenuti = TENUTI) {
+function classiDelMapping(testo) {
   const classi = new Map();
   let corrente = null;
   for (const riga of testo.split(/\r?\n/)) {
     const c = /^(\S+) -> (\S+):$/.exec(riga);
     if (c) {
-      corrente = { dopo: c[2], membri: new Map() };
+      corrente = { dopo: c[2], membri: new Map(), nomi: new Map() };
       classi.set(c[1], corrente);
       continue;
     }
     const m = /^\s+(?:\d+:\d+:)?(\S+ [^\s(]+\([^)]*\))(?::\d+(?::\d+)?)? -> (\S+)$/.exec(riga);
     if (m && corrente) {
       const [ritorno, firma] = m[1].split(" ");
+      const nome = firma.slice(0, firma.indexOf("("));
       // Un nome con la classe davanti è un metodo incorporato in questo, non un suo membro.
-      if (firma.slice(0, firma.indexOf("(")).includes(".")) continue;
+      if (nome.includes(".")) continue;
       const chiave = `${ritorno} ${firma}`;
       if (!corrente.membri.has(chiave)) corrente.membri.set(chiave, m[2]);
+      if (!corrente.nomi.has(nome)) corrente.nomi.set(nome, new Set());
+      corrente.nomi.get(nome).add(m[2]);
     }
   }
+  return classi;
+}
+
+/**
+ * `mapping.txt` di R8: ogni membro di `TENUTI` nella sua classe, col suo nome,
+ * e ogni native di `Ponte` (`nativi`, dal Kotlin) senza un altro nome.
+ *
+ * Per le native si vede solo la **ridenominazione**: una riga con un altro nome
+ * c'è sempre, per un membro rinominato. L'assenza non dice niente: una native
+ * non ha codice, e nessuno ha ancora visto un mapping di rilascio con quelle di
+ * F8, quindi non si sa se R8 elenchi un membro che ha tenuto col suo nome. Se
+ * non lo elencasse, fermare la release perché «manca» sarebbe un falso allarme
+ * dopo novanta minuti di build: l'assenza è un avviso (`avvisiMapping`).
+ */
+function problemiMapping(testo, tenuti = TENUTI, nativi = nativiDelPonte()) {
+  const classi = classiDelMapping(testo);
   const problemi = [];
   for (const [classe, membro] of tenuti) {
     const c = classi.get(classe);
@@ -274,7 +352,32 @@ function problemiMapping(testo, tenuti = TENUTI) {
     if (dopo === undefined) problemi.push(`R8 ha tolto ${classe}.${nome} (${membro})`);
     else if (dopo !== nome) problemi.push(`R8 ha rinominato ${classe}.${nome} in ${dopo}`);
   }
+  const ponte = classi.get(CLASSE_PONTE);
+  if (ponte) {
+    for (const nome of nativi) {
+      const dopo = ponte.nomi.get(nome);
+      if (dopo !== undefined && !dopo.has(nome)) problemi.push(`R8 ha rinominato ${CLASSE_PONTE}.${nome} in ${[...dopo].join(", ")}`);
+    }
+  }
   return problemi;
+}
+
+/**
+ * Le native di `Ponte` che il `mapping.txt` non elenca: un avviso che non
+ * ferma, per dire alla prima corsa vera com'è fatto il mapping (vedi
+ * `problemiMapping`). Se la classe non c'è, lo dice già `problemiMapping`.
+ */
+function avvisiMapping(testo, nativi = nativiDelPonte()) {
+  const ponte = classiDelMapping(testo).get(CLASSE_PONTE);
+  if (!ponte) return [];
+  return nativi
+    .filter((nome) => !ponte.nomi.has(nome))
+    .map(
+      (nome) =>
+        `${CLASSE_PONTE}.${nome} (native) non compare nel mapping.txt: R8 non la rinomina, ma non si sa ` +
+        "se omette le native che tiene col loro nome. Se il nucleo non parte dal servizio su un telefono, " +
+        "è il primo posto dove guardare",
+    );
 }
 
 /**
@@ -329,16 +432,25 @@ function problemiFirma(testo, impronta) {
 
 /**
  * Il `.apk.sig` di minisign: la stessa chiave dell'updater del computer, la
- * versione e il nome del file nel commento fidato. Gli identificativi e il
- * commento si leggono con le funzioni di `manifesto.js`.
+ * versione e il nome del file nel commento fidato, **e la firma valida per i
+ * byte dell'APK** (`minisign.js`, S5-2). Gli identificativi e il commento si
+ * leggono con le funzioni di `manifesto.js`; i byte sono quelli del file che si
+ * carica, e senza non si verifica niente: un controllo che si salta in silenzio
+ * è peggio di nessun controllo, quindi mancano i byte è un errore.
  */
-function problemiSig(sig, { pubkey, versione: v, file }) {
+function problemiSig(sig, { pubkey, versione: v, file, byte }) {
+  if (!Buffer.isBuffer(byte)) throw new Error("problemiSig: servono i byte dell'APK firmato, per verificare la firma contro di loro");
   const { identificativo, versioneFirmata } = require("./manifesto.js");
   const problemi = [];
   const dellaChiave = identificativo(pubkey, "plugins.updater.pubkey");
   const dellaFirma = identificativo(sig, `${file}.sig`);
   if (dellaChiave !== dellaFirma) {
     problemi.push(`${file}.sig è firmato con la chiave ${dellaFirma}, non con quella dell'updater (${dellaChiave})`);
+  } else {
+    // Con la chiave giusta resta da vedere se la firma è **di questi byte**: è
+    // quel che l'app sul telefono controlla prima di passare l'APK ad Android.
+    const esito = verificaFirma(byte, sig, pubkey);
+    if (!esito.ok) problemi.push(`${file}.sig: ${esito.motivo}`);
   }
   const firmata = versioneFirmata(sig);
   if (firmata !== v) problemi.push(`${file}.sig copre la versione ${firmata ?? "(nessuna)"} invece della ${v}`);
@@ -347,6 +459,117 @@ function problemiSig(sig, { pubkey, versione: v, file }) {
   const nome = commento.split("\t").find((c) => c.trim().startsWith("file:"));
   if (!nome || nome.trim().slice("file:".length) !== file) problemi.push(`${file}.sig è stato fatto per un altro file (${nome ? nome.trim() : "nessuno"})`);
   return problemi;
+}
+
+/* ── i segreti di Android, prima delle compilazioni lunghe (S10-3) ───── */
+
+/** I tre segreti dell'ambiente `release` con cui `firma-apk` firma l'APK. */
+const SEGRETI_ANDROID = ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS"];
+
+/**
+ * La forma dei segreti di Android, senza aprire niente: ci sono tutti e tre, e il
+ * keystore è base64 di un keystore (un PKCS12 comincia con la `SEQUENCE` DER,
+ * `0x30`; un JKS con `0xFEEDFEED`). Ritorna i problemi e i byte del keystore,
+ * se si sono potuti ricavare.
+ *
+ * **Non più severo del passo che anticipa**: `firma-apk` decodifica con
+ * `base64 -d`, che tollera gli a capo (`base64` senza `-w0` ne mette uno ogni
+ * 76 colonne), e questo controllo li tollera. Gli spazi ai bordi di password e
+ * alias non si guardano qui: se la password non è quella giusta lo dice
+ * `keytool`, che è l'unico a saperlo, e non una regola nostra che potrebbe
+ * fermare una password legittima. **Non stampa mai un valore**, solo i nomi.
+ */
+function formaDeiSegretiAndroid(env) {
+  const problemi = [];
+  for (const nome of SEGRETI_ANDROID) {
+    if (env[nome] === undefined || env[nome] === "") {
+      problemi.push(`${nome} manca o è vuoto: i segreti stanno nell'ambiente release (Settings → Environments → release), e se l'ambiente non c'era GitHub l'ha creato vuoto`);
+    }
+  }
+  let keystore = null;
+  const grezzo = env.ANDROID_KEYSTORE_BASE64;
+  if (grezzo) {
+    const pulito = grezzo.replace(/\r?\n/g, "");
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(pulito) || pulito.length % 4 !== 0) {
+      problemi.push("ANDROID_KEYSTORE_BASE64 non è base64: va il file .jks codificato, per intero (base64 -w0 rilascio.jks)");
+    } else {
+      const byte = Buffer.from(pulito, "base64");
+      const pkcs12 = byte.length > 4 && byte[0] === 0x30;
+      const jks = byte.length > 4 && byte.readUInt32BE(0) === 0xfeedfeed;
+      if (pkcs12 || jks) keystore = byte;
+      else problemi.push("ANDROID_KEYSTORE_BASE64 è base64, ma non è un keystore: non comincia come un PKCS12 né come un JKS");
+    }
+  }
+  return { problemi, keystore };
+}
+
+/** `keytool` del JDK: quello di `JAVA_HOME` se c'è, altrimenti dal `PATH`. */
+function cercaKeytool(env = process.env) {
+  const nome = process.platform === "win32" ? "keytool.exe" : "keytool";
+  if (env.JAVA_HOME) {
+    const dentro = path.join(env.JAVA_HOME, "bin", nome);
+    if (fs.existsSync(dentro)) return dentro;
+  }
+  return nome;
+}
+
+/**
+ * Il keystore si apre con quella password e quell'alias, e il certificato è
+ * quello dei rilasci. Sono i tre modi in cui `firma-apk` morirebbe dopo
+ * novanta minuti di compilazione: password sbagliata (`apksigner` non apre il
+ * keystore), alias sbagliato, o una chiave che non è quella dell'app — e in
+ * quest'ultimo caso la firma riuscirebbe, e nessun telefono con l'app
+ * installata potrebbe aggiornarsi (`problemiFirma` lo ferma, ma sull'APK).
+ *
+ * Il keystore passa da un file temporaneo leggibile solo da chi lo scrive, in
+ * `RUNNER_TEMP`, cancellato comunque vada. La password arriva a `keytool` dall'
+ * ambiente (`-storepass:env`) e non dalla riga di comando; l'alias sì, come in
+ * `apksigner`, ma non è un segreto. **Non si stampa mai l'uscita di `keytool`**:
+ * contiene l'alias e il soggetto del certificato, e un errore generico la
+ * riporta con alias e password coperti.
+ */
+function problemiKeystore({ keystore, password, alias }, { impronta, keytool = cercaKeytool() }) {
+  const cartella = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), "rymembra-ks-"));
+  try {
+    const file = path.join(cartella, "controllo.jks");
+    fs.writeFileSync(file, keystore, { mode: 0o600 });
+    // Inglese di serie: le frasi che si riconoscono sotto sono le sue.
+    const esito = spawnSync(
+      keytool,
+      ["-J-Duser.language=en", "-J-Duser.country=US", "-list", "-v", "-keystore", file, "-storepass:env", "ANDROID_KEYSTORE_PASSWORD", "-alias", alias],
+      { env: { ...process.env, ANDROID_KEYSTORE_PASSWORD: password }, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+    );
+    if (esito.error) {
+      return [`keytool non è partito (${esito.error.code ?? esito.error.message}): serve il JDK, in JAVA_HOME o nel PATH`];
+    }
+    const uscita = `${esito.stdout ?? ""}${esito.stderr ?? ""}`;
+    if (esito.status !== 0) {
+      if (/keystore password was incorrect/i.test(uscita)) {
+        return ["ANDROID_KEYSTORE_PASSWORD non apre il keystore: la password è sbagliata, o ha un a capo o uno spazio ai bordi che non è parte della password"];
+      }
+      if (/Alias <.*> does not exist/i.test(uscita)) return ["ANDROID_KEY_ALIAS non c'è nel keystore: l'alias è un altro"];
+      if (/Unrecognized keystore format|Invalid keystore format|keystore was tampered/i.test(uscita)) {
+        return ["ANDROID_KEYSTORE_BASE64 non è un keystore che keytool apra: il file è rotto o è stato codificato male"];
+      }
+      let coperta = uscita.split(/\r?\n/).find((r) => r.trim() !== "") ?? "(nessun messaggio)";
+      for (const segreto of [password, alias]) if (segreto) coperta = coperta.split(segreto).join("***");
+      return [`keytool non è riuscito (uscita ${esito.status}): ${coperta}`];
+    }
+    const problemi = [];
+    if (!/^Entry type: PrivateKeyEntry/m.test(uscita)) problemi.push("ANDROID_KEY_ALIAS non è una chiave privata del keystore: apksigner non potrebbe firmare");
+    // Il primo certificato della catena è quello che firma.
+    const sha = /^\s+SHA256:\s*([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){31})\s*$/m.exec(uscita);
+    if (!sha) problemi.push("keytool non ha detto l'impronta SHA-256 del certificato");
+    else if (normalizzaImpronta(sha[1]) !== normalizzaImpronta(impronta)) {
+      problemi.push(
+        `il certificato dell'alias è ${normalizzaImpronta(sha[1])}, non quello dei rilasci (${normalizzaImpronta(impronta)}, strumenti/android-certificato.sha256): ` +
+          "nessuna copia installata potrebbe aggiornarsi con un APK firmato così",
+      );
+    }
+    return problemi;
+  } finally {
+    fs.rmSync(cartella, { recursive: true, force: true });
+  }
 }
 
 /* ── il comando ───────────────────────────────────────────────────────── */
@@ -388,8 +611,26 @@ function main() {
     console.log(nomeAsset(v));
     return;
   }
+  if (a.comando === "segreti") {
+    // Dall'ambiente: i tre segreti di Android, quelli di `firma-apk`.
+    const { problemi, keystore } = formaDeiSegretiAndroid(process.env);
+    if (problemi.length === 0) {
+      problemi.push(
+        ...problemiKeystore(
+          { keystore, password: process.env.ANDROID_KEYSTORE_PASSWORD, alias: process.env.ANDROID_KEY_ALIAS },
+          { impronta: improntaInchiodata() },
+        ),
+      );
+    }
+    if (problemi.length) {
+      console.error(`I segreti di Android: ${problemi.length} problemi\n` + problemi.map((p) => `  - ${p}`).join("\n"));
+      process.exit(1);
+    }
+    console.log("I segreti di Android ci sono, il keystore si apre con quella password e quell'alias, e il certificato è quello dei rilasci.");
+    return;
+  }
   if ((a.comando !== "controlla" && a.comando !== "verifica") || !a.file) {
-    console.error("uso: apk.js nome | controlla <apk> --mapping <mapping.txt> | verifica <apk-firmato>");
+    console.error("uso: apk.js nome | segreti | controlla <apk> --mapping <mapping.txt> | verifica <apk-firmato>");
     process.exit(2);
   }
   const apk = fs.readFileSync(a.file);
@@ -405,7 +646,12 @@ function main() {
     const risorse = lancia("aapt2", ["dump", "resources", a.file]);
     if (risorse.codice !== 0) problemi.push(`aapt2 dump resources non è riuscito:\n${risorse.uscita}`);
     else problemi.push(...problemiRisorse(risorse.uscita, iconeDellAuto()));
-    problemi.push(...problemiMapping(fs.readFileSync(a.mapping, "utf8")));
+    const mapping = fs.readFileSync(a.mapping, "utf8");
+    problemi.push(...problemiMapping(mapping));
+    // Non fermano: dicono alla prima corsa vera com'è fatto il mapping (vedi `problemiMapping`).
+    for (const avviso of avvisiMapping(mapping)) {
+      console.log(process.env.GITHUB_ACTIONS === "true" ? `::notice title=R8 e le native di Ponte::${avviso}` : `Avviso: ${avviso}`);
+    }
   } else {
     const firma = lancia("apksigner", ["verify", "--verbose", "--print-certs", a.file]);
     if (firma.codice !== 0) problemi.push(`apksigner verify non è riuscito:\n${firma.uscita}`);
@@ -414,7 +660,7 @@ function main() {
     if (!fs.existsSync(sig)) problemi.push(`manca ${path.basename(sig)}: senza, l'app non può verificare l'APK come fa il computer`);
     else {
       const pubkey = configurazione().plugins?.updater?.pubkey ?? "";
-      problemi.push(...problemiSig(fs.readFileSync(sig, "utf8").trim(), { pubkey, versione: v, file: path.basename(a.file) }));
+      problemi.push(...problemiSig(fs.readFileSync(sig, "utf8").trim(), { pubkey, versione: v, file: path.basename(a.file), byte: apk }));
     }
   }
   if (problemi.length) {
@@ -438,9 +684,15 @@ module.exports = {
   problemiPagine,
   problemiBadging,
   problemiMapping,
+  avvisiMapping,
+  nativiDi,
+  nativiDelPonte,
   problemiRisorse,
   iconeDellAuto,
   problemiFirma,
   problemiSig,
+  formaDeiSegretiAndroid,
+  cercaKeytool,
+  problemiKeystore,
   argomenti,
 };

@@ -73,9 +73,9 @@ test("la toolchain di Rust è la stessa in tutti i workflow, e verify:ci è quel
   assert.equal(toolchainDellaCi(VERIFY), versioni[0]);
 });
 
-/* ── R20-1: gli avvisi delle dipendenze consultivi solo nella release ── */
+/* ── R20-1: gli avvisi delle dipendenze consultivi nelle due corse di un tag ── */
 
-test("nella release gli avvisi di sicurezza delle dipendenze non fermano la build, licenze e divieti sì", () => {
+test("nella release e in msix gli avvisi di sicurezza delle dipendenze non fermano la build, licenze e divieti sì", () => {
   assert.match(VERIFY, /consultivo:\n\s+description: [^\n]+\n\s+type: boolean\n\s+required: false\n\s+default: false/);
   const d = V.dipendenze;
   // Licenze, divieti e sorgenti: sempre bloccanti, dipendono dal codice.
@@ -93,8 +93,23 @@ test("nella release gli avvisi di sicurezza delle dipendenze non fermano la buil
   assert.match(VERIFY, /outputs:\n\s+avvisi:[\s\S]*?value: \$\{\{ jobs\.dipendenze\.outputs\.avvisi \}\}/);
   assert.match(R.verifica, /consultivo: true/);
   assert.match(R.pubblica, /needs\.verifica\.outputs\.avvisi/);
-  // msix.yml e i rami restano com'erano: bloccanti.
-  assert.ok(!/consultivo/.test(lavori(MSIX).verifica));
+  // `msix.yml` verifica lo stesso tag con lo stesso `deny.toml`, e rilanciarlo non
+  // cambia niente: un avviso uscito fra il tag e il lancio lo bloccherebbe fino a
+  // un tag nuovo, senza che il pacchetto (nessuna chiave, nessun segreto) ne
+  // abbia colpa (S10-12). Come la release, consultivo: l'esito si dice a chi lo
+  // carica nel Store. I rami e le pull request restano bloccanti: il default.
+  const M = lavori(MSIX);
+  assert.match(M.verifica, /consultivo: true/);
+  assert.match(M.pacchetto, /needs: \[tag, verifica\]/);
+  // L'esito sale a chi carica il pacchetto: un'annotazione in cima al lavoro, e non solo nel registro di `verifica`.
+  assert.match(M.pacchetto, /if: needs\.verifica\.outputs\.avvisi == 'trovati'/);
+  assert.match(M.pacchetto, /::warning/);
+  const avviso = blocchiRun(M.pacchetto).find((r) => /::warning/.test(r));
+  assert.ok(avviso, "manca il passo che dice gli avvisi");
+  // Il collegamento alla corsa passa dall'ambiente, e non da `${{ }}` dentro `run:`.
+  assert.ok(!/\$\{\{/.test(avviso), `un'espressione dentro run:\n${avviso}`);
+  // Un backtick dentro un echo fra virgolette è una sostituzione di comando: eseguirebbe il testo.
+  assert.ok(!/`/.test(avviso), `un backtick dentro run:\n${avviso}`);
 });
 
 /* ── R20-2: tempi ── */
@@ -183,4 +198,83 @@ test("ogni azione è inchiodata a un hash", () => {
       assert.match(m[1], /@[0-9a-f]{40}$/, m[1]);
     }
   }
+});
+
+/* ── S5-2: la firma si verifica contro i byte, prima di pubblicare ────── */
+
+test("l'installer e l'APK si verificano contro i byte dopo la firma e prima di caricare l'artefatto", () => {
+  const dopo = (testo, prima, poi) => {
+    const a = testo.indexOf(prima);
+    const b = testo.indexOf(poi);
+    assert.ok(a >= 0, `manca «${prima}»`);
+    assert.ok(b >= 0, `manca «${poi}»`);
+    assert.ok(a < b, `«${prima}» deve venire prima di «${poi}»`);
+  };
+  // Il computer: firma, poi `manifesto.js` (che verifica le firme), poi l'artefatto che `pubblica` scarica.
+  dopo(R.firma, "tauri signer sign", "node strumenti/manifesto.js");
+  dopo(R.firma, "node strumenti/manifesto.js", "actions/upload-artifact");
+  // Il telefono: firma minisign, poi `apk.js verifica`, poi l'artefatto.
+  dopo(R["firma-apk"], "tauri signer sign", "node strumenti/apk.js verifica");
+  dopo(R["firma-apk"], "node strumenti/apk.js verifica", "actions/upload-artifact");
+  // E `pubblica` non parte senza che tutti e due siano passati.
+  assert.match(R.pubblica, /needs: \[tag, verifica, firma, firma-apk\]/);
+  // I due script fanno davvero la verifica: la prova è nel codice, non nel nome del passo.
+  for (const script of ["manifesto.js", "apk.js"]) {
+    assert.match(leggi(`strumenti/${script}`), /require\("\.\/minisign\.js"\)/, `${script} non usa minisign.js`);
+  }
+  assert.match(leggi("strumenti/manifesto.js"), /verificaFirma\(fs\.readFileSync/);
+  assert.match(leggi("strumenti/apk.js"), /verificaFirma\(byte, sig, pubkey\)/);
+});
+
+/* ── S5-8: una minor senza Novità ferma il tag ────────────────────────── */
+
+test("il lavoro tag pretende le Novità per una minor o una major, e le lascia libere a una correttiva", () => {
+  const corsa = blocchiRun(R.tag).find((r) => /node strumenti\/novita\.js/.test(r));
+  assert.ok(corsa, "il lavoro tag non lancia novita.js");
+  // `--se-minor` e non il comando nudo, che per una 3.3.0 senza finestra darebbe solo un avviso.
+  assert.match(corsa, /node strumenti\/novita\.js --se-minor/);
+  assert.ok(!/node strumenti\/novita\.js\s*$/m.test(corsa), "novita.js nudo: la minor senza novità passerebbe con un avviso");
+});
+
+/* ── S10-3: i segreti si guardano prima delle compilazioni lunghe ─────── */
+
+/** I lavori da cui `nome` dipende, anche per interposta persona (`needs:`). */
+function dipendeDa(workflow, nome, visti = new Set()) {
+  const m = /^\s+needs:\s*(?:\[([^\]]*)\]|(\S+))\s*$/m.exec(workflow[nome] ?? "");
+  for (const d of (m?.[1] ?? m?.[2] ?? "").split(",").map((x) => x.trim()).filter(Boolean)) {
+    if (!visti.has(d)) {
+      visti.add(d);
+      dipendeDa(workflow, d, visti);
+    }
+  }
+  return visti;
+}
+
+test("un lavoro iniziale guarda i segreti dell'ambiente release, e ogni compilazione dipende da lui", () => {
+  const s = R.segreti;
+  assert.ok(s, "manca il lavoro segreti");
+  // Nell'ambiente `release`, dove stanno i segreti: se non c'è, GitHub lo crea vuoto, e qui lo si vede in due minuti.
+  assert.match(s, /environment: release/);
+  assert.match(s, /needs: tag/);
+  assert.match(s, /permissions:\n\s+contents: read/);
+  assert.match(s, /timeout-minutes: (?:[1-9]|10)\n/);
+  // Gli stessi controlli di `firma`, e non una copia: `firma.js` per la minisign, `apk.js` per Android.
+  assert.match(s, /run: node strumenti\/firma\.js/);
+  assert.match(s, /node strumenti\/apk\.js segreti/);
+  // Accanto alle chiavi non gira codice di terzi: né dipendenze di npm né compilazioni.
+  assert.ok(!/npm (?:ci|install)|cargo|gradlew|tauri /.test(s), "il lavoro dei segreti non installa né compila niente");
+  for (const run of blocchiRun(s)) {
+    assert.ok(!/\$\{\{/.test(run), `un'espressione dentro run:\n${run}`);
+    assert.ok(!/set -x/.test(run));
+  }
+  // Tutti i segreti che il workflow nomina stanno qui: uno aggiunto a `firma` e dimenticato in `segreti` non si vedrebbe.
+  const nomi = (testo) => [...new Set([...testo.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]))].sort();
+  assert.deepEqual(nomi(s), nomi(RELEASE));
+  assert.equal(nomi(s).length, 5, nomi(s).join(" "));
+  // Ogni altro lavoro dipende da `segreti`, direttamente o attraverso un altro: niente parte prima.
+  for (const nome of Object.keys(R).filter((n) => n !== "tag" && n !== "segreti")) {
+    assert.ok(dipendeDa(R, nome).has("segreti"), `${nome} non dipende da segreti`);
+  }
+  // E le due compilazioni lunghe lo dicono apertamente, senza fidarsi di `verifica`.
+  for (const nome of ["verifica", "costruisci", "apk"]) assert.match(R[nome], /needs: \[[^\]]*\bsegreti\b/, nome);
 });

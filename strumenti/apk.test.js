@@ -29,6 +29,7 @@ const {
   problemiRisorse,
   iconeDellAuto,
 } = require("./apk.js");
+const { nuovaChiave, commentoDi } = require("./firma-di-prova.js");
 
 const IMPRONTA = "24:85:94:2C:0F:5D:73:42:97:CD:96:A6:65:19:C7:2E:49:22:C7:05:37:E8:F3:9A:B2:D9:80:60:24:18:2A:C1";
 
@@ -246,27 +247,27 @@ test("una libreria a 4 KB, un'altra ABI o nessuna libreria fermano la release", 
 
 /* ── il .sig di minisign ──────────────────────────────────────────────── */
 
-/** Una firma con l'identificativo della chiave dell'updater vera, e un commento fidato a scelta. */
-function sig(commento, conAltraChiave = false) {
-  const pubkey = JSON.parse(fs.readFileSync(path.join(__dirname, "../apps/desktop/src-tauri/tauri.conf.json"), "utf8")).plugins.updater.pubkey;
-  const riga = Buffer.from(pubkey, "base64").toString("utf8").split("\n")[1].trim();
-  const testa = Buffer.from(riga, "base64").subarray(0, 10);
-  if (conAltraChiave) testa[9] ^= 0xff;
-  const firma = Buffer.concat([testa, Buffer.alloc(64, 7)]).toString("base64");
-  const testo = ["untrusted comment: signature from tauri secret key", firma, `trusted comment: ${commento}`, "y".repeat(88), ""].join("\n");
-  return { sig: Buffer.from(testo, "utf8").toString("base64"), pubkey };
+/**
+ * Una firma vera (chiave usa e getta, `firma-di-prova.js`) dei byte `APK`, con
+ * un commento fidato a scelta. `altraChiave`: la firma è di una chiave che non è
+ * quella della `pubkey` data.
+ */
+const APK = Buffer.from("un apk firmato");
+function sig(commento, altraChiave = false) {
+  const chiave = nuovaChiave();
+  return { sig: (altraChiave ? nuovaChiave() : chiave).firma(APK, commento), pubkey: chiave.pubkey };
 }
 
 test("il .apk.sig è della chiave dell'updater, per quella versione e quel file", () => {
   const file = "Rymembra_3.2.1_android-arm64.apk";
-  const buono = sig(`timestamp:1790000000\tfile:${file}\tversion:3.2.1`);
-  assert.deepEqual(problemiSig(buono.sig, { pubkey: buono.pubkey, versione: "3.2.1", file }), []);
-  const altra = sig(`timestamp:1790000000\tfile:${file}\tversion:3.2.1`, true);
-  assert.match(problemiSig(altra.sig, { pubkey: altra.pubkey, versione: "3.2.1", file }).join("\n"), /non con quella dell'updater/);
+  const buono = sig(commentoDi(file, "3.2.1"));
+  assert.deepEqual(problemiSig(buono.sig, { pubkey: buono.pubkey, versione: "3.2.1", file, byte: APK }), []);
+  const altra = sig(commentoDi(file, "3.2.1"), true);
+  assert.match(problemiSig(altra.sig, { pubkey: altra.pubkey, versione: "3.2.1", file, byte: APK }).join("\n"), /non con quella dell'updater/);
   const senzaVersione = sig(`timestamp:1790000000\tfile:${file}`);
-  assert.match(problemiSig(senzaVersione.sig, { pubkey: senzaVersione.pubkey, versione: "3.2.1", file }).join("\n"), /\(nessuna\)/);
-  const altroFile = sig("timestamp:1790000000\tfile:app-arm64-release-unsigned.apk\tversion:3.2.1");
-  assert.match(problemiSig(altroFile.sig, { pubkey: altroFile.pubkey, versione: "3.2.1", file }).join("\n"), /un altro file/);
+  assert.match(problemiSig(senzaVersione.sig, { pubkey: senzaVersione.pubkey, versione: "3.2.1", file, byte: APK }).join("\n"), /\(nessuna\)/);
+  const altroFile = sig(commentoDi("app-arm64-release-unsigned.apk", "3.2.1"));
+  assert.match(problemiSig(altroFile.sig, { pubkey: altroFile.pubkey, versione: "3.2.1", file, byte: APK }).join("\n"), /un altro file/);
 });
 
 /* ── aapt2 dump resources ─────────────────────────────────────────────── */
@@ -325,4 +326,241 @@ test("un APK senza le icone di Android Auto ferma la release (R11-5)", () => {
   assert.deepEqual(problemiRisorse(risorseCon(cinque), iconeDellAuto()).length, 1);
   // Un'uscita che non è quella di aapt2 non passa per buona.
   assert.match(problemiRisorse("", iconeDellAuto()).join("\n"), /non ha descritto/);
+});
+
+/* ── S5-2: il .apk.sig contro i byte dell'APK ─────────────────────────── */
+
+test("il .apk.sig con i byte cambiati non passa (S5-2)", () => {
+  const file = "Rymembra_3.2.1_android-arm64.apk";
+  const chiave = nuovaChiave();
+  const firma = chiave.firma(APK, commentoDi(file, "3.2.1"));
+  const dati = { pubkey: chiave.pubkey, versione: "3.2.1", file };
+  assert.deepEqual(problemiSig(firma, { ...dati, byte: APK }), []);
+  // Un `zipalign` o una ricompressione dopo la firma: stessa chiave, stessa
+  // versione, stesso nome nel commento, altri byte.
+  const cambiato = Buffer.from(APK);
+  cambiato[0] ^= 1;
+  assert.match(problemiSig(firma, { ...dati, byte: cambiato }).join("\n"), /non è valida per i byte/);
+  // Senza i byte non c'è niente da verificare, e non passa per buono in silenzio.
+  assert.throws(() => problemiSig(firma, dati), /byte/);
+});
+
+/* ── S5-7: l'impronta del certificato esiste in due copie ─────────────── */
+
+test("l'impronta dell'app (rilasci.rs) è quella inchiodata per la CI (android-certificato.sha256)", () => {
+  // Due copie, due lettori: la CI approva l'APK se il certificato è quello di
+  // `android-certificato.sha256`; l'app sul telefono giudica «un'altra chiave»
+  // ogni copia che non sia quella di `IMPRONTA_DEL_RILASCIO`. Se divergono, la
+  // CI approva un APK che nessun telefono scarica più, senza un errore.
+  const rust = fs.readFileSync(path.join(__dirname, "../apps/desktop/src-tauri/src/rilasci.rs"), "utf8");
+  // La costante va a capo dopo `=`: `\s*` copre anche l'a capo.
+  const m = /pub const IMPRONTA_DEL_RILASCIO\s*:\s*&str\s*=\s*"([^"]*)"/.exec(rust);
+  assert.ok(m, "rilasci.rs non ha più `pub const IMPRONTA_DEL_RILASCIO: &str = \"…\"`");
+  assert.equal(normalizzaImpronta(m[1]), improntaInchiodata());
+  // La forma che l'app confronta è esadecimale minuscolo, senza due punti (`impronta_normale`).
+  assert.match(m[1], /^[0-9a-f]{64}$/);
+});
+
+/* ── S6-5 = S10-4: le native di Ponte, dal Kotlin ─────────────────────── */
+
+const PONTE = "io.github.federicobaratti.rymembra.Ponte";
+
+/** Il `mapping.txt` di prova con queste righe di membro dentro `Ponte`. */
+function conMembri(righe) {
+  const testa = '# {"id":"sourceFile","fileName":"Ponte.kt"}\r\n';
+  return MAPPING.replace(testa, `${testa}${righe.map((r) => `${r}\r\n`).join("")}`);
+}
+
+const NATIVE_TENUTE = [
+  "    void avviaNucleo(android.content.Context,java.lang.String,boolean) -> avviaNucleo",
+  "    void rilasciaIlContestoDelServizio() -> rilasciaIlContestoDelServizio",
+  "    void contestoDiTaoPronto() -> contestoDiTaoPronto",
+];
+
+test("R8 che rinomina una native di Ponte ferma la release: Rust la cerca per nome (S6-5)", () => {
+  // `Ponte.chiama` conserva il nome, ma `avviaNucleo` diventa `a`: il servizio
+  // non avvia più il nucleo (boot, Android Auto senza attività), e l'errore si
+  // vedrebbe solo sul telefono, in `UnsatisfiedLinkError`.
+  const rinominata = conMembri([
+    "    void avviaNucleo(android.content.Context,java.lang.String,boolean) -> a",
+    "    void rilasciaIlContestoDelServizio() -> rilasciaIlContestoDelServizio",
+    "    void contestoDiTaoPronto() -> contestoDiTaoPronto",
+  ]);
+  assert.deepEqual(problemiMapping(rinominata), [`R8 ha rinominato ${PONTE}.avviaNucleo in a`]);
+  // Una per una, ognuna delle tre.
+  for (const [nome, riga] of [
+    ["rilasciaIlContestoDelServizio", "    void rilasciaIlContestoDelServizio() -> b"],
+    ["contestoDiTaoPronto", "    void contestoDiTaoPronto() -> c"],
+  ]) {
+    const mapping = conMembri(NATIVE_TENUTE.map((r) => (r.includes(` ${nome}(`) ? riga : r)));
+    assert.match(problemiMapping(mapping).join("\n"), new RegExp(`R8 ha rinominato ${PONTE.replace(/\./g, "\.")}\.${nome} in `));
+  }
+  // Con i nomi tenuti, o con la riga assente, non è un problema che ferma.
+  assert.deepEqual(problemiMapping(conMembri(NATIVE_TENUTE)), []);
+  assert.deepEqual(problemiMapping(MAPPING), []);
+});
+
+test("le native che la CI controlla sono i `external fun` di Ponte.kt, non una lista scritta a mano", () => {
+  const { nativiDi, nativiDelPonte } = require("./apk.js");
+  assert.deepEqual([...nativiDelPonte()].sort(), ["avviaNucleo", "contestoDiTaoPronto", "rilasciaIlContestoDelServizio"]);
+  const kotlin = [
+    "  /** Vedi anche `external fun finta` nei commenti: non è una dichiarazione. */",
+    "  // private external fun commentata()",
+    "  @JvmStatic private external fun una(contesto: Context, dati: String)",
+    "  external fun due()",
+    "  private external @JvmStatic fun tre(): Boolean",
+    "  fun nonNativa() = Unit",
+  ].join("\n");
+  assert.deepEqual(nativiDi(kotlin), ["una", "due", "tre"]);
+  // Una native nuova in Kotlin entra nel controllo da sé: R8 che la rinomina ferma.
+  const rinominata = conMembri(["    void nuova(int) -> a"]);
+  assert.deepEqual(problemiMapping(rinominata, undefined, ["nuova"]), [`R8 ha rinominato ${PONTE}.nuova in a`]);
+});
+
+test("nessun'altra classe Kotlin dichiara una native: la regola e il controllo sono di Ponte", () => {
+  // `proguard-rules.pro` tiene i nomi solo di `Ponte`, e `nativiDelPonte` legge
+  // solo `Ponte.kt`. Una native in un'altra classe sfuggirebbe a tutte e due.
+  const cartella = path.join(__dirname, "../apps/desktop/src-tauri/gen/android/app/src/main/java/io/github/federicobaratti/rymembra");
+  const altre = fs
+    .readdirSync(cartella)
+    .filter((f) => f.endsWith(".kt") && f !== "Ponte.kt")
+    .filter((f) => /^[ \t]*(?:@\w+[ \t]+)*(?:\w+[ \t]+)*external[ \t]+(?:\w+[ \t]+)*fun\b/m.test(fs.readFileSync(path.join(cartella, f), "utf8")));
+  assert.deepEqual(altre, [], "una native fuori da Ponte: va nella regola `-keepclasseswithmembernames` di proguard-rules.pro e in nativiDelPonte()");
+});
+
+test("una native che il mapping non elenca è un avviso, non un errore: R8 non dice come elenca un native tenuto", () => {
+  const { avvisiMapping } = require("./apk.js");
+  // Nessuno ha visto un mapping di rilascio con le native di F8: se R8 le
+  // elenca col loro nome o le omette, lo dirà la prima corsa vera.
+  assert.deepEqual(avvisiMapping(conMembri(NATIVE_TENUTE)), []);
+  const assenti = avvisiMapping(MAPPING);
+  assert.equal(assenti.length, 3);
+  assert.match(assenti.join("\n"), /avviaNucleo/);
+  // Il mapping non ha nemmeno `Ponte`: lo dice già `problemiMapping`, qui non si ripete.
+  assert.deepEqual(avvisiMapping("# compiler: R8\r\n"), []);
+});
+
+/* ── S10-3: i segreti di Android, prima delle compilazioni lunghe ─────── */
+
+const os = require("node:os");
+const { spawnSync } = require("node:child_process");
+const crypto = require("node:crypto");
+
+/**
+ * `keytool` del JDK, o `null`: le prove che lo usano si saltano. Si preferisce il
+ * JDK 17 dell'immagine (`JAVA_HOME_17_X64`), che è quello che `segreti` usa in
+ * produzione, a un `JAVA_HOME` qualunque: queste prove girano anche nel lavoro
+ * `verifica` di Windows, e un JDK diverso non deve poterle rompere.
+ */
+function keytoolOppureNull() {
+  const { cercaKeytool } = require("./apk.js");
+  const k = cercaKeytool({ ...process.env, JAVA_HOME: process.env.JAVA_HOME_17_X64 || process.env.JAVA_HOME });
+  return spawnSync(k, ["-help"], { encoding: "utf8" }).error ? null : k;
+}
+
+/** Un keystore PKCS12 vero, in una cartella nuova: file, password, alias e impronta del suo certificato (da `keytool -exportcert`, indipendente dall'uscita di `-list`). */
+function keystoreVero(keytool) {
+  const cartella = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-ks-prova-"));
+  const file = path.join(cartella, "prova.jks");
+  const password = `pw-${crypto.randomBytes(6).toString("hex")}`;
+  const alias = "chiave-di-prova";
+  const env = { ...process.env, KS_PROVA: password };
+  const genera = spawnSync(keytool, ["-genkeypair", "-keystore", file, "-storetype", "PKCS12", "-alias", alias, "-storepass:env", "KS_PROVA", "-keyalg", "RSA", "-keysize", "2048", "-dname", "CN=Prova", "-validity", "2"], { env, encoding: "utf8" });
+  assert.equal(genera.status, 0, genera.stdout + genera.stderr);
+  const pem = spawnSync(keytool, ["-exportcert", "-rfc", "-keystore", file, "-storepass:env", "KS_PROVA", "-alias", alias], { env, encoding: "utf8" });
+  assert.equal(pem.status, 0, pem.stdout + pem.stderr);
+  const impronta = new crypto.X509Certificate(pem.stdout.slice(pem.stdout.indexOf("-----BEGIN"))).fingerprint256;
+  return { keystore: fs.readFileSync(file), password, alias, impronta };
+}
+
+test("la forma dei segreti di Android: ci sono tutti e tre, e il keystore è base64 di un keystore", () => {
+  const { formaDeiSegretiAndroid } = require("./apk.js");
+  const pkcs12 = Buffer.concat([Buffer.from([0x30, 0x82, 0x0a, 0x22]), crypto.randomBytes(40)]);
+  const jks = Buffer.concat([Buffer.from([0xfe, 0xed, 0xfe, 0xed]), crypto.randomBytes(40)]);
+  const buono = { ANDROID_KEYSTORE_BASE64: pkcs12.toString("base64"), ANDROID_KEYSTORE_PASSWORD: "una password", ANDROID_KEY_ALIAS: "rymembra" };
+  assert.deepEqual(formaDeiSegretiAndroid(buono).problemi, []);
+  assert.deepEqual(formaDeiSegretiAndroid(buono).keystore, pkcs12);
+  assert.deepEqual(formaDeiSegretiAndroid({ ...buono, ANDROID_KEYSTORE_BASE64: jks.toString("base64") }).problemi, []);
+  // `base64` senza `-w0` va a capo ogni 76 colonne, e `base64 -d` di `firma-apk` lo tollera: il controllo non è più severo.
+  const aCapo = pkcs12.toString("base64").replace(/(.{76})/g, "$1\n");
+  assert.deepEqual(formaDeiSegretiAndroid({ ...buono, ANDROID_KEYSTORE_BASE64: `${aCapo}\n` }).problemi, []);
+  // Un ambiente `release` creato al volo da GitHub, senza segreti: tutti e tre mancano, e si dicono per nome.
+  const nessuno = formaDeiSegretiAndroid({}).problemi.join("\n");
+  for (const nome of ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS"]) assert.match(nessuno, new RegExp(nome));
+  assert.match(nessuno, /Environments → release/);
+  assert.match(formaDeiSegretiAndroid({ ...buono, ANDROID_KEY_ALIAS: "" }).problemi.join("\n"), /ANDROID_KEY_ALIAS/);
+  // Né base64, né un keystore: si dice, senza mai stampare il valore.
+  const storto = formaDeiSegretiAndroid({ ...buono, ANDROID_KEYSTORE_BASE64: "questo non è base64 e ha spazi" });
+  assert.match(storto.problemi.join("\n"), /ANDROID_KEYSTORE_BASE64 non è base64/);
+  assert.ok(!storto.problemi.join("\n").includes("spazi"));
+  const altro = formaDeiSegretiAndroid({ ...buono, ANDROID_KEYSTORE_BASE64: crypto.randomBytes(64).fill(1).toString("base64") });
+  assert.match(altro.problemi.join("\n"), /non è un keystore/);
+});
+
+test("keytool apre il keystore con la password e l'alias, e l'impronta è quella dei rilasci (S10-3)", { skip: keytoolOppureNull() ? false : "keytool non c'è (JAVA_HOME o PATH)" }, () => {
+  const { problemiKeystore } = require("./apk.js");
+  const keytool = keytoolOppureNull();
+  const k = keystoreVero(keytool);
+  const dati = { keystore: k.keystore, password: k.password, alias: k.alias };
+  // La cartella temporanea è quella che dice RUNNER_TEMP: dopo il controllo non deve restare niente, il keystore è una chiave.
+  const runner = fs.mkdtempSync(path.join(os.tmpdir(), "rymembra-runner-"));
+  const prima = process.env.RUNNER_TEMP;
+  process.env.RUNNER_TEMP = runner;
+  try {
+    assert.deepEqual(problemiKeystore(dati, { impronta: k.impronta, keytool }), []);
+    assert.deepEqual(fs.readdirSync(runner), [], "il keystore è rimasto su disco");
+    // Una password sbagliata: la dice per nome e non la stampa, né la nuova né quella vera.
+    const password = problemiKeystore({ ...dati, password: "sbagliata-1234" }, { impronta: k.impronta, keytool }).join("\n");
+    assert.match(password, /ANDROID_KEYSTORE_PASSWORD/);
+    assert.ok(!password.includes("sbagliata-1234") && !password.includes(k.password), password);
+    // Un alias che non c'è.
+    const alias = problemiKeystore({ ...dati, alias: "non-esiste" }, { impronta: k.impronta, keytool }).join("\n");
+    assert.match(alias, /ANDROID_KEY_ALIAS/);
+    assert.ok(!alias.includes("non-esiste"), alias);
+    // Un certificato che non è quello inchiodato: nessun telefono si aggiornerebbe.
+    const altra = problemiKeystore(dati, { impronta: IMPRONTA, keytool }).join("\n");
+    assert.match(altra, /non quello dei rilasci/);
+    // Byte che cominciano come un PKCS12 ma non lo sono: la frase esatta dipende dal JDK (può
+    // essere «formato non riconosciuto» o un errore di lettura del DER), quindi non la si
+    // pretende. Vale che non passa, e che non stampa un segreto: il ramo generico copre il resto.
+    const finto = problemiKeystore({ ...dati, keystore: Buffer.concat([Buffer.from([0x30, 0x82]), crypto.randomBytes(80)]) }, { impronta: k.impronta, keytool });
+    assert.ok(finto.length > 0, "un keystore finto è passato per buono");
+    assert.ok(!finto.join("\n").includes(k.password), finto.join("\n"));
+    assert.deepEqual(fs.readdirSync(runner), []);
+  } finally {
+    if (prima === undefined) delete process.env.RUNNER_TEMP;
+    else process.env.RUNNER_TEMP = prima;
+  }
+});
+
+test("senza keytool il controllo lo dice, e non passa per buono", () => {
+  const { problemiKeystore } = require("./apk.js");
+  const dati = { keystore: Buffer.from([0x30, 0x82, 1, 2, 3]), password: "x", alias: "y" };
+  const esito = problemiKeystore(dati, { impronta: IMPRONTA, keytool: path.join(os.tmpdir(), "keytool-che-non-esiste") }).join("\n");
+  assert.match(esito, /keytool non è partito/);
+});
+
+test("`apk.js segreti` dall'ambiente: senza segreti esce con 1 e li nomina, con un'altra chiave dice che non è quella dei rilasci", () => {
+  const lancia = (extra) => {
+    const env = { ...process.env };
+    for (const nome of Object.keys(env)) if (/^ANDROID_KEY/i.test(nome)) delete env[nome];
+    const esito = spawnSync(process.execPath, [path.join(__dirname, "apk.js"), "segreti"], { env: { ...env, ...extra }, encoding: "utf8" });
+    return { codice: esito.status, uscita: `${esito.stdout}${esito.stderr}` };
+  };
+  const vuoto = lancia({});
+  assert.equal(vuoto.codice, 1, vuoto.uscita);
+  for (const nome of ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS"]) assert.match(vuoto.uscita, new RegExp(nome));
+  const keytool = keytoolOppureNull();
+  if (!keytool) return;
+  // Un keystore vero ma di un'altra chiave: la CI lo direbbe dopo novanta minuti, qui dopo due.
+  const k = keystoreVero(keytool);
+  const altra = lancia({
+    ANDROID_KEYSTORE_BASE64: k.keystore.toString("base64"),
+    ANDROID_KEYSTORE_PASSWORD: k.password,
+    ANDROID_KEY_ALIAS: k.alias,
+    JAVA_HOME: path.dirname(path.dirname(keytool)),
+  });
+  assert.equal(altra.codice, 1, altra.uscita);
+  assert.match(altra.uscita, /non quello dei rilasci/);
+  assert.ok(!altra.uscita.includes(k.password) && !altra.uscita.includes(k.keystore.toString("base64").slice(0, 40)), "un segreto in uscita");
 });

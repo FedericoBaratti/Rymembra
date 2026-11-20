@@ -149,3 +149,53 @@ test("il repository com'è: le novità che ci sono sono scritte bene", () => {
   // `version:set` la prova non deve diventare rossa.
   for (const avviso of avvisi) assert.match(avviso, /non ha novità/);
 });
+
+/* ── S5-8: una minor o una major senza Novità ferma il tag ────────────── */
+
+const { spawnSync } = require("node:child_process");
+
+/** Lancia `novita.js` dentro un albero finto: lo script risolve `REPO` rispetto a sé stesso. */
+function lancia(radice, ...argomenti) {
+  for (const f of ["novita.js", "json.js"]) {
+    fs.mkdirSync(path.join(radice, "strumenti"), { recursive: true });
+    fs.copyFileSync(path.join(__dirname, f), path.join(radice, "strumenti", f));
+  }
+  const env = { ...process.env };
+  delete env.GITHUB_ACTIONS;
+  const esito = spawnSync(process.execPath, [path.join(radice, "strumenti", "novita.js"), ...argomenti], { env, encoding: "utf8" });
+  return { codice: esito.status, uscita: `${esito.stdout}${esito.stderr}` };
+}
+
+/** Un albero con la versione `versione` e le novità solo della 3.3.0. */
+function senzaNovita(versione) {
+  return albero({ versione, registro: registro("3.3.0", 3), it: testi("3.3.0", 3), en: testi("3.3.0", 3) });
+}
+
+test("una versione con la patch a zero (minor o major) è una che deve portare le Novità", () => {
+  const { richiedeLeNovita } = require("./novita.js");
+  for (const v of ["3.3.0", "3.10.0", "4.0.0", "10.0.0"]) assert.equal(richiedeLeNovita(v), true, v);
+  for (const v of ["3.3.1", "3.2.10", "4.0.7"]) assert.equal(richiedeLeNovita(v), false, v);
+});
+
+test("con --se-minor la minor senza novità ferma il tag, e la patch no (S5-8)", () => {
+  // La 3.3.0 esce senza la finestra «Novità»: chi viene dalla 3.2.0 non la
+  // vede, e non la vedrà mai (alla 3.3.1 la tabella dice «Niente»). Era un
+  // avviso e la corsa andava avanti.
+  const minor = lancia(senzaNovita("3.4.0"), "--se-minor");
+  assert.equal(minor.codice, 1, minor.uscita);
+  assert.match(minor.uscita, /3\.4\.0 non ha novità/);
+  const major = lancia(senzaNovita("4.0.0"), "--se-minor");
+  assert.equal(major.codice, 1, major.uscita);
+  // Una correttiva non ne ha: resta libera, con l'avviso.
+  const patch = lancia(senzaNovita("3.4.1"), "--se-minor");
+  assert.equal(patch.codice, 0, patch.uscita);
+  assert.match(patch.uscita, /Avviso: .*3\.4\.1 non ha novità/);
+  // Una minor che le ha passa.
+  const con = lancia(albero({ versione: "3.3.0", registro: registro("3.3.0", 3), it: testi("3.3.0", 3), en: testi("3.3.0", 3) }), "--se-minor");
+  assert.equal(con.codice, 0, con.uscita);
+});
+
+test("senza opzioni una minor senza novità resta un avviso: `npm run verify` non si ferma a metà sviluppo", () => {
+  const { codice, uscita } = lancia(senzaNovita("3.4.0"));
+  assert.equal(codice, 0, uscita);
+});

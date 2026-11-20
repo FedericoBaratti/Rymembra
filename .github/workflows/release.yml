@@ -43,10 +43,19 @@
 # Il prezzo è che le azioni non si aggiornano più da sole. Si aggiornano a mano,
 # leggendo la versione dal commento accanto all'hash.
 #
-# # I lavori, e perché le chiavi ne vedono due soli
+# # I lavori, e perché le chiavi ne vedono tre soli
 #
-#   tag → verifica ┬→ costruisci → firma ─────┬→ pubblica
-#                  └→ apk ───────→ firma-apk ─┘
+#   tag → segreti → verifica ┬→ costruisci → firma ─────┬→ pubblica
+#                            └→ apk ───────→ firma-apk ─┘
+#
+# `segreti` è il primo dopo `tag`, e il solo che guarda i segreti **prima** di
+# ogni compilazione: se l'ambiente `release` non c'è (GitHub lo crea vuoto, senza
+# segreti e senza revisore) o un segreto manca, è incollato male, o il keystore
+# non si apre con quella password e quell'alias, o è di un'altra chiave, lo
+# dice dopo due minuti. Prima lo dicevano `firma` e `firma-apk`, dopo ore di
+# compilazione. Riusa i controlli di `strumenti/firma.js` e di
+# `strumenti/apk.js`, gli stessi che poi firmano, e non esegue codice di terzi:
+# niente `npm ci`, niente compilazioni.
 #
 # Le chiavi stanno nei segreti dell'**ambiente `release`**:
 #
@@ -74,10 +83,12 @@
 # *Selected*, con la sola regola di **tag** `v*`; un revisore obbligatorio; i
 # cinque segreti lì, e **tolti** da *Settings → Secrets → Actions → Repository
 # secrets* (finché ci sono anche lì, l'ambiente non protegge niente). I lavori
-# `firma` e `firma-apk` si fermano ad aspettare l'approvazione: è voluto, è un
-# secondo gesto umano prima che le chiavi escano dal loro cassetto. Sono **due
-# approvazioni**: se i due lavori aspettano insieme si approvano con un gesto
-# solo, altrimenti uno alla volta. Una corsa lanciata a mano va lanciata **dal
+# `segreti`, `firma` e `firma-apk` si fermano ad aspettare l'approvazione: è
+# voluto, è un gesto umano prima che le chiavi escano dal loro cassetto. Sono
+# **tre approvazioni**: la prima subito dopo il tag (`segreti`, due minuti di
+# lavoro, e solo dopo parte la verifica), le altre due a compilazione finita —
+# se `firma` e `firma-apk` aspettano insieme si approvano con un gesto solo,
+# altrimenti uno alla volta. Una corsa lanciata a mano va lanciata **dal
 # tag** («Use workflow from» → *Tags*), non da un ramo: un ramo l'ambiente lo
 # rifiuta, e il lavoro `tag` lo dice subito invece che dopo un'ora di
 # compilazione.
@@ -87,9 +98,10 @@
 # dei quali esegue codice suo. Adesso `costruisci` e `apk` producono installer
 # e APK **senza** chiave e li consegnano come artefatti; `firma` e `firma-apk`
 # girano su macchine pulite, installano solo la CLI di Tauri dal lockfile senza
-# eseguirne gli script (e gli strumenti dell'SDK di Android), e firmano. Sulle
-# macchine che hanno compilato le chiavi non arrivano mai: per questo l'APK non
-# lo firma Gradle con `keystore.properties`, ma `apksigner` dopo.
+# eseguirne gli script (e gli strumenti dell'SDK di Android), e firmano; e
+# `segreti` gira su una macchina ancora più pulita, che non installa niente.
+# Sulle macchine che hanno compilato le chiavi non arrivano mai: per questo
+# l'APK non lo firma Gradle con `keystore.properties`, ma `apksigner` dopo.
 #
 # Lo stesso per il permesso di scrivere sul repository: lo ha solo `pubblica`,
 # che non esegue codice del repository. Tutti gli altri leggono e basta.
@@ -193,9 +205,11 @@ jobs:
           TAG: ${{ steps.scelto.outputs.tag }}
         run: |
           node strumenti/versione.js
-          # La finestra «Novità» di questa versione: se non ce n'è una è un
-          # avviso (una versione correttiva non ne ha), e il tag si fa lo stesso.
-          node strumenti/novita.js
+          # La finestra «Novità» di questa versione. Una minor o una major (la
+          # patch è zero: 3.3.0, 4.0.0) **deve** averla: senza, chi viene dalla
+          # versione prima non la vedrà mai, e la correttiva dopo non la
+          # recupera. Una correttiva (3.3.1) non ne ha, ed è solo un avviso.
+          node strumenti/novita.js --se-minor
           trovato=$(node -p "require('./apps/desktop/package.json').version")
           if [ "$trovato" != "${TAG#v}" ]; then
             echo "il tag dice ${TAG#v}, i file dicono $trovato"
@@ -217,12 +231,73 @@ jobs:
           path: corpo/
           if-no-files-found: error
 
+  # I cinque segreti dell'ambiente `release`, guardati **prima** di qualunque
+  # compilazione (S10-3). Se l'ambiente non esiste, GitHub lo crea al volo,
+  # vuoto e senza revisore: `costruisci` e `apk` girerebbero per un'ora e mezza,
+  # e `firma` morirebbe alla prima riga. Qui lo si vede dopo due minuti, nello
+  # stesso ambiente che poi consegnerà le chiavi, quindi con le stesse regole
+  # (solo un tag `v*`, un revisore): è la prima delle tre approvazioni.
+  #
+  # Gli stessi controlli di chi poi firma, non una copia:
+  #
+  #   - `strumenti/firma.js`: la chiave minisign è intera, base64 pulita, senza
+  #     spazi ai bordi, e la password pure. Rifiuta anche un a capo in fondo,
+  #     e va bene così: la CLI di Tauri non fa `trim()` e lo rifiuterebbe lo
+  #     stesso, dopo la compilazione; qui il rifiuto costa due minuti.
+  #   - `strumenti/apk.js segreti`: ci sono i tre segreti di Android, il
+  #     keystore è base64 di un keystore, `keytool` lo apre con quella password
+  #     e quell'alias, e il certificato ha l'impronta di
+  #     `strumenti/android-certificato.sha256`. Non guarda la password della
+  #     minisign (la sapremo solo firmando) né il valore di niente: non stampa
+  #     mai un segreto, e il keystore sta su disco il tempo di `keytool`.
+  #
+  # Non esegue codice di terzi: niente `npm ci`, niente compilazioni. Gli
+  # strumenti sono script di Node che usano solo la libreria di serie.
+  segreti:
+    needs: tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: La chiave dell'updater è quella che sembra
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node strumenti/firma.js
+
+      # `keytool` è quello del JDK 17 dell'immagine, lo stesso che usano
+      # `apksigner` e Gradle negli altri lavori.
+      - name: La chiave di Android apre il keystore, ed è quella dei rilasci
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          node strumenti/apk.js segreti
+
   # Le stesse prove di ogni push, sul tag e non sul ramo. Con una differenza:
   # gli avvisi di sicurezza sulle dipendenze non fermano la release, vanno in
   # testa alla bozza (decisione D-96; vedi il lavoro `dipendenze` di
-  # `verify.yml`). Licenze e divieti fermano come sempre.
+  # `verify.yml`). Licenze e divieti fermano come sempre. Dopo `segreti`: una
+  # configurazione sbagliata si scopre prima di un'ora di prove.
   verifica:
-    needs: tag
+    needs: [tag, segreti]
     permissions:
       contents: read
     uses: ./.github/workflows/verify.yml
@@ -231,7 +306,7 @@ jobs:
       consultivo: true
 
   costruisci:
-    needs: [tag, verifica]
+    needs: [tag, segreti, verifica]
     runs-on: windows-latest
     # Novanta: senza cache (qui sotto) tutte le dipendenze si compilano in
     # release con `codegen-units = 1` e LTO thin su quattro processori; i
@@ -397,6 +472,13 @@ jobs:
       # posto in tutta la catena in cui quel disallineamento si può ancora
       # scoprire senza che lo racconti un utente. Si ferma anche se le note
       # dell'aggiornamento sarebbero vuote.
+      #
+      # E la firma si verifica **contro i byte**, non solo nell'id e nella
+      # versione (`strumenti/minisign.js`, BLAKE2b-512 e Ed25519 come il
+      # client): sull'installer firmato, su quello che si carica in `uscita/`
+      # e, riletta da disco, sulla firma dentro `latest.json`. Un `.sig` che non
+      # è di questo file passerebbe tutti gli altri cancelli, e ogni copia
+      # installata scaricherebbe l'installer per buttarlo.
       - name: Il manifesto dell'updater
         shell: bash
         run: |
@@ -414,7 +496,7 @@ jobs:
   # telefoni a 64 bit, cioè quasi tutti (decisione D-6); l'x86_64 serviva solo
   # a emulatori e Chromebook e raddoppiava il tempo.
   apk:
-    needs: [tag, verifica]
+    needs: [tag, segreti, verifica]
     # `ubuntu-24.04` e non `-latest`: l'immagine non cambia sotto i piedi da un
     # tag all'altro.
     runs-on: ubuntu-24.04
@@ -662,9 +744,11 @@ jobs:
       # `apksigner` può aver cambiato), un firmatario solo, non la chiave di
       # debug, l'impronta del certificato uguale a quella inchiodata in
       # `strumenti/android-certificato.sha256`, e il `.apk.sig` della chiave
-      # dell'updater per questa versione. È il gemello di `manifesto.js`: una
-      # chiave sbagliata qui vuol dire che nessun telefono si aggiornerà, e lo
-      # scoprirebbe solo chi prova.
+      # dell'updater per questa versione, **valido per i byte dell'APK**
+      # (`strumenti/minisign.js`: è quel che l'app sul telefono verifica prima
+      # di consegnarlo ad Android). È il gemello di `manifesto.js`: una chiave
+      # sbagliata, o un `.apk.sig` di un altro file, vuol dire che nessun
+      # telefono si aggiornerà, e lo scoprirebbe solo chi prova.
       - name: L'APK firmato, controllato
         shell: bash
         run: |
