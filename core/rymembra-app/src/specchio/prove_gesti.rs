@@ -1664,3 +1664,77 @@ fn una_riga_specchio_di_un_dispositivo_non_collegato_si_toglie_all_apertura() {
     );
     assert!(dispositivi_a_meta(&c).expect("a metà").is_empty());
 }
+
+// ── la posta in uscita segue un brano riabbinato (S2-13) ─────────────────────────
+
+#[test]
+fn una_riga_riabbinata_porta_con_se_la_sua_posta() {
+    use crate::dispositivi::{POSTA_TESTO, POSTA_VALUTA, in_posta, metti_in_posta};
+    // Il PC ricostruisce la libreria: il brano 2 torna con un id nuovo, e la riga
+    // specchio si riabbina sul posto (`riabbina`). Un cuore dato qui e ancora in
+    // posta nomina il brano con l'id di prima: il PC risponderebbe «quel brano non
+    // c'è», e il cuore si butterebbe.
+    let c = libreria();
+    let tutte: Vec<_> = (1..=5).map(riga).collect();
+    giro(&c, &chiave(PC), &tutte, ADESSO);
+    let id2 = id_specchio(&c, PC, 2);
+    specchio::valutazioni::dai_al_gruppo(&c, id2, Some(true), None, ADESSO + 1_000).expect("cuore");
+    // E un testo corretto, che aspetta in posta con la stessa chiave.
+    metti_in_posta(
+        &c,
+        &chiave(PC),
+        POSTA_TESTO,
+        "2",
+        r#"{"scartoMs":120}"#,
+        ADESSO + 2_000,
+    )
+    .expect("testo");
+    assert!(
+        in_posta(&c, &chiave(PC), POSTA_VALUTA, "2")
+            .expect("posta")
+            .is_some()
+    );
+
+    // Il PC non manda più il brano 2, e poi lo rimanda con l'id 902.
+    let senza: Vec<_> = tutte.iter().filter(|r| r.id != 2).cloned().collect();
+    giro(&c, &chiave(PC), &senza, ADESSO + 10_000);
+    let mut di_nuovo = riga(2);
+    di_nuovo.id = 902;
+    let mut tutte_di_nuovo = senza.clone();
+    tutte_di_nuovo.push(di_nuovo);
+    let chiusura = giro(&c, &chiave(PC), &tutte_di_nuovo, ADESSO + 20_000);
+    assert_eq!(chiusura.riabbinate, 1, "{chiusura:?}");
+    assert_eq!(
+        id_specchio(&c, PC, 902),
+        id2,
+        "la riga è la stessa, col suo id nuovo"
+    );
+
+    assert!(
+        in_posta(&c, &chiave(PC), POSTA_VALUTA, "2")
+            .expect("posta")
+            .is_none(),
+        "il cuore non resta all'id di prima"
+    );
+    let voto = in_posta(&c, &chiave(PC), POSTA_VALUTA, "902")
+        .expect("posta")
+        .expect("il cuore segue il brano");
+    let valutazione = specchio::valutazioni::Valutazione::da_corpo(&voto.corpo).expect("corpo");
+    assert_eq!(
+        (valutazione.brano, valutazione.liked),
+        (902, Some(true)),
+        "e nel corpo c'è l'id di adesso: è quello che il PC legge"
+    );
+    assert_eq!(voto.quando_ms, ADESSO + 1_000, "l'orologio non cambia");
+    assert!(
+        in_posta(&c, &chiave(PC), POSTA_TESTO, "2")
+            .expect("posta")
+            .is_none()
+    );
+    assert!(
+        in_posta(&c, &chiave(PC), POSTA_TESTO, "902")
+            .expect("posta")
+            .is_some(),
+        "anche il testo corretto"
+    );
+}

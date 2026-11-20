@@ -877,11 +877,19 @@ impl Giro {
                 params![vecchio, percorso(&self.dispositivo, riga.id)],
             )
             .map_err(|err| db_error("riga specchio riabbinata", &err))?;
+            let id_di_prima: i64 = tx
+                .query_row(
+                    "SELECT id_remoto FROM lontano_brani WHERE track_id = ?1",
+                    [vecchio],
+                    |r| r.get(0),
+                )
+                .map_err(|err| db_error("riga specchio riabbinata", &err))?;
             tx.execute(
                 "UPDATE lontano_brani SET id_remoto = ?2 WHERE track_id = ?1",
                 params![vecchio, riga.id],
             )
             .map_err(|err| db_error("riga specchio riabbinata", &err))?;
+            sposta_la_posta(tx, &self.dispositivo, id_di_prima, riga.id)?;
             let impronta = impronta_della_riga(riga);
             aggiorna(
                 tx,
@@ -897,6 +905,34 @@ impl Giro {
         }
         Ok(fatte)
     }
+}
+
+/// La posta in uscita per il brano `da` — un voto, un testo corretto — passa al
+/// brano che adesso ha l'id `a`: lo stesso brano, riabbinato dopo che il
+/// proprietario ha rifatto la sua libreria con id nuovi (S2-13).
+///
+/// La chiave di una voce è l'id che il brano ha **dall'altra parte**, e il corpo
+/// di un voto lo porta anche dentro (`brano`): è quello che il proprietario
+/// legge. Rimasta all'id di prima, la voce arriverebbe a un brano che non c'è
+/// (`lontano.fileCambiato`) e si butterebbe, e il cuore dato qui sparirebbe al
+/// giro dopo. L'orologio della voce non cambia: è quello della decisione.
+///
+/// `OR IGNORE`: se per l'id nuovo c'è già una voce — non può esserci, la riga
+/// con quell'id è appena entrata — non si pesta, e quella di prima si butta da
+/// sola.
+fn sposta_la_posta(tx: &Connection, dispositivo: &str, da: i64, a: i64) -> Result<(), AppError> {
+    if da == a {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE OR IGNORE dispositivi_posta
+            SET chiave = ?4,
+                corpo = CASE WHEN tipo = 'valuta' THEN json_set(corpo, '$.brano', ?3) ELSE corpo END
+          WHERE dispositivo = ?1 AND chiave = ?2 AND tipo IN ('valuta', 'testo')",
+        params![dispositivo, da.to_string(), a, a.to_string()],
+    )
+    .map(|_| ())
+    .map_err(|err| db_error("posta di una riga riabbinata", &err))
 }
 
 /// Com'è andato il giro.
