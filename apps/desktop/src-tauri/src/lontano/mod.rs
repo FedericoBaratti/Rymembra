@@ -623,7 +623,7 @@ pub async fn lontano_dimentica(app: Nucleo, chiave: String) -> Esito<StatoLontan
             nodo.revoca(&chiave);
         }
         // Le sue righe in coda non si aprono più: le righe se ne vanno con lui
-        // (`specchio::archivio::dimentica_dispositivo`), e `apri_riga` rifiuta
+        // (`specchio::archivio::comincia_a_dimenticare`, poi a blocchi), e `apri_riga` rifiuta
         // un dispositivo che non è più collegato.
         specchio::dimenticato(&chiave);
         // E le copertine che una versione di prima gli teneva in cache: non

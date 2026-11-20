@@ -590,20 +590,28 @@ struct Scritte {
     insieme_cambiato: bool,
     /// Perché si è fermata, se si è fermata prima della fine.
     guasto: Option<AppError>,
+    /// I dispositivi dimenticati il cui primo tempo è fatto: le loro righe sono
+    /// nascoste, e si cancellano a blocchi, **fuori** da questo lucchetto
+    /// ([`super::specchio::dimentica_a_blocchi`]).
+    da_finire: Vec<String>,
 }
 
 /// Scrive le modifiche nella libreria, una alla volta, fino alla prima che
 /// non riesce. Ognuna è una transazione sua (`dispositivi::dimentica` ne apre
 /// una), e quelle fatte restano fatte. Scriverne una due volte non cambia
 /// niente: dimenticare due volte è dimenticare una volta.
+///
+/// «Dimentica» fa qui **il primo tempo e basta**: la riga di `dispositivi` se ne
+/// va, e le righe specchio del dispositivo si nascondono (S2-3, S2-6). Cancellarle
+/// — un minuto di lucchetto con duecentomila righe — è dei blocchi, che girano a
+/// lucchetto lasciato; e se l'app si chiude prima, lo spazzino dell'avvio li
+/// riprende.
 fn scrivi_su(c: &rusqlite::Connection, da_scrivere: &[(String, u64, Modifica)]) -> Scritte {
     let mut scritte = Scritte::default();
     for (chiave, numero, modifica) in da_scrivere {
         let esito = match modifica {
             Modifica::Dimentica => dispositivi::dimentica(c, chiave).and_then(|insieme| {
-                // Le sue righe nella libreria unica se ne vanno con lui, dopo
-                // aver passato le voci di playlist a un'altra copia.
-                rymembra_app::specchio::archivio::dimentica_dispositivo(c, chiave)?;
+                rymembra_app::specchio::archivio::comincia_a_dimenticare(c, chiave, adesso_ms())?;
                 Ok(insieme)
             }),
             Modifica::Revoca => dispositivi::revoca(c, chiave).map(|()| false),
@@ -613,6 +621,9 @@ fn scrivi_su(c: &rusqlite::Connection, da_scrivere: &[(String, u64, Modifica)]) 
             Ok(cambiato) => {
                 scritte.insieme_cambiato |= cambiato;
                 scritte.fatte.push((chiave.clone(), *numero));
+                if matches!(modifica, Modifica::Dimentica) {
+                    scritte.da_finire.push(chiave.clone());
+                }
             }
             Err(err) => {
                 scritte.guasto = Some(err);
@@ -724,6 +735,13 @@ fn scrivi_finche_ce_n_e(app: &Nucleo, comune: &Comune) {
                 subito: false,
             });
         }
+        // Le righe dei dispositivi dimenticati si cancellano a blocchi, fuori
+        // dal lucchetto e **fuori da questo filo**: un «Dimentica» da duecentomila
+        // righe dura più di un minuto, e un collegamento fatto nel frattempo
+        // non deve aspettare che finisca per essere scritto.
+        for chiave in scritte.da_finire {
+            super::specchio::dimentica_in_disparte(app.clone(), chiave);
+        }
         if let Some(err) = scritte.guasto {
             nota!(
                 "[lontano] una modifica dei dispositivi non si scrive codice={}: si riprova al giro",
@@ -751,6 +769,9 @@ pub(super) fn scrivi_prima_di_uscire(app: &Nucleo, comune: &Comune) {
     match esito {
         Some(Ok(scritte)) => {
             comune.segna_scritte(&scritte.fatte);
+            // Le righe dei dispositivi dimenticati (`scritte.da_finire`) non si
+            // cancellano uscendo: sono già nascoste, e all'avvio dopo lo
+            // spazzino finisce il lavoro ([`super::specchio::riprendi_le_dimenticanze`]).
             if let Some(err) = scritte.guasto {
                 nota!(
                     "[lontano] uscendo, una modifica dei dispositivi non si scrive codice={}",
@@ -771,6 +792,10 @@ pub(super) fn scrivi_prima_di_uscire(app: &Nucleo, comune: &Comune) {
 
 /// Fa partire il filo.
 pub(super) fn avvia(app: Nucleo, comune: Arc<Comune>, cassetta: Receiver<Posta>) {
+    // Prima del filo e a prescindere da lui: un «Dimentica» rimasto a metà
+    // non dipende da «Raggiungibile da internet», e su Android parte anche dal
+    // servizio, senza una finestra.
+    super::specchio::riprendi_le_dimenticanze_in_disparte(app.clone());
     let girato = std::thread::Builder::new()
         .name("rymembra-lontano-filo".to_owned())
         .spawn(move || Filo::nuovo(app, comune).gira(&cassetta));
@@ -1656,6 +1681,58 @@ mod prove {
         assert!(tieni_la_lettura(&comune, &mut letto, leggi(c), 0));
         assert!(!comune.associato(&perso));
         assert!(comune.associato(&nuovo));
+    }
+
+    /// «Dimentica», nello scrittore del registro, fa il **primo tempo** e basta:
+    /// la riga di `dispositivi` se ne va e le righe specchio si nascondono, ma non
+    /// si cancellano — cancellarle tiene il lucchetto un minuto con duecentomila
+    /// righe (S2-6) — e `da_finire` dice a chi viene dopo quali dispositivi hanno
+    /// ancora dei blocchi da fare.
+    #[test]
+    fn il_registro_fa_il_primo_tempo_di_dimentica_e_lascia_i_blocchi_a_chi_viene_dopo() {
+        let db = rymembra_app::db::open_in_memory().unwrap();
+        let c = &db.connection;
+        let perso = chiave_finta('a');
+        collega(c, &perso);
+        for id in 1..=3_i64 {
+            c.execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified, source)
+                 VALUES (?1, ?2, ?3, 'T', 'A', 'B', 1, 1, 1, 'lontano')",
+                rusqlite::params![
+                    id,
+                    rymembra_app::specchio::percorso(&perso, id),
+                    format!("a|t{id}|b")
+                ],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO lontano_brani (track_id, dispositivo, id_remoto) VALUES (?1, ?2, ?1)",
+                rusqlite::params![id, &perso],
+            )
+            .unwrap();
+        }
+        let scritte = scrivi_su(c, &[(perso.clone(), 1, Modifica::Dimentica)]);
+        assert!(scritte.guasto.is_none(), "{:?}", scritte.guasto);
+        assert_eq!(scritte.fatte, vec![(perso.clone(), 1)]);
+        assert_eq!(scritte.da_finire, vec![perso.clone()]);
+        let quante = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(quante("SELECT COUNT(*) FROM dispositivi"), 0);
+        assert_eq!(
+            quante("SELECT COUNT(*) FROM lontano_brani"),
+            3,
+            "le righe non si cancellano sotto questo lucchetto"
+        );
+        assert_eq!(
+            quante("SELECT COUNT(*) FROM tracks WHERE copia_di = id"),
+            3,
+            "ma si nascondono: da adesso non si vedono"
+        );
+        // E uno spazzino che arriva le trova a metà.
+        assert_eq!(
+            rymembra_app::specchio::archivio::dispositivi_a_meta(c).unwrap(),
+            vec![perso]
+        );
     }
 
     /// Un dispositivo appena collegato, come arriva dal nodo.

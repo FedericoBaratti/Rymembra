@@ -1042,6 +1042,111 @@ fn conferma_a_blocchi<D: Dati>(dati: &D, chiave: &str) -> Result<usize, AppError
     }
 }
 
+/// Il secondo tempo di «Dimentica»: le righe di un dispositivo che non è più
+/// collegato se ne vanno **a blocchi**, ognuno in una presa sua del lucchetto, e
+/// dopo ogni blocco la coda del lettore smette di nominare le righe tolte
+/// (S11-1). Il primo tempo — le righe nascoste, la riga di `dispositivi` tolta —
+/// l'ha già fatto chi ha scritto il registro ([`super::filo`]): da lì il
+/// dispositivo non serve più niente, e le sue righe non si vedono.
+///
+/// Si ferma se il dispositivo si è ricollegato nel frattempo (le righe sono di
+/// nuovo sue), se un blocco non ha tolto niente, o se la libreria non risponde:
+/// quel che resta lo finisce lo spazzino dell'avvio ([`riprendi_le_dimenticanze`]).
+/// Quante righe ha tolto.
+fn dimentica_a_blocchi<D: Dati>(dati: &D, chiave: &str) -> usize {
+    // Alla finestra, subito: il dispositivo non ha più righe da vedere, e gli
+    // elenchi si rileggono senza aspettare la fine dei blocchi.
+    dati.emetti(&AvanzamentoSpecchio {
+        dispositivo: chiave.to_owned(),
+        fase: Fase::Fine,
+        ..AvanzamentoSpecchio::default()
+    });
+    let mut tolte = 0_usize;
+    loop {
+        let blocco = dati.scrivi(|c| {
+            archivio::dimentica_un_blocco(c, chiave, adesso_ms(), archivio::BLOCCO_RIMOZIONI)
+        });
+        match blocco {
+            Ok(blocco) => {
+                dati.sgombera(&blocco.ids_tolti);
+                tolte = tolte.saturating_add(blocco.tolte);
+                if blocco.finito || blocco.tolte == 0 {
+                    break;
+                }
+            }
+            Err(err) => {
+                nota!(
+                    "[lontano] «Dimentica» non finisce codice={}: si riprende all'avvio",
+                    err.code().kind().code()
+                );
+                break;
+            }
+        }
+    }
+    tolte
+}
+
+/// [`dimentica_a_blocchi`] su un filo suo, per il filo che ha scritto il registro:
+/// non aspetta.
+pub(super) fn dimentica_in_disparte(app: Nucleo, chiave: String) {
+    let partito = std::thread::Builder::new()
+        .name("rymembra-lontano-dimentica".to_owned())
+        .spawn(move || match DallApp::nuovo(&app) {
+            Ok(dati) => {
+                dimentica_a_blocchi(&dati, &chiave);
+            }
+            Err(err) => nota!(
+                "[lontano] «Dimentica» non può finire ora codice={}: si riprende all'avvio",
+                err.code().kind().code()
+            ),
+        });
+    if let Err(err) = partito {
+        nota!("[lontano] il filo di «Dimentica» non parte: {err}");
+    }
+}
+
+/// Lo spazzino dell'avvio: i dispositivi che non sono più collegati e hanno
+/// ancora righe — un «Dimentica» che un arresto ha lasciato a metà, la chiusura
+/// dalla barra, Windows che spegne — si finiscono ([`dimentica_a_blocchi`]). Le
+/// loro righe, se il primo tempo non c'era stato, si nascondono lì prima di
+/// cancellarle.
+fn riprendi_le_dimenticanze<D: Dati>(dati: &D) {
+    let a_meta = match dati.leggi(archivio::dispositivi_a_meta) {
+        Ok(a_meta) => a_meta,
+        Err(err) => {
+            nota!(
+                "[lontano] i «Dimentica» rimasti a metà non si cercano codice={}",
+                err.code().kind().code()
+            );
+            return;
+        }
+    };
+    for chiave in a_meta {
+        let tolte = dimentica_a_blocchi(dati, &chiave);
+        nota!(
+            "[lontano] un «Dimentica» rimasto a metà è finito: {tolte} righe tolte, dispositivo {}",
+            chiave.chars().take(8).collect::<String>()
+        );
+    }
+}
+
+/// [`riprendi_le_dimenticanze`] su un filo suo: parte con il nucleo, anche senza
+/// finestra e con «Raggiungibile da internet» spento, e non aspetta.
+pub(super) fn riprendi_le_dimenticanze_in_disparte(app: Nucleo) {
+    let partito = std::thread::Builder::new()
+        .name("rymembra-lontano-spazzino".to_owned())
+        .spawn(move || match DallApp::nuovo(&app) {
+            Ok(dati) => riprendi_le_dimenticanze(&dati),
+            Err(err) => nota!(
+                "[lontano] lo spazzino dei «Dimentica» non parte codice={}",
+                err.code().kind().code()
+            ),
+        });
+    if let Err(err) = partito {
+        nota!("[lontano] il filo dello spazzino non parte: {err}");
+    }
+}
+
 /// La persona ha detto di sì: le righe che il dispositivo non manda più se ne
 /// vanno. Quante.
 #[tauri::command]
@@ -2152,7 +2257,12 @@ mod prove {
     }
 
     /// Una riga specchio di `dispositivo`, segnata sparita da `sparita_da`.
-    fn riga_specchio(c: &rusqlite::Connection, id: i64, dispositivo: &str, sparita_da: i64) {
+    fn riga_specchio(
+        c: &rusqlite::Connection,
+        id: i64,
+        dispositivo: &str,
+        sparita_da: Option<i64>,
+    ) {
         c.execute(
             "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size, date_added,
                                  date_modified, source)
@@ -2181,7 +2291,7 @@ mod prove {
         {
             let db = dati.db.lock().unwrap();
             for id in 1..=60 {
-                riga_specchio(&db, id, &chiave, 1_000);
+                riga_specchio(&db, id, &chiave, Some(1_000));
             }
         }
         let tolte = conferma_a_blocchi(&dati, &chiave).unwrap();
@@ -2205,14 +2315,89 @@ mod prove {
             // Sparite da sempre (1 ms dopo il 1970): più della grazia; e una
             // sparita adesso, che resta.
             for id in 1..=3 {
-                riga_specchio(&db, id, &chiave, 1);
+                riga_specchio(&db, id, &chiave, Some(1));
             }
-            riga_specchio(&db, 4, &chiave, adesso_ms());
+            riga_specchio(&db, 4, &chiave, Some(adesso_ms()));
         }
         togli_le_scadute(&dati, &chiave, 0, 0, false, true);
         let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
         sgombrati.sort_unstable();
         assert_eq!(sgombrati, vec![1, 2, 3], "la quarta è ancora in grazia");
         assert!(!*dati.sgombrato_dentro_la_scrittura.lock().unwrap());
+    }
+
+    /// «Dimentica» a blocchi: le righe se ne vanno più di un blocco alla volta, e
+    /// dopo ognuno la coda lo sa — a lucchetto lasciato.
+    #[test]
+    fn dimenticare_a_blocchi_dice_alla_coda_quali_righe_ha_tolto() {
+        let chiave = "b".repeat(64);
+        let dati = ConLibreria::nuova();
+        let quante = i64::try_from(archivio::BLOCCO_RIMOZIONI).unwrap() + 500;
+        {
+            let db = dati.db.lock().unwrap();
+            let tx = db.unchecked_transaction().unwrap();
+            for id in 1..=quante {
+                riga_specchio(&tx, id, &chiave, None);
+            }
+            tx.commit().unwrap();
+        }
+        // Il dispositivo non è in `dispositivi`: il registro l'ha già tolto.
+        let tolte = dimentica_a_blocchi(&dati, &chiave);
+        assert_eq!(i64::try_from(tolte).unwrap(), quante);
+        let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
+        sgombrati.sort_unstable();
+        assert_eq!(sgombrati, (1..=quante).collect::<Vec<i64>>());
+        assert!(!*dati.sgombrato_dentro_la_scrittura.lock().unwrap());
+        let db = dati.db.lock().unwrap();
+        assert_eq!(quante_righe(&db, "lontano_brani"), 0);
+        assert_eq!(quante_righe(&db, "tracks"), 0);
+    }
+
+    fn quante_righe(c: &rusqlite::Connection, tabella: &str) -> i64 {
+        c.query_row(&format!("SELECT COUNT(*) FROM {tabella}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Lo spazzino dell'avvio finisce un «Dimentica» rimasto a metà, e lascia stare
+    /// un dispositivo collegato.
+    #[test]
+    fn lo_spazzino_finisce_i_dimentica_rimasti_a_meta_e_non_tocca_i_collegati() {
+        let a_meta = "b".repeat(64);
+        let collegato = "c".repeat(64);
+        let dati = ConLibreria::nuova();
+        {
+            let db = dati.db.lock().unwrap();
+            for id in 1..=5 {
+                riga_specchio(&db, id, &a_meta, None);
+            }
+            for id in 6..=8 {
+                riga_specchio(&db, id, &collegato, None);
+            }
+            db.execute(
+                "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'PC', 1)",
+                [&collegato],
+            )
+            .unwrap();
+        }
+        riprendi_le_dimenticanze(&dati);
+        let db = dati.db.lock().unwrap();
+        assert_eq!(
+            quante(
+                &db,
+                &format!("SELECT COUNT(*) FROM lontano_brani WHERE dispositivo = '{a_meta}'")
+            ),
+            0
+        );
+        assert_eq!(
+            quante(
+                &db,
+                &format!("SELECT COUNT(*) FROM lontano_brani WHERE dispositivo = '{collegato}'")
+            ),
+            3,
+            "il collegato resta com'è"
+        );
+        let mut sgombrati = dati.sgombrati.lock().unwrap().clone();
+        sgombrati.sort_unstable();
+        assert_eq!(sgombrati, vec![1, 2, 3, 4, 5]);
     }
 }

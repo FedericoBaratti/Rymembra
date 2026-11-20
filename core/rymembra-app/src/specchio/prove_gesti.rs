@@ -1486,3 +1486,181 @@ fn togliere_righe_non_tocca_la_coda_che_non_le_nomina() {
         7_000
     );
 }
+
+// ── «Dimentica» a blocchi, e lo spazzino dell'avvio (S2-3, S2-6) ─────────────────
+
+/// Il telefono di «Dimentica»: il brano 1 di qui e dodici righe del PC — la 1 è
+/// lo stesso brano di quello di qui, la 7 c'è solo sul PC —, una playlist con
+/// tutte e due, due ascolti sulla 1 e uno sulla 7, e un voto in posta. Il PC è
+/// già stato dimenticato dal registro: la riga di `dispositivi` non c'è più, e
+/// questo è lo stato in cui un arresto lascia le righe.
+fn telefono_che_dimentica_il_pc() -> (Connection, i64, i64) {
+    let c = libreria();
+    locale(&c, 1, 1);
+    let righe: Vec<_> = (1..=12).map(riga).collect();
+    giro(&c, &chiave(PC), &righe, ADESSO);
+    let (r1, r7) = (id_specchio(&c, PC, 1), id_specchio(&c, PC, 7));
+    playlist_con(&c, "sera", &[r1, r7]);
+    for (brano, quando) in [(r1, 1_700), (r1, 1_800), (r7, 2_700)] {
+        ascolto(&c, brano, quando);
+    }
+    crate::dispositivi::dimentica(&c, &chiave(PC)).expect("dimenticato dal registro");
+    // La posta che si accoda dopo, fra la riga di `dispositivi` e le righe.
+    crate::dispositivi::metti_in_posta(&c, &chiave(PC), "valuta", "1", "{}", 1).expect("posta");
+    (c, r1, r7)
+}
+
+/// Le righe che «Tutti» mostra.
+fn visibili_in_tutti(c: &Connection) -> i64 {
+    crate::library::counts(c, &specchio::Origine::Tutti)
+        .expect("conteggi")
+        .tracks
+}
+
+fn righe_del_pc(c: &Connection) -> i64 {
+    c.query_row(
+        "SELECT COUNT(*) FROM lontano_brani WHERE dispositivo = ?1",
+        [chiave(PC)],
+        |r| r.get(0),
+    )
+    .expect("righe")
+}
+
+#[test]
+fn dimenticare_a_blocchi_libera_il_lucchetto_fra_un_blocco_e_l_altro() {
+    use specchio::archivio::{
+        comincia_a_dimenticare, dimentica_un_blocco, dispositivi_a_meta, stato,
+    };
+    let (c, r1, _r7) = telefono_che_dimentica_il_pc();
+    assert_eq!(
+        visibili_in_tutti(&c),
+        12,
+        "il punto di partenza: la 1 è doppia, il resto è del PC"
+    );
+
+    // Il primo tempo: da adesso le righe non si vedono, e il brano di qui sì.
+    assert!(comincia_a_dimenticare(&c, &chiave(PC), ADESSO + 1_000).expect("primo tempo"));
+    assert_eq!(visibili_in_tutti(&c), 1, "resta il brano di qui");
+    assert_eq!(
+        righe_del_pc(&c),
+        12,
+        "le righe ci sono ancora: si cancellano a blocchi"
+    );
+    assert_eq!(
+        stato(&c, &chiave(PC)).expect("stato"),
+        specchio::archivio::StatoDispositivo {
+            righe: 12,
+            ..Default::default()
+        },
+        "e lo stato dei suoi secchi se n'è andato: se torna, si rilegge da capo"
+    );
+    assert_eq!(
+        c.query_row("SELECT COUNT(*) FROM dispositivi_posta", [], |r| r
+            .get::<_, i64>(0))
+            .expect("posta"),
+        0,
+        "la posta non parte più"
+    );
+
+    // Un blocco piccolo, poi l'arresto: l'app si chiude, Windows spegne.
+    let primo = dimentica_un_blocco(&c, &chiave(PC), ADESSO + 2_000, 5).expect("blocco");
+    assert_eq!(
+        (primo.tolte, primo.finito, primo.tornato),
+        (5, false, false),
+        "{primo:?}"
+    );
+    assert_eq!(primo.ids_tolti.len(), 5);
+    assert_eq!(righe_del_pc(&c), 7);
+    assert_eq!(
+        visibili_in_tutti(&c),
+        1,
+        "fra un blocco e l'altro non si vede niente del PC"
+    );
+
+    // All'avvio: lo spazzino lo trova, e finisce il lavoro.
+    assert_eq!(dispositivi_a_meta(&c).expect("a metà"), vec![chiave(PC)]);
+    let mut tolte = primo.tolte;
+    loop {
+        let blocco = dimentica_un_blocco(&c, &chiave(PC), ADESSO + 3_000, 5).expect("blocco");
+        tolte += blocco.tolte;
+        if blocco.finito || blocco.tolte == 0 {
+            assert!(blocco.finito, "{blocco:?}");
+            break;
+        }
+    }
+    assert_eq!(tolte, 12);
+    assert_eq!(righe_del_pc(&c), 0);
+    assert!(
+        dispositivi_a_meta(&c).expect("a metà").is_empty(),
+        "niente è rimasto a metà"
+    );
+    for tabella in ["lontano_secchi", "lontano_cataloghi", "dispositivi_posta"] {
+        assert_eq!(
+            c.query_row(&format!("SELECT COUNT(*) FROM {tabella}"), [], |r| r
+                .get::<_, i64>(0))
+                .expect("tabella"),
+            0,
+            "{tabella}"
+        );
+    }
+    // La voce sulla 1 è passata alla copia di qui, quella sulla 7 no; e gli
+    // ascolti della 1 con lei.
+    assert_eq!(
+        in_playlist(&c, "sera"),
+        vec![k(1)],
+        "una sola voce, quella del brano che c'è anche qui"
+    );
+    assert_eq!(ascolti_di(&c, 1), 2);
+    assert_eq!(
+        c.query_row("SELECT COUNT(*) FROM play_history", [], |r| r
+            .get::<_, i64>(0))
+            .expect("tutti"),
+        2,
+        "l'ascolto del brano solo del PC se n'è andato con lui"
+    );
+    assert_eq!(visibili_in_tutti(&c), 1);
+    let _ = r1;
+}
+
+#[test]
+fn un_dispositivo_che_si_ricollega_ferma_la_cancellazione() {
+    use specchio::archivio::{comincia_a_dimenticare, dimentica_un_blocco};
+    let (c, _r1, _r7) = telefono_che_dimentica_il_pc();
+    assert!(comincia_a_dimenticare(&c, &chiave(PC), ADESSO + 1_000).expect("primo tempo"));
+    // La persona rifà il collegamento prima che i blocchi finiscano.
+    c.execute(
+        "INSERT INTO dispositivi (chiave, nome, associato_ms) VALUES (?1, 'Di nuovo', 2)",
+        [chiave(PC)],
+    )
+    .expect("riassociato");
+    let blocco = dimentica_un_blocco(&c, &chiave(PC), ADESSO + 2_000, 5).expect("blocco");
+    assert!(blocco.tornato && blocco.finito, "{blocco:?}");
+    assert_eq!(blocco.tolte, 0);
+    assert_eq!(righe_del_pc(&c), 12, "le righe sono di nuovo sue");
+    // E non si ricomincia nemmeno il primo tempo su un dispositivo collegato.
+    assert!(!comincia_a_dimenticare(&c, &chiave(PC), ADESSO + 3_000).expect("primo tempo"));
+    assert!(
+        specchio::archivio::dispositivi_a_meta(&c)
+            .expect("a metà")
+            .is_empty()
+    );
+}
+
+#[test]
+fn una_riga_specchio_di_un_dispositivo_non_collegato_si_toglie_all_apertura() {
+    // L'arresto è arrivato subito dopo la riga di `dispositivi`: le righe sono
+    // tutte lì, visibili, senza il primo tempo. Lo spazzino lo fa e finisce.
+    use specchio::archivio::{dimentica_un_blocco, dispositivi_a_meta};
+    let (c, _r1, _r7) = telefono_che_dimentica_il_pc();
+    assert_eq!(visibili_in_tutti(&c), 12);
+    assert_eq!(dispositivi_a_meta(&c).expect("a metà"), vec![chiave(PC)]);
+    let blocco = dimentica_un_blocco(&c, &chiave(PC), ADESSO + 1_000, 50).expect("blocco");
+    assert!(blocco.finito, "{blocco:?}");
+    assert_eq!(righe_del_pc(&c), 0);
+    assert_eq!(
+        visibili_in_tutti(&c),
+        1,
+        "resta il brano di qui, e torna visibile"
+    );
+    assert!(dispositivi_a_meta(&c).expect("a metà").is_empty());
+}

@@ -1167,3 +1167,43 @@ fn misura_dimenticare_un_pc_da_duecentomila_righe() {
         n(&c, "SELECT COUNT(*) FROM tracks WHERE source = 'lontano'")
     );
 }
+
+#[test]
+#[ignore = "misura"]
+fn misura_dimenticare_un_pc_da_duecentomila_righe_a_blocchi() {
+    // La stessa scena della misura sopra, col codice di adesso: il lucchetto non
+    // lo tiene «Dimentica» per intero ma il primo tempo e poi un blocco alla
+    // volta, e quel che conta è il più lungo di loro. `dispositivi::dimentica`
+    // ha già tolto la riga, come nel nucleo.
+    use crate::specchio::archivio::{
+        BLOCCO_RIMOZIONI, comincia_a_dimenticare, dimentica_un_blocco,
+    };
+    let c = telefono_con_un_pc_al_tetto();
+    let pc = chiave(PC);
+    crate::dispositivi::dimentica(&c, &pc).expect("dimenticato dal registro");
+    let t = Instant::now();
+    assert!(comincia_a_dimenticare(&c, &pc, ADESSO).expect("primo tempo"));
+    let primo_ms = t.elapsed().as_millis();
+    eprintln!("MISURA primo tempo (segna sparite, nasconde, rifà i doppioni): {primo_ms} ms");
+    let (mut blocchi, mut piu_lungo_ms, mut totale_ms, mut tolte) = (0, 0_u128, 0_u128, 0);
+    loop {
+        let t = Instant::now();
+        let blocco = dimentica_un_blocco(&c, &pc, ADESSO, BLOCCO_RIMOZIONI).expect("blocco");
+        let ms = t.elapsed().as_millis();
+        blocchi += 1;
+        piu_lungo_ms = piu_lungo_ms.max(ms);
+        totale_ms += ms;
+        tolte += blocco.tolte;
+        if blocco.finito || blocco.tolte == 0 {
+            break;
+        }
+    }
+    eprintln!(
+        "MISURA a blocchi: {tolte} righe in {blocchi} blocchi da {BLOCCO_RIMOZIONI}, il piu' lungo {piu_lungo_ms} ms (totale dei blocchi {totale_ms} ms); lucchetto piu' lungo in tutto: {} ms",
+        piu_lungo_ms.max(primo_ms)
+    );
+    eprintln!(
+        "righe del PC rimaste: {}",
+        n(&c, "SELECT COUNT(*) FROM tracks WHERE source = 'lontano'")
+    );
+}

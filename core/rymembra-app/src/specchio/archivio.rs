@@ -1338,15 +1338,16 @@ fn sposta_la_cronologia(tx: &Connection, da_togliere: &[i64]) -> Result<usize, A
 /// coda in memoria, il lettore, la sgombera dopo la scrittura con gli
 /// identificativi che questa restituisce: stanno nello strato che lo possiede.
 ///
-/// Gli identificativi delle righe tolte davvero.
+/// Gli identificativi delle righe tolte davvero, e quante voci di playlist sono
+/// passate a un'altra copia.
 fn togli(
     tx: &Connection,
     righe: &[(i64, String)],
     toccati: &mut Toccati,
-) -> Result<Vec<i64>, AppError> {
+) -> Result<Tolte, AppError> {
     let ids: Vec<i64> = righe.iter().map(|(id, _)| *id).collect();
     toccati.segna_brani(tx, &ids)?;
-    sposta_le_voci(tx, &ids, true)?;
+    let voci_spostate = sposta_le_voci(tx, &ids, true)?;
     sposta_la_cronologia(tx, &ids)?;
     let mut st = tx
         .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND path = ?2")
@@ -1368,7 +1369,19 @@ fn togli(
         crate::sincronia::ricorda_i_brani_assenti(tx)?;
         crate::playback::sgombra_il_salvato(tx, &tolte)?;
     }
-    Ok(tolte)
+    Ok(Tolte {
+        ids: tolte,
+        voci_spostate,
+    })
+}
+
+/// Quel che [`togli`] ha fatto.
+#[derive(Debug, Default)]
+struct Tolte {
+    /// Gli identificativi delle righe tolte davvero.
+    ids: Vec<i64>,
+    /// Le voci di playlist passate a un'altra copia prima di toglierle.
+    voci_spostate: usize,
 }
 
 /// Il dispositivo si può ancora leggere?
@@ -1608,7 +1621,7 @@ fn togli_un_blocco_in(
             non_nascoste,
         )
     };
-    let ids_tolti = togli(tx, &da_togliere, toccati)?;
+    let ids_tolti = togli(tx, &da_togliere, toccati)?.ids;
     let tolte = ids_tolti.len();
     Ok(Blocco {
         tolte,
@@ -1728,7 +1741,7 @@ pub fn conferma_un_blocco_di(
         )
     };
     let mut toccati = Toccati::nessuno();
-    let ids_tolti = togli(&tx, &da_togliere, &mut toccati)?;
+    let ids_tolti = togli(&tx, &da_togliere, &mut toccati)?.ids;
     let tolte = ids_tolti.len();
     if tolte > 0 {
         // Le righe segnate sparite sono nascoste dal giro che le ha segnate, e
@@ -2223,10 +2236,302 @@ pub fn anteprima_dimentica(
     Ok(anteprima)
 }
 
-/// Dimentica un dispositivo: le sue voci di playlist passano a un'altra copia
-/// dello stesso brano, dove c'è; poi se ne vanno le sue righe, la posta che
-/// aspettava di partire, lo stato dei suoi secchi, e doppioni e aggregati si
-/// rifanno. Quante voci ha rimappato e quante righe ha tolto.
+// ── «Dimentica», a blocchi ───────────────────────────────────────────────────
+//
+// Le righe di un dispositivo con duecentomila brani, in una transazione sola,
+// tenevano il lucchetto della libreria **un minuto** (S2-6, misurato: vedi
+// `prove_revisione::misura_dimenticare_un_pc_da_duecentomila_righe`), e un
+// arresto fra la riga di `dispositivi` e le righe specchio le lasciava in
+// libreria per sempre, senza un dispositivo a cui appartenere (S2-3). Adesso in
+// tre tempi:
+//
+// 1. **Il dispositivo si segna «in via di dimenticanza»** ([`comincia_a_dimenticare`]),
+//    in una transazione sola e breve: tutte le sue righe diventano *sparite e
+//    nascoste* — lo stato che la grazia e la conferma già conoscono — e quindi
+//    non si vedono, non si suonano e non partecipano a niente; lo stato dei suoi
+//    secchi e la sua posta se ne vanno; e i brani di qui che stavano dietro di
+//    lui tornano a vedersi. La riga di `dispositivi` l'ha già tolta
+//    `dispositivi::dimentica`: **è lei lo stato**. Un dispositivo che non c'è in
+//    `dispositivi` e ha ancora delle righe è un «Dimentica» rimasto a metà.
+// 2. **Si cancella a blocchi** ([`dimentica_un_blocco`]), ognuno in una
+//    transazione sua e in una presa sua del lucchetto, con le voci e la
+//    cronologia che passano alla copia di qui come per la conferma.
+// 3. **All'avvio uno spazzino riprende** ([`dispositivi_a_meta`]) quel che un
+//    arresto ha lasciato a metà.
+//
+// Se nel frattempo il dispositivo si ricollega — la riga torna in `dispositivi` —
+// i blocchi si fermano: le righe sono di nuovo sue, e la prima lettura del suo
+// catalogo (senza più secchi) le ritrova, una per una, o le lascia scadere.
+
+/// Il dispositivo è ancora, o di nuovo, uno dei collegati?
+///
+/// La riga di `dispositivi` c'è, anche revocata: la revoca la dice l'altro, e
+/// non è un «Dimentica». Dentro la transazione che scrive.
+fn e_collegato(tx: &Connection, dispositivo: &str) -> Result<bool, AppError> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM dispositivi WHERE chiave = ?1)",
+        [dispositivo],
+        |r| r.get(0),
+    )
+    .map_err(|err| db_error("dispositivo da dimenticare", &err))
+}
+
+/// Il primo tempo, nella transazione di chi chiama: lo stato dei secchi e la
+/// posta se ne vanno, tutte le righe diventano sparite e nascoste, e doppioni e
+/// chiavi d'album si rifanno una volta. Chi chiama ricostruisce gli aggregati
+/// con `toccati`. Quante voci di playlist sono passate a un'altra copia.
+///
+/// Idempotente: sulle righe già sparite e nascoste non fa niente.
+fn comincia_in(
+    tx: &Connection,
+    dispositivo: &str,
+    adesso_ms: i64,
+    toccati: &mut Toccati,
+) -> Result<usize, AppError> {
+    let cosa = "dimenticare un dispositivo";
+    // Niente impronte che, se il dispositivo si ricollega, farebbero saltare la
+    // rilettura di secchi le cui righe sono nel frattempo sparite.
+    for tabella in ["lontano_secchi", "lontano_cataloghi", "dispositivi_posta"] {
+        tx.execute(
+            &format!("DELETE FROM {tabella} WHERE dispositivo = ?1"),
+            [dispositivo],
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    }
+    // Sparite da adesso: non sono un'alternativa per nessuna voce, non entrano
+    // nei doppioni.
+    tx.execute(
+        "UPDATE lontano_brani SET sparito_ms = ?2 WHERE dispositivo = ?1 AND sparito_ms IS NULL",
+        params![dispositivo, adesso_ms],
+    )
+    .map_err(|err| db_error(cosa, &err))?;
+    // Le voci di playlist alla copia di qui, come fa `nascondi_le_sparite`: le
+    // righe che ne hanno sono poche, e si cercano per la sola riga che le ha. E
+    // poi tutte le righe nascoste con un'istruzione sola — `nascondi_le_sparite`
+    // le scriverebbe una per una, e su duecentomila righe sono tre secondi di
+    // lucchetto in più (misurati).
+    let con_voci: Vec<i64> = {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT DISTINCT pt.track_id FROM playlist_tracks pt
+                   JOIN lontano_brani l ON l.track_id = pt.track_id
+                  WHERE l.dispositivo = ?1",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        st.query_map([dispositivo], |r| r.get(0))
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<_, _>>()
+            .map_err(|err| db_error(cosa, &err))?
+    };
+    let spostate = sposta_le_voci(tx, &con_voci, true)?;
+    tx.execute(
+        "UPDATE tracks SET copia_di = id
+          WHERE id IN (SELECT track_id FROM lontano_brani WHERE dispositivo = ?1)
+            AND copia_di IS NOT id",
+        [dispositivo],
+    )
+    .map_err(|err| db_error(cosa, &err))?;
+    // I brani di qui che stavano dietro una riga del dispositivo tornano a
+    // vedersi: senza, per tutta la cancellazione sarebbero invisibili.
+    rifai_doppioni_e_album(tx, toccati)?;
+    Ok(spostate)
+}
+
+/// Il primo tempo di «Dimentica» ([`comincia_a_dimenticare`] e il blocco che lo
+/// riprende lo condividono): il dispositivo non serve più niente, e le sue righe
+/// non si vedono. In una transazione breve, a lucchetto preso.
+///
+/// `dispositivi::dimentica` ha già tolto la riga di `dispositivi`: se è tornata —
+/// una nuova associazione nel frattempo — non si fa niente e dice `false`.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn comincia_a_dimenticare(
+    connection: &Connection,
+    dispositivo: &str,
+    adesso_ms: i64,
+) -> Result<bool, AppError> {
+    comincia_a_dimenticare_con(connection, dispositivo, adesso_ms, true).map(|voci| voci.is_some())
+}
+
+/// [`comincia_a_dimenticare`] con la guardia scelta da chi chiama: le prove di
+/// «Dimentica» hanno il dispositivo in `dispositivi`, e non la vogliono.
+/// `Some(voci)` se ha fatto il primo tempo, con le voci passate alla copia di qui.
+fn comincia_a_dimenticare_con(
+    connection: &Connection,
+    dispositivo: &str,
+    adesso_ms: i64,
+    con_la_guardia: bool,
+) -> Result<Option<usize>, AppError> {
+    let tx = transazione(connection)?;
+    if con_la_guardia && e_collegato(&tx, dispositivo)? {
+        return Ok(None);
+    }
+    let mut toccati = Toccati::nessuno();
+    let voci = comincia_in(&tx, dispositivo, adesso_ms, &mut toccati)?;
+    ricostruisci_aggregati(&tx, &toccati)?;
+    tx.commit()
+        .map_err(|err| db_error("dimenticare un dispositivo", &err))?;
+    Ok(Some(voci))
+}
+
+/// Quel che un blocco di «Dimentica» ha fatto.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BloccoDimentica {
+    /// Righe tolte in questo blocco.
+    pub tolte: usize,
+    /// I loro identificativi: chi tiene la coda del lettore la sgombera con
+    /// questi, dopo la scrittura (S11-1).
+    pub ids_tolti: Vec<i64>,
+    /// Voci di playlist passate a un'altra copia in questo blocco.
+    pub voci_spostate: usize,
+    /// Non c'è più niente da togliere: chi chiama smette.
+    pub finito: bool,
+    /// Il dispositivo si è ricollegato: le sue righe non si toccano più.
+    pub tornato: bool,
+}
+
+/// Un blocco di «Dimentica»: al più `grandezza` righe del dispositivo, in una
+/// transazione sua. Chi chiama lo ripete, **ogni volta in una presa sua del
+/// lucchetto**, finché `finito` — e si ferma anche se un blocco non ha tolto
+/// niente, perché non si giri a vuoto.
+///
+/// Le voci di playlist e gli ascolti passano alla copia di qui, come per la
+/// conferma ([`togli`]); gli album e gli artisti si rifanno per le sole chiavi
+/// toccate. Se il primo tempo non c'è stato — un arresto fra la riga di
+/// `dispositivi` e [`comincia_a_dimenticare`], o uno spazzino davanti a righe di
+/// una versione di prima — lo fa qui.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn dimentica_un_blocco(
+    connection: &Connection,
+    dispositivo: &str,
+    adesso_ms: i64,
+    grandezza: usize,
+) -> Result<BloccoDimentica, AppError> {
+    dimentica_un_blocco_con(connection, dispositivo, adesso_ms, grandezza, true)
+}
+
+/// [`dimentica_un_blocco`] con la guardia scelta da chi chiama.
+fn dimentica_un_blocco_con(
+    connection: &Connection,
+    dispositivo: &str,
+    adesso_ms: i64,
+    grandezza: usize,
+    con_la_guardia: bool,
+) -> Result<BloccoDimentica, AppError> {
+    let cosa = "dimenticare un dispositivo";
+    let tx = transazione(connection)?;
+    if con_la_guardia && e_collegato(&tx, dispositivo)? {
+        return Ok(BloccoDimentica {
+            finito: true,
+            tornato: true,
+            ..BloccoDimentica::default()
+        });
+    }
+    let mut toccati = Toccati::nessuno();
+    let da_cominciare: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM lontano_brani
+                             WHERE dispositivo = ?1 AND sparito_ms IS NULL)",
+            [dispositivo],
+            |r| r.get(0),
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    let mut voci_spostate = if da_cominciare {
+        comincia_in(&tx, dispositivo, adesso_ms, &mut toccati)?
+    } else {
+        0
+    };
+    let righe: Vec<(i64, String)> = {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT t.id, t.path FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
+                  WHERE l.dispositivo = ?1 ORDER BY t.id LIMIT ?2",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let lette = st
+            .query_map(
+                params![dispositivo, i64::try_from(grandezza).unwrap_or(i64::MAX)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        lette
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error(cosa, &err))?
+    };
+    let tolte = togli(&tx, &righe, &mut toccati)?;
+    voci_spostate += tolte.voci_spostate;
+    let restano: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM lontano_brani WHERE dispositivo = ?1)",
+            [dispositivo],
+            |r| r.get(0),
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    if !restano {
+        // L'ultimo blocco: niente deve restare di lui. Anche lo stato dei secchi,
+        // se qualcuno l'avesse riscritto nel frattempo.
+        for tabella in ["lontano_secchi", "lontano_cataloghi", "dispositivi_posta"] {
+            tx.execute(
+                &format!("DELETE FROM {tabella} WHERE dispositivo = ?1"),
+                [dispositivo],
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        }
+    }
+    ricostruisci_aggregati(&tx, &toccati)?;
+    tx.commit().map_err(|err| db_error(cosa, &err))?;
+    Ok(BloccoDimentica {
+        tolte: tolte.ids.len(),
+        ids_tolti: tolte.ids,
+        voci_spostate,
+        finito: !restano,
+        tornato: false,
+    })
+}
+
+/// I dispositivi che hanno ancora righe, o lo stato di un catalogo, e non sono
+/// più collegati: un «Dimentica» rimasto a metà — un arresto, la chiusura dalla
+/// barra, Windows che spegne —. Chi chiama, all'avvio, li finisce con
+/// [`dimentica_un_blocco`].
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn dispositivi_a_meta(connection: &Connection) -> Result<Vec<String>, AppError> {
+    let cosa = "dispositivi dimenticati a metà";
+    let mut st = connection
+        .prepare(
+            "SELECT dispositivo FROM (
+               SELECT dispositivo FROM lontano_cataloghi
+               UNION SELECT dispositivo FROM lontano_secchi
+               UNION SELECT DISTINCT dispositivo FROM lontano_brani
+             ) WHERE dispositivo NOT IN (SELECT chiave FROM dispositivi)
+             ORDER BY dispositivo",
+        )
+        .map_err(|err| db_error(cosa, &err))?;
+    let lette = st
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|err| db_error(cosa, &err))?;
+    lette
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| db_error(cosa, &err))
+}
+
+/// Dimentica un dispositivo, tutto in una volta: le sue voci di playlist e la
+/// sua cronologia passano a un'altra copia dello stesso brano, dove c'è; poi se
+/// ne vanno le sue righe, la posta che aspettava di partire, lo stato dei suoi
+/// secchi, e doppioni e aggregati si rifanno. Quante voci ha rimappato e quante
+/// righe ha tolto.
+///
+/// A blocchi come tutto il resto ([`comincia_a_dimenticare`],
+/// [`dimentica_un_blocco`]), ma **senza lasciare il lucchetto** fra l'uno e
+/// l'altro, perché chi chiama ce l'ha in mano: le prove, e basta. Il nucleo
+/// chiama i blocchi da sé, ognuno in una presa sua.
 ///
 /// Non chiede niente: chi chiede conferma, dicendo quante playlist perdono
 /// brani, è chi chiama, con [`anteprima_dimentica`].
@@ -2238,47 +2543,19 @@ pub fn dimentica_dispositivo(
     connection: &Connection,
     dispositivo: &str,
 ) -> Result<(usize, usize), AppError> {
-    let cosa = "dimenticare un dispositivo";
-    let tx = transazione(connection)?;
-    let voci = voci_con_alternativa(&tx, dispositivo)?;
-    let mut rimappate = 0;
-    for (playlist, brano, altra) in &voci {
-        if let Some(altra) = altra {
-            rimappate += tx
-                .execute(
-                    "UPDATE playlist_tracks SET track_id = ?3 WHERE playlist_id = ?1 AND track_id = ?2",
-                    params![playlist, brano, altra],
-                )
-                .map_err(|err| db_error(cosa, &err))?;
+    let adesso_ms = crate::library::now_ms();
+    let mut rimappate =
+        comincia_a_dimenticare_con(connection, dispositivo, adesso_ms, false)?.unwrap_or(0);
+    let mut tolte = 0;
+    loop {
+        let blocco =
+            dimentica_un_blocco_con(connection, dispositivo, adesso_ms, BLOCCO_RIMOZIONI, false)?;
+        tolte += blocco.tolte;
+        rimappate += blocco.voci_spostate;
+        if blocco.finito || blocco.tolte == 0 {
+            return Ok((rimappate, tolte));
         }
     }
-    let righe: Vec<(i64, String)> = {
-        let mut st = tx
-            .prepare(
-                "SELECT t.id, t.path FROM lontano_brani l JOIN tracks t ON t.id = l.track_id
-                  WHERE l.dispositivo = ?1",
-            )
-            .map_err(|err| db_error(cosa, &err))?;
-        let lette = st
-            .query_map([dispositivo], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(|err| db_error(cosa, &err))?;
-        lette
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|err| db_error(cosa, &err))?
-    };
-    let mut toccati = Toccati::nessuno();
-    let tolte = togli(&tx, &righe, &mut toccati)?.len();
-    for tabella in ["lontano_secchi", "lontano_cataloghi", "dispositivi_posta"] {
-        tx.execute(
-            &format!("DELETE FROM {tabella} WHERE dispositivo = ?1"),
-            [dispositivo],
-        )
-        .map_err(|err| db_error(cosa, &err))?;
-    }
-    rifai_doppioni_e_album(&tx, &mut toccati)?;
-    ricostruisci_aggregati(&tx, &toccati)?;
-    tx.commit().map_err(|err| db_error(cosa, &err))?;
-    Ok((rimappate, tolte))
 }
 
 #[cfg(test)]
