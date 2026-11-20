@@ -1218,15 +1218,15 @@ fn righe_della_scena(fino: i64, ascolti: i64) -> Vec<crate::library::condivisa::
         .map(|i| {
             let mut r = riga(i);
             r.track_key = if i <= 20_000 {
-                format!("artista {}|titolo {i}|album {}", i % 900, i / 12)
+                format!("artista {}|titolo {i}|album {}", i % 900, i.div_euclid(12))
             } else {
-                format!("artista {}|solo pc {i}|album {}", i % 900, i / 12)
+                format!("artista {}|solo pc {i}|album {}", i % 900, i.div_euclid(12))
             };
             r.content_key = Some(r.track_key.clone());
             r.title = format!("Titolo {i}");
             r.artist = format!("Artista {}", i % 900);
-            r.album = format!("Album {}", i / 12);
-            r.album_key = Some(format!("{:032x}", i / 12));
+            r.album = format!("Album {}", i.div_euclid(12));
+            r.album_key = Some(format!("{:032x}", i.div_euclid(12)));
             r.codec = Some("flac".to_owned());
             r.bitrate = Some(900);
             r.sample_rate = Some(96_000);
@@ -1294,11 +1294,18 @@ fn misura_la_chiusura_di_un_giro_e_una_scansione_che_non_cambiano_niente() {
     eprintln!(
         "MISURA giro identico a quello di prima: secchio {secchio_ms} ms, chiudi {chiudi_ms} ms"
     );
-    // La scansione che non cambia niente rifaceva questo, dopo ogni passata.
+    // La scansione che non cambia niente rifaceva questo, dopo ogni passata; adesso
+    // lo chiede solo se la passata ha cambiato qualcosa.
+    let t = Instant::now();
+    crate::specchio::archivio::ricalcola_doppioni_se_serve(&c, false).expect("doppioni");
+    eprintln!(
+        "MISURA fine di una scansione che non cambia niente (ricalcola_doppioni_se_serve): {} ms",
+        t.elapsed().as_millis()
+    );
     let t = Instant::now();
     crate::specchio::archivio::ricalcola_doppioni(&c).expect("doppioni");
     eprintln!(
-        "MISURA ricalcola_doppioni (il lavoro di una scansione che non cambia niente): {} ms",
+        "MISURA ricalcola_doppioni (il lavoro che una scansione che ha cambiato qualcosa rifà): {} ms",
         t.elapsed().as_millis()
     );
 }

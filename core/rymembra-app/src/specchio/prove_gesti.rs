@@ -28,7 +28,7 @@ use rymembra_sync::Contenuto;
 
 use crate::sincronia;
 use crate::specchio::comuni::{
-    ADESSO, chiave, documento, giro, id_specchio, in_playlist, libreria, locale, passata,
+    ADESSO, chiave, documento, giro, giro_con, id_specchio, in_playlist, libreria, locale, passata,
     playlist_con, pubblicata, riga, scambio,
 };
 use crate::{playlists, specchio};
@@ -1737,4 +1737,193 @@ fn una_riga_riabbinata_porta_con_se_la_sua_posta() {
             .is_some(),
         "anche il testo corretto"
     );
+}
+
+// ── S2-5: doppioni e chiavi d'album si rifanno solo quando serve ─────────────
+
+/// Quante volte, in questo filo, si sono rifatti doppioni e chiavi d'album.
+fn rifatti() -> usize {
+    specchio::archivio::PASSATE_DI_DOPPIONI.with(std::cell::Cell::get)
+}
+
+/// Un telefono con il brano 1 di qui, che dichiara la sua chiave d'album, e i
+/// brani 1 e 2 del PC dello stesso disco: le righe del PC prendono la chiave
+/// d'album di qui. Dopo il primo giro.
+fn telefono_con_il_disco_del_pc() -> Connection {
+    let c = libreria();
+    locale(&c, 1, 1);
+    c.execute(
+        "UPDATE tracks SET album_key = 'storage/musica|album' WHERE id = 1",
+        [],
+    )
+    .expect("chiave d'album di qui");
+    giro(&c, &chiave(PC), &[riga(1), riga(2)], ADESSO);
+    c
+}
+
+fn chiavi_d_album(c: &Connection) -> Vec<String> {
+    c.prepare("SELECT album_key FROM tracks ORDER BY id")
+        .expect("chiavi")
+        .query_map([], |r| r.get::<_, String>(0))
+        .expect("chiavi")
+        .map(|r| r.expect("chiave"))
+        .collect()
+}
+
+#[test]
+fn un_giro_che_non_porta_niente_non_rifa_doppioni_e_album() {
+    // La chiusura di un giro rifaceva doppioni e chiavi d'album su tutta la
+    // libreria anche quando il catalogo era quello di prima: 9 secondi di
+    // lucchetto con 250.000 righe (misura, profilo di sviluppo).
+    let c = telefono_con_il_disco_del_pc();
+    assert_eq!(
+        chiavi_d_album(&c),
+        vec!["storage/musica|album"; 3],
+        "il controllo: le righe del PC hanno preso la chiave d'album di qui"
+    );
+    let prima = rifatti();
+    let (_, conti) = giro_con(&c, &chiave(PC), &[riga(1), riga(2)], ADESSO + 1);
+    assert_eq!(conti.inserite + conti.aggiornate + conti.segnate_sparite, 0);
+    assert_eq!(
+        rifatti(),
+        prima,
+        "un giro che non porta niente non rifà niente"
+    );
+}
+
+#[test]
+fn un_giro_con_solo_ascolti_non_rifa_doppioni_e_album_e_tiene_il_disco_unito() {
+    // Il PC suona musica: ogni ascolto cambia il suo catalogo, e la riga
+    // dell'ascolto si riscrive. Cambia il conteggio, non chi è un doppione né a
+    // quale disco appartiene: e la riga riscritta non deve perdere la chiave
+    // d'album di qui, che solo il riallineamento — che qui non gira — le ridarebbe.
+    let c = telefono_con_il_disco_del_pc();
+    let prima = rifatti();
+    let mut con_ascolti = riga(2);
+    con_ascolti.play_count = 9;
+    con_ascolti.liked = true;
+    con_ascolti.rating = 4;
+    con_ascolti.liked_at = Some(1_700_000_000_000);
+    con_ascolti.rating_at = Some(1_700_000_000_000);
+    con_ascolti.last_played_at = Some(1_700_000_000_000);
+    con_ascolti.stats_updated_at = 1_700_000_000_000;
+    let (_, conti) = giro_con(&c, &chiave(PC), &[riga(1), con_ascolti], ADESSO + 1);
+    assert_eq!(conti.aggiornate, 1, "la riga si riscrive");
+    assert_eq!(rifatti(), prima, "ma i doppioni e il disco non si rifanno");
+    let ascolti: i64 = c
+        .query_row(
+            "SELECT play_count FROM tracks WHERE id = ?1",
+            [id_specchio(&c, PC, 2)],
+            |r| r.get(0),
+        )
+        .expect("ascolti");
+    assert_eq!(ascolti, 9);
+    assert_eq!(
+        chiavi_d_album(&c),
+        vec!["storage/musica|album"; 3],
+        "il disco resta uno solo"
+    );
+}
+
+#[test]
+fn un_giro_che_cambia_una_chiave_la_qualita_o_il_disco_rifa_doppioni_e_album() {
+    // Il telefono ha i brani 1 e 2 di qui, dello stesso disco; il PC ha il brano 1,
+    // nascosto dietro quello di qui.
+    let c = libreria();
+    locale(&c, 1, 1);
+    locale(&c, 2, 2);
+    // La stessa qualità delle righe del PC (`riga`): a pari qualità vince questo
+    // dispositivo, e la riga del PC sta dietro.
+    c.execute(
+        "UPDATE tracks SET album_key = 'storage/musica|album', codec = 'mp3', bitrate = 320,
+                           sample_rate = 44100, file_size = 8000000, duration_ms = 200000",
+        [],
+    )
+    .expect("chiave d'album e qualità di qui");
+    giro(&c, &chiave(PC), &[riga(1)], ADESSO);
+    let remoto = id_specchio(&c, PC, 1);
+    let copia_di = |c: &Connection, id: i64| -> Option<i64> {
+        c.query_row("SELECT copia_di FROM tracks WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("copia_di")
+    };
+    assert_eq!(
+        copia_di(&c, remoto),
+        Some(1),
+        "il controllo: dietro il brano 1 di qui"
+    );
+    let mut ora = ADESSO;
+    let mut cambia = |c: &Connection, r: crate::library::condivisa::BranoCatalogo, cosa: &str| {
+        let prima = rifatti();
+        ora += 1;
+        giro_con(c, &chiave(PC), &[r], ora);
+        assert_eq!(rifatti(), prima + 1, "{cosa}: si rifanno");
+    };
+
+    // Un'altra chiave: il brano del PC diventa lo stesso brano del 2.
+    let mut stessa = riga(1);
+    stessa.track_key = riga(2).track_key;
+    stessa.content_key = Some(riga(2).track_key);
+    cambia(&c, stessa.clone(), "una chiave");
+    assert_eq!(copia_di(&c, remoto), Some(2), "ora sta dietro il brano 2");
+
+    // La qualità: stessa chiave, un file migliore di quello di qui.
+    let mut migliore = stessa;
+    migliore.bitrate = Some(900);
+    migliore.codec = Some("flac".to_owned());
+    migliore.dimensione = 24_000_000;
+    cambia(&c, migliore.clone(), "la qualità");
+    assert_eq!(copia_di(&c, remoto), None, "adesso è lui il migliore");
+    assert_eq!(copia_di(&c, 2), Some(remoto), "e il brano 2 gli sta dietro");
+
+    // Il disco: un altro album, che non è più quello di qui.
+    let mut altro = migliore;
+    altro.album = "Un altro disco".to_owned();
+    altro.album_key = Some("b".repeat(32));
+    cambia(&c, altro, "il disco");
+    let chiavi = chiavi_d_album(&c);
+    assert_eq!(chiavi[0], "storage/musica|album");
+    assert_ne!(
+        chiavi[2], chiavi[0],
+        "il brano del PC non è più nel disco di qui"
+    );
+}
+
+#[test]
+fn dimenticare_un_dispositivo_rifa_i_doppioni_solo_se_dietro_di_lui_c_e_qualcosa() {
+    use crate::specchio::archivio::comincia_a_dimenticare;
+    // Nessuna riga sta dietro quelle del PC: niente da riportare in vista.
+    let c = libreria();
+    locale(&c, 1, 1);
+    giro(&c, &chiave(PC), &[riga(5), riga(6)], ADESSO);
+    crate::dispositivi::dimentica(&c, &chiave(PC)).expect("dimenticato dal registro");
+    let prima = rifatti();
+    assert!(comincia_a_dimenticare(&c, &chiave(PC), ADESSO).expect("primo tempo"));
+    assert_eq!(rifatti(), prima, "niente stava dietro il PC");
+
+    // Il brano di qui sta nascosto dietro la riga migliore del PC: dimenticando
+    // il PC torna a vedersi, e per questo si rifanno.
+    let c = libreria();
+    locale(&c, 1, 1);
+    let mut migliore = riga(1);
+    migliore.bitrate = Some(900);
+    migliore.codec = Some("flac".to_owned());
+    migliore.dimensione = 24_000_000;
+    giro(&c, &chiave(PC), &[migliore], ADESSO);
+    let nascosto: Option<i64> = c
+        .query_row("SELECT copia_di FROM tracks WHERE id = 1", [], |r| r.get(0))
+        .expect("copia_di");
+    assert!(
+        nascosto.is_some(),
+        "il controllo: il brano di qui è nascosto"
+    );
+    crate::dispositivi::dimentica(&c, &chiave(PC)).expect("dimenticato dal registro");
+    let prima = rifatti();
+    assert!(comincia_a_dimenticare(&c, &chiave(PC), ADESSO).expect("primo tempo"));
+    assert_eq!(rifatti(), prima + 1, "qualcosa stava dietro il PC");
+    let dopo: Option<i64> = c
+        .query_row("SELECT copia_di FROM tracks WHERE id = 1", [], |r| r.get(0))
+        .expect("copia_di");
+    assert_eq!(dopo, None, "il brano di qui è tornato in vista");
 }
