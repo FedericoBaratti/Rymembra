@@ -347,6 +347,8 @@ const LETTURE: LettureDati = {
   testoBrano: () => subito({ ...testoFinto(), daChiedere: false, cercato: true }),
   testoCerca: () => subito(testoFinto()),
   testoCercaDiNuovo: () => subito(testoFinto()),
+  // Nessun dispositivo ha sostituito il testo finto: il pulsante non compare.
+  testoCopia: () => subito(null),
   testiPannello: () => subito(undefined),
   spettro: () => subito(undefined),
   spettroVisibile: () => subito(false),

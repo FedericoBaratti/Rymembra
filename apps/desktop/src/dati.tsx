@@ -41,6 +41,7 @@ export type LettureDati = Pick<
   | "testoBrano"
   | "testoCerca"
   | "testoCercaDiNuovo"
+  | "testoCopia"
   | "testiPannello"
   | "spettro"
   | "spettroVisibile"

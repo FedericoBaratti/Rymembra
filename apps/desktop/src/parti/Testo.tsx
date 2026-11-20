@@ -70,7 +70,13 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ipc, type Brano, type RigaTesto, type TestoBrano } from "../ipc";
+import {
+  ipc,
+  type Brano,
+  type CopiaDelTesto,
+  type RigaTesto,
+  type TestoBrano,
+} from "../ipc";
 import { Sincronizza } from "../Sincronizza";
 import { anticipoAdesso, usePosizioneMs } from "../riproduzione";
 import { fermoRestando } from "../transizione";
@@ -327,6 +333,11 @@ export function Testo({
   // solo perché la pilloletta si veda comparire e sparire: sono due disegni per
   // gesto, non venti al secondo.
   const [inPausa, setInPausa] = useState(false);
+  /* La copia del testo sincronizzato a mano che un dispositivo collegato ha
+     sostituito con una sua correzione: c'è, il pulsante «Ripristina» compare.
+     Il nucleo la tiene solo per i brani di questa macchina, e per gli altri
+     risponde che non c'è: il pannello non deve sapere da dove viene il brano. */
+  const [copia, setCopia] = useState<CopiaDelTesto | null>(null);
   const posizioneMs = usePosizioneMs();
   // Il lettore fermo, e non lo scorrimento fermo di `inPausa` qui sopra: la
   // riga accesa lo porta, e una skin ci ferma quel che fa ballare.
@@ -437,6 +448,42 @@ export function Testo({
       annullato = true;
     };
   }, [brano.id, onErrore, chiedi, letture]);
+
+  /* Se c'è una copia da ripristinare, a ogni cambio di brano. Un guasto qui
+     non dice niente a nessuno: la copia è un'àncora di salvezza, non il testo,
+     e chiederla a vuoto toglie solo un pulsante. Una voce di «Ascolta insieme»
+     ha un id che non è una riga, e il nucleo lo rifiuta: stesso caso. */
+  useEffect(() => {
+    let annullato = false;
+    setCopia(null);
+    letture
+      .testoCopia(brano.id)
+      .then((trovata) => {
+        if (!annullato) setCopia(trovata);
+      })
+      .catch(() => undefined);
+    return () => {
+      annullato = true;
+    };
+  }, [brano.id, letture]);
+
+  /* Rimette il testo di prima, e tiene come copia quello che c'era: rifare il
+     gesto lo disfa, quindi dopo la copia c'è ancora e si rilegge, per la data
+     di adesso. La risposta di un brano che non si guarda più si butta, come
+     quelle del catalogo. */
+  const ripristina = useCallback(() => {
+    const id = brano.id;
+    ipc
+      .testoRipristina(id)
+      .then((rimesso) => {
+        if (branoOra.current !== id) return;
+        setTesto(rimesso);
+        return letture.testoCopia(id).then((dopo) => {
+          if (branoOra.current === id) setCopia(dopo);
+        });
+      })
+      .catch(onErrore);
+  }, [brano.id, letture, onErrore]);
 
   // Un brano nuovo è un elenco nuovo: la riga da cui si arriva non esiste più,
   // e senza questo il primo inseguimento del brano nuovo si crederebbe vicino
@@ -663,6 +710,19 @@ export function Testo({
     </button>
   );
 
+  /* «Ripristina il testo di prima», in testata, solo quando c'è una copia: un
+     altro dispositivo ha sostituito un testo che avevi sincronizzato tu. */
+  const bottoneRipristina = copia !== null && testo !== null && (
+    <button
+      type="button"
+      className="bottone minuto btn-ghost"
+      title={t("np.lyrics.restore.hint")}
+      onClick={ripristina}
+    >
+      {t("np.lyrics.restore")}
+    </button>
+  );
+
   /* La riga dei ripieghi: quel che si può fare quando il testo non c'è, o
      c'è ma senza tempi.
 
@@ -875,6 +935,7 @@ export function Testo({
           </span>
         )}
         {bottoneAltri}
+        {bottoneRipristina}
         {bottoneSincronizza}
       </header>
 

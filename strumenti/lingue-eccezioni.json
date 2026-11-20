@@ -51,10 +51,7 @@
     "studio.chat.tokens": "I gettoni in entrata di una conversazione: il solo prompt di sistema ne ha migliaia.",
     "studio.chat.spent": "I gettoni in entrata di una conversazione: il solo prompt di sistema ne ha migliaia."
   },
-  "chiaviVive": {
-    "np.lyrics.restore": "Il testo del pulsante «Ripristina il testo di prima» del pannello dei testi: il comando (`testo_ripristina`) e la frase ci sono, il pulsante lo disegna il gruppo dell'interfaccia (vedi il report r33-testi). Si toglie questa voce quando il pulsante c'è.",
-    "np.lyrics.restore.hint": "Il suggerimento dello stesso pulsante: vale lo stesso motivo."
-  },
+  "chiaviVive": {},
   "valoriUguali": {
     "Unità di misura: lo stesso simbolo in ogni lingua.": [
       "format.khz",
