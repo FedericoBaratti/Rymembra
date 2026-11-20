@@ -1676,6 +1676,106 @@ mod prove {
         );
     }
 
+    /// T-1. «Non è questo» sulla copia del testo del proprietario valeva finché il
+    /// pannello non si riapriva: `rifiuta` svuotava la riga, e con il proprietario
+    /// in linea `vale_il_proprietario` vedeva una riga che non è di chi ascolta e
+    /// rimetteva lo stesso testo. Un rifiuto vale finché lui manda **lo stesso**
+    /// testo; uno diverso torna a vincere (il proprietario ha ragione sul suo brano).
+    #[test]
+    fn non_e_questo_vale_finche_il_proprietario_manda_lo_stesso_testo() {
+        let c = libreria();
+        let b = il_brano_specchio(&c);
+        let _ = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(LRC),
+        );
+        rifiuta(&c, &b.track_key).unwrap();
+
+        // Alla prossima apertura il proprietario manda lo stesso testo: non torna.
+        let dopo = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(LRC),
+        );
+        let r = leggi_riga(&c, &b.track_key).expect("riga");
+        assert!(
+            r.synced.is_none() && r.plain.is_none(),
+            "la copia scartata è tornata: {:?}",
+            r.synced
+        );
+        assert!(dopo.testo.righe.is_empty(), "e il pannello la mostra");
+
+        // Se lo rifà — un testo diverso — vince di nuovo.
+        let nuovo = "[00:09.00]rifatta\n";
+        let ancora = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(nuovo),
+        );
+        assert_eq!(ancora.testo.righe.first().map(|r| r.ms), Some(9_000));
+        assert_eq!(
+            leggi_riga(&c, &b.track_key)
+                .and_then(|r| r.synced)
+                .as_deref(),
+            Some(nuovo)
+        );
+    }
+
+    /// T-1, l'altra metà: una voce scelta da qui al posto della copia del
+    /// proprietario vale finché lui manda lo stesso testo.
+    #[test]
+    fn una_voce_scelta_da_qui_vale_finche_il_proprietario_manda_lo_stesso_testo() {
+        let c = libreria();
+        let b = il_brano_specchio(&c);
+        let _ = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(LRC),
+        );
+        let scelta = "[00:05.00]un'altra voce\n";
+        let voce = Voce {
+            candidato: Candidato {
+                id: 222,
+                sincronizzato: true,
+                ..Candidato::default()
+            },
+            piatto: None,
+            sincronizzato: Some(scelta.to_owned()),
+        };
+        ricorda_scelta(&c, &b, &voce).unwrap();
+
+        let dopo = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(LRC),
+        );
+        assert_eq!(
+            dopo.testo.righe.first().map(|r| r.ms),
+            Some(5_000),
+            "la voce scelta resta, anche col proprietario in linea con lo stesso testo"
+        );
+        assert_eq!(dopo.fonte, Fonte::Lrclib);
+
+        let nuovo = "[00:09.00]rifatta\n";
+        let ancora = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(nuovo),
+        );
+        assert_eq!(
+            ancora.testo.righe.first().map(|r| r.ms),
+            Some(9_000),
+            "un testo diverso del proprietario torna a vincere"
+        );
+    }
+
     // ── gli scartati hanno un tetto ─────────────────────────────────────────
 
     #[test]

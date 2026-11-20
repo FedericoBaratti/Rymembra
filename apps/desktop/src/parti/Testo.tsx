@@ -84,7 +84,7 @@ import { statoSuono, useQuelCheSuona } from "../segnali";
 import { useDati } from "../dati";
 import { t, tSe } from "../lingue";
 import { Icona } from "./Icone";
-import { faseLettura } from "./ramoTesto";
+import { faseLettura, sostituibileDaQui } from "./ramoTesto";
 import { SceltaTesto } from "./SceltaTesto";
 
 /**
@@ -687,10 +687,11 @@ export function Testo({
   // Che cosa dire finché il testo non c'è: vedi `faseLettura`.
   const fase = faseLettura({ testo, leggendo, illeggibile });
 
-  // Il testo che si ha è del catalogo, e la scelta può scartarlo.
+  // Il testo che si ha è del catalogo, o la copia di quello del proprietario del
+  // brano (vale finché lui manda lo stesso): la scelta può scartarlo.
   const rifiutabile =
     testo !== null &&
-    testo.fonte === "lrclib" &&
+    sostituibileDaQui(testo.fonte) &&
     !testo.strumentale &&
     (righe.length > 0 || testo.piatto !== null);
   const apriScelta = () => setScelta({ brano, rifiutabile });
@@ -768,11 +769,12 @@ export function Testo({
   );
 
   /* «Altri testi», in testata: quando il testo che scorre è arrivato dal
-     catalogo, e quindi l'ha scelto il programma. Quello di un sidecar o di chi
-     ascolta non si sostituisce da qui — vincerebbe comunque — e quando non c'è
-     niente il gesto sta già fra i ripieghi. */
+     catalogo, e quindi l'ha scelto il programma, o è la copia di quello del
+     proprietario del brano. Quello di un sidecar o di chi ascolta non si
+     sostituisce da qui — vincerebbe comunque — e quando non c'è niente il gesto
+     sta già fra i ripieghi. */
   const bottoneAltri = testo !== null &&
-    testo.fonte === "lrclib" &&
+    sostituibileDaQui(testo.fonte) &&
     (righe.length > 0 || testo.strumentale) && (
       <button
         type="button"
