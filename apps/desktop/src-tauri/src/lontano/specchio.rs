@@ -170,7 +170,8 @@ pub(super) trait Dati {
     fn emetti(&self, avanzamento: &AvanzamentoSpecchio);
     /// Righe appena tolte dalla libreria: la coda del lettore non le nomina più
     /// (S11-1). Si chiama dopo la scrittura, **mai** dentro `scrivi`: sgomberare
-    /// prende il lucchetto del lettore e poi quello della libreria. Per le prove
+    /// prende il lucchetto del lettore, e quello della libreria non si deve avere
+    /// in mano mentre lo si aspetta (prima il lettore, poi la libreria). Per le prove
     /// che non hanno un lettore non fa niente.
     fn sgombera(&self, _ids: &[i64]) {}
 }
@@ -2235,18 +2236,21 @@ mod prove {
     /// Una libreria sola, senza rete e senza lettore: quel che serve a vedere cosa
     /// una rimozione di righe specchio dice, dopo la scrittura, a chi tiene la
     /// coda (S11-1).
+    /// Un brano, e l'errore con cui l'altro lo rifiuta.
+    type Rifiuto = (i64, fn() -> AppError);
+
     struct ConLibreria {
         db: Mutex<rusqlite::Connection>,
         /// Gli identificativi che `sgombera` ha ricevuto, nell'ordine.
         sgombrati: Mutex<Vec<i64>>,
         /// Il lucchetto della libreria era preso quando `sgombera` è stato
-        /// chiamato: sgomberare prende quello del lettore e poi quello della
-        /// libreria, e dentro `scrivi` si bloccherebbe da solo.
+        /// chiamato: sgomberare prende quello del lettore, e chi tiene la
+        /// libreria non deve aspettarlo.
         sgombrato_dentro_la_scrittura: Mutex<bool>,
         dentro_la_scrittura: Mutex<bool>,
         /// Il brano a cui l'altro risponde con questo errore: gli altri vanno
         /// a buon fine. Senza, l'altro non risponde a niente.
-        rifiuta: Mutex<Option<(i64, fn() -> AppError)>>,
+        rifiuta: Mutex<Option<Rifiuto>>,
         /// I brani per cui `chiedi` ha avuto una `Valuta`, nell'ordine.
         chiesti: Mutex<Vec<i64>>,
     }
