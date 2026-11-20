@@ -73,9 +73,9 @@ test("la toolchain di Rust è la stessa in tutti i workflow, e verify:ci è quel
   assert.equal(toolchainDellaCi(VERIFY), versioni[0]);
 });
 
-/* ── R20-1: gli avvisi delle dipendenze consultivi solo nella release ── */
+/* ── R20-1: gli avvisi delle dipendenze consultivi nelle due corse di un tag ── */
 
-test("nella release gli avvisi di sicurezza delle dipendenze non fermano la build, licenze e divieti sì", () => {
+test("nella release e in msix gli avvisi di sicurezza delle dipendenze non fermano la build, licenze e divieti sì", () => {
   assert.match(VERIFY, /consultivo:\n\s+description: [^\n]+\n\s+type: boolean\n\s+required: false\n\s+default: false/);
   const d = V.dipendenze;
   // Licenze, divieti e sorgenti: sempre bloccanti, dipendono dal codice.
@@ -93,8 +93,23 @@ test("nella release gli avvisi di sicurezza delle dipendenze non fermano la buil
   assert.match(VERIFY, /outputs:\n\s+avvisi:[\s\S]*?value: \$\{\{ jobs\.dipendenze\.outputs\.avvisi \}\}/);
   assert.match(R.verifica, /consultivo: true/);
   assert.match(R.pubblica, /needs\.verifica\.outputs\.avvisi/);
-  // msix.yml e i rami restano com'erano: bloccanti.
-  assert.ok(!/consultivo/.test(lavori(MSIX).verifica));
+  // `msix.yml` verifica lo stesso tag con lo stesso `deny.toml`, e rilanciarlo non
+  // cambia niente: un avviso uscito fra il tag e il lancio lo bloccherebbe fino a
+  // un tag nuovo, senza che il pacchetto (nessuna chiave, nessun segreto) ne
+  // abbia colpa (S10-12). Come la release, consultivo: l'esito si dice a chi lo
+  // carica nel Store. I rami e le pull request restano bloccanti: il default.
+  const M = lavori(MSIX);
+  assert.match(M.verifica, /consultivo: true/);
+  assert.match(M.pacchetto, /needs: \[tag, verifica\]/);
+  // L'esito sale a chi carica il pacchetto: un'annotazione in cima al lavoro, e non solo nel registro di `verifica`.
+  assert.match(M.pacchetto, /if: needs\.verifica\.outputs\.avvisi == 'trovati'/);
+  assert.match(M.pacchetto, /::warning/);
+  const avviso = blocchiRun(M.pacchetto).find((r) => /::warning/.test(r));
+  assert.ok(avviso, "manca il passo che dice gli avvisi");
+  // Il collegamento alla corsa passa dall'ambiente, e non da `${{ }}` dentro `run:`.
+  assert.ok(!/\$\{\{/.test(avviso), `un'espressione dentro run:\n${avviso}`);
+  // Un backtick dentro un echo fra virgolette è una sostituzione di comando: eseguirebbe il testo.
+  assert.ok(!/`/.test(avviso), `un backtick dentro run:\n${avviso}`);
 });
 
 /* ── R20-2: tempi ── */

@@ -104,6 +104,14 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+  # Gli avvisi di sicurezza sulle dipendenze non fermano la corsa, come in
+  # `release.yml` (vedi il lavoro `dipendenze` di `verify.yml`): qui si
+  # verifica un tag che esiste già, con il `deny.toml` **di quel tag**, e un
+  # avviso uscito fra il tag e il lancio fermerebbe la corsa in un modo da cui
+  # rilanciarla non esce — stesso tag, stesso file — fino a un tag di
+  # correzione. Il pacchetto non porta chiavi né segreti: l'avviso è una nota
+  # per chi lo carica nel Store, non un divieto (S10-12). Licenze, divieti e
+  # sorgenti restano bloccanti; l'esito si dice in cima al lavoro `pacchetto`.
   verifica:
     needs: tag
     permissions:
@@ -111,6 +119,7 @@ jobs:
     uses: ./.github/workflows/verify.yml
     with:
       ref: refs/tags/${{ needs.tag.outputs.tag }}
+      consultivo: true
 
   pacchetto:
     needs: [tag, verifica]
@@ -120,6 +129,23 @@ jobs:
       contents: read
 
     steps:
+      # In cima, prima di cinquanta minuti di compilazione: chi carica il
+      # pacchetto nel Store deve saperlo senza cercarlo nel registro di
+      # `verifica`. Il collegamento passa dall'ambiente e non da `${{ }}`
+      # dentro `run:`.
+      - name: Gli avvisi sulle dipendenze
+        if: needs.verifica.outputs.avvisi == 'trovati'
+        shell: bash
+        env:
+          CORSA: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          echo "::warning title=Avvisi sulle dipendenze::cargo deny check advisories o npm audit hanno trovato degli avvisi di sicurezza: il pacchetto si costruisce lo stesso. Leggili nel lavoro verifica / dipendenze di questa corsa e decidi prima di caricarlo nel Store."
+          {
+            echo "### Avvisi sulle dipendenze"
+            echo ""
+            echo "Il controllo delle dipendenze di questa corsa ha trovato degli avvisi di sicurezza (cargo deny check advisories o npm audit), e il pacchetto si costruisce lo stesso. Leggili nel [riepilogo della corsa]($CORSA) e decidi prima di caricarlo nel Store."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.tag.outputs.tag }}
