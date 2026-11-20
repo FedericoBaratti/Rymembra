@@ -750,6 +750,86 @@ pub fn ascolto_da_ricontare(connection: &Connection, chiave: &str) -> Result<(),
         .map_err(|err| db_error("ascolto da ricontare", &err))
 }
 
+// ── il tetto totale dei testi che un dispositivo può scrivere ───────────────
+
+/// Quanti testi, al più, un dispositivo collegato può scrivere nella libreria di
+/// chi li possiede in [`FINESTRA_TESTI_MS`]: cento.
+///
+/// Il tetto di sessanta scritture al minuto è un tetto sul **ritmo**, e in un
+/// giorno ne lascia passare ottantaseimila: ogni brano della libreria, più volte,
+/// con un testo di quarantottomila byte. Questo è il tetto sul **totale**. Chi
+/// sincronizza a mano un testo ci mette minuti, e cento in un giorno sono già più
+/// di quanto un utente faccia; chi torna dopo giorni senza rete con una posta
+/// lunga la vede arrivare in qualche giorno, perché oltre il tetto sente
+/// `lontano.irraggiungibile`, la tiene e riprova. Cento testi sono al più
+/// quattro mebibyte e mezzo al giorno.
+pub const TESTI_AL_GIORNO: usize = 100;
+
+/// La finestra di [`TESTI_AL_GIORNO`]: ventiquattr'ore, scorrevole.
+pub const FINESTRA_TESTI_MS: i64 = 24 * 3600 * 1000;
+
+/// Un dispositivo può scrivere un testo in più? `true` se sì, e lo segna.
+///
+/// Il testo si riconosce per (dispositivo, brano, orologio): la stessa
+/// correzione consegnata due volte — una consegna interrotta si rifà per intero —
+/// è una sola. Sta nella tabella degli ascolti ricevuti, con un prefisso
+/// (`testo:`) fuori dall'intervallo di [`ricevuti_da`], quindi non conta contro il
+/// tetto degli ascolti e non ne è contata.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn testo_ammesso(
+    connection: &Connection,
+    dispositivo: &str,
+    brano: i64,
+    quando_ms: i64,
+    adesso_ms: i64,
+) -> Result<bool, AppError> {
+    let guasto = |err: rusqlite::Error| db_error("testi scritti da un dispositivo", &err);
+    let chi = dispositivo.trim().to_ascii_lowercase();
+    let (da, a) = (format!("testo:{chi}:"), format!("testo:{chi};"));
+    let dal_ms = adesso_ms.saturating_sub(FINESTRA_TESTI_MS);
+    // Si potano solo le sue: le altre chiavi le pota `ascolto_nuovo`.
+    connection
+        .execute(
+            "DELETE FROM dispositivi_ricevuti
+              WHERE chiave >= ?1 AND chiave < ?2 AND ricevuto_ms < ?3",
+            rusqlite::params![da, a, dal_ms],
+        )
+        .map_err(guasto)?;
+    let chiave = format!("testo:{chi}:{brano}:{quando_ms}");
+    let gia = connection
+        .query_row(
+            "SELECT 1 FROM dispositivi_ricevuti WHERE chiave = ?1",
+            [&chiave],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(guasto)?
+        .is_some();
+    if gia {
+        return Ok(true);
+    }
+    let scritti: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM dispositivi_ricevuti WHERE chiave >= ?1 AND chiave < ?2",
+            rusqlite::params![da, a],
+            |r| r.get(0),
+        )
+        .map_err(guasto)?;
+    if usize::try_from(scritti).unwrap_or(usize::MAX) >= TESTI_AL_GIORNO {
+        return Ok(false);
+    }
+    connection
+        .execute(
+            "INSERT INTO dispositivi_ricevuti (chiave, ricevuto_ms) VALUES (?1, ?2)",
+            rusqlite::params![chiave, adesso_ms],
+        )
+        .map_err(guasto)?;
+    Ok(true)
+}
+
 // ── la posta in uscita ──────────────────────────────────────────────────────
 //
 // Quel che si decide qui di un brano di un altro dispositivo e che lui deve
@@ -1226,6 +1306,31 @@ mod prove {
         assert_eq!(ricevuti_da(c, &uno, 150).unwrap(), 1, "solo da allora");
         assert_eq!(ricevuti_da(c, &altro, 0).unwrap(), 1);
         assert_eq!(ricevuti_da(c, &"1c".repeat(32), 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn i_testi_si_contano_per_dispositivo_e_per_correzione() {
+        let db = open_in_memory().unwrap();
+        let c = &db.connection;
+        let uno = "1a".repeat(32);
+        let altro = "1b".repeat(32);
+        let adesso = 10 * FINESTRA_TESTI_MS;
+        // Cento correzioni diverse passano, la centunesima no.
+        for brano in 1..=i64::try_from(TESTI_AL_GIORNO).unwrap() {
+            assert!(testo_ammesso(c, &uno, brano, adesso - 5, adesso).unwrap());
+        }
+        assert!(!testo_ammesso(c, &uno, 1_000, adesso - 5, adesso).unwrap());
+        // La stessa correzione consegnata ancora (stesso brano, stesso orologio)
+        // è la stessa: passa anche a tetto raggiunto, e non conta due volte.
+        assert!(testo_ammesso(c, &uno.to_ascii_uppercase(), 1, adesso - 5, adesso).unwrap());
+        assert!(!testo_ammesso(c, &uno, 1_001, adesso - 5, adesso).unwrap());
+        // Un altro dispositivo ha il suo tetto, e il tetto degli ascolti non lo
+        // vede: i due contano chiavi con prefissi diversi.
+        assert!(testo_ammesso(c, &altro, 1, adesso - 5, adesso).unwrap());
+        assert_eq!(ricevuti_da(c, &uno, 0).unwrap(), 0);
+        // Passate le ventiquattr'ore le chiavi si potano e si può di nuovo.
+        let dopo = adesso + FINESTRA_TESTI_MS + 1;
+        assert!(testo_ammesso(c, &uno, 1_000, dopo - 5, dopo).unwrap());
     }
 }
 

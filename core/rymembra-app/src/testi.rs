@@ -66,10 +66,11 @@ use crate::library::{db_error, now_ms};
 
 mod catalogo;
 pub mod condiviso;
+pub mod copia;
 mod disco;
 
 pub use catalogo::{
-    Copertura, LOTTO, RIPROVA_DOPO_UN_GUASTO_MS, RIPROVA_MS, candidati_in_rete,
+    Copertura, LOTTO, MASSIMI_SCARTATI, RIPROVA_DOPO_UN_GUASTO_MS, RIPROVA_MS, candidati_in_rete,
     cerca_di_nuovo_in_rete, cerca_in_rete, copertura, da_cercare, dimentica_esito,
     quanti_da_cercare, ricorda_esito, ricorda_scelta, rifiuta, rimanda,
 };
@@ -106,6 +107,16 @@ pub enum Fonte {
     Lrclib,
     /// Sincronizzato a mano, qui dentro.
     Mano,
+    /// Una copia del testo che ha il proprietario del brano, quando il brano è
+    /// di un altro dispositivo.
+    ///
+    /// Anche se lui l'ha sincronizzato a mano, per chi lo riceve **non** è un
+    /// testo di chi ascolta: è la sua copia, e il proprietario è chi ha ragione
+    /// sul suo brano. Quindi si aggiorna quando lui lo cambia, non si pubblica
+    /// come lavoro di chi ascolta, e «Non è questo» la scarta. Con l'etichetta
+    /// `mano` la copia restava congelata alla prima versione ricevuta, e un pari
+    /// poteva dichiarare `mano` per bloccare un testo qualunque.
+    Proprietario,
 }
 
 impl Fonte {
@@ -118,6 +129,7 @@ impl Fonte {
             Self::Tag => "tag",
             Self::Lrclib => "lrclib",
             Self::Mano => "mano",
+            Self::Proprietario => "proprietario",
         }
     }
 
@@ -129,6 +141,7 @@ impl Fonte {
             "tag" => Self::Tag,
             "lrclib" => Self::Lrclib,
             "mano" => Self::Mano,
+            "proprietario" => Self::Proprietario,
             _ => Self::Nessuna,
         }
     }
@@ -940,6 +953,25 @@ pub fn imposta_scarto(
     track_key: &str,
     scarto_ms: i32,
 ) -> Result<(), AppError> {
+    imposta_scarto_alle(connection, track_key, scarto_ms, now_ms())
+}
+
+/// Come [`imposta_scarto`], con l'istante in cui lo scarto è stato **deciso**.
+///
+/// Per chi applica quel che un altro dispositivo ha deciso prima, e lo porta con
+/// l'orologio di allora: la riga ricorda quando si è deciso, e non quando la
+/// correzione è arrivata — è il confronto che permette di scegliere fra due
+/// correzioni la più recente. Vedi [`condiviso::scrivi_dal_dispositivo`].
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn imposta_scarto_alle(
+    connection: &Connection,
+    track_key: &str,
+    scarto_ms: i32,
+    quando_ms: i64,
+) -> Result<(), AppError> {
     connection
         .execute(
             "INSERT INTO lyrics (track_key, source, offset_ms, updated_at)
@@ -950,7 +982,7 @@ pub fn imposta_scarto(
             // Il nome viene dall'enumerazione e non scritto a mano nella `SQL`:
             // il valore neutro è una cosa sola, e se cambia deve cambiare in un
             // posto solo.
-            rusqlite::params![track_key, scarto_ms, now_ms(), Fonte::Nessuna.nome()],
+            rusqlite::params![track_key, scarto_ms, quando_ms, Fonte::Nessuna.nome()],
         )
         .map(|_| ())
         .map_err(|err| db_error("scrittura dello scarto di un testo", &err))
@@ -1034,6 +1066,22 @@ pub fn registra_a_mano(
     brano: &BranoDaTestare,
     lrc: &str,
 ) -> Result<(), AppError> {
+    registra_a_mano_alle(connection, brano, lrc, now_ms())
+}
+
+/// Come [`registra_a_mano`], con l'istante in cui il testo è stato **deciso**: la
+/// riga lo ricorda come suo orologio (`updated_at`), per scegliere fra due
+/// correzioni la più recente. Vedi [`imposta_scarto_alle`].
+///
+/// # Errori
+///
+/// Quelli di [`registra_a_mano`].
+pub fn registra_a_mano_alle(
+    connection: &Connection,
+    brano: &BranoDaTestare,
+    lrc: &str,
+    quando_ms: i64,
+) -> Result<(), AppError> {
     crate::playback::riga_della_libreria(brano.id)?;
     connection
         .execute(
@@ -1050,7 +1098,7 @@ pub fn registra_a_mano(
                duration_ms = excluded.duration_ms,
                updated_at = excluded.updated_at,
                checked_at = excluded.checked_at",
-            rusqlite::params![brano.track_key, lrc, brano.duration_ms, now_ms()],
+            rusqlite::params![brano.track_key, lrc, brano.duration_ms, quando_ms],
         )
         .map(|_| ())
         .map_err(|err| db_error("salvataggio di un testo sincronizzato", &err))?;

@@ -980,6 +980,18 @@ export interface CandidatoTesto {
   anteprima: string | null;
 }
 
+/**
+ * La copia di un livello del testo sincronizzato a mano che un dispositivo
+ * collegato ha sostituito con una sua correzione: quel che torna da
+ * `testoCopia`, e che `testoRipristina` rimette al suo posto.
+ */
+export interface CopiaDelTesto {
+  /** Quando il testo è stato sostituito, in millisecondi. */
+  sostituitaMs: number;
+  /** Quanto è lungo il testo che si ripristinerebbe, in byte. */
+  byte: number;
+}
+
 /** Quel che torna da `testoCandidati`. */
 export interface CandidatiTesto {
   /**
@@ -1023,7 +1035,7 @@ export interface TestoBrano {
   /** Il brano non ha parole. È una risposta, non un'assenza. */
   strumentale: boolean;
   /** Da dove viene. */
-  fonte: "nessuna" | "sidecar" | "tag" | "lrclib" | "mano";
+  fonte: "nessuna" | "sidecar" | "tag" | "lrclib" | "mano" | "proprietario";
   /**
    * Lo scarto dichiarato dal file, nel verso dello standard: positivo anticipa.
    *

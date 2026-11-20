@@ -43,8 +43,8 @@ use rymembra_meta::lrclib::Voce;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BranoDaTestare, COLONNE, DalDisco, Fonte, Riga, TestoBrano, brano_da_riga, componi_con,
-    imposta_scarto, registra_a_mano, ricorda_scelta, rifiuta,
+    BranoDaTestare, COLONNE, DalDisco, Fonte, Riga, TestoBrano, brano_da_riga, componi_con, copia,
+    imposta_scarto_alle, leggi_riga, registra_a_mano_alle, ricorda_scelta, rifiuta,
 };
 use crate::dispositivi::{self, POSTA_TESTO};
 use crate::library::condivisa::CONDIVISO;
@@ -315,23 +315,77 @@ pub fn testo_da_dare(
     })
 }
 
+/// Chi scrive una correzione a un brano di qui, e quando l'ha decisa.
+#[derive(Debug, Clone, Copy)]
+pub struct Scrivente<'a> {
+    /// La chiave del dispositivo che manda: per il tetto totale.
+    pub dispositivo: &'a str,
+    /// L'orologio di chi manda, quando ha deciso la correzione, in millisecondi.
+    /// Zero se non lo dice (una build di prima): vale come «adesso».
+    pub quando_ms: i64,
+    /// Adesso, sull'orologio di chi risponde.
+    pub adesso_ms: i64,
+}
+
+impl Scrivente<'_> {
+    /// L'istante con cui la correzione si confronta con il testo che c'è.
+    ///
+    /// Quando l'ha deciso chi la manda, e mai più avanti di adesso: un orologio
+    /// avanti non fissa un testo che nessuna correzione vera scavalcherebbe,
+    /// come per `Valuta`. Senza orologio, adesso: vince l'ultima arrivata, che è
+    /// com'è sempre stato — per quelle di una build di prima non si può sapere di
+    /// più, e **non** si trattano come «le più vecchie»: una correzione dal
+    /// telefono con la build di oggi non deve sparire in silenzio.
+    #[must_use]
+    pub const fn quando(&self) -> i64 {
+        if self.quando_ms <= 0 || self.quando_ms > self.adesso_ms {
+            self.adesso_ms
+        } else {
+            self.quando_ms
+        }
+    }
+}
+
 /// Applica una scrittura arrivata da un altro dispositivo a un brano di qui.
 ///
 /// La convalida va prima di ogni scrittura, e il brano deve essere condiviso:
 /// un brano che non lo è risponde `lontano.fileCambiato`, come per le altre
-/// scritture. Le funzioni sono quelle dei comandi di sempre, quindi il testo
-/// scritto a mano non si perde e una voce scartata non torna; nessun file
-/// accanto al brano si tocca.
+/// scritture. Le funzioni sono quelle dei comandi di sempre; nessun file accanto
+/// al brano si tocca.
+///
+/// # La più recente vince, non l'ultima arrivata
+///
+/// Un testo sincronizzato a mano (`source = 'mano'`) ha come orologio
+/// `updated_at`, e una correzione arrivata da un altro dispositivo lo scavalca
+/// solo se è **più recente**: una correzione decisa prima e consegnata dopo —
+/// per giorni, dalla posta di un telefono senza rete — non cancella il lavoro
+/// fatto qui nel frattempo. Una scrittura vecchia non è un errore: si risponde
+/// `Fatto` e non si scrive, o resterebbe in posta per trenta giorni. La riga
+/// ricorda l'orologio **di chi ha deciso** e non l'ora di arrivo, altrimenti due
+/// correzioni consegnate in ordine inverso si scavalcherebbero a vicenda.
+///
+/// Vale per il testo a mano e per lo scarto, e solo contro un testo a mano: quel
+/// che viene dal catalogo, da un file o dal tag non ha un orologio di chi lo
+/// decide, e la voce scelta e il rifiuto non toccano un testo a mano.
+///
+/// # Quanto un dispositivo può scrivere, e cosa resta di quel che sostituisce
+///
+/// Un testo — a mano o una voce scelta — si conta contro
+/// [`dispositivi::TESTI_AL_GIORNO`] per dispositivo; oltre, `lontano.irraggiungibile`
+/// e chi manda lo tiene in posta. Quando un testo a mano di qui viene
+/// sostituito, quello di prima resta come copia di un livello
+/// ([`super::copia`]) e si ripristina con un gesto.
 ///
 /// # Errori
 ///
 /// `lontano.fileCambiato` per un brano che non è condiviso; `lontano.protocollo`
-/// per una scrittura fuori dai tetti; `db.queryFailed` se il database non
-/// risponde.
+/// per una scrittura fuori dai tetti; `lontano.irraggiungibile` oltre il tetto
+/// dei testi di un dispositivo; `db.queryFailed` se il database non risponde.
 pub fn scrivi_dal_dispositivo(
     connection: &Connection,
     id: i64,
     scrittura: &Scrittura,
+    scrivente: &Scrivente<'_>,
 ) -> Result<(), AppError> {
     // La convalida prima di tutto, anche prima di guardare il brano: una
     // scrittura storta si rifiuta con lo stesso codice per ogni brano.
@@ -340,15 +394,70 @@ pub fn scrivi_dal_dispositivo(
         return Err(AppError::new(ErrorCode::LontanoFileCambiato)
             .with_cause("il brano non è più condiviso"));
     };
+    let quando = scrivente.quando();
+    // Il confronto degli orologi, il tetto, la copia e la scrittura sono un
+    // gesto solo: o tutti o niente. Uscire prima senza `commit` li annulla.
+    let gesto = connection
+        .unchecked_transaction()
+        .map_err(|err| db_error("scrittura di un testo da un dispositivo", &err))?;
+    let attuale = leggi_riga(&gesto, &brano.track_key);
+    let a_mano = attuale
+        .as_ref()
+        .filter(|riga| riga.fonte.e_di_chi_ascolta());
     match scrittura {
-        Scrittura::Scarto(scarto) => imposta_scarto(connection, &brano.track_key, *scarto),
-        Scrittura::Testo(NuovoTesto::Mano { lrc }) => registra_a_mano(connection, &brano, lrc),
+        Scrittura::Scarto(scarto) => {
+            // Uno scarto deciso prima dell'ultimo tocco al testo a mano non lo
+            // sposta: lo ha già scavalcato chi l'ha toccato dopo.
+            if a_mano.is_some_and(|riga| riga.aggiornata_ms > quando) {
+                return Ok(());
+            }
+            imposta_scarto_alle(&gesto, &brano.track_key, *scarto, quando)?;
+        }
+        Scrittura::Testo(NuovoTesto::Mano { lrc }) => {
+            // Strettamente più recente: la stessa correzione consegnata due
+            // volte è la stessa, e la seconda non riscrive niente.
+            if a_mano.is_some_and(|riga| riga.aggiornata_ms >= quando) {
+                return Ok(());
+            }
+            ammetti(&gesto, scrivente, brano.id, quando)?;
+            if let Some(prima) = a_mano
+                .filter(|riga| riga.ha_i_tempi() && riga.synced.as_deref() != Some(lrc.as_str()))
+            {
+                copia::tieni(&gesto, &brano.track_key, prima, scrivente.adesso_ms)?;
+            }
+            registra_a_mano_alle(&gesto, &brano, lrc, quando)?;
+        }
         Scrittura::Testo(NuovoTesto::Scelta { .. }) => {
             let voce = voce.ok_or_else(|| fuori_dai_tetti("una voce scelta senza voce"))?;
-            ricorda_scelta(connection, &brano, &voce)
+            ammetti(&gesto, scrivente, brano.id, quando)?;
+            ricorda_scelta(&gesto, &brano, &voce)?;
         }
-        Scrittura::Testo(NuovoTesto::Rifiuta) => rifiuta(connection, &brano.track_key),
+        Scrittura::Testo(NuovoTesto::Rifiuta) => rifiuta(&gesto, &brano.track_key)?,
     }
+    gesto
+        .commit()
+        .map_err(|err| db_error("scrittura di un testo da un dispositivo", &err))
+}
+
+/// Il dispositivo può scrivere un testo in più? Altrimenti
+/// `lontano.irraggiungibile`: chi manda lo tiene e riprova.
+fn ammetti(
+    connection: &Connection,
+    scrivente: &Scrivente<'_>,
+    brano: i64,
+    quando_ms: i64,
+) -> Result<(), AppError> {
+    if dispositivi::testo_ammesso(
+        connection,
+        scrivente.dispositivo,
+        brano,
+        quando_ms,
+        scrivente.adesso_ms,
+    )? {
+        return Ok(());
+    }
+    Err(AppError::new(ErrorCode::LontanoIrraggiungibile)
+        .with_cause("troppi testi da questo dispositivo nelle ultime ventiquattr'ore"))
 }
 
 /// Controlla una scrittura, e per una voce scelta prepara la voce.
@@ -451,7 +560,14 @@ pub fn convalida_ricevuto(ricevuto: TestoCondiviso) -> Result<DalProprietario, A
             "un testo che è insieme con i tempi e senza",
         ));
     }
-    let fonte = Fonte::da_nome(&ricevuto.fonte);
+    // «Sincronizzato a mano» dal proprietario non vale come sincronizzato a mano
+    // **qui**: per chi lo riceve è la copia di un altro, che lui può aggiornare.
+    // Il `mano` di qui è lavoro di chi ascolta, e non lo scavalca nessuno: se lo
+    // dichiarasse un pari, un testo qualunque bloccherebbe la riga.
+    let fonte = match Fonte::da_nome(&ricevuto.fonte) {
+        Fonte::Mano => Fonte::Proprietario,
+        altra => altra,
+    };
     if ricevuto.strumentale {
         return Ok(DalProprietario {
             testo: Testo {
@@ -634,6 +750,32 @@ mod prove {
         .expect("conteggio")
     }
 
+    /// Il dispositivo che scrive, nelle prove: il `b` di sempre.
+    fn mittente() -> String {
+        chiave('b')
+    }
+
+    /// Una scrittura senza orologio (come la mandava una build di prima), da
+    /// `mittente`, adesso. Ha il nome della funzione che prova, e la nasconde:
+    /// le prove che hanno bisogno di un orologio o di un altro dispositivo
+    /// chiamano `super::scrivi_dal_dispositivo` con il loro [`Scrivente`].
+    fn scrivi_dal_dispositivo(
+        c: &Connection,
+        id: i64,
+        scrittura: &Scrittura,
+    ) -> Result<(), rymembra_domain::errors::AppError> {
+        super::scrivi_dal_dispositivo(
+            c,
+            id,
+            scrittura,
+            &Scrivente {
+                dispositivo: &mittente(),
+                quando_ms: 0,
+                adesso_ms: ADESSO,
+            },
+        )
+    }
+
     fn codice<T: std::fmt::Debug>(esito: Result<T, rymembra_domain::errors::AppError>) -> String {
         esito
             .expect_err("un errore")
@@ -774,7 +916,8 @@ mod prove {
         let dal = convalida_ricevuto(il_testo(Some(LRC), None)).expect("buono");
         assert!(dal.testo.sincronizzato());
         assert_eq!(dal.testo.righe.len(), 2);
-        assert_eq!(dal.fonte, Fonte::Mano);
+        // «Mano» dichiarato dal proprietario è, per chi lo riceve, la sua copia.
+        assert_eq!(dal.fonte, Fonte::Proprietario);
         let dal = convalida_ricevuto(il_testo(None, Some(PIATTO))).expect("piatto");
         assert!(!dal.testo.sincronizzato());
         assert_eq!(dal.testo.piatto.as_deref(), Some(PIATTO));
@@ -1446,5 +1589,452 @@ mod prove {
         .unwrap();
         assert!(!esito, "non parte: il proprietario non la prenderebbe");
         assert!(!in_attesa(&c, &pc()).unwrap());
+    }
+
+    // ── il «mano» del proprietario è una copia, non un testo di qui ─────────
+
+    /// Il testo che il proprietario dice di aver sincronizzato a mano: il suo
+    /// `fonte` è `mano`, e per chi lo riceve non lo è.
+    fn dal_proprietario_a_mano(lrc: &str) -> DalDisco {
+        DalDisco {
+            proprietario: Some(dal_proprietario(&il_testo(Some(lrc), None))),
+            ..DalDisco::default()
+        }
+    }
+
+    #[test]
+    fn il_testo_a_mano_del_proprietario_si_aggiorna_quando_lui_lo_rifa() {
+        let c = libreria();
+        let b = il_brano_specchio(&c);
+        let primo = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(LRC),
+        );
+        assert_eq!(primo.testo.righe.first().map(|r| r.ms), Some(1_000));
+
+        // Lui lo rifà, e chi ascolta qui lo vede cambiare: la copia non è
+        // congelata.
+        let nuovo = "[00:09.00]rifatta\n";
+        let dopo = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(nuovo),
+        );
+        assert_eq!(dopo.testo.righe.first().map(|r| r.ms), Some(9_000));
+        let r = leggi_riga(&c, &b.track_key).expect("copia");
+        assert_eq!(r.synced.as_deref(), Some(nuovo));
+        assert_eq!(r.fonte.nome(), "proprietario");
+    }
+
+    #[test]
+    fn un_mano_dichiarato_dal_proprietario_non_e_un_mano_di_qui() {
+        let c = libreria();
+        let b = il_brano_specchio(&c);
+        let _ = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(LRC),
+        );
+        let r = leggi_riga(&c, &b.track_key).expect("copia");
+        assert!(
+            !r.fonte.e_di_chi_ascolta(),
+            "il testo del proprietario è diventato un testo di chi ascolta"
+        );
+        // Non si pubblica come lavoro di chi ascolta: non l'ha fatto lui.
+        assert!(crate::testi::da_restituire(&c, b.id).is_err());
+    }
+
+    #[test]
+    fn non_e_questo_scarta_la_copia_del_proprietario() {
+        let c = libreria();
+        let b = il_brano_specchio(&c);
+        let _ = componi(
+            &c,
+            &b,
+            leggi_riga(&c, &b.track_key),
+            dal_proprietario_a_mano(LRC),
+        );
+        rifiuta(&c, &b.track_key).unwrap();
+        let r = leggi_riga(&c, &b.track_key).expect("riga");
+        assert!(
+            r.synced.is_none() && r.plain.is_none(),
+            "la copia è rimasta"
+        );
+    }
+
+    // ── gli scartati hanno un tetto ─────────────────────────────────────────
+
+    #[test]
+    fn gli_scartati_di_un_brano_hanno_un_tetto() {
+        let c = libreria();
+        locale(&c, 1, "k1", "C:/Musica/1.mp3");
+        let b = brano(&c, 1).expect("brano");
+        // Un dispositivo che alterna «scelgo la voce n» e «non è questo» con un
+        // n sempre nuovo: gli scartati di quel brano non crescono senza fine.
+        for n in 1..=500 {
+            let voce = Voce {
+                candidato: Candidato {
+                    id: n,
+                    sincronizzato: true,
+                    ..Candidato::default()
+                },
+                piatto: None,
+                sincronizzato: Some(LRC.to_owned()),
+            };
+            ricorda_scelta(&c, &b, &voce).unwrap();
+            rifiuta(&c, &b.track_key).unwrap();
+        }
+        let quanti: i64 = c
+            .query_row(
+                "SELECT json_array_length(COALESCE(scartati, '[]')) FROM lyrics WHERE track_key = 'k1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(quanti <= 64, "{quanti} scartati");
+        // E si tengono i più recenti: l'ultima voce rifiutata c'è ancora.
+        let c_e: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM lyrics, json_each(lyrics.scartati)
+                  WHERE track_key = 'k1' AND value = 500",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(c_e, 1);
+    }
+
+    // ── la più recente vince, e un dispositivo non scrive all'infinito ──────
+
+    const DOPO: &str = "[00:09.00]nuova riga\n";
+    const ALTRA: &str = "[00:07.00]altra riga\n";
+    const UN_SECONDO: i64 = 1_000;
+
+    /// Una correzione da `da`, decisa a `quando_ms` (zero: senza orologio), arrivata
+    /// a `adesso_ms`.
+    fn scrive(
+        c: &Connection,
+        id: i64,
+        scrittura: &Scrittura,
+        da: &str,
+        quando_ms: i64,
+        adesso_ms: i64,
+    ) -> Result<(), rymembra_domain::errors::AppError> {
+        super::scrivi_dal_dispositivo(
+            c,
+            id,
+            scrittura,
+            &Scrivente {
+                dispositivo: da,
+                quando_ms,
+                adesso_ms,
+            },
+        )
+    }
+
+    fn mano(lrc: &str) -> Scrittura {
+        Scrittura::Testo(NuovoTesto::Mano {
+            lrc: lrc.to_owned(),
+        })
+    }
+
+    /// Un brano condiviso `1` con `k1` e il suo testo a mano, fatto qui a `quando_ms`.
+    fn con_un_testo_a_mano(quando_ms: i64) -> Connection {
+        let c = libreria();
+        locale(&c, 1, "k1", "C:/Musica/1.mp3");
+        c.execute(
+            "INSERT INTO lyrics (track_key, synced, source, offset_ms, updated_at, checked_at)
+             VALUES ('k1', ?1, 'mano', 40, ?2, ?2)",
+            params![LRC, quando_ms],
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn una_correzione_decisa_prima_non_scavalca_un_testo_a_mano_piu_nuovo() {
+        // Il testo di qui è stato rifatto a ADESSO − 10 s. Una correzione decisa
+        // un'ora fa dal telefono, che l'ha tenuta in posta, arriva adesso.
+        let c = con_un_testo_a_mano(ADESSO - 10 * UN_SECONDO);
+        let decisa = ADESSO - 3_600 * UN_SECONDO;
+        scrive(&c, 1, &mano(DOPO), &mittente(), decisa, ADESSO).expect("risponde Fatto");
+        let r = leggi_riga(&c, "k1").unwrap();
+        assert_eq!(
+            r.synced.as_deref(),
+            Some(LRC),
+            "il testo di qui è stato scavalcato"
+        );
+        assert_eq!(r.scarto_ms, 40);
+        // Lo scarto che accompagna quel testo (un testo a mano porta con sé uno
+        // scarto a zero) non sposta il testo che è rimasto.
+        scrive(&c, 1, &Scrittura::Scarto(0), &mittente(), decisa, ADESSO).expect("Fatto");
+        assert_eq!(leggi_riga(&c, "k1").unwrap().scarto_ms, 40);
+        // E non ha lasciato una copia: non è stato sostituito niente.
+        assert_eq!(nelle_righe(&c, "k1\u{1f}prima"), 0);
+    }
+
+    #[test]
+    fn una_correzione_piu_recente_scavalca_e_la_riga_ricorda_chi_l_ha_decisa() {
+        let c = con_un_testo_a_mano(ADESSO - 3_600 * UN_SECONDO);
+        let decisa = ADESSO - 60 * UN_SECONDO;
+        scrive(&c, 1, &mano(DOPO), &mittente(), decisa, ADESSO).unwrap();
+        let r = leggi_riga(&c, "k1").unwrap();
+        assert_eq!(r.synced.as_deref(), Some(DOPO));
+        // L'orologio della riga è quello di chi ha deciso, non l'ora di arrivo.
+        assert_eq!(r.aggiornata_ms, decisa);
+        assert_eq!(r.scarto_ms, 0, "un testo a mano azzera lo scarto");
+        // Lo scarto che segue, con lo stesso orologio, si applica: è parte della
+        // stessa correzione.
+        scrive(&c, 1, &Scrittura::Scarto(250), &mittente(), decisa, ADESSO).unwrap();
+        assert_eq!(leggi_riga(&c, "k1").unwrap().scarto_ms, 250);
+    }
+
+    #[test]
+    fn due_correzioni_consegnate_in_ordine_inverso_vincono_per_orologio() {
+        // A decide a T1, B a T2 > T1, e arrivano nell'ordine sbagliato: A prima.
+        let (t1, t2) = (ADESSO - 600 * UN_SECONDO, ADESSO - 300 * UN_SECONDO);
+        let c = con_un_testo_a_mano(ADESSO - 3_600 * UN_SECONDO);
+        scrive(&c, 1, &mano(DOPO), &mittente(), t1, ADESSO).unwrap();
+        scrive(&c, 1, &mano(ALTRA), &mittente(), t2, ADESSO + UN_SECONDO).unwrap();
+        // Vince B, la più recente, anche se è arrivata dopo di A — e se la riga
+        // avesse ricordato l'ora di arrivo di A, B sarebbe stata scartata.
+        assert_eq!(leggi_riga(&c, "k1").unwrap().synced.as_deref(), Some(ALTRA));
+        // Nell'altro ordine vince la stessa.
+        let c = con_un_testo_a_mano(ADESSO - 3_600 * UN_SECONDO);
+        scrive(&c, 1, &mano(ALTRA), &mittente(), t2, ADESSO).unwrap();
+        scrive(&c, 1, &mano(DOPO), &mittente(), t1, ADESSO + UN_SECONDO).unwrap();
+        assert_eq!(leggi_riga(&c, "k1").unwrap().synced.as_deref(), Some(ALTRA));
+    }
+
+    #[test]
+    fn senza_orologio_vale_adesso_e_un_orologio_avanti_vale_adesso() {
+        // Una build di prima non manda l'orologio: vince l'ultima arrivata, com'è
+        // sempre stato — e non sparisce in silenzio.
+        let c = con_un_testo_a_mano(ADESSO - 10 * UN_SECONDO);
+        scrive(&c, 1, &mano(DOPO), &mittente(), 0, ADESSO).unwrap();
+        let r = leggi_riga(&c, "k1").unwrap();
+        assert_eq!(r.synced.as_deref(), Some(DOPO));
+        assert_eq!(r.aggiornata_ms, ADESSO);
+        // Un orologio nel futuro non fissa un testo che nessuna correzione vera
+        // scavalcherebbe: si riporta ad adesso.
+        scrive(
+            &c,
+            1,
+            &mano(ALTRA),
+            &mittente(),
+            ADESSO + 86_400_000,
+            ADESSO + UN_SECONDO,
+        )
+        .unwrap();
+        let r = leggi_riga(&c, "k1").unwrap();
+        assert_eq!(r.synced.as_deref(), Some(ALTRA));
+        assert_eq!(r.aggiornata_ms, ADESSO + UN_SECONDO);
+    }
+
+    #[test]
+    fn la_stessa_correzione_due_volte_e_innocua() {
+        let c = con_un_testo_a_mano(ADESSO - 3_600 * UN_SECONDO);
+        let decisa = ADESSO - 60 * UN_SECONDO;
+        scrive(&c, 1, &mano(DOPO), &mittente(), decisa, ADESSO).unwrap();
+        // Una consegna interrotta si rifà per intero: la seconda non scrive.
+        c.execute(
+            "UPDATE lyrics SET checked_at = 123 WHERE track_key = 'k1'",
+            [],
+        )
+        .unwrap();
+        scrive(&c, 1, &mano(DOPO), &mittente(), decisa, ADESSO + UN_SECONDO).unwrap();
+        let r = leggi_riga(&c, "k1").unwrap();
+        assert_eq!(r.synced.as_deref(), Some(DOPO));
+        // La copia è ancora il testo di prima, non il testo appena scritto.
+        let copia: String = c
+            .query_row(
+                "SELECT synced FROM lyrics WHERE track_key = ?1",
+                ["k1\u{1f}prima"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(copia, LRC);
+    }
+
+    #[test]
+    fn un_dispositivo_non_scrive_oltre_il_tetto_al_giorno() {
+        let c = libreria();
+        let tetto = dispositivi::TESTI_AL_GIORNO;
+        for n in 1..=i64::try_from(tetto + 5).unwrap() {
+            locale(&c, n, &format!("k{n}"), &format!("C:/Musica/{n}.mp3"));
+        }
+        let b = mittente();
+        let un_altro = chiave('c');
+        let decisa = ADESSO - 60 * UN_SECONDO;
+        for n in 1..=i64::try_from(tetto).unwrap() {
+            scrive(&c, n, &mano(LRC), &b, decisa, ADESSO).unwrap_or_else(|e| {
+                panic!(
+                    "il testo {n} di {tetto} non passa: {}",
+                    e.code().kind().code()
+                )
+            });
+        }
+        // Il successivo sente `lontano.irraggiungibile` e non scrive niente: chi
+        // manda lo tiene in posta e riprova.
+        let n = i64::try_from(tetto + 1).unwrap();
+        assert_eq!(
+            codice(scrive(&c, n, &mano(LRC), &b, decisa, ADESSO)),
+            "lontano.irraggiungibile"
+        );
+        assert_eq!(nelle_righe(&c, &format!("k{n}")), 0);
+        // Anche una voce scelta dal catalogo si conta: scrive un testo.
+        let scelta = Scrittura::Testo(NuovoTesto::Scelta {
+            id_catalogo: 9,
+            piatto: None,
+            sincronizzato: Some(LRC.to_owned()),
+            strumentale: false,
+        });
+        assert_eq!(
+            codice(scrive(&c, n, &scelta, &b, decisa, ADESSO)),
+            "lontano.irraggiungibile"
+        );
+        // La consegna di una correzione già applicata che si ripete, a tetto
+        // raggiunto, non si rifiuta: è la stessa, e non c'è niente da scrivere.
+        scrive(&c, 1, &mano(LRC), &b, decisa, ADESSO).expect("la stessa, già applicata");
+        // Un altro dispositivo ha il suo tetto.
+        scrive(&c, n, &mano(LRC), &un_altro, decisa, ADESSO).expect("un altro dispositivo");
+        // Uno scarto e un «non è questo» non scrivono un testo: non si contano.
+        scrive(&c, n + 1, &Scrittura::Scarto(5), &b, decisa, ADESSO).expect("uno scarto");
+        scrive(
+            &c,
+            n + 1,
+            &Scrittura::Testo(NuovoTesto::Rifiuta),
+            &b,
+            decisa,
+            ADESSO,
+        )
+        .expect("un rifiuto");
+        // E la finestra scorre: dopo ventiquattr'ore si può di nuovo.
+        let dopo = ADESSO + dispositivi::FINESTRA_TESTI_MS + UN_SECONDO;
+        scrive(&c, n, &mano(LRC), &b, decisa + dopo - ADESSO, dopo).expect("il giorno dopo");
+    }
+
+    #[test]
+    fn il_tetto_dei_testi_non_tocca_quello_degli_ascolti() {
+        let c = libreria();
+        locale(&c, 1, "k1", "C:/Musica/1.mp3");
+        let b = mittente();
+        scrive(&c, 1, &mano(LRC), &b, ADESSO - UN_SECONDO, ADESSO).unwrap();
+        assert_eq!(
+            dispositivi::ricevuti_da(&c, &b, ADESSO - 3_600 * UN_SECONDO).unwrap(),
+            0,
+            "un testo scritto si è contato fra gli ascolti"
+        );
+    }
+
+    // ── la copia di un livello ──────────────────────────────────────────────
+
+    fn copia_di(c: &Connection, k: &str) -> Option<String> {
+        c.query_row(
+            "SELECT synced FROM lyrics WHERE track_key = ?1",
+            [format!("{k}\u{1f}prima")],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+
+    #[test]
+    fn il_testo_a_mano_sostituito_resta_come_copia_di_un_livello() {
+        let c = con_un_testo_a_mano(ADESSO - 3_600 * UN_SECONDO);
+        scrive(
+            &c,
+            1,
+            &mano(DOPO),
+            &mittente(),
+            ADESSO - 60 * UN_SECONDO,
+            ADESSO,
+        )
+        .unwrap();
+        assert_eq!(copia_di(&c, "k1").as_deref(), Some(LRC));
+        let copia = crate::testi::copia::leggi(&c, "k1")
+            .unwrap()
+            .expect("copia");
+        assert_eq!(copia.sostituita_ms, ADESSO);
+        assert_eq!(copia.byte, LRC.len());
+        // Un livello solo: una seconda sostituzione prende il posto della copia.
+        scrive(
+            &c,
+            1,
+            &mano(ALTRA),
+            &mittente(),
+            ADESSO - 30 * UN_SECONDO,
+            ADESSO + 5,
+        )
+        .unwrap();
+        assert_eq!(copia_di(&c, "k1").as_deref(), Some(DOPO));
+        // La copia non è il testo di nessun brano: nessuna chiave di brano la
+        // incontra, e la riga vera è sempre una sola.
+        assert_eq!(nelle_righe(&c, "k1"), 1);
+        assert_eq!(leggi_riga(&c, "k1").unwrap().synced.as_deref(), Some(ALTRA));
+    }
+
+    #[test]
+    fn quel_che_non_e_a_mano_non_lascia_copia() {
+        let c = libreria();
+        locale(&c, 1, "k1", "C:/Musica/1.mp3");
+        c.execute(
+            "INSERT INTO lyrics (track_key, synced, source, updated_at) VALUES ('k1', ?1, 'lrclib', 5)",
+            [LRC],
+        )
+        .unwrap();
+        scrive(&c, 1, &mano(DOPO), &mittente(), ADESSO - UN_SECONDO, ADESSO).unwrap();
+        assert_eq!(leggi_riga(&c, "k1").unwrap().synced.as_deref(), Some(DOPO));
+        assert_eq!(copia_di(&c, "k1"), None, "un testo scaricato si riscarica");
+        // E scrivere due volte lo stesso testo non lo copia su sé stesso.
+        let c = con_un_testo_a_mano(ADESSO - 3_600 * UN_SECONDO);
+        scrive(&c, 1, &mano(LRC), &mittente(), ADESSO - UN_SECONDO, ADESSO).unwrap();
+        assert_eq!(copia_di(&c, "k1"), None);
+    }
+
+    #[test]
+    fn ripristinare_scambia_il_testo_con_la_copia_e_si_disfa() {
+        let c = con_un_testo_a_mano(ADESSO - 3_600 * UN_SECONDO);
+        // Senza copia non c'è niente da ripristinare.
+        assert!(!crate::testi::copia::ripristina(&c, "k1", ADESSO).unwrap());
+        scrive(
+            &c,
+            1,
+            &mano(DOPO),
+            &mittente(),
+            ADESSO - 60 * UN_SECONDO,
+            ADESSO,
+        )
+        .unwrap();
+
+        assert!(crate::testi::copia::ripristina(&c, "k1", ADESSO + 10).unwrap());
+        let r = leggi_riga(&c, "k1").unwrap();
+        assert_eq!(r.synced.as_deref(), Some(LRC));
+        assert!(r.fonte.e_di_chi_ascolta());
+        assert_eq!(
+            r.aggiornata_ms,
+            ADESSO + 10,
+            "un gesto di chi ascolta vale adesso"
+        );
+        assert_eq!(copia_di(&c, "k1").as_deref(), Some(DOPO));
+        // Una correzione decisa prima del ripristino non lo scavalca.
+        scrive(
+            &c,
+            1,
+            &mano(ALTRA),
+            &mittente(),
+            ADESSO - UN_SECONDO,
+            ADESSO + 20,
+        )
+        .unwrap();
+        assert_eq!(leggi_riga(&c, "k1").unwrap().synced.as_deref(), Some(LRC));
+
+        // Ripristinare ancora è disfare: torna il testo della correzione.
+        assert!(crate::testi::copia::ripristina(&c, "k1", ADESSO + 30).unwrap());
+        assert_eq!(leggi_riga(&c, "k1").unwrap().synced.as_deref(), Some(DOPO));
+        assert_eq!(copia_di(&c, "k1").as_deref(), Some(LRC));
     }
 }

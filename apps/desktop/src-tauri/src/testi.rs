@@ -956,6 +956,90 @@ fn rifiuta_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
         .map_err(errore)
 }
 
+/// La copia di un livello del testo a mano che un dispositivo collegato ha
+/// sostituito, per chi offre di ripristinarla: vedi `rymembra_app::testi::copia`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopiaTestoIpc {
+    /// Quando il testo è stato sostituito, in millisecondi.
+    pub sostituita_ms: i64,
+    /// Quanto è lungo il testo che si ripristinerebbe, in byte.
+    pub byte: usize,
+}
+
+/// La copia di prima del testo a mano di un brano, se un dispositivo collegato
+/// ne ha sostituito uno; `None` se non c'è, o se il brano è di un altro
+/// dispositivo (la copia sta dove sta il testo, e lì si ripristina).
+///
+/// In disparte, come ogni comando che legge la libreria per id.
+#[tauri::command]
+pub async fn testo_copia(app: AppHandle, id: i64) -> Esito<Option<CopiaTestoIpc>> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("lettura della copia di un testo", move || {
+        copia_adesso(&app, id)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testo_copia`], sul pool bloccante.
+fn copia_adesso(app: &AppHandle, id: i64) -> Esito<Option<CopiaTestoIpc>> {
+    let stato = gestito::<Stato>(app, "lettura della copia di un testo").map_err(errore)?;
+    con_libreria(&stato, |libreria| {
+        let brano = testi::brano(&libreria.connection, id)?;
+        if brano.remoto.is_some() {
+            return Ok(None);
+        }
+        Ok(
+            testi::copia::leggi(&libreria.connection, &brano.track_key)?.map(|copia| {
+                CopiaTestoIpc {
+                    sostituita_ms: copia.sostituita_ms,
+                    byte: copia.byte,
+                }
+            }),
+        )
+    })
+    .map_err(errore)
+}
+
+/// Scambia il testo di adesso con la copia di prima (vedi [`testo_copia`]):
+/// ripristinare di nuovo lo disfa. Torna il testo che il pannello deve mostrare.
+///
+/// Per un brano di questo dispositivo. Per una riga di un altro dispositivo non
+/// fa niente e torna il testo com'è: la copia sta dove sta il testo, e il
+/// ripristino si fa lì. In disparte: dopo lo scambio rilegge il disco accanto al
+/// brano (vedi [`testo_di`]).
+#[tauri::command]
+pub async fn testo_ripristina(app: AppHandle, id: i64) -> Esito<TestoIpc> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("ripristino di un testo", move || {
+        ripristina_adesso(&app, id)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testo_ripristina`], sul pool bloccante.
+fn ripristina_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
+    let stato = gestito::<Stato>(app, "ripristino di un testo").map_err(errore)?;
+    let (brano, scambiato) = con_libreria(&stato, |libreria| {
+        let brano = testi::brano(&libreria.connection, id)?;
+        let scambiato = brano.remoto.is_none()
+            && testi::copia::ripristina(&libreria.connection, &brano.track_key, adesso_ms())?;
+        Ok((brano, scambiato))
+    })
+    .map_err(errore)?;
+    if scambiato {
+        // Il testo sta nel profilo di chi lo possiede: come ogni suo gesto.
+        crate::nuvola::sporca(app);
+    }
+    testo_di(app, &stato, &brano)
+        .map(TestoIpc::from)
+        .map_err(errore)
+}
+
 /// Un pannello del testo si è aperto (`true`) o chiuso (`false`).
 ///
 /// Serve al precaricamento: vedi [`StatoTesti::pannelli_aperti`]. Non fallisce

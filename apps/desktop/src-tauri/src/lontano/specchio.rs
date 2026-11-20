@@ -1094,7 +1094,7 @@ mod prove {
             self.associati.lock().unwrap().insert(chiave.to_owned());
         }
 
-        fn rispondi(&self, _da: &str, domanda: Domanda) -> Result<Risposta, AppError> {
+        fn rispondi(&self, da: &str, domanda: Domanda) -> Result<Risposta, AppError> {
             let db = self.db.lock().unwrap();
             let dati = |v: serde_json::Result<serde_json::Value>| {
                 v.map(Risposta::Dati).map_err(|e| {
@@ -1131,10 +1131,23 @@ mod prove {
                         None => Ok(Risposta::Fatto),
                     }
                 }
-                Domanda::TestoScrivi { brano, cosa } => {
+                Domanda::TestoScrivi {
+                    brano,
+                    cosa,
+                    quando_ms,
+                } => {
                     let scrittura = testo::dal_protocollo(cosa)
                         .ok_or_else(|| AppError::new(ErrorCode::LontanoProtocollo))?;
-                    dei_testi::scrivi_dal_dispositivo(&db, brano, &scrittura)?;
+                    dei_testi::scrivi_dal_dispositivo(
+                        &db,
+                        brano,
+                        &scrittura,
+                        &dei_testi::Scrivente {
+                            dispositivo: da,
+                            quando_ms,
+                            adesso_ms: crate::stato::adesso_ms(),
+                        },
+                    )?;
                     Ok(Risposta::Fatto)
                 }
                 _ => Err(AppError::new(ErrorCode::LontanoProtocollo)),
@@ -1652,7 +1665,8 @@ mod prove {
         assert_eq!(brano.path, None, "niente percorso: nessun file qui accanto");
 
         let dal = testo_del_proprietario(&telefono, &remoto).expect("il PC ha un testo");
-        assert_eq!(dal.fonte, Fonte::Mano);
+        // «Mano» dichiarato dal PC è, per chi lo riceve, la sua copia.
+        assert_eq!(dal.fonte, Fonte::Proprietario);
         assert_eq!(dal.scarto_ms, 80);
         assert!(dal.testo.sincronizzato());
         assert_eq!(dal.testo.righe.len(), 2);
@@ -1666,13 +1680,13 @@ mod prove {
             ..testi::DalDisco::default()
         };
         let esito = testi::componi(&db, &brano, riga, disco);
-        assert_eq!(esito.fonte, Fonte::Mano);
+        assert_eq!(esito.fonte, Fonte::Proprietario);
         assert_eq!(esito.scarto_ms, 80);
         let copia = testi::leggi_riga(&db, &brano.track_key).expect("una copia");
         assert_eq!(copia.synced.as_deref(), Some(LRC_DEL_PC));
         // Col PC spento la catena di qui lo trova da sola.
         let dopo = testi::per_brano(&db, brano.id).expect("testo");
-        assert_eq!(dopo.fonte, Fonte::Mano);
+        assert_eq!(dopo.fonte, Fonte::Proprietario);
         assert!(dopo.testo.sincronizzato());
     }
 
@@ -1735,7 +1749,9 @@ mod prove {
         // Una correzione data qui: un testo a mano e uno scarto.
         {
             let db = telefono.db.lock().unwrap();
-            let adesso = adesso_ms();
+            // Decisa un minuto fa: nel passato di chi risponde, e dopo il testo del
+            // PC (fatto all'istante 1).
+            let adesso = adesso_ms() - 60_000;
             assert!(
                 dei_testi::metti_in_posta(
                     &db,
@@ -1787,10 +1803,83 @@ mod prove {
         assert_eq!(sincronizzato, LRC_MIO);
         assert_eq!(scarto, -40, "lo scarto dato dopo il testo vince");
         assert_eq!(fonte, "mano");
+        // L'orologio della riga è quello di quando il telefono ha deciso
+        // (l'ultimo gesto della voce: lo scarto), e non quello di quando la
+        // voce è arrivata.
+        let aggiornata: i64 = pc
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT updated_at FROM lyrics WHERE track_key = 'artista|titolo 7|album'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            aggiornata < adesso_ms() - 50_000,
+            "la riga ha l'ora di arrivo ({aggiornata}) e non quella della decisione"
+        );
         // E adesso il PC dà il testo nuovo.
         let dal = testo_del_proprietario(&telefono, &remoto).expect("il testo del PC");
         assert_eq!(dal.scarto_ms, -40);
         assert_eq!(dal.testo.righe.first().map(|r| r.ms), Some(3_000));
+    }
+
+    #[test]
+    fn una_correzione_decisa_prima_non_cancella_il_testo_rifatto_sul_pc() {
+        let (_nodo_pc, pc, telefono) = collegati(30);
+        let chiave = telefono.pc.clone();
+        giro(&telefono, &chiave).expect("il primo giro");
+        testo_sul_pc(&pc, 7);
+        let remoto = il_pc_di(&telefono, 7);
+        // Il telefono, senza rete, decide una correzione un'ora fa e la tiene in
+        // posta. Nel frattempo, sul PC, il testo a mano è stato rifatto: adesso.
+        pc.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE lyrics SET updated_at = ?1 WHERE track_key = 'artista|titolo 7|album'",
+                [adesso_ms()],
+            )
+            .unwrap();
+        {
+            let db = telefono.db.lock().unwrap();
+            assert!(
+                dei_testi::metti_in_posta(
+                    &db,
+                    &remoto,
+                    &dei_testi::Scrittura::Testo(dei_testi::NuovoTesto::Mano {
+                        lrc: LRC_MIO.to_owned()
+                    }),
+                    adesso_ms() - 3_600_000
+                )
+                .unwrap()
+            );
+        }
+        // Il telefono si ricollega: la voce è consegnata e se ne va — la
+        // risposta è `Fatto`, non un errore che la terrebbe in posta per un mese
+        // — ma il PC ha tenuto il suo testo.
+        assert_eq!(manda_la_posta(&telefono, &chiave).unwrap(), 0);
+        assert!(
+            dispositivi::posta_da_mandare(&telefono.db.lock().unwrap(), &chiave)
+                .unwrap()
+                .is_empty()
+        );
+        let sincronizzato: String = pc
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT synced FROM lyrics WHERE track_key = 'artista|titolo 7|album'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            sincronizzato, LRC_DEL_PC,
+            "il testo del PC è stato scavalcato"
+        );
     }
 
     #[test]

@@ -197,6 +197,14 @@ pub(super) fn consegna<D: Dati>(dati: &D, chiave: &str, voce: &VocePosta) -> Con
         let domanda = Domanda::TestoScrivi {
             brano,
             cosa: in_protocollo(&scrittura),
+            // L'orologio è quello di quando si è deciso, non di quando si
+            // consegna: una voce può aspettare giorni, e il proprietario sceglie
+            // fra due correzioni la più recente. È l'istante dell'**ultimo**
+            // gesto della voce — i gesti di un brano si fondono in una voce sola
+            // (`Correzione::dopo`) — quindi un testo seguito da uno scarto porta
+            // l'ora dello scarto: un'approssimazione di pochi minuti, dalla parte
+            // di chi ha toccato per ultimo.
+            quando_ms: voce.quando_ms,
         };
         let Err(err) = dati.chiedi(chiave, domanda, ATTESA_POSTA) else {
             continue;

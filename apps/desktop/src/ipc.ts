@@ -31,7 +31,7 @@ import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, Di
 import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
 import type { Causa, InstallazioneSkin, Istantanea, Migrato, Registro, Salvataggio, Skin, Validazione, Variabile, VoceFile, VoceSkin, VoceTavolozza } from "./ipc/skin";
-import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, NovitaDaMostrare, QuandoInstallare, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
+import type { AppDaSalvare, AppNuvolaIpc, CandidatiTesto, CartellaRemota, ChiavePiattaforma, ContoNuvola, CopiaDelTesto, CopiaDiPrima, LibreriaDiPrima, DirittiInsieme, DispositivoSincronia, EsitoAnnullamento, EsitoInvio, EsitoPulizia, EsitoRipristino, MessaggioIa, ModelloIa, ModoSorveglianza, ModuloCollega, OperazioniIa, PermessiTelefono, PianoRipristino, ProfiloIaDaSalvare, QuadroSorveglianza, Resoconto, SaluteDatabase, ServizioNuvola, ServizioOfferto, NovitaDaMostrare, QuandoInstallare, StatoAggiornamenti, StatoArricchimento, StatoCacheNuvola, StatoIa, StatoInsieme, StatoManutenzione, StatoNuvola, StatoScrobble, StatoSincronia, StatoTesti, TestoBrano, FonteFacoltativa } from "./ipc/servizi";
 
 export * from "./ipc/errori";
 export * from "./ipc/libreria";
@@ -1335,6 +1335,13 @@ export const ipc = {
   // «Nessuno di questi»: toglie il testo arrivato dal catalogo, e il brano resta
   // segnato come cercato.
   testoRifiuta: (id: number) => invoke<TestoBrano>("testo_rifiuta", { id }),
+  // Il testo sincronizzato a mano che un dispositivo collegato ha sostituito resta
+  // come copia di un livello: `testoCopia` dice se c'è (e da quando), e
+  // `testoRipristina` la scambia con il testo di adesso — ripristinare di nuovo
+  // lo disfa. Solo per i brani di questa macchina: la copia sta dove sta il testo.
+  testoCopia: (id: number) => invoke<CopiaDelTesto | null>("testo_copia", { id }),
+  testoRipristina: (id: number) =>
+    invoke<TestoBrano>("testo_ripristina", { id }),
   // Un pannello del testo si apre o si chiude. Il nucleo precarica il testo del
   // brano dopo solo mentre almeno un pannello è aperto: vedi `PRIVACY.md`.
   testiPannello: (aperto: boolean) =>
