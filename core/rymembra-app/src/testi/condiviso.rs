@@ -698,7 +698,9 @@ pub fn metti_in_posta(
 mod prove {
     use rusqlite::{Connection, params};
 
-    use crate::specchio::comuni::{ADESSO, chiave, giro, libreria, riga as riga_di_catalogo};
+    use crate::specchio::comuni::{
+        ADESSO, chiave, giro, libreria_che_sorveglia as libreria, riga as riga_di_catalogo,
+    };
     use crate::testi::{
         BranoDaTestare, DalDisco, Fonte, Remoto, brano, componi, componi_senza_scrivere, copertura,
         da_cercare, imposta_scarto, leggi_dal_disco, leggi_riga, per_brano, quanti_da_cercare,

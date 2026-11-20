@@ -19,13 +19,20 @@ pub(crate) fn chiave(c: char) -> String {
     c.to_string().repeat(64)
 }
 
-/// Una libreria vuota, con lo schema aggiornato, che sorveglia le cartelle dei
-/// brani di qui delle prove (`/musica`, `C:/Musica`, `C:/non/esiste`): senza una
-/// cartella sorvegliata niente si condivide (S1-8).
+/// Una libreria vuota, con lo schema aggiornato.
 pub(crate) fn libreria() -> Connection {
-    let c = crate::db::open_in_memory()
+    crate::db::open_in_memory()
         .expect("database in memoria")
-        .connection;
+        .connection
+}
+
+/// Una libreria vuota che sorveglia le cartelle dei brani di qui delle prove di
+/// chi serve gli altri dispositivi (`/musica`, `C:/Musica`, `C:/non/esiste`):
+/// senza una cartella sorvegliata niente si condivide (S1-8). Non è
+/// [`libreria`] perché l'elenco delle cartelle viaggia nel documento della
+/// sincronia, e le prove di quel documento contano le sue chiavi.
+pub(crate) fn libreria_che_sorveglia() -> Connection {
+    let c = libreria();
     crate::settings::write_json(
         &c,
         crate::settings::CHIAVE_CARTELLE,

@@ -330,6 +330,9 @@ fn lo_stesso_album_su_due_dispositivi_di_fuori_e_una_scheda_sola() {
 #[test]
 fn il_conto_di_un_disco_condiviso_non_conta_le_righe_degli_altri_dispositivi() {
     let (c, _, _, _) = telefono_con_il_pc();
+    // I brani di qui stanno sotto una cartella sorvegliata: senza, niente si condivide.
+    crate::settings::write_json(&c, crate::settings::CHIAVE_CARTELLE, &["/musica"])
+        .expect("cartelle sorvegliate");
     let condivisi = crate::library::condivisa::album(&c, 0, 50).expect("album condivisi");
     let formati = condivisi
         .iter()
