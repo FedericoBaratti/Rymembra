@@ -1647,6 +1647,8 @@
   "devices.mirror.forget.loses.uno": "Una playlist perderebbe dei brani che non hai in nessun altro posto.",
   "devices.mirror.forget.unknown": "Non sono riuscito a controllare quante playlist perderebbero dei brani.",
   "devices.mirror.forget.history": "Perderai la cronologia d'ascolto dei brani che esistono solo su quel dispositivo.",
+  "devices.mirror.forget.listens": "Perderai {n} ascolti dalla cronologia: sono di brani che esistono solo su quel dispositivo.",
+  "devices.mirror.forget.listens.uno": "Perderai un ascolto dalla cronologia: è di un brano che esiste solo su quel dispositivo.",
   "devices.tag.together": "Ascolta insieme",
   "devices.via.relay": "via relay",
   "devices.tag.sync": "sincronia",

@@ -379,26 +379,29 @@ export function unaAllaVolta(): (lavoro: () => Promise<void>) => Promise<boolean
  * cronologia ha la cascata sulle righe — la cronologia d'ascolto di quei brani.
  * Quella dei brani che hai anche qui passa alla tua copia (lo fa il nucleo); dei
  * brani che esistono **solo** su quel dispositivo andrà persa, e la domanda lo
- * dice (S2-2). Senza un numero: l'anteprima non conta ancora gli ascolti, e una
- * frase che dice quel che resta vero in tutti e due i casi è meglio di una cifra
- * indovinata. Sul dispositivo del proprietario gli ascolti già mandati restano,
- * ed è quel che dice `devices.forget.sub`.
+ * dice (S2-2), col numero di ascolti che l'anteprima conta (`ascoltiPersi`, con
+ * il suo plurale). Sul dispositivo del proprietario gli ascolti già mandati
+ * restano, ed è quel che dice `devices.forget.sub`.
  *
- * Senza righe non c'è cronologia da perdere e non si dice; senza anteprima — il
- * conto non è arrivato — si dice lo stesso, e che non si è potuto controllare
- * quante playlist perdono: tacere direbbe «non si perde niente».
+ * Senza ascolti da perdere non si dice niente: sarebbe un avviso che non ha un
+ * oggetto. Senza anteprima — il conto non è arrivato — si dice che non si è
+ * potuto controllare quante playlist perdono, e la frase della cronologia senza
+ * un numero: tacere direbbe «non si perde niente».
  */
 export function frasiDelDimentica(
-  anteprima: Pick<AnteprimaDimentica, "righe" | "playlistChePerdono"> | null,
+  anteprima: Pick<AnteprimaDimentica, "playlistChePerdono" | "ascoltiPersi"> | null,
 ): { chiave: Chiave; valori: Valori }[] {
   const frasi: { chiave: Chiave; valori: Valori }[] = [{ chiave: "devices.forget.sub", valori: {} }];
   if (anteprima === null) {
     frasi.push({ chiave: "devices.mirror.forget.unknown", valori: {} });
-  } else if (anteprima.playlistChePerdono > 0) {
+    frasi.push({ chiave: "devices.mirror.forget.history", valori: {} });
+    return frasi;
+  }
+  if (anteprima.playlistChePerdono > 0) {
     frasi.push({ chiave: "devices.mirror.forget.loses", valori: { n: anteprima.playlistChePerdono } });
   }
-  if (anteprima === null || anteprima.righe > 0) {
-    frasi.push({ chiave: "devices.mirror.forget.history", valori: {} });
+  if (anteprima.ascoltiPersi > 0) {
+    frasi.push({ chiave: "devices.mirror.forget.listens", valori: { n: anteprima.ascoltiPersi } });
   }
   return frasi;
 }
