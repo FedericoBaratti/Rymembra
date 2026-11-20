@@ -95,8 +95,44 @@ pub fn interpreta(corpo: &[u8]) -> Vec<Voce> {
     }
 }
 
-/// Una voce sola, se ha almeno un titolo e un artista.
+/// Quanti byte, al più, ha il titolo, l'artista o l'album di una voce.
+///
+/// Mille: il titolo di un'opera con tutti i suoi movimenti ne fa qualche
+/// centinaio, e non serve di più a riconoscerlo.
+pub const MASSIMO_NOME_BYTE: usize = 1024;
+
+/// I campi di testo di una voce con il tetto di ciascuno, in byte. Il testo di
+/// una canzone ha quello di ogni testo che si legge da fuori
+/// ([`testo::MASSIMO_TESTO_BYTE`]); i nomi, [`MASSIMO_NOME_BYTE`].
+const CAMPI_CON_TETTO: [(&str, usize); 6] = [
+    ("trackName", MASSIMO_NOME_BYTE),
+    ("name", MASSIMO_NOME_BYTE),
+    ("artistName", MASSIMO_NOME_BYTE),
+    ("albumName", MASSIMO_NOME_BYTE),
+    ("syncedLyrics", testo::MASSIMO_TESTO_BYTE),
+    ("plainLyrics", testo::MASSIMO_TESTO_BYTE),
+];
+
+/// Ogni campo di testo della voce sta nel suo tetto.
+///
+/// Su LRCLIB pubblica **chiunque**, anche senza un account: la risposta può
+/// arrivare fino al tetto del corpo (dieci mebibyte) con un campo solo, e la
+/// documentazione non dichiara nessun limite lato server. Una voce con un campo
+/// fuori dai tetti non si corregge né si accorcia — un LRC tagliato è un altro
+/// testo — e non è una voce: se ne va da sola, le altre dell'elenco restano.
+fn dentro_i_tetti(voce: &Value) -> bool {
+    CAMPI_CON_TETTO.iter().all(|(campo, massimo)| {
+        voce.get(campo)
+            .and_then(Value::as_str)
+            .is_none_or(|testo| testo.len() <= *massimo)
+    })
+}
+
+/// Una voce sola, se ha almeno un titolo e un artista, e se sta nei tetti.
 fn una(voce: &Value) -> Option<Voce> {
+    if !dentro_i_tetti(voce) {
+        return None;
+    }
     let titolo = testo_di(voce, "trackName").or_else(|| testo_di(voce, "name"))?;
     let artista = testo_di(voce, "artistName")?;
     let sincronizzato = testo_di(voce, "syncedLyrics");
@@ -1030,6 +1066,51 @@ mod prove {
         assert!(interpreta(b"[]").is_empty());
         // Un oggetto senza i campi che contano non è una voce.
         assert!(interpreta(br#"{"code": 404, "name": "TrackNotFound"}"#).is_empty());
+    }
+
+    /// Una voce con un solo campo di testo lungo `byte`.
+    fn voce_con(campo: &str, byte: usize) -> String {
+        format!(
+            r#"{{"id": 7, "trackName": "A", "artistName": "B", "{campo}": "{}"}}"#,
+            "a".repeat(byte)
+        )
+    }
+
+    #[test]
+    fn una_voce_con_un_campo_oltre_il_tetto_non_e_una_voce() {
+        // Chiunque pubblica su LRCLIB, senza un account: un campo di megabyte
+        // non entra nel resto del programma. Con `assert!` e non con `assert_eq!`
+        // sulle voci: un fallimento le stamperebbe intere.
+        let testo = rymembra_domain::testo::MASSIMO_TESTO_BYTE;
+        for campo in ["syncedLyrics", "plainLyrics"] {
+            assert!(
+                interpreta(voce_con(campo, testo + 1).as_bytes()).is_empty(),
+                "{campo} oltre il tetto e passato"
+            );
+            // Al tetto passa.
+            assert_eq!(
+                interpreta(voce_con(campo, testo).as_bytes()).len(),
+                1,
+                "{campo} al tetto non passa"
+            );
+        }
+        for campo in ["trackName", "artistName", "albumName"] {
+            let enorme = format!(
+                r#"{{"trackName": "A", "artistName": "B", "{campo}": "{}"}}"#,
+                "a".repeat(MASSIMO_NOME_BYTE + 1)
+            );
+            assert!(
+                interpreta(enorme.as_bytes()).is_empty(),
+                "{campo} oltre il tetto e passato"
+            );
+        }
+        // Dentro un elenco la voce storta se ne va da sola, le altre restano.
+        let elenco = format!(
+            "[{}, {}]",
+            voce_con("syncedLyrics", testo + 1),
+            voce_con("syncedLyrics", 100)
+        );
+        assert_eq!(interpreta(elenco.as_bytes()).len(), 1);
     }
 
     #[test]

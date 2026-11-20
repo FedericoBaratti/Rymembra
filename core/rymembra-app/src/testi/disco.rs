@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 use rymembra_domain::errors::{AppError, ErrorCode};
-use rymembra_domain::testo::{self, Testo};
+use rymembra_domain::testo::{self, MASSIMO_TESTO_BYTE, Testo};
 
 // ── il sidecar ──────────────────────────────────────────────────────────────
 
@@ -71,10 +71,16 @@ pub fn leggi_sidecar(brano: &Path) -> Option<String> {
 
 /// Come [`leggi_sidecar`], con l'istante dell'ultima modifica del file in
 /// millisecondi, quando il filesystem lo dice.
+///
+/// Un file più lungo di [`MASSIMO_TESTO_BYTE`] non è un testo: è una cartella di
+/// musica scaricata con un `.lrc` fatto apposta, o un file che con un `.lrc` ha
+/// in comune solo il nome. Non si legge per intero — prima si leggeva con
+/// `std::fs::read`, senza tetto — e vale come se non ci fosse, quindi un
+/// `.a2.lrc` troppo lungo lascia il posto al `.lrc` che sta nel tetto.
 pub(super) fn leggi_sidecar_con_data(brano: &Path) -> Option<(String, Option<i64>)> {
     for coda in CODE {
         let percorso = percorso_sidecar(brano, coda);
-        let Ok(byte) = std::fs::read(&percorso) else {
+        let Some(byte) = leggi_entro_il_tetto(&percorso) else {
             continue;
         };
         let (grezzo, _codifica) = rymembra_domain::codifica::leggi_byte(&byte);
@@ -88,6 +94,34 @@ pub(super) fn leggi_sidecar_con_data(brano: &Path) -> Option<(String, Option<i64
         }
     }
     None
+}
+
+/// I byte di un file, se stanno in [`MASSIMO_TESTO_BYTE`]; `None` se non si
+/// legge o se è più lungo.
+///
+/// Legge un byte **oltre** il tetto, e non guarda la lunghezza dai metadati:
+/// su una condivisione di rete o su un file che cresce mentre lo si legge la
+/// lunghezza dichiarata non è quella che arriva.
+fn leggi_entro_il_tetto(percorso: &Path) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+
+    let tetto = u64::try_from(MASSIMO_TESTO_BYTE).unwrap_or(u64::MAX);
+    let mut byte = Vec::new();
+    std::fs::File::open(percorso)
+        .ok()?
+        .take(tetto.saturating_add(1))
+        .read_to_end(&mut byte)
+        .ok()?;
+    (byte.len() <= MASSIMO_TESTO_BYTE).then_some(byte)
+}
+
+/// Un testo preso dal tag di un file, se sta in [`MASSIMO_TESTO_BYTE`].
+///
+/// I tag arrivano da file di cui non ci si può fidare, e `lofty` li legge fino a
+/// 16 MiB: un `SYNCEDLYRICS` più lungo di un testo vero non si usa, come un
+/// sidecar più lungo.
+fn nel_tetto(testo: Option<String>) -> Option<String> {
+    testo.filter(|t| t.len() <= MASSIMO_TESTO_BYTE)
 }
 
 /// Scrive — o toglie, con `None` — un sidecar accanto al brano, senza perdere
@@ -288,15 +322,20 @@ fn da_id3v2(tag: Option<&lofty::id3::v2::Id3v2Tag>) -> Option<String> {
 
 /// Il testo di `SYNCEDLYRICS` in un tag Vorbis.
 pub(super) fn da_vorbis(tag: Option<&lofty::ogg::tag::VorbisComments>) -> Option<String> {
+    // Il tetto prima della copia: un tag di megabyte non si duplica per scartarlo.
     tag?.get(CHIAVE_SINCRONIZZATA)
-        .filter(|t| !t.trim().is_empty())
+        .filter(|t| !t.trim().is_empty() && t.len() <= MASSIMO_TESTO_BYTE)
         .map(ToOwned::to_owned)
 }
 
 /// Il testo di `SYNCEDLYRICS` in un tag APE.
 fn da_ape(tag: Option<&lofty::ape::ApeTag>) -> Option<String> {
     match tag?.get(CHIAVE_SINCRONIZZATA)?.value() {
-        lofty::tag::ItemValue::Text(testo) if !testo.trim().is_empty() => Some(testo.clone()),
+        lofty::tag::ItemValue::Text(testo)
+            if !testo.trim().is_empty() && testo.len() <= MASSIMO_TESTO_BYTE =>
+        {
+            Some(testo.clone())
+        }
         _ => None,
     }
 }
@@ -364,10 +403,10 @@ pub(super) fn lrc_da_sylt(frame: &lofty::id3::v2::SynchronizedTextFrame<'_>) -> 
     // Si ricompone passando da `scrivi`, che è l'inverso provato di `leggi`:
     // così questo tag entra nel resto del programma sotto la stessa forma di un
     // `.lrc` sul disco, e non c'è un secondo formato interno da mantenere.
-    Some(testo::scrivi(&Testo {
+    nel_tetto(Some(testo::scrivi(&Testo {
         righe,
         piatto: None,
         strumentale: false,
         offset_ms: 0,
-    }))
+    })))
 }

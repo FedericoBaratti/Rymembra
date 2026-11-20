@@ -492,13 +492,18 @@ fn correzioni(connection: &Connection) -> Result<BTreeMap<String, Correzione>, A
 }
 
 /// I testi. Sono già indicizzati sulla chiave del brano.
+///
+/// Senza le copie di un livello del testo a mano sostituito da un dispositivo
+/// collegato (`crate::testi::copia`): sono una rete di sicurezza di questa
+/// macchina, non il testo di nessun brano, e non viaggiano.
 fn testi(connection: &Connection) -> Result<BTreeMap<String, Testo>, AppError> {
     let mut istruzione = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT track_key, plain, synced, source, lrclib_id, offset_ms,
                     instrumental, duration_ms, updated_at
-               FROM lyrics",
-        )
+               FROM lyrics WHERE {}",
+            crate::testi::copia::NON_E_UNA_COPIA
+        ))
         .map_err(|err| db_error("testi del profilo", &err))?;
     let righe = istruzione
         .query_map([], |riga| {

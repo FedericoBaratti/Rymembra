@@ -708,12 +708,23 @@ pub struct CandidatoIpc {
     pub anteprima: Option<String>,
 }
 
+/// Quanti byte, al più, del testo di un candidato si leggono per l'anteprima.
+///
+/// L'anteprima sono due righe, e l'elenco ne ha fino a venti: si leggeva ogni
+/// testo per intero — fino a un quarto di mebibyte l'uno — per prenderne due
+/// righe. Basta l'inizio; il testo intero resta nel nucleo finché qualcuno non
+/// lo sceglie.
+pub(crate) const ANTEPRIMA_BYTE: usize = 8 * 1024;
+
 impl From<&rymembra_meta::lrclib::Voce> for CandidatoIpc {
     fn from(voce: &rymembra_meta::lrclib::Voce) -> Self {
-        let grezzo = voce
+        let intero = voce
             .sincronizzato
             .as_deref()
             .or(voce.piatto.as_deref())
+            .unwrap_or_default();
+        let grezzo = intero
+            .get(..intero.floor_char_boundary(ANTEPRIMA_BYTE))
             .unwrap_or_default();
         let letto = rymembra_domain::testo::leggi(grezzo);
         let anteprima: Vec<String> = letto
@@ -940,6 +951,90 @@ fn rifiuta_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
     })
     .map_err(errore)?;
     svegliali(app, da_svegliare);
+    testo_di(app, &stato, &brano)
+        .map(TestoIpc::from)
+        .map_err(errore)
+}
+
+/// La copia di un livello del testo a mano che un dispositivo collegato ha
+/// sostituito, per chi offre di ripristinarla: vedi `rymembra_app::testi::copia`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopiaTestoIpc {
+    /// Quando il testo è stato sostituito, in millisecondi.
+    pub sostituita_ms: i64,
+    /// Quanto è lungo il testo che si ripristinerebbe, in byte.
+    pub byte: usize,
+}
+
+/// La copia di prima del testo a mano di un brano, se un dispositivo collegato
+/// ne ha sostituito uno; `None` se non c'è, o se il brano è di un altro
+/// dispositivo (la copia sta dove sta il testo, e lì si ripristina).
+///
+/// In disparte, come ogni comando che legge la libreria per id.
+#[tauri::command]
+pub async fn testo_copia(app: AppHandle, id: i64) -> Esito<Option<CopiaTestoIpc>> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("lettura della copia di un testo", move || {
+        copia_adesso(&app, id)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testo_copia`], sul pool bloccante.
+fn copia_adesso(app: &AppHandle, id: i64) -> Esito<Option<CopiaTestoIpc>> {
+    let stato = gestito::<Stato>(app, "lettura della copia di un testo").map_err(errore)?;
+    con_libreria(&stato, |libreria| {
+        let brano = testi::brano(&libreria.connection, id)?;
+        if brano.remoto.is_some() {
+            return Ok(None);
+        }
+        Ok(
+            testi::copia::leggi(&libreria.connection, &brano.track_key)?.map(|copia| {
+                CopiaTestoIpc {
+                    sostituita_ms: copia.sostituita_ms,
+                    byte: copia.byte,
+                }
+            }),
+        )
+    })
+    .map_err(errore)
+}
+
+/// Scambia il testo di adesso con la copia di prima (vedi [`testo_copia`]):
+/// ripristinare di nuovo lo disfa. Torna il testo che il pannello deve mostrare.
+///
+/// Per un brano di questo dispositivo. Per una riga di un altro dispositivo non
+/// fa niente e torna il testo com'è: la copia sta dove sta il testo, e il
+/// ripristino si fa lì. In disparte: dopo lo scambio rilegge il disco accanto al
+/// brano (vedi [`testo_di`]).
+#[tauri::command]
+pub async fn testo_ripristina(app: AppHandle, id: i64) -> Esito<TestoIpc> {
+    // Un id di sessione non è una riga: vedi `riproduzione::ospiti`.
+    let id = crate::riproduzione::riga_di_libreria(id).map_err(errore)?;
+    in_disparte("ripristino di un testo", move || {
+        ripristina_adesso(&app, id)
+    })
+    .await
+    .map_err(errore)?
+}
+
+/// Il corpo di [`testo_ripristina`], sul pool bloccante.
+fn ripristina_adesso(app: &AppHandle, id: i64) -> Esito<TestoIpc> {
+    let stato = gestito::<Stato>(app, "ripristino di un testo").map_err(errore)?;
+    let (brano, scambiato) = con_libreria(&stato, |libreria| {
+        let brano = testi::brano(&libreria.connection, id)?;
+        let scambiato = brano.remoto.is_none()
+            && testi::copia::ripristina(&libreria.connection, &brano.track_key, adesso_ms())?;
+        Ok((brano, scambiato))
+    })
+    .map_err(errore)?;
+    if scambiato {
+        // Il testo sta nel profilo di chi lo possiede: come ogni suo gesto.
+        crate::nuvola::sporca(app);
+    }
     testo_di(app, &stato, &brano)
         .map(TestoIpc::from)
         .map_err(errore)
@@ -1365,8 +1460,40 @@ impl Sequenza {
 #[cfg(test)]
 mod prove {
     use super::{
-        GUASTI_DI_FILA, ParolaSalvata, Reazione, RigaSalvata, Sequenza, componi, gemello_esteso,
+        ANTEPRIMA_BYTE, CandidatoIpc, GUASTI_DI_FILA, ParolaSalvata, Reazione, RigaSalvata,
+        Sequenza, componi, gemello_esteso,
     };
+
+    /// L'anteprima di un candidato si ricava dall'inizio del suo testo, non da
+    /// tutto: venti candidati da un quarto di mebibyte ciascuno non si leggono
+    /// per prenderne due righe l'uno.
+    #[test]
+    fn l_anteprima_di_un_candidato_legge_solo_l_inizio() {
+        let voce = |testo: String| rymembra_meta::lrclib::Voce {
+            candidato: rymembra_domain::testo::Candidato {
+                id: 1,
+                titolo: "T".to_owned(),
+                artista: "A".to_owned(),
+                ..Default::default()
+            },
+            piatto: Some(testo),
+            sincronizzato: None,
+        };
+        // Un testo normale ha la sua anteprima: due righe, senza tempi.
+        let normale = CandidatoIpc::from(&voce("prima\nseconda\nterza".to_owned()));
+        assert_eq!(normale.anteprima.as_deref(), Some("prima\nseconda"));
+
+        // Le righe che stanno dopo l'inizio non entrano: qui il testo comincia
+        // dopo ottanta kibibyte di righe vuote, ed è oltre quel che si legge.
+        let lontano = format!("{}ciao", "\n".repeat(10 * ANTEPRIMA_BYTE));
+        assert!(
+            CandidatoIpc::from(&voce(lontano)).anteprima.is_none(),
+            "l'anteprima ha letto oltre l'inizio"
+        );
+        // E un taglio in mezzo a un carattere non fa un panico.
+        let accenti = "è".repeat(ANTEPRIMA_BYTE);
+        assert!(CandidatoIpc::from(&voce(accenti)).anteprima.is_some());
+    }
 
     /// Nessun comando `(async)` legge il disco accanto al brano, decodifica il
     /// brano o chiede al catalogo.

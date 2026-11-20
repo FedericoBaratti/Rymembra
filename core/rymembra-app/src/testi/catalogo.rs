@@ -504,8 +504,11 @@ pub fn rimanda(connection: &Connection, brano: &BranoDaTestare) -> Result<(), Ap
 /// quindi né il pannello né la passata vanno a riprenderlo da soli. La voce
 /// giusta, se c'è, si sceglie dall'elenco: vedi [`candidati_in_rete`].
 ///
-/// Tocca **solo** quel che è venuto dal catalogo. Il testo di chi ascolta non si
-/// butta da qui, e quello del sidecar o del tag sta in un file che non è nostro:
+/// Tocca **solo** quel che è venuto dal catalogo e la copia del testo che ha il
+/// proprietario del brano ([`super::Fonte::Proprietario`]: per chi ascolta qui è
+/// una copia, e «non è questo» la scarta come scarta una voce del catalogo —
+/// finché lui non ne manda un'altra). Il testo di chi ascolta non si butta da
+/// qui, e quello del sidecar o del tag sta in un file che non è nostro:
 /// scartarne la copia in tabella non servirebbe a niente, perché alla prossima
 /// apertura il file lo ridarebbe.
 ///
@@ -522,21 +525,60 @@ pub fn rimanda(connection: &Connection, brano: &BranoDaTestare) -> Result<(), Ap
 ///
 /// `db.queryFailed`.
 pub fn rifiuta(connection: &Connection, track_key: &str) -> Result<(), AppError> {
-    let adesso = now_ms();
+    use rusqlite::OptionalExtension as _;
+
+    let guasto = |err: rusqlite::Error| db_error("scarto di un testo del catalogo", &err);
+    // L'elenco si rifà qui e non in SQL perché ha un tetto e un ordine: i più
+    // recenti, senza doppioni. Con `json_insert` cresceva di una voce a ogni
+    // scarto, comandato anche da un altro dispositivo (60 scritture al minuto).
+    let prima: Option<(Option<i64>, Option<String>)> = connection
+        .query_row(
+            "SELECT lrclib_id, scartati FROM lyrics
+              WHERE track_key = ?1 AND source IN ('lrclib', 'proprietario')",
+            [track_key],
+            |riga| Ok((riga.get(0)?, riga.get(1)?)),
+        )
+        .optional()
+        .map_err(guasto)?;
+    let Some((id, scartati)) = prima else {
+        return Ok(());
+    };
+    let scartati = match id {
+        Some(id) => Some(scartati_con(scartati.as_deref(), id)),
+        None => scartati,
+    };
     connection
         .execute(
             "UPDATE lyrics
-               SET scartati = CASE
-                     WHEN lrclib_id IS NULL THEN scartati
-                     ELSE json_insert(COALESCE(scartati, '[]'), '$[#]', lrclib_id)
-                   END,
+               SET scartati = ?2,
                    plain = NULL, synced = NULL, lrclib_id = NULL, instrumental = 0,
-                   scelta = 0, updated_at = ?2, checked_at = ?2
-             WHERE track_key = ?1 AND source = 'lrclib'",
-            rusqlite::params![track_key, adesso],
+                   scelta = 0, updated_at = ?3, checked_at = ?3
+             WHERE track_key = ?1 AND source IN ('lrclib', 'proprietario')",
+            rusqlite::params![track_key, scartati, now_ms()],
         )
         .map(|_| ())
-        .map_err(|err| db_error("scarto di un testo del catalogo", &err))
+        .map_err(guasto)
+}
+
+/// Quante voci del catalogo, al più, si ricordano come scartate per un brano.
+///
+/// Sessantaquattro: chi scarta a mano una voce dopo l'altra, per un brano che il
+/// catalogo conosce male, ne scarta qualche unità; l'elenco serve a non rimettere
+/// una voce già rifiutata, e una voce che esce dall'elenco torna solo se il
+/// catalogo la ripropone di nuovo.
+pub const MASSIMI_SCARTATI: usize = 64;
+
+/// L'elenco degli scartati dopo `id`: senza di lui se c'era già, con lui in
+/// fondo, e senza le voci più vecchie oltre [`MASSIMI_SCARTATI`].
+fn scartati_con(elenco: Option<&str>, id: i64) -> String {
+    let mut voci: Vec<i64> = elenco
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default();
+    voci.retain(|v| *v != id);
+    voci.push(id);
+    let oltre = voci.len().saturating_sub(MASSIMI_SCARTATI);
+    voci.drain(..oltre);
+    serde_json::to_string(&voci).unwrap_or_else(|_| "[]".to_owned())
 }
 
 /// Chi è in coda per il catalogo, come condizione `WHERE` su `tracks t`.

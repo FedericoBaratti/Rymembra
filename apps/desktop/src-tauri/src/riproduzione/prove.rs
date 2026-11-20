@@ -643,6 +643,8 @@ fn le_guardie_degli_id_stanno_in_testa_ai_comandi_di_libreria() {
                 "testo_candidati",
                 "testo_scegli",
                 "testo_rifiuta",
+                "testo_copia",
+                "testo_ripristina",
                 "testo_aggancia",
                 "testo_salva",
                 "testo_pubblica",

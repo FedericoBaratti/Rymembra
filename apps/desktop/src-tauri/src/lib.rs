@@ -1647,6 +1647,8 @@ pub fn run() {
             testi::testo_candidati,
             testi::testo_scegli,
             testi::testo_rifiuta,
+            testi::testo_copia,
+            testi::testo_ripristina,
             testi::testi_pannello,
             testi::testi_stato,
             testi::testi_rete,

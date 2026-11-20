@@ -914,6 +914,7 @@ fn nuove_domande() -> Vec<Domanda> {
         Domanda::Testo { brano: 1 },
         Domanda::TestoScrivi {
             brano: 1,
+            quando_ms: 0,
             cosa: ScritturaTesto::Scarto { scarto_ms: 100 },
         },
     ]
@@ -1109,6 +1110,7 @@ fn a_un_pari_col_catalogo_ma_senza_i_testi_le_domande_dei_testi_non_si_fanno() {
         Domanda::Testo { brano: 1 },
         Domanda::TestoScrivi {
             brano: 1,
+            quando_ms: 0,
             cosa: ScritturaTesto::Rifiuta,
         },
     ] {
@@ -1178,7 +1180,11 @@ fn fra_due_pari_che_dichiarano_i_testi_le_due_domande_passano() {
         assert_eq!(
             a.chiedi(
                 &b.chiave(),
-                Domanda::TestoScrivi { brano: 7, cosa },
+                Domanda::TestoScrivi {
+                    brano: 7,
+                    cosa,
+                    quando_ms: 0,
+                },
                 Duration::from_secs(10)
             )
             .unwrap(),
@@ -1195,6 +1201,7 @@ fn le_correzioni_dei_testi_sono_scritture_e_hanno_il_tetto_al_minuto() {
     collegati(&uno, &server, &del_server, &di_uno);
     let correggi = |n: usize| Domanda::TestoScrivi {
         brano: 1,
+        quando_ms: 0,
         cosa: ScritturaTesto::Scarto {
             scarto_ms: i32::try_from(n).unwrap(),
         },

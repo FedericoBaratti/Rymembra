@@ -113,7 +113,11 @@ pub fn rispondi(app: &Nucleo, da: &str, domanda: Domanda) -> Result<Risposta, Ap
         // condiviso (`condiviso::brano_condiviso`), mai da un brano del cloud,
         // di catalogo o di un terzo dispositivo.
         Domanda::Testo { brano } => dai_il_testo(app, brano),
-        Domanda::TestoScrivi { brano, cosa } => scrivi_il_testo(app, brano, cosa),
+        Domanda::TestoScrivi {
+            brano,
+            cosa,
+            quando_ms,
+        } => scrivi_il_testo(app, da, brano, cosa, quando_ms),
         Domanda::Presenza | Domanda::Annuncio(_) | Domanda::Dimenticami | Domanda::Sconosciuta => {
             Err(AppError::new(ErrorCode::LontanoProtocollo)
                 .with_cause("una domanda a cui risponde il nodo"))
@@ -362,12 +366,16 @@ fn il_testo_di(stato: &Stato, brano: i64) -> Result<Risposta, AppError> {
 }
 
 /// Una correzione al testo di un brano condiviso, arrivata da un altro
-/// dispositivo: la scrive qui con la logica dei comandi di sempre. Solo la
-/// libreria, mai un file accanto al brano.
+/// dispositivo `da`: la scrive qui con la logica dei comandi di sempre. Solo la
+/// libreria, mai un file accanto al brano. `quando_ms` è l'orologio di chi
+/// l'ha decisa, zero se una build di prima non lo manda: vedi
+/// [`condiviso::scrivi_dal_dispositivo`].
 fn scrivi_il_testo(
     app: &Nucleo,
+    da: &str,
     brano: i64,
     cosa: rymembra_lontano::protocollo::ScritturaTesto,
+    quando_ms: i64,
 ) -> Result<Risposta, AppError> {
     let Some(scrittura) = super::testo::dal_protocollo(cosa) else {
         return Err(AppError::new(ErrorCode::LontanoProtocollo)
@@ -378,7 +386,12 @@ fn scrivi_il_testo(
             what: Some("lontano".to_owned()),
         })
     })?;
-    scrivi_un_testo(&stato, brano, &scrittura)?;
+    let scrivente = condiviso::Scrivente {
+        dispositivo: da,
+        quando_ms,
+        adesso_ms: adesso_ms(),
+    };
+    scrivi_un_testo(&stato, brano, &scrittura, &scrivente)?;
     // Il testo sta nel profilo di chi lo possiede: come ogni suo gesto.
     crate::nuvola::sporca(app);
     Ok(Risposta::Fatto)
@@ -389,9 +402,10 @@ fn scrivi_un_testo(
     stato: &Stato,
     brano: i64,
     scrittura: &condiviso::Scrittura,
+    scrivente: &condiviso::Scrivente<'_>,
 ) -> Result<(), AppError> {
     crate::stato::con_libreria_entro(stato, ATTESA_LETTURA, |libreria| {
-        condiviso::scrivi_dal_dispositivo(&libreria.connection, brano, scrittura)
+        condiviso::scrivi_dal_dispositivo(&libreria.connection, brano, scrittura, scrivente)
     })
     .unwrap_or_else(|| {
         Err(occupata(&AppError::new(ErrorCode::DbLocked).with_cause(
@@ -520,6 +534,15 @@ mod prove {
 
     fn da() -> String {
         "ab".repeat(32)
+    }
+
+    /// Chi scrive le correzioni di prova: `da`, senza orologio, adesso.
+    fn scrivente() -> condiviso::Scrivente<'static> {
+        condiviso::Scrivente {
+            dispositivo: "abababababababababababababababababababababababababababababababab",
+            quando_ms: 0,
+            adesso_ms: ADESSO,
+        }
     }
 
     /// Una libreria con un brano condiviso di tre minuti, il numero 1.
@@ -852,7 +875,7 @@ mod prove {
             );
             // E nemmeno si corregge.
             assert_eq!(
-                scrivi_un_testo(stato, id, &condiviso::Scrittura::Scarto(50))
+                scrivi_un_testo(stato, id, &condiviso::Scrittura::Scarto(50), &scrivente(),)
                     .expect_err("rifiutata")
                     .code()
                     .kind()
@@ -863,7 +886,8 @@ mod prove {
         }
         // Un brano condiviso, invece, si corregge, e il testo che si dà dopo è
         // quello nuovo.
-        scrivi_un_testo(stato, 1, &condiviso::Scrittura::Scarto(-120)).expect("scritta");
+        scrivi_un_testo(stato, 1, &condiviso::Scrittura::Scarto(-120), &scrivente())
+            .expect("scritta");
         let Ok(Risposta::Dati(dopo)) = il_testo_di(stato, 1) else {
             panic!("il testo di dopo");
         };

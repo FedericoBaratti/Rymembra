@@ -30,7 +30,10 @@
 //! * `[offset:]` non si applica ai tempi, si conserva: applicarlo vorrebbe dire
 //!   che riscrivere il file ne cambia i numeri;
 //! * i tempi si riordinano, perché un file con le righe fuori ordine esiste e
-//!   la ricerca binaria di [`riga_attiva`] ha bisogno che siano in ordine.
+//!   la ricerca binaria di [`riga_attiva`] ha bisogno che siano in ordine;
+//! * un testo costruito per costare molto si **taglia**, non si rifiuta: i tetti
+//!   sui tempi, le parole e le righe sono le costanti `MASSIM…` qui sotto, con il
+//!   perché di ciascuno accanto a lui.
 
 use crate::enrich::{VETO_DURATA_SEC, punteggio_durata, scarto_secondi, similarity};
 
@@ -126,6 +129,94 @@ pub const FINESTRA_DOPO_MS: i64 = 120;
 const CHIAVI: &[&str] = &[
     "al", "ar", "au", "by", "id", "la", "length", "offset", "re", "ti", "tool", "ve",
 ];
+
+// ── i tetti del lettore ─────────────────────────────────────────────────────
+//
+// Un `.lrc` arriva da posti di cui non ci si può fidare — il file accanto a un
+// album scaricato, il tag di un brano comprato, la risposta di un catalogo in
+// cui chiunque può pubblicare, un altro dispositivo — e [`leggi`] non fallisce
+// mai. Quindi il suo **costo** deve essere limitato qualunque cosa riceva, e il
+// solo posto in cui si può dirlo una volta per tutti è qui: un tetto sui byte
+// in ingresso (chi apre il file, chi riceve la risposta) non basta, perché
+// `[0:0]` sono cinque byte e un tempo valido, e `<0:0>x` sei e una parola.
+// Quarantottomila byte di quei due, senza tetti qui dentro, erano quattromila
+// parole clonate per ciascuno dei quattromilaottocento tempi: un miliardo di
+// byte. Con duecentocinquantasei kibibyte, decine di gigabyte.
+//
+// Nessun tetto taglia un LRC vero. Uno vero ha al più qualche decina di tempi
+// per riga (un ritornello ripetuto cinque, dieci volte), qualche decina di
+// parole per riga anche nel karaoke sillaba per sillaba, qualche centinaio di
+// righe, qualche migliaio per un'opera intera. I valori sotto stanno a un
+// ordine di grandezza sopra, non di più: servono a fermare un testo costruito,
+// non a giudicare quello di nessuno.
+//
+// Gli eccessi **si scartano**, e non restano nel testo come caratteri. È la
+// proprietà che il modulo dichiara — `scrivi(leggi(scrivi(x))) == scrivi(x)` —
+// a imporlo: un tag che oltre il tetto restasse nella riga come testo verrebbe
+// riletto come tag dal giro dopo, e ogni riscrittura ne mangerebbe un altro
+// pezzo.
+
+/// Quanti tempi **distinti**, al più, ha una riga: `[00:12.00][01:15.00]…`.
+///
+/// Trentadue: una strofa ripetuta dieci volte è già un caso raro. Oltre, i tag
+/// si consumano e non contano.
+pub const MASSIMI_TEMPI_PER_RIGA: usize = 32;
+
+/// Quante parole con un tempo, al più, ha una riga dell'LRC esteso.
+///
+/// Cinquecentododici: il karaoke che temporizza ogni sillaba o ogni carattere
+/// fa qualche decina di tempi per riga. Dalla parola successiva la riga **finisce
+/// lì**: il resto, tag e testo, si scarta — non si accoda all'ultima parola,
+/// perché due pezzi di testo che si toccano senza il tag in mezzo possono
+/// comporre un tag nuovo.
+pub const MASSIME_PAROLE_PER_RIGA: usize = 512;
+
+/// Quante righe, al più, [`leggi`] costruisce **prima** della fusione dei tempi
+/// uguali: quattro volte le righe che un testo ricevuto può avere
+/// (`MASSIME_RIGHE` in `rymembra_app::testi::condiviso`), per lasciare posto ai
+/// ritornelli. Le righe che non ci stanno si scartano per intero.
+pub const MASSIME_RIGHE_ESPANSE: usize = 16_000;
+
+/// Quante parole con un tempo, al più, [`leggi`] costruisce in tutto, ripetizioni
+/// dei tempi comprese: cinque volte quelle che un testo ricevuto può avere. Una
+/// riga che farebbe superarlo si scarta per intero, come per le righe.
+pub const MASSIME_PAROLE_ESPANSE: usize = 200_000;
+
+/// Quante righe **secondarie**, al più, ha una riga: le altre righe che il file
+/// mette allo stesso tempo, di solito una traduzione e una pronuncia.
+///
+/// Sedici: i file con le traduzioni ne hanno una, due, di rado quattro. Servono
+/// a fermare mille righe diverse allo stesso tempo — `[00:00.00]uno`,
+/// `[00:00.00]due`… —, che la fusione confrontava ognuna con tutte le
+/// precedenti: il quadrato del numero di righe.
+pub const MASSIME_SECONDARIE_PER_RIGA: usize = 16;
+
+/// Quanto può essere lungo, in byte, il contenuto di un tag di tempo
+/// (`hh:mm:ss.xxx` sono dodici): serve a cercare il `>` che lo chiude **solo
+/// lì vicino**. Senza, ogni `<` di un testo andava a cercare il suo `>` fino in
+/// fondo alla riga, e un testo di sole parentesi aperte costava il quadrato
+/// della sua lunghezza.
+pub const MASSIMA_LUNGHEZZA_TEMPO: usize = 32;
+
+/// Quanto può valere, al più, lo scarto che un LRC dichiara con `[offset:]`: un'ora.
+///
+/// È lo stesso tetto della correzione di chi ascolta
+/// (`rymembra_app::testi::condiviso::MASSIMO_SCARTO_MS`) e per la stessa
+/// ragione: oltre non è una sincronizzazione sbagliata di poco, è un numero
+/// sbagliato, e con il pulsante di correzione a più o meno un'ora il testo non
+/// si raddrizzerebbe più. Uno scarto fuori dal tetto vale come uno che non si
+/// legge: zero.
+pub const MASSIMO_OFFSET_MS: i32 = 3_600_000;
+
+/// Quanto, al più, è lungo in byte un testo che si legge da fuori: un `.lrc`
+/// accanto al brano, un tag, la risposta di un catalogo, il testo di un altro
+/// dispositivo.
+///
+/// Un quarto di mebibyte: un testo vero sta in pochi kibibyte, e un'opera intera
+/// con i tempi di ogni parola in qualche centinaio. È un tetto **di chi apre**,
+/// non di [`leggi`] — che non sa da dove viene quel che legge — e sta qui perché
+/// tutti i punti d'ingresso lo condividano invece di scegliersi ognuno il suo.
+pub const MASSIMO_TESTO_BYTE: usize = 256 * 1024;
 
 // ── quel che un testo è ─────────────────────────────────────────────────────
 
@@ -246,6 +337,7 @@ pub fn leggi(grezzo: &str) -> Testo {
     let mut righe: Vec<Riga> = Vec::new();
     let mut senza_tempo: Vec<&str> = Vec::new();
     let mut offset_ms = 0_i32;
+    let mut parole_espanse = 0_usize;
 
     // Il BOM sta in testa al file, non in testa a ogni riga: si toglie una volta
     // sola. `lines()` pensa da sé al CRLF ma non al CR nudo, che è il fine riga
@@ -257,27 +349,18 @@ pub fn leggi(grezzo: &str) -> Testo {
         .replace("\r\n", "\n")
         .replace('\r', "\n");
     for riga in normalizzato.lines() {
-        let (tag, resto) = separa_tag(riga);
-        let ha_tag = !tag.is_empty();
-        let mut tempi: Vec<u32> = Vec::new();
-        for uno in tag {
-            if let Some(ms) = tempo_ms(uno) {
-                tempi.push(ms);
-                continue;
-            }
-            if let Some((chiave, valore)) = uno.split_once(':')
-                && chiave.trim().eq_ignore_ascii_case("offset")
-            {
-                offset_ms = valore.trim().parse::<i32>().unwrap_or(0);
-            }
+        let (etichette, resto) = separa_tag(riga);
+        if let Some(scarto) = etichette.offset {
+            offset_ms = scarto;
         }
+        let tempi = etichette.tempi;
 
         if tempi.is_empty() {
             // Una riga di sole intestazioni — `[ar:…]`, `[ti:…]`, `[offset:…]` —
             // non è testo nemmeno in un file senza tempi: si tiene solo quel che
             // le sta dopo, se c'è. `[Ritornello]` non passa di qui, perché
-            // `separa_tag` si ferma prima e `tag` resta vuoto.
-            if !ha_tag {
+            // `separa_tag` si ferma prima e `ha_tag` resta falso.
+            if !etichette.ha_tag {
                 senza_tempo.push(riga);
             } else if !resto.trim().is_empty() {
                 senza_tempo.push(resto);
@@ -285,7 +368,21 @@ pub fn leggi(grezzo: &str) -> Testo {
             continue;
         }
 
+        // Il tetto sulle righe, prima di costruirne una: si guarda quel che la
+        // riga **aggiungerebbe**, e una riga che non ci sta si scarta intera
+        // (vedi i tetti in testa al modulo).
+        if righe.len().saturating_add(tempi.len()) > MASSIME_RIGHE_ESPANSE {
+            continue;
+        }
         let (piatta, prefisso, parole) = separa_parole(resto);
+        let costo = parole
+            .len()
+            .saturating_add(usize::from(prefisso.is_some()))
+            .saturating_mul(tempi.len());
+        if parole_espanse.saturating_add(costo) > MASSIME_PAROLE_ESPANSE {
+            continue;
+        }
+        parole_espanse = parole_espanse.saturating_add(costo);
         let piatta = piatta.trim().to_owned();
         for ms in tempi {
             // Una riga con più tempi è la stessa riga cantata più volte, e ogni
@@ -356,9 +453,14 @@ pub fn leggi(grezzo: &str) -> Testo {
 /// — `[00:12.00][00:12.00]riga` — non diventa una traduzione di sé stesso.
 fn fondi_allo_stesso_tempo(righe: Vec<Riga>) -> Vec<Riga> {
     let mut fuse: Vec<Riga> = Vec::with_capacity(righe.len());
+    // Quante secondarie ha già l'ultima riga: si tiene qui e non si conta
+    // rileggendole, perché altrimenti mille righe diverse allo stesso tempo
+    // volevano dire mille letture di tutte le precedenti.
+    let mut secondarie = 0_usize;
     for riga in righe {
         let Some(ultima) = fuse.last_mut().filter(|u| u.ms == riga.ms) else {
             fuse.push(riga);
+            secondarie = 0;
             continue;
         };
         if riga.testo.is_empty() || riga.testo == ultima.testo {
@@ -369,24 +471,51 @@ fn fondi_allo_stesso_tempo(righe: Vec<Riga>) -> Vec<Riga> {
             *ultima = Riga { secondaria, ..riga };
             continue;
         }
+        // Oltre il tetto una secondaria in più si scarta, senza cercarla fra
+        // le altre: vedi [`MASSIME_SECONDARIE_PER_RIGA`].
+        if secondarie >= MASSIME_SECONDARIE_PER_RIGA {
+            continue;
+        }
         match ultima.secondaria.as_mut() {
             Some(gia) if gia.lines().any(|l| l == riga.testo) => {}
             Some(gia) => {
                 gia.push('\n');
                 gia.push_str(&riga.testo);
+                secondarie = secondarie.saturating_add(1);
             }
-            None => ultima.secondaria = Some(riga.testo),
+            None => {
+                ultima.secondaria = Some(riga.testo);
+                secondarie = 1;
+            }
         }
     }
     fuse
+}
+
+/// I `[…]` in testa a una riga: i tempi che portano, lo scarto dichiarato, e se
+/// ce n'era qualcuno.
+#[derive(Debug, Default)]
+struct Etichette {
+    /// I tempi, **distinti** e nell'ordine in cui il file li dà, al più
+    /// [`MASSIMI_TEMPI_PER_RIGA`]: quelli di troppo si consumano senza contare.
+    tempi: Vec<u32>,
+    /// L'ultimo `[offset:…]` della riga, già dentro [`MASSIMO_OFFSET_MS`].
+    offset: Option<i32>,
+    /// C'era almeno un tag, di qualunque genere.
+    ha_tag: bool,
 }
 
 /// I contenuti dei `[…]` in testa alla riga, e quel che resta.
 ///
 /// Un gruppo che non è né un tempo né una [chiave conosciuta](CHIAVI) **non** è
 /// un tag: la scansione si ferma prima, e `[Ritornello]` resta la riga che è.
-fn separa_tag(riga: &str) -> (Vec<&str>, &str) {
-    let mut tag: Vec<&str> = Vec::new();
+///
+/// Non tiene i tag, ne tiene quel che dicono: uno che si ripete non occupa un
+/// posto, e quelli oltre [`MASSIMI_TEMPI_PER_RIGA`] si **consumano** — escono dal
+/// testo, che è quel che chiedono i tetti in testa al modulo
+/// — ma non si ricordano.
+fn separa_tag(riga: &str) -> (Etichette, &str) {
+    let mut etichette = Etichette::default();
     let mut resto = riga;
     loop {
         let candidato = resto.trim_start();
@@ -400,23 +529,50 @@ fn separa_tag(riga: &str) -> (Vec<&str>, &str) {
         else {
             break;
         };
-        if !e_un_tag(dentro) {
+        if let Some(ms) = tempo_ms(dentro) {
+            if etichette.tempi.len() < MASSIMI_TEMPI_PER_RIGA && !etichette.tempi.contains(&ms) {
+                etichette.tempi.push(ms);
+            }
+        } else if let Some((chiave, valore)) = dentro.split_once(':')
+            && CHIAVI.iter().any(|c| chiave.trim().eq_ignore_ascii_case(c))
+        {
+            if chiave.trim().eq_ignore_ascii_case("offset") {
+                etichette.offset = Some(scarto_nei_tetti(valore));
+            }
+        } else {
             break;
         }
-        tag.push(dentro);
+        etichette.ha_tag = true;
         resto = avanti;
     }
-    (tag, resto)
+    (etichette, resto)
 }
 
-/// Il contenuto di un `[…]` è un tag e non testo.
-fn e_un_tag(dentro: &str) -> bool {
-    if tempo_ms(dentro).is_some() {
-        return true;
-    }
-    dentro
-        .split_once(':')
-        .is_some_and(|(chiave, _)| CHIAVI.iter().any(|c| chiave.trim().eq_ignore_ascii_case(c)))
+/// Lo scarto che un `[offset:…]` dichiara, o zero se non è uno scarto: un
+/// numero che non si legge, e uno oltre [`MASSIMO_OFFSET_MS`].
+fn scarto_nei_tetti(valore: &str) -> i32 {
+    valore
+        .trim()
+        .parse::<i32>()
+        .ok()
+        .filter(|scarto| scarto.unsigned_abs() <= MASSIMO_OFFSET_MS.unsigned_abs())
+        .unwrap_or(0)
+}
+
+/// Un `<tempo>` all'inizio di `dopo` (che comincia subito dopo il `<`): il tempo
+/// e quel che segue il `>`.
+///
+/// Il `>` si cerca solo entro [`MASSIMA_LUNGHEZZA_TEMPO`] byte: un tempo non è
+/// più lungo, e cercarlo fino in fondo alla riga a ogni `<` rendeva quadratico un
+/// testo fatto di sole parentesi aperte.
+fn tempo_di_parola(dopo: &str) -> Option<(u32, &str)> {
+    let chiude = dopo
+        .bytes()
+        .take(MASSIMA_LUNGHEZZA_TEMPO.saturating_add(1))
+        .position(|b| b == b'>')?;
+    let dentro = dopo.get(..chiude)?;
+    let avanti = dopo.get(chiude.saturating_add(1)..)?;
+    Some((tempo_ms(dentro)?, avanti))
 }
 
 /// I tempi delle parole dentro una riga, e la riga ricomposta.
@@ -428,6 +584,14 @@ fn e_un_tag(dentro: &str) -> bool {
 /// Il pezzo che sta prima del primo tempo torna a parte, e solo quando ci sono
 /// delle parole e il pezzo non è di soli spazi: non ha un tempo suo, e il tempo
 /// che gli spetta — quello della riga — lo sa solo [`leggi`].
+///
+/// # Il tetto delle parole
+///
+/// Al tag che sarebbe il [`MASSIME_PAROLE_PER_RIGA`]-esimo più uno la riga
+/// **finisce**: quel tag e tutto quel che lo segue si scartano. Non si accoda il
+/// testo all'ultima parola togliendo solo i tag, perché due pezzi che si toccano
+/// senza un tag in mezzo possono comporne uno nuovo — `x<0` e `:0>y` danno
+/// `x<0:0>y` —, e la riscrittura lo leggerebbe come tempo.
 fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
     if !testo.contains('<') {
         return (testo.to_owned(), None, Vec::new());
@@ -437,20 +601,21 @@ fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
     let mut corrente: Option<u32> = None;
     let mut pezzo = String::new();
     let mut resto = testo;
+    let mut con_tempo = 0_usize;
 
     while let Some(apre) = resto.find('<') {
         let (Some(prima), Some(dopo)) = (resto.get(..apre), resto.get(apre.saturating_add(1)..))
         else {
             break;
         };
-        let letto = dopo.find('>').and_then(|chiude| {
-            let dentro = dopo.get(..chiude)?;
-            let avanti = dopo.get(chiude.saturating_add(1)..)?;
-            Some((tempo_ms(dentro)?, avanti))
-        });
-        match letto {
+        match tempo_di_parola(dopo) {
             Some((ms, avanti)) => {
                 pezzo.push_str(prima);
+                if con_tempo >= MASSIME_PAROLE_PER_RIGA {
+                    resto = "";
+                    break;
+                }
+                con_tempo = con_tempo.saturating_add(1);
                 segmenti.push((corrente, std::mem::take(&mut pezzo)));
                 corrente = Some(ms);
                 resto = avanti;
@@ -501,6 +666,12 @@ fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
 /// con una cifra sola, e sono i file scritti a mano.
 fn tempo_ms(grezzo: &str) -> Option<u32> {
     let grezzo = grezzo.trim();
+    // Un tempo non è più lungo di così: chi guarda `[…]` e `<…>` di un testo
+    // ostile non deve scomporre in pezzi un contenuto di centinaia di kibibyte
+    // per scoprire che non lo è.
+    if grezzo.len() > MASSIMA_LUNGHEZZA_TEMPO {
+        return None;
+    }
     let pezzi: Vec<&str> = grezzo.split(':').collect();
     let (ore, minuti, secondi, frazione) = match pezzi.as_slice() {
         [m, s] => {
@@ -564,8 +735,15 @@ fn tempo_ms(grezzo: &str) -> Option<u32> {
 ///
 /// La conseguenza va detta: scrivere **arrotonda** al centesimo. Quindi
 /// `leggi(scrivi(x)) == x` vale sui tempi allineati al centesimo, e
-/// `scrivi(leggi(scrivi(x))) == scrivi(x)` vale sempre — cioè riscrivere un file
-/// non lo cambia mai due volte. È la proprietà che conta, ed è provata.
+/// `scrivi(leggi(scrivi(x))) == scrivi(x)` vale per ogni testo dentro i tetti del
+/// lettore — cioè per ogni testo che [`leggi`] restituisce — quindi riscrivere un
+/// file non lo cambia mai due volte. È la proprietà che conta, ed è provata,
+/// anche sugli ingressi che i tetti tagliano.
+///
+/// Un [`Testo`] **costruito a mano** oltre i tetti (un editor che salva più di
+/// [`MASSIME_RIGHE_ESPANSE`] righe, più di [`MASSIME_PAROLE_PER_RIGA`] parole in
+/// una riga o più di [`MASSIME_SECONDARIE_PER_RIGA`] secondarie) si scrive per
+/// intero, ma riletto si taglia: i tetti sono del lettore, non di chi scrive.
 #[must_use]
 pub fn scrivi(testo: &Testo) -> String {
     let mut fuori = String::new();
@@ -1676,5 +1854,323 @@ mod prove {
             "prima riga\nseconda riga\nterza riga\n"
         );
         assert_eq!(leggi("solo parole").come_piatto(), "solo parole");
+    }
+
+    // ── i tetti del lettore: gli ingressi ostili ─────────────────────────────
+    //
+    // Le prove che seguono costruiscono i testi che [`leggi`] non deve più
+    // moltiplicare. Girano **una alla volta** (`una_alla_volta`): alcune sono
+    // di centinaia di kibibyte, e quattro insieme su un PC carico sono il
+    // genere di cosa che lo fa spegnere.
+
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static UNA_ALLA_VOLTA: Mutex<()> = Mutex::new(());
+
+    fn una_alla_volta() -> std::sync::MutexGuard<'static, ()> {
+        UNA_ALLA_VOLTA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `[0:1][0:2]…[0:n]`: `n` tempi distinti, nessuno ripetuto.
+    fn tempi_distinti(n: usize) -> String {
+        (1..=n).map(|s| format!("[0:{s}]")).collect()
+    }
+
+    /// `<0:1>x<0:2>x…`: `n` parole con tempi distinti.
+    fn parole_distinte(n: usize) -> String {
+        (1..=n).map(|s| format!("<0:{s}>x")).collect()
+    }
+
+    fn parole_in_tutto(testo: &Testo) -> usize {
+        testo.righe.iter().map(|r| r.parole.len()).sum()
+    }
+
+    /// Riscrivere un testo già riscritto non lo cambia: la proprietà del modulo,
+    /// provata su un ingresso qualunque.
+    fn riscrittura_stabile(grezzo: &str) {
+        let una = scrivi(&leggi(grezzo));
+        let due = scrivi(&leggi(&una));
+        assert_eq!(una, due, "la riscrittura non è stabile per {grezzo:.80}");
+    }
+
+    #[test]
+    fn una_riga_con_centinaia_di_tempi_ne_tiene_al_massimo_trentadue() {
+        let _uno = una_alla_volta();
+        let testo = leggi(&format!("{}x", tempi_distinti(200)));
+        assert!(
+            testo.righe.len() <= MASSIMI_TEMPI_PER_RIGA,
+            "{} righe da una riga sola",
+            testo.righe.len()
+        );
+        // I primi trentadue restano, nell'ordine in cui il file li dà.
+        assert_eq!(testo.righe.len(), MASSIMI_TEMPI_PER_RIGA);
+        assert_eq!(testo.righe.last().map(|r| r.ms), Some(32_000));
+    }
+
+    #[test]
+    fn i_tempi_uguali_di_una_riga_contano_una_volta() {
+        let _uno = una_alla_volta();
+        // Cento volte lo stesso tempo non sono cento tempi: sono uno, come
+        // diceva già la fusione dopo averne costruite cento.
+        let testo = leggi(&format!("{}ciao", "[0:5]".repeat(100)));
+        assert_eq!(testo.righe.len(), 1);
+        // Il trentatreesimo tempo **distinto** si scarta, e un ripetuto prima
+        // di lui non ne occupa il posto.
+        let tanti = format!(
+            "{}{}x",
+            "[0:1]".repeat(500),
+            tempi_distinti(MASSIMI_TEMPI_PER_RIGA + 1)
+        );
+        assert_eq!(leggi(&tanti).righe.len(), MASSIMI_TEMPI_PER_RIGA);
+    }
+
+    #[test]
+    fn la_bomba_dei_tag_e_delle_parole_non_moltiplica_niente() {
+        let _uno = una_alla_volta();
+        // La forma dei revisori in scala: tempi uguali, parole oltre il tetto.
+        let bomba = format!("{}{}", "[0:0]".repeat(300), "<0:0>x".repeat(600));
+        let testo = leggi(&bomba);
+        assert_eq!(testo.righe.len(), 1);
+        let prima = testo.righe.first().expect("una riga");
+        assert!(
+            prima.parole.len() <= MASSIME_PAROLE_PER_RIGA,
+            "{} parole in una riga",
+            prima.parole.len()
+        );
+        assert_eq!(prima.parole.len(), MASSIME_PAROLE_PER_RIGA);
+    }
+
+    #[test]
+    fn il_prodotto_tempi_per_parole_ha_un_tetto() {
+        let _uno = una_alla_volta();
+        // Tempi distinti, quindi niente fusione che li salvi: ognuno è una riga
+        // con le sue parole.
+        let testo = leggi(&format!("{}{}", tempi_distinti(300), parole_distinte(400)));
+        assert!(
+            parole_in_tutto(&testo) <= MASSIMI_TEMPI_PER_RIGA * MASSIME_PAROLE_PER_RIGA,
+            "{} parole in tutto",
+            parole_in_tutto(&testo)
+        );
+    }
+
+    #[test]
+    fn le_righe_espanse_hanno_un_tetto() {
+        let _uno = una_alla_volta();
+        // Una riga per ogni minuto: tempi distinti, nessuna fusione.
+        let grezzo: String = (1..=MASSIME_RIGHE_ESPANSE + 1000)
+            .map(|minuto| format!("[{minuto}:00]x\n"))
+            .collect();
+        let testo = leggi(&grezzo);
+        assert!(
+            testo.righe.len() <= MASSIME_RIGHE_ESPANSE,
+            "{} righe",
+            testo.righe.len()
+        );
+        assert_eq!(testo.righe.len(), MASSIME_RIGHE_ESPANSE);
+    }
+
+    #[test]
+    fn le_parole_espanse_hanno_un_tetto() {
+        let _uno = una_alla_volta();
+        // Quattrocento righe da cinquecentododici parole: ognuna sta nel suo
+        // tetto, tutte insieme no.
+        let riga = parole_distinte(MASSIME_PAROLE_PER_RIGA);
+        let grezzo: String = (1..=400).map(|n| format!("[{n}:00]{riga}\n")).collect();
+        let testo = leggi(&grezzo);
+        assert!(
+            parole_in_tutto(&testo) <= MASSIME_PAROLE_ESPANSE,
+            "{} parole in tutto",
+            parole_in_tutto(&testo)
+        );
+        // Le righe che non ci stanno si scartano per intero, e le prime restano.
+        assert!(
+            testo
+                .righe
+                .iter()
+                .all(|r| r.parole.len() == MASSIME_PAROLE_PER_RIGA)
+        );
+        assert_eq!(testo.righe.first().map(|r| r.ms), Some(60_000));
+    }
+
+    #[test]
+    fn un_testo_di_sole_parentesi_aperte_si_legge_in_tempo_lineare() {
+        let _uno = una_alla_volta();
+        // Ogni `<` cercava il suo `>` fino in fondo: il quadrato di duecentomila.
+        for grezzo in [
+            format!("[0:0]{}", "<".repeat(200_000)),
+            format!("[0:0]{}>", "<".repeat(200_000)),
+            format!("[0:0]{}>", "<0".repeat(100_000)),
+        ] {
+            let inizio = Instant::now();
+            let testo = leggi(&grezzo);
+            let durata = inizio.elapsed();
+            assert!(
+                durata < Duration::from_millis(500),
+                "{durata:?} per {} byte",
+                grezzo.len()
+            );
+            assert_eq!(testo.righe.len(), 1);
+        }
+    }
+
+    /// Gli ingressi ostili della grandezza che un testo ricevuto può avere
+    /// ([`MASSIMO_TESTO_BYTE`]) e di quella di una scrittura da un altro
+    /// dispositivo (quarantottomila byte), uno per famiglia di difetto. Con un
+    /// tetto **largo**: qui non si misura un tempo, si impedisce che tornino i
+    /// secondi — o i gigabyte — di prima.
+    ///
+    /// Le prove strutturali (il numero di righe e di parole del risultato) sono
+    /// quelle sopra; questa dice che il lavoro per arrivarci non è esploso.
+    #[test]
+    fn gli_ingressi_ostili_si_leggono_in_poco_tempo_e_in_poco_spazio() {
+        let _uno = una_alla_volta();
+        let grande = MASSIMO_TESTO_BYTE;
+        // `5·T + 6·W ≤ byte`, metà dei byte ciascuno: il massimo di `T·W`.
+        let bomba = |tempi: usize, parole: usize| {
+            format!("{}{}", "[0:0]".repeat(tempi), "<0:0>x".repeat(parole))
+        };
+        let famiglie: Vec<(&str, String)> = vec![
+            ("la bomba da 48 KB", bomba(4_800, 4_000)),
+            ("la bomba da 256 KiB", bomba(26_214, 21_845)),
+            (
+                "tempi distinti in una riga sola",
+                format!("{}x", tempi_distinti(28_000)),
+            ),
+            (
+                "tante righe con un tempo distinto",
+                (1..=30_000).map(|m| format!("[{m}:00]x\n")).collect(),
+            ),
+            (
+                "tante righe diverse allo stesso tempo",
+                (1..=45_000).map(|n| format!("[0:0]r{n}\n")).collect(),
+            ),
+            (
+                "tanti tag di intestazione",
+                format!("{}[0:1]x", "[ar:x]".repeat(43_000)),
+            ),
+            (
+                "parole oltre il tetto, in tante righe",
+                (1..=87)
+                    .map(|n| format!("[{n}:00]{}\n", parole_distinte(MASSIME_PAROLE_PER_RIGA)))
+                    .collect(),
+            ),
+            (
+                "una riga sola lunghissima senza tag",
+                format!("[0:1]{}", "a".repeat(grande)),
+            ),
+        ];
+        // La bomba dei revisori, a grandezza intera: una riga, e le sue parole
+        // nel tetto. Era 19,2 milioni di parole clonate, circa un gigabyte.
+        let intera = leggi(&bomba(4_800, 4_000));
+        assert_eq!(intera.righe.len(), 1);
+        assert_eq!(parole_in_tutto(&intera), MASSIME_PAROLE_PER_RIGA);
+        for (nome, grezzo) in famiglie {
+            let inizio = Instant::now();
+            let testo = leggi(&grezzo);
+            let durata = inizio.elapsed();
+            let righe = testo.righe.len();
+            let parole = parole_in_tutto(&testo);
+            eprintln!(
+                "{nome}: {} byte, {durata:?}, {righe} righe, {parole} parole",
+                grezzo.len()
+            );
+            assert!(
+                durata < Duration::from_secs(3),
+                "{nome}: {durata:?} per {} byte",
+                grezzo.len()
+            );
+            assert!(righe <= MASSIME_RIGHE_ESPANSE, "{nome}: {righe} righe");
+            assert!(parole <= MASSIME_PAROLE_ESPANSE, "{nome}: {parole} parole");
+        }
+    }
+
+    #[test]
+    fn le_righe_diverse_allo_stesso_tempo_hanno_un_tetto() {
+        let _uno = una_alla_volta();
+        // Una traduzione e una pronuncia sono normali, e restano tutte.
+        let normale = leggi("[0:1]originale\n[0:1]traduzione\n[0:1]pronuncia");
+        assert_eq!(normale.righe.len(), 1);
+        assert_eq!(
+            normale.righe.first().and_then(|r| r.secondaria.as_deref()),
+            Some("traduzione\npronuncia")
+        );
+        // Mille righe diverse allo stesso tempo, no.
+        let grezzo: String = (0..1000).map(|n| format!("[0:1]r{n}\n")).collect();
+        let testo = leggi(&grezzo);
+        let prima = testo.righe.first().expect("una riga");
+        assert_eq!(
+            prima.secondaria.as_deref().map_or(0, |s| s.lines().count()),
+            MASSIME_SECONDARIE_PER_RIGA
+        );
+        riscrittura_stabile(&grezzo);
+    }
+
+    #[test]
+    fn uno_scarto_oltre_un_ora_non_e_uno_scarto() {
+        assert_eq!(leggi("[offset:2000000000]\n[00:01.00]x").offset_ms, 0);
+        assert_eq!(leggi("[offset:-2000000000]\n[00:01.00]x").offset_ms, 0);
+        assert_eq!(
+            leggi("[offset:3600000]\n[00:01.00]x").offset_ms,
+            MASSIMO_OFFSET_MS
+        );
+        assert_eq!(leggi("[offset:-250]\n[00:01.00]x").offset_ms, -250);
+    }
+
+    #[test]
+    fn la_riga_che_supera_le_parole_finisce_alla_parola_prima() {
+        let _uno = una_alla_volta();
+        // Cinquecentododici parole, l'ultima che finisce con un `<0` che
+        // diventerebbe un tag se le si accostasse a `:0>y` dopo il tag scartato.
+        let mut grezzo = String::from("[0:0]");
+        grezzo.push_str(&parole_distinte(MASSIME_PAROLE_PER_RIGA - 1));
+        grezzo.push_str("<0:600>ultima<0<0:601>:0>y");
+        let testo = leggi(&grezzo);
+        let prima = testo.righe.first().expect("una riga");
+        assert_eq!(prima.parole.len(), MASSIME_PAROLE_PER_RIGA);
+        // Il tag di troppo si scarta, e con lui tutto quel che segue: né `:0>`
+        // né `y` si accodano all'ultima parola.
+        assert_eq!(
+            prima.parole.last().map(|p| p.testo.as_str()),
+            Some("ultima<0")
+        );
+        assert!(!prima.testo.contains('y'));
+        assert!(!scrivi(&testo).contains(":0>y"));
+        riscrittura_stabile(&grezzo);
+    }
+
+    #[test]
+    fn riscrivere_i_testi_ostili_non_cambia_niente_due_volte() {
+        let _uno = una_alla_volta();
+        let con_il_tetto = |tempi: usize, parole: usize| {
+            format!("{}{}", tempi_distinti(tempi), parole_distinte(parole))
+        };
+        for grezzo in [
+            // La bomba dei revisori, in scala.
+            format!("{}{}", "[0:0]".repeat(300), "<0:0>x".repeat(600)),
+            // Un tempo sotto il tetto, uno sopra, uno molto sopra.
+            con_il_tetto(MASSIMI_TEMPI_PER_RIGA - 1, 3),
+            con_il_tetto(MASSIMI_TEMPI_PER_RIGA, 3),
+            con_il_tetto(MASSIMI_TEMPI_PER_RIGA + 1, 3),
+            con_il_tetto(200, 3),
+            // Una parola sotto il tetto, una sopra, molto sopra.
+            con_il_tetto(2, MASSIME_PAROLE_PER_RIGA - 1),
+            con_il_tetto(2, MASSIME_PAROLE_PER_RIGA),
+            con_il_tetto(2, MASSIME_PAROLE_PER_RIGA + 1),
+            con_il_tetto(2, 900),
+            // Il pezzo che accostato a un altro comporrebbe un tag.
+            format!(
+                "[0:0]{}x<0<0:1>:0>y",
+                parole_distinte(MASSIME_PAROLE_PER_RIGA)
+            ),
+            // Tag e parentesi che non sono tag, in mezzo e in fondo.
+            "[0:0]<<0:0>0:0>[0:1]<0:1>>>[x]<".to_owned(),
+            format!("[0:0]{}", "<".repeat(5_000)),
+            format!("{}[offset:9999999999]\n[0:1]x", "[ar:x]".repeat(40)),
+        ] {
+            riscrittura_stabile(&grezzo);
+        }
     }
 }

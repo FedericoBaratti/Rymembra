@@ -3548,3 +3548,29 @@ fn il_dono_di_un_brano_nuovo_dopo_un_riordino_di_la_non_raddoppia_e_non_si_perde
         }
     }
 }
+
+/// La copia di un livello del testo a mano sostituito da un dispositivo
+/// collegato (`crate::testi::copia`) è una rete di sicurezza di questa macchina:
+/// non è il testo di nessun brano, e non esce con il profilo né con il documento
+/// della biblioteca.
+#[test]
+fn la_copia_del_testo_a_mano_non_esce_nel_profilo() {
+    let c = libreria();
+    c.execute_batch(
+        "INSERT INTO lyrics (track_key, synced, source, updated_at)
+           VALUES ('chiave', '[00:01.00]un testo', 'mano', 10);
+         INSERT INTO lyrics (track_key, synced, source, updated_at)
+           VALUES ('chiave' || char(31) || 'prima', '[00:01.00]un testo di prima', 'mano', 5);",
+    )
+    .expect("testi");
+    let biblioteca = biblioteca::raccogli(&c).expect("biblioteca");
+    assert_eq!(
+        biblioteca
+            .testi
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["chiave"],
+        "la copia è uscita nel profilo"
+    );
+}

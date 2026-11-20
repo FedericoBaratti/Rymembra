@@ -197,6 +197,14 @@ pub(super) fn consegna<D: Dati>(dati: &D, chiave: &str, voce: &VocePosta) -> Con
         let domanda = Domanda::TestoScrivi {
             brano,
             cosa: in_protocollo(&scrittura),
+            // L'orologio è quello di quando si è deciso, non di quando si
+            // consegna: una voce può aspettare giorni, e il proprietario sceglie
+            // fra due correzioni la più recente. È l'istante dell'**ultimo**
+            // gesto della voce — i gesti di un brano si fondono in una voce sola
+            // (`Correzione::dopo`) — quindi un testo seguito da uno scarto porta
+            // l'ora dello scarto: un'approssimazione di pochi minuti, dalla parte
+            // di chi ha toccato per ultimo.
+            quando_ms: voce.quando_ms,
         };
         let Err(err) = dati.chiedi(chiave, domanda, ATTESA_POSTA) else {
             continue;
@@ -218,4 +226,23 @@ pub(super) fn consegna<D: Dati>(dati: &D, chiave: &str, voce: &VocePosta) -> Con
         };
     }
     Consegna::Fatta
+}
+
+#[cfg(test)]
+mod prove {
+    use rymembra_app::testi::condiviso::MASSIMO_TESTO;
+    use rymembra_lontano::protocollo::MASSIMO_TESTO_SCRITTURA;
+
+    /// Chi scrive e chi risponde guardano lo stesso tetto.
+    ///
+    /// Il protocollo non conosce `rymembra_app`, e il nucleo non conosce il
+    /// protocollo: i due numeri stanno in due crate, e questa prova — l'unico
+    /// posto che li vede entrambi — è quel che li tiene uguali. Se il tetto del
+    /// protocollo fosse più basso, un testo che chi scrive accetta arriverebbe
+    /// a chi risponde come `Sconosciuta` e resterebbe in posta per trenta
+    /// giorni; più alto, chi risponde leggerebbe quel che chi scrive non manda.
+    #[test]
+    fn il_tetto_del_protocollo_e_quello_di_chi_scrive() {
+        assert_eq!(MASSIMO_TESTO_SCRITTURA, MASSIMO_TESTO);
+    }
 }

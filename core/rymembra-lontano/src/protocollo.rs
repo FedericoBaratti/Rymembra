@@ -217,11 +217,25 @@ pub enum Domanda {
     /// come deve restare il testo, e non cosa aggiungere. Dietro
     /// [`CAPACITA_TESTI`], e conta fra le scritture
     /// ([`Domanda::e_una_scrittura`]).
+    ///
+    /// Porta l'**orologio** di chi l'ha decisa, come [`Domanda::Valuta`]: fra due
+    /// correzioni vince la più recente, non l'ultima arrivata — una che aspetta in
+    /// posta per giorni non deve cancellare un testo sincronizzato a mano nel
+    /// frattempo da chi lo possiede.
     TestoScrivi {
         /// Il brano, con l'id della libreria dell'altro.
         brano: i64,
         /// Cosa è cambiato.
         cosa: ScritturaTesto,
+        /// Quando si è deciso, ms, sull'orologio di chi manda.
+        ///
+        /// **Facoltativo**: una build di prima non lo manda, e vale zero,
+        /// «senza orologio» — chi risponde la tratta come decisa **adesso**, che
+        /// è com'è sempre stato (vince l'ultima arrivata). Non cambia il numero
+        /// del protocollo: chi non lo conosce lo ignora, e chi lo conosce legge
+        /// zero dove manca.
+        #[serde(default)]
+        quando_ms: i64,
     },
     /// Dimentica questo dispositivo.
     Dimenticami,
@@ -229,6 +243,16 @@ pub enum Domanda {
     #[serde(other)]
     Sconosciuta,
 }
+
+/// Quanti byte, al più, ha ogni testo dentro una correzione
+/// ([`ScritturaTesto::Mano`], e i due testi di [`ScritturaTesto::Scelta`]).
+///
+/// È il tetto di chi **scrive** (`MASSIMO_TESTO` in
+/// `rymembra_app::testi::condiviso`, che l'applicazione prova uguale a questo) e
+/// sta qui perché chi risponde lo guardi **prima** di passare il testo a
+/// qualunque altra cosa — il parser compreso. Nei 64 KiB aperti di una
+/// [`Domanda`] ci sta con margine anche con tutti gli escape.
+pub const MASSIMO_TESTO_SCRITTURA: usize = 48_000;
 
 /// Una correzione al testo di un brano, come arriva a chi lo possiede.
 ///
@@ -325,6 +349,44 @@ impl Domanda {
                 quanti: quanti.min(MASSIMO_PEZZO),
             },
             Self::Annuncio(presenza) => Self::Annuncio(presenza.nei_tetti()),
+            Self::TestoScrivi {
+                brano,
+                cosa,
+                quando_ms,
+            } => Self::TestoScrivi {
+                brano,
+                cosa: cosa.nei_tetti(),
+                // Un orologio negativo non è un istante: vale «senza orologio».
+                quando_ms: quando_ms.max(0),
+            },
+            altra => altra,
+        }
+    }
+}
+
+impl ScritturaTesto {
+    /// La stessa correzione coi tetti di questo protocollo: un testo più lungo di
+    /// [`MASSIMO_TESTO_SCRITTURA`] diventa [`ScritturaTesto::Sconosciuta`].
+    ///
+    /// **Non si taglia.** Un LRC accorciato di colpo è un altro testo, e chi lo
+    /// riceve — con un tetto suo uguale a questo — lo troverebbe nei tetti e lo
+    /// scriverebbe. Come `Sconosciuta` chi risponde lo rifiuta con
+    /// `lontano.protocollo`, che è quel che si dice a una correzione che non si
+    /// può applicare, e non lo passa al parser né al database.
+    #[must_use]
+    pub fn nei_tetti(self) -> Self {
+        let sta = |testo: &str| testo.len() <= MASSIMO_TESTO_SCRITTURA;
+        match self {
+            Self::Mano { lrc } if !sta(&lrc) => Self::Sconosciuta,
+            Self::Scelta {
+                piatto,
+                sincronizzato,
+                ..
+            } if !piatto.as_deref().is_none_or(sta)
+                || !sincronizzato.as_deref().is_none_or(sta) =>
+            {
+                Self::Sconosciuta
+            }
             altra => altra,
         }
     }
@@ -728,16 +790,19 @@ mod prove {
             Domanda::Testo { brano: 3 },
             Domanda::TestoScrivi {
                 brano: 3,
+                quando_ms: 0,
                 cosa: ScritturaTesto::Scarto { scarto_ms: -250 },
             },
             Domanda::TestoScrivi {
                 brano: 3,
+                quando_ms: 0,
                 cosa: ScritturaTesto::Mano {
                     lrc: "[00:01.00]la\n[00:02.50]cura\n".to_owned(),
                 },
             },
             Domanda::TestoScrivi {
                 brano: 3,
+                quando_ms: 0,
                 cosa: ScritturaTesto::Scelta {
                     id_catalogo: 4_242,
                     piatto: None,
@@ -747,6 +812,7 @@ mod prove {
             },
             Domanda::TestoScrivi {
                 brano: 3,
+                quando_ms: 0,
                 cosa: ScritturaTesto::Rifiuta,
             },
         ] {
@@ -767,9 +833,66 @@ mod prove {
             domani,
             Domanda::TestoScrivi {
                 brano: 3,
+                quando_ms: 0,
                 cosa: ScritturaTesto::Sconosciuta
             }
         );
+    }
+
+    #[test]
+    fn l_orologio_di_una_correzione_di_testo_e_facoltativo_nei_due_versi() {
+        // Una build di prima non lo manda: chi legge trova zero, «senza
+        // orologio». È la forma del telefono vero dell'utente (`8b89651`).
+        let di_prima: Domanda =
+            serde_json::from_str(r#"{"tipo":"testoScrivi","brano":3,"cosa":{"tipo":"rifiuta"}}"#)
+                .unwrap();
+        assert_eq!(
+            di_prima,
+            Domanda::TestoScrivi {
+                brano: 3,
+                cosa: ScritturaTesto::Rifiuta,
+                quando_ms: 0,
+            }
+        );
+
+        // Una build di domani ne manda altri: i campi che non si conoscono si
+        // ignorano, e questa non li nega (`deny_unknown_fields` non c'è), quindi
+        // lo stesso vale per la build di prima davanti al campo di oggi.
+        let con_orologio = Domanda::TestoScrivi {
+            brano: 3,
+            cosa: ScritturaTesto::Scarto { scarto_ms: 5 },
+            quando_ms: 1_700_000_000_000,
+        };
+        let json = serde_json::to_value(&con_orologio).unwrap();
+        assert_eq!(json["quandoMs"], 1_700_000_000_000_i64);
+        assert_eq!(andata_e_ritorno(&con_orologio), con_orologio);
+        let mut aggiunto = json.clone();
+        aggiunto["campoDiDomani"] = serde_json::json!(1);
+        assert_eq!(
+            serde_json::from_value::<Domanda>(aggiunto).unwrap(),
+            con_orologio
+        );
+        // E tolto il campo, torna la forma di prima.
+        let mut senza = json;
+        senza.as_object_mut().unwrap().remove("quandoMs");
+        assert_eq!(
+            serde_json::from_value::<Domanda>(senza).unwrap(),
+            Domanda::TestoScrivi {
+                brano: 3,
+                cosa: ScritturaTesto::Scarto { scarto_ms: 5 },
+                quando_ms: 0,
+            }
+        );
+        // Un orologio negativo non è un istante.
+        let storto = Domanda::TestoScrivi {
+            brano: 3,
+            cosa: ScritturaTesto::Rifiuta,
+            quando_ms: -5,
+        };
+        assert!(matches!(
+            storto.nei_tetti(),
+            Domanda::TestoScrivi { quando_ms: 0, .. }
+        ));
     }
 
     #[test]
@@ -800,6 +923,7 @@ mod prove {
             Domanda::Testo { brano: 1 },
             Domanda::TestoScrivi {
                 brano: 1,
+                quando_ms: 0,
                 cosa: ScritturaTesto::Rifiuta,
             },
         ] {
@@ -861,7 +985,14 @@ mod prove {
             },
             ScritturaTesto::Rifiuta,
         ] {
-            assert!(Domanda::TestoScrivi { brano: 1, cosa }.e_una_scrittura());
+            assert!(
+                Domanda::TestoScrivi {
+                    brano: 1,
+                    cosa,
+                    quando_ms: 0,
+                }
+                .e_una_scrittura()
+            );
         }
         // Leggere un testo no: è una lettura, come quelle del catalogo.
         assert!(!Domanda::Testo { brano: 1 }.e_una_scrittura());
@@ -889,6 +1020,70 @@ mod prove {
         assert!(json.contains(r#""capacita":["catalogo"]"#), "{json}");
         assert!(nuova.dichiara(CAPACITA_CATALOGO));
         assert_eq!(serde_json::from_str::<Presenza>(&json).unwrap(), nuova);
+    }
+
+    #[test]
+    fn un_testo_oltre_il_tetto_non_arriva_a_chi_lo_legge() {
+        // Il tetto in byte prima di ogni altro: chi risponde non deve nemmeno
+        // arrivare a passare a qualcosa un testo che nessuno scrive così lungo.
+        //
+        // Con `assert!` e non `assert_eq!`: un'asserzione che fallisce stampa le
+        // due metà, e queste sono da quarantottomila byte.
+        let troppo = "a".repeat(MASSIMO_TESTO_SCRITTURA + 1);
+        let giusto = "a".repeat(MASSIMO_TESTO_SCRITTURA);
+        let scrittura = |cosa| {
+            Domanda::TestoScrivi {
+                brano: 3,
+                cosa,
+                quando_ms: 0,
+            }
+            .nei_tetti()
+        };
+        let e_sconosciuta = |domanda: &Domanda| {
+            matches!(
+                domanda,
+                Domanda::TestoScrivi {
+                    brano: 3,
+                    quando_ms: 0,
+                    cosa: ScritturaTesto::Sconosciuta
+                }
+            )
+        };
+
+        assert!(e_sconosciuta(&scrittura(ScritturaTesto::Mano {
+            lrc: troppo.clone()
+        })));
+        // Una scelta con un testo troppo lungo, nell'uno o nell'altro campo.
+        for (piatto, sincronizzato) in [
+            (Some(troppo.clone()), None),
+            (None, Some(troppo.clone())),
+            (Some(giusto.clone()), Some(troppo.clone())),
+        ] {
+            assert!(e_sconosciuta(&scrittura(ScritturaTesto::Scelta {
+                id_catalogo: 1,
+                piatto,
+                sincronizzato,
+                strumentale: false,
+            })));
+        }
+        // Quel che sta nel tetto passa com'è.
+        let sta = Domanda::TestoScrivi {
+            brano: 3,
+            quando_ms: 0,
+            cosa: ScritturaTesto::Mano { lrc: giusto },
+        };
+        assert!(sta.clone().nei_tetti() == sta);
+        for senza_testo in [
+            ScritturaTesto::Scarto { scarto_ms: 5 },
+            ScritturaTesto::Rifiuta,
+        ] {
+            let domanda = Domanda::TestoScrivi {
+                brano: 3,
+                quando_ms: 0,
+                cosa: senza_testo,
+            };
+            assert_eq!(domanda.clone().nei_tetti(), domanda);
+        }
     }
 
     #[test]
