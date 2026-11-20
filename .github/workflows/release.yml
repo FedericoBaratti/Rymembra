@@ -241,10 +241,9 @@ jobs:
   # Gli stessi controlli di chi poi firma, non una copia:
   #
   #   - `strumenti/firma.js`: la chiave minisign è intera, base64 pulita, senza
-  #     spazi ai bordi, e la password pure. Rifiuta un a capo ai bordi anche se
-  #     un segreto incollato così a mano potrebbe parerci innocuo: la CLI di
-  #     Tauri non fa `trim()` e lo rifiuterebbe lo stesso, dopo la
-  #     compilazione. Va bene così, e qui costa due minuti.
+  #     spazi ai bordi, e la password pure. Rifiuta anche un a capo in fondo,
+  #     e va bene così: la CLI di Tauri non fa `trim()` e lo rifiuterebbe lo
+  #     stesso, dopo la compilazione; qui il rifiuto costa due minuti.
   #   - `strumenti/apk.js segreti`: ci sono i tre segreti di Android, il
   #     keystore è base64 di un keystore, `keytool` lo apre con quella password
   #     e quell'alias, e il certificato ha l'impronta di
