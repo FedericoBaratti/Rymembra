@@ -25,8 +25,18 @@
  * Con \`--richiedi\` anche l'avviso ferma: è il modo di pretendere le novità per
  * una release che le deve avere.
  *
+ * Con \`--se-minor\` ferma solo se la versione è una **minor o una major** (la
+ * patch è zero: 3.3.0, 4.0.0): è quella che porta cose nuove, e se esce senza
+ * la finestra chi viene dalla versione prima non la vedrà mai (alla correttiva
+ * dopo la tabella dice «Niente»). Una correttiva (3.3.1) resta libera, con
+ * l'avviso. È quel che chiede il lavoro \`tag\` di \`release.yml\`; senza opzioni
+ * lo strumento non ferma mai per questo, perché \`npm run verify\` lo lancia
+ * anche a metà sviluppo, con la versione già alzata e le novità ancora da
+ * scrivere.
+ *
  *   node strumenti/novita.js              controlla, avvisa, esce con 1 se qualcosa non torna
  *   node strumenti/novita.js --richiedi   la versione di oggi DEVE avere le novità
+ *   node strumenti/novita.js --se-minor   come --richiedi, ma solo per una minor o una major
  *
  * Il registro si legge come testo, senza compilare TypeScript: lo strumento gira
  * prima di \`npm ci\`, e la forma di \`novita.ts\` è abbastanza semplice da non
@@ -69,17 +79,28 @@ function chiaviDi(testo, versione) {
 }
 
 /**
+ * Una minor o una major — la patch è zero: 3.3.0, 4.0.0 — porta cose nuove, e
+ * deve portare le Novità; una correttiva (3.3.1) no.
+ */
+function richiedeLeNovita(versione) {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(versione);
+  return m !== null && Number(m[3]) === 0;
+}
+
+/**
  * Controlla le novità di un albero.
  *
  * @param {string} radice la radice del repository
- * @param {{richiedi?: boolean}} [opzioni]
+ * @param {{richiedi?: boolean, seMinor?: boolean}} [opzioni] `seMinor`: come
+ *   `richiedi`, ma solo se la versione è una minor o una major
  * @returns {{problemi: string[], avvisi: string[]}}
  */
-function controlla(radice, { richiedi = false } = {}) {
+function controlla(radice, { richiedi = false, seMinor = false } = {}) {
   const problemi = [];
   const avvisi = [];
   const desktop = path.join(radice, "apps", "desktop");
   const versione = JSON.parse(fs.readFileSync(path.join(desktop, "package.json"), "utf8")).version;
+  if (seMinor && richiedeLeNovita(versione)) richiedi = true;
   const registro = fs.readFileSync(path.join(desktop, "src", "novita.ts"), "utf8");
   const lingue = {
     it: leggi(path.join(desktop, "src", "lingue", "it.json")),
@@ -141,7 +162,8 @@ function controlla(radice, { richiedi = false } = {}) {
 
 function principale() {
   const richiedi = process.argv.includes("--richiedi");
-  const { problemi, avvisi } = controlla(REPO, { richiedi });
+  const seMinor = process.argv.includes("--se-minor");
+  const { problemi, avvisi } = controlla(REPO, { richiedi, seMinor });
   const inCi = process.env.GITHUB_ACTIONS === "true";
   for (const avviso of avvisi) console.log(inCi ? `::warning title=Novità::${avviso}` : `Avviso: ${avviso}`);
   if (problemi.length > 0) {
@@ -154,4 +176,4 @@ function principale() {
 
 if (require.main === module) principale();
 
-module.exports = { controlla, passiDi, REPO };
+module.exports = { controlla, passiDi, richiedeLeNovita, REPO };

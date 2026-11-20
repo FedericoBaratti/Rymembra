@@ -193,9 +193,11 @@ jobs:
           TAG: ${{ steps.scelto.outputs.tag }}
         run: |
           node strumenti/versione.js
-          # La finestra «Novità» di questa versione: se non ce n'è una è un
-          # avviso (una versione correttiva non ne ha), e il tag si fa lo stesso.
-          node strumenti/novita.js
+          # La finestra «Novità» di questa versione. Una minor o una major (la
+          # patch è zero: 3.3.0, 4.0.0) **deve** averla: senza, chi viene dalla
+          # versione prima non la vedrà mai, e la correttiva dopo non la
+          # recupera. Una correttiva (3.3.1) non ne ha, ed è solo un avviso.
+          node strumenti/novita.js --se-minor
           trovato=$(node -p "require('./apps/desktop/package.json').version")
           if [ "$trovato" != "${TAG#v}" ]; then
             echo "il tag dice ${TAG#v}, i file dicono $trovato"

@@ -210,3 +210,13 @@ test("l'installer e l'APK si verificano contro i byte dopo la firma e prima di c
   assert.match(leggi("strumenti/manifesto.js"), /verificaFirma\(fs\.readFileSync/);
   assert.match(leggi("strumenti/apk.js"), /verificaFirma\(byte, sig, pubkey\)/);
 });
+
+/* ── S5-8: una minor senza Novità ferma il tag ────────────────────────── */
+
+test("il lavoro tag pretende le Novità per una minor o una major, e le lascia libere a una correttiva", () => {
+  const corsa = blocchiRun(R.tag).find((r) => /node strumenti\/novita\.js/.test(r));
+  assert.ok(corsa, "il lavoro tag non lancia novita.js");
+  // `--se-minor` e non il comando nudo, che per una 3.3.0 senza finestra darebbe solo un avviso.
+  assert.match(corsa, /node strumenti\/novita\.js --se-minor/);
+  assert.ok(!/node strumenti\/novita\.js\s*$/m.test(corsa), "novita.js nudo: la minor senza novità passerebbe con un avviso");
+});
