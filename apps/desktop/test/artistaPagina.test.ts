@@ -142,7 +142,7 @@ test("il filtro per dispositivo vale per tutti gli elenchi della pagina dell'art
   assert.match(app, /const chiaveArtista = `\$\{nomeAperto\}:\$\{chiaveOrigine\}`;/);
   // E i numeri dell'artista si rileggono con il filtro nuovo: sono la lunghezza
   // delle liste, e un conto vecchio le lascerebbe corte o piene di scheletri.
-  const rilegge = brano(app, "Promise.all([ipc.artisti(origineIpc), ipc.partecipazioniConta(nomeAperto, origineIpc)])", "return () => {");
+  const rilegge = brano(app, "ipc\n      .artisti(origineIpc)", "return () => {");
   assert.match(rilegge, /albums: 0, tracks: 0/, "un artista senza niente col filtro nuovo resta aperto con zero");
   assert.match(app, /\[nomeAperto, chiaveArtista, giroArtista\]/);
   // La selezione dei brani dell'artista porta il filtro e l'ordinamento.
@@ -216,6 +216,38 @@ test("un brano di un altro dispositivo, dal nome o dal menù, apre l'artista con
   assert.match(tipi, /albumArtist: string \| null;/);
   assert.match(tipi, /\{ tipo: "artista"; nome: string; ordine: OrdineArtista \}/);
   assert.match(tipi, /\{ tipo: "partecipazioni"; nome: string; specie: SpecieDiPartecipazione \}/);
+});
+
+// ── S9-3: la pagina dell'artista non rilegge gli artisti a ogni giro da 3 s ──
+
+test("S9-3: i conti delle partecipazioni non aspettano l'elenco intero degli artisti", () => {
+  // Il difetto: `Promise.all([ipc.artisti(), ipc.partecipazioniConta()])`. Se la
+  // lettura degli artisti falliva (il database occupato dallo specchio) le
+  // sezioni «Compare anche in» non comparivano, e se era lenta aspettavano lei.
+  assert.doesNotMatch(app, /Promise\.all\(\[\s*ipc\.artisti\(/);
+  const effetto = brano(app, "const [giroArtista, setGiroArtista]", "const { artisti, artistiInArrivo");
+  const conta = brano(effetto, "ipc\n      .partecipazioniConta(", ".catch(");
+  assert.match(conta, /setConteggioPartecipazioni\(\{ chiave: chiaveArtista, conto \}\)/);
+  assert.doesNotMatch(conta, /ipc\.artisti\(/);
+});
+
+test("S9-3: una lettura di un dispositivo che il filtro non vede non rilegge l'artista aperto", () => {
+  // `ricaricaContorno` incrementava `giroArtista` a ogni rilettura della
+  // libreria: ogni 3 s durante la prima lettura di un catalogo, con tutti gli
+  // artisti riletti per due numeri. Sotto «Questo dispositivo», o sotto un altro
+  // PC, quel catalogo non cambia niente di quel che l'artista mostra.
+  const contorno = brano(app, "const ricaricaContorno = useCallback(", "}, [ricaricaAlbum");
+  assert.match(contorno, /if \(!opzioni\?\.senzaArtista\) setGiroArtista\(/);
+  // La rilettura accorpata sa se qualcuna delle sue cause riguarda il filtro, e
+  // ogni causa che non è una lettura fuori filtro lo dice.
+  assert.match(app, /const cause = useRef\(causeDiRilettura\(\)\)/);
+  assert.match(app, /const senzaArtista = !cause\.current\.preleva\(\);/);
+  assert.match(app, /useAscolto\("scarico:in_libreria", \(\) => chiediRilettura\(true\)\)/);
+  assert.match(app, /useAscolto\("cartelle:cambiate", \(\) => chiediRilettura\(true\)\)/);
+  assert.match(app, /onRilegge=\{\(\) => chiediRilettura\(true\)\}/);
+  assert.match(app, /chiediRilettura\(origineVedeIlDispositivo\(origine, nuovo\.dispositivo\)\)/);
+  // E nessun'altra chiamata diretta al lavoro accorpato: salterebbe le cause.
+  assert.equal([...app.matchAll(/ricaricaAccorpata\.chiama\(\)/g)].length, 1, "solo `chiediRilettura` lo chiama");
 });
 
 test("le stringhe nuove hanno la loro frase in italiano e in inglese", () => {

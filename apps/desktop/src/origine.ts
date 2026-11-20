@@ -294,6 +294,25 @@ export function chiaviDiLibreria(stato: StatoLontano | null): string | null {
 }
 
 /**
+ * Il filtro mostra le righe di questo dispositivo?
+ *
+ * «Tutti» le ha tutte; «Questo dispositivo» solo quelle di qui, e il filtro di un
+ * dispositivo solo le sue. Serve a chi deve decidere se la lettura del catalogo
+ * di un dispositivo cambia qualcosa di quel che si vede (S9-3): sotto un filtro
+ * che non lo contiene, no.
+ */
+export function origineVedeIlDispositivo(origine: OrigineLibreria, dispositivo: string): boolean {
+  switch (origine.tipo) {
+    case "tutti":
+      return true;
+    case "locale":
+      return false;
+    case "dispositivo":
+      return origine.chiave === dispositivo;
+  }
+}
+
+/**
  * Il filtro con cui aprire la pagina dell'artista di una riga: quello di adesso
  * se contiene la riga, «Tutti» se no.
  *

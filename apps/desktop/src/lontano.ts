@@ -672,6 +672,41 @@ export function domandaSullePerdite(
 export const RILEGGI_DURANTE_LA_LETTURA_MS = 3_000;
 
 /**
+ * Le cause di una raffica di riletture, accorpate in una sola (`accorpa`).
+ *
+ * Una rilettura nata dalla lettura del catalogo di un dispositivo che il filtro
+ * non vede — «Questo dispositivo» acceso e un PC che manda la sua musica — non
+ * cambia niente di quel che si mostra, e non vale la pena di rileggere per essa
+ * gli artisti per due numeri della pagina aperta (S9-3). Ma la rilettura è una
+ * sola per raffica, e se dentro la raffica c'è anche una scansione o un brano
+ * scaricato quei numeri vanno rifatti: basta una causa che conta.
+ *
+ * `aggiungi(true)` per ogni causa che può cambiare quel che il filtro mostra,
+ * `aggiungi(false)` per una che sicuramente no. `preleva` dice se qualcuna
+ * contava, e riparte da zero. Senza cause dette vale «sì»: nel dubbio, i
+ * numeri non restano vecchi.
+ */
+export function causeDiRilettura(): {
+  aggiungi: (riguardaIlFiltro: boolean) => void;
+  preleva: () => boolean;
+} {
+  let dette = 0;
+  let contava = false;
+  return {
+    aggiungi(riguardaIlFiltro) {
+      dette += 1;
+      if (riguardaIlFiltro) contava = true;
+    },
+    preleva() {
+      const esito = dette === 0 || contava;
+      dette = 0;
+      contava = false;
+      return esito;
+    },
+  };
+}
+
+/**
  * Dopo questo avanzamento gli elenchi vanno riletti?
  *
  * Il giro del catalogo scrive in `tracks` e non manda `cartelle:cambiate`: le

@@ -20,6 +20,7 @@ import {
   conIlSiDeiDatiMobili,
   gestoLontano,
   annullatoDaQui,
+  causeDiRilettura,
   linkDa,
   ordinaDispositivi,
   qrScaduto,
@@ -354,4 +355,25 @@ test("sui dati mobili con «Chiedi» il gesto aspetta il sì invece di fallire; 
     archivioLontano.scrivi(prima);
     archivioDatiMobili.scrivi(null);
   }
+});
+
+// ── S9-3: le cause di una raffica di riletture ─────────────────────────────
+
+test("S9-3: le riletture accorpate dicono se qualcuna riguarda il filtro", () => {
+  const cause = causeDiRilettura();
+  // Senza cause dette (un modo di chiedere che non si è presentato) si rilegge
+  // tutto: nel dubbio, i numeri dell'artista non restano vecchi.
+  assert.equal(cause.preleva(), true);
+  // Solo letture di dispositivi che il filtro non vede: niente da rifare.
+  cause.aggiungi(false);
+  cause.aggiungi(false);
+  assert.equal(cause.preleva(), false);
+  // Basta una causa che conta, in qualunque posto della raffica.
+  cause.aggiungi(false);
+  cause.aggiungi(true);
+  cause.aggiungi(false);
+  assert.equal(cause.preleva(), true);
+  // Ogni raffica parte da zero: la causa di prima non si trascina.
+  cause.aggiungi(false);
+  assert.equal(cause.preleva(), false);
 });

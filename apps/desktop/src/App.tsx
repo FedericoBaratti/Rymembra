@@ -71,6 +71,7 @@ import {
   archivioLontano,
   archivioScarico,
   archivioSpecchio,
+  causeDiRilettura,
   chiedeConfermaPerLoScarico,
   conAvanzamento,
   conIlSiDeiDatiMobili,
@@ -205,6 +206,7 @@ import {
   origineCheContiene,
   origineConChiavi,
   origineDi,
+  origineVedeIlDispositivo,
   ugualiOrigini,
   perIlNucleo,
   primoSpento,
@@ -1122,15 +1124,33 @@ export function App() {
    * con zero: la pagina lo dice, invece di sparire sotto le dita.
    *
    * Letto anche da una libreria che cambia (`giroArtista`): un brano tolto, una
-   * scansione finita.
+   * scansione finita. Non per la lettura del catalogo di un dispositivo che il
+   * filtro non vede: vedi `ricaricaContorno`.
+   *
+   * # Due letture, non una (S9-3)
+   *
+   * I conti delle partecipazioni sono veloci e non aspettano l'elenco intero
+   * degli artisti: legati in un `Promise.all`, un database occupato dallo specchio
+   * che faceva fallire la seconda lettura toglieva anche le sezioni «Compare anche
+   * in». Quanto all'elenco intero — migliaia di artisti, megabyte di JSON, per
+   * due numeri — serve un comando del nucleo che dia l'artista solo: finché non
+   * c'è, si rilegge meno spesso che si può.
    */
   useEffect(() => {
     if (nomeAperto === "") return;
     let superata = false;
-    Promise.all([ipc.artisti(origineIpc), ipc.partecipazioniConta(nomeAperto, origineIpc)])
-      .then(([elenco, conto]) => {
+    ipc
+      .partecipazioniConta(nomeAperto, origineIpc)
+      .then((conto) => {
+        if (!superata) setConteggioPartecipazioni({ chiave: chiaveArtista, conto });
+      })
+      .catch((e: unknown) => {
+        if (!superata) segnalaErrore(e);
+      });
+    ipc
+      .artisti(origineIpc)
+      .then((elenco) => {
         if (superata) return;
-        setConteggioPartecipazioni({ chiave: chiaveArtista, conto });
         const suo = elenco.find((a) => a.name === nomeAperto);
         setArtistaAperto((prima) => {
           if (prima === null || prima.name !== nomeAperto) return prima;
@@ -1248,11 +1268,14 @@ export function App() {
    * tre elenchi un «togli una riga» non ce l'hanno, perché quanti brani abbia
    * davvero un album lo sa solo il nucleo — la finestra ne vede una pagina.
    */
-  const ricaricaContorno = useCallback(() => {
+  const ricaricaContorno = useCallback((opzioni?: { senzaArtista?: boolean }) => {
     ricaricaAlbum();
     // L'artista aperto: i suoi numeri sono la lunghezza dei suoi elenchi, e un
-    // brano che se ne va li cambia (`giroArtista`).
-    setGiroArtista((giro) => giro + 1);
+    // brano che se ne va li cambia (`giroArtista`). Non per la lettura del
+    // catalogo di un dispositivo che il filtro non vede (`senzaArtista`): rileggeva
+    // l'elenco intero degli artisti ogni 3 s per numeri che non potevano cambiare
+    // (S9-3).
+    if (!opzioni?.senzaArtista) setGiroArtista((giro) => giro + 1);
     // Gli artisti si rileggono subito se la vista è aperta, entrandoci se no.
     invalidaArtisti();
     // La Home dopo una scansione o dei brani scaricati: i suoi ripiani sono
@@ -1262,10 +1285,13 @@ export function App() {
     if (vista === "home") rileggiCasa();
   }, [ricaricaAlbum, invalidaArtisti, vista, rileggiCasa]);
 
-  const caricaVista = useCallback(() => {
-    ricaricaBrani();
-    ricaricaContorno();
-  }, [ricaricaBrani, ricaricaContorno]);
+  const caricaVista = useCallback(
+    (opzioni?: { senzaArtista?: boolean }) => {
+      ricaricaBrani();
+      ricaricaContorno(opzioni);
+    },
+    [ricaricaBrani, ricaricaContorno],
+  );
 
   /**
    * Rilegge la libreria dopo un cambiamento venuto dal nucleo: una volta per
@@ -1284,20 +1310,37 @@ export function App() {
    * quello del disegno in cui la finestra si è aperta.
    */
   const ricaricaDalNucleo = useRef(() => {});
+  /** Perché si rilegge, nella raffica in corso: vedi `causeDiRilettura`. */
+  const cause = useRef(causeDiRilettura());
   useEffect(() => {
     ricaricaDalNucleo.current = () => {
+      // Se ogni causa della raffica è la lettura di un catalogo che il filtro non
+      // vede, i numeri dell'artista aperto non possono essere cambiati (S9-3).
+      const senzaArtista = !cause.current.preleva();
       // `rileggi` e non `ricarica`: la rilettura nata da un evento toglie solo
       // il guasto messo dalla libreria. Una scansione a mano fallita manda
       // `cartelle:cambiate` e poi l'errore, e con `ricarica` la sua fascia
       // spariva cinquanta millesimi dopo. Vedi `dopoLaLettura`.
       void rileggi();
-      caricaVista();
+      caricaVista({ senzaArtista });
     };
   });
   const [ricaricaAccorpata] = useState(() =>
     accorpa(() => ricaricaDalNucleo.current(), ACCORPA_RICARICHE_MS),
   );
   useEffect(() => () => ricaricaAccorpata.butta(), [ricaricaAccorpata]);
+  /**
+   * Chiede la rilettura accorpata, dicendo se la causa può cambiare quel che il
+   * filtro mostra: tutte tranne la lettura del catalogo di un dispositivo che il
+   * filtro non contiene.
+   */
+  const chiediRilettura = useCallback(
+    (riguardaIlFiltro: boolean) => {
+      cause.current.aggiungi(riguardaIlFiltro);
+      ricaricaAccorpata.chiama();
+    },
+    [ricaricaAccorpata],
+  );
 
   /**
    * I brani scaricati sono entrati in libreria.
@@ -1312,7 +1355,7 @@ export function App() {
    * quanti brani sono entrati, ed è qui che andrebbe una notizia per i
    * download, se un giorno la si vorrà.
    */
-  useAscolto("scarico:in_libreria", () => ricaricaAccorpata.chiama());
+  useAscolto("scarico:in_libreria", () => chiediRilettura(true));
 
   /*
    * La libreria è cambiata sotto: una scansione — anche quella che parte da
@@ -1328,7 +1371,7 @@ export function App() {
    * cose per conto suo e non passa di qui: là la barra resta finché la
    * libreria non è riletta, e quella rilettura `scansiona` la deve aspettare.
    */
-  useAscolto("cartelle:cambiate", () => ricaricaAccorpata.chiama());
+  useAscolto("cartelle:cambiate", () => chiediRilettura(true));
 
   /*
    * Il catalogo di un dispositivo collegato sta entrando in libreria (o ha
@@ -1346,7 +1389,9 @@ export function App() {
       const adesso = Date.now();
       if (rileggereDopo(prima, nuovo, adesso, ultimaRilettura.current)) {
         ultimaRilettura.current = adesso;
-        ricaricaAccorpata.chiama();
+        // Sotto «Questo dispositivo», o il filtro di un altro, il catalogo che
+        // arriva non cambia le righe che si vedono, né i numeri dell'artista.
+        chiediRilettura(origineVedeIlDispositivo(origine, nuovo.dispositivo));
       }
     },
     true,
@@ -5810,7 +5855,7 @@ export function App() {
         <DomandaSpecchio
           onErrore={segnalaErrore}
           onNotizia={setNotizia}
-          onRilegge={() => ricaricaAccorpata.chiama()}
+          onRilegge={() => chiediRilettura(true)}
         />
       </div>
 

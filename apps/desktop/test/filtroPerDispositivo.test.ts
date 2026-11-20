@@ -17,6 +17,7 @@ import {
   origineConChiavi,
   origineDi,
   origineValida,
+  origineVedeIlDispositivo,
   vistaPerIlFiltro,
   perIlNucleo,
   pilloleOrigine,
@@ -86,6 +87,13 @@ test("ogni origine ha la sua chiave, e due origini uguali si riconoscono", () =>
   assert.ok(ugualiOrigini(origineDi(PC), origineDi(PC)));
   assert.ok(!ugualiOrigini(origineDi(PC), origineDi(TELEFONO)));
   assert.ok(!ugualiOrigini(TUTTI, LOCALE));
+});
+
+test("S9-3: quale filtro vede le righe di un dispositivo che sta mandando il catalogo", () => {
+  assert.ok(origineVedeIlDispositivo(TUTTI, PC), "«Tutti» le vede tutte");
+  assert.ok(!origineVedeIlDispositivo(LOCALE, PC), "«Questo dispositivo» non ha righe di un altro");
+  assert.ok(origineVedeIlDispositivo(origineDi(PC), PC));
+  assert.ok(!origineVedeIlDispositivo(origineDi(TELEFONO), PC), "il filtro di un altro dispositivo no");
 });
 
 test("senza dispositivi collegati non ci sono pillole: due nomi per la stessa cosa", () => {
