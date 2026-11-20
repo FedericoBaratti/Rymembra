@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import type {
+  AvanzamentoSpecchio,
   DispositivoLontano,
   DispositivoSincronia,
   FidatoInsieme,
@@ -21,6 +22,7 @@ import {
   conIlSiDeiDatiMobili,
   gestoLontano,
   annullatoDaQui,
+  annunciDelloSpecchio,
   causeDiRilettura,
   chiaveDelTestoErrore,
   frasiDelDimentica,
@@ -465,5 +467,75 @@ test("S2-2: l'anteprima di «Dimentica» dice che la cronologia dei brani solo d
     assert.ok(testi["devices.mirror.forget.history"], `${lingua}: manca la frase`);
     // Il sottotitolo non si legge più come una rassicurazione sulla cronologia.
     assert.doesNotMatch(testi["devices.forget.sub"] ?? "", /Gli ascolti già mandati restano|Listens already sent stay/, lingua);
+  }
+});
+
+// ── S9-11: le strisce non sono regioni vive con un contatore dentro ─────────
+
+function passo(dispositivo: string, campi: Partial<AvanzamentoSpecchio> = {}): AvanzamentoSpecchio {
+  return {
+    dispositivo,
+    fase: "leggo",
+    fatti: 0,
+    totali: 50_000,
+    righe: 0,
+    inAttesa: 0,
+    ultimoMs: null,
+    errore: null,
+    ...campi,
+  };
+}
+
+test("S9-11: la lettura di un catalogo si annuncia all'inizio e alla fine, non a ogni passo", () => {
+  // Il difetto: `role="status"` su un testo con «12.000/50.000», e un
+  // `lontano:specchio` a ogni passo del catalogo: per i minuti della prima
+  // lettura un lettore di schermo rileggeva il testo intero a ogni cambio. Si
+  // annuncia il passaggio, non lo stato (`Annuncio.tsx`).
+  const prima = { pc: passo("pc", { fatti: 0 }) };
+  assert.deepEqual(annunciDelloSpecchio({}, prima), [{ tipo: "inizio", dispositivo: "pc" }]);
+  // I passi in mezzo non dicono niente.
+  assert.deepEqual(annunciDelloSpecchio(prima, { pc: passo("pc", { fatti: 12_000 }) }), []);
+  // Finita: si dice, e una volta.
+  const fine = { pc: passo("pc", { fase: "fine", fatti: 50_000, righe: 50_000 }) };
+  assert.deepEqual(annunciDelloSpecchio(prima, fine), [{ tipo: "fine", dispositivo: "pc" }]);
+  assert.deepEqual(annunciDelloSpecchio(fine, fine), []);
+  // Interrotta o non supportata: non «letta» (la dice la sua frase, S9-12).
+  assert.deepEqual(annunciDelloSpecchio(prima, { pc: passo("pc", { fase: "errore", errore: "x" }) }), []);
+  // Due dispositivi: ognuno il suo.
+  assert.deepEqual(
+    annunciDelloSpecchio(
+      { a: passo("a"), b: passo("b", { fase: "fine" }) },
+      { a: passo("a", { fase: "fine" }), b: passo("b") },
+    ),
+    [
+      { tipo: "fine", dispositivo: "a" },
+      { tipo: "inizio", dispositivo: "b" },
+    ],
+  );
+});
+
+test("S9-11: nessun role=\"status\" sopra un testo che porta un conteggio", () => {
+  const striscia = readFileSync(new URL("../src/parti/StrisciaSpecchio.tsx", import.meta.url), "utf8");
+  // L'unica regione viva è quella montata sempre e vuota, col testo dell'annuncio.
+  const regioni = [...striscia.matchAll(/role="status"/g)];
+  assert.equal(regioni.length, 1, "una regione viva sola");
+  const annuncio = striscia.slice(striscia.indexOf("function AnnuncioSpecchio"), striscia.indexOf("export function StrisciaSpecchio"));
+  assert.match(annuncio, /role="status"/);
+  assert.match(annuncio, /className="solo-lettori"/);
+  // La striscia dello scarico (`percento`, ogni 2 MiB) e quella della lettura
+  // (`fatti`/`totali`) non lo sono.
+  const scarico = striscia.slice(striscia.indexOf("export function StrisciaScarico"));
+  assert.doesNotMatch(scarico, /role="status"/);
+  const lettura = striscia.slice(striscia.indexOf("export function StrisciaSpecchio"), striscia.indexOf("/**\n * La striscia di «Scarica qui»"));
+  assert.doesNotMatch(lettura, /role="status"/);
+  // Le due frasi dell'annuncio ci sono in italiano e in inglese, senza segnaposto di conteggio.
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    for (const chiave of ["devices.mirror.announce.start", "devices.mirror.announce.end"]) {
+      assert.ok(testi[chiave], `${lingua}: manca ${chiave}`);
+      assert.doesNotMatch(testi[chiave] ?? "", /\{fatti\}|\{totali\}/, `${lingua}: ${chiave} ha un conteggio`);
+    }
   }
 });

@@ -659,6 +659,37 @@ export function inLettura(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio
   return Object.values(avanzamenti).filter((a) => a.fase === "leggo");
 }
 
+/** Una lettura di catalogo che comincia o finisce, da dire a chi ascolta lo schermo. */
+export interface AnnuncioDelloSpecchio {
+  tipo: "inizio" | "fine";
+  dispositivo: string;
+}
+
+/**
+ * Quel che va detto passando da `prima` ad `adesso`: le letture cominciate e
+ * quelle finite bene.
+ *
+ * La striscia «Leggo la libreria di “PC”… 12.000/50.000» era una regione viva con
+ * un contatore dentro, e il catalogo manda un passo ogni pochi secondi (e lo
+ * scarico uno ogni 2 MiB): un lettore di schermo rileggeva il testo intero a ogni
+ * cambio, per i minuti della prima lettura. Si annuncia il passaggio, non lo
+ * stato (`Annuncio.tsx`, `AnnuncioScansione.tsx`); chi vuole il punto guarda la
+ * striscia. Una lettura che si interrompe (`errore`) non è «letta», e qui non si
+ * dice.
+ */
+export function annunciDelloSpecchio(
+  prima: AvanzamentiSpecchio,
+  adesso: AvanzamentiSpecchio,
+): AnnuncioDelloSpecchio[] {
+  const fuori: AnnuncioDelloSpecchio[] = [];
+  for (const a of Object.values(adesso)) {
+    const era = prima[a.dispositivo]?.fase;
+    if (a.fase === "leggo" && era !== "leggo") fuori.push({ tipo: "inizio", dispositivo: a.dispositivo });
+    else if (a.fase === "fine" && era === "leggo") fuori.push({ tipo: "fine", dispositivo: a.dispositivo });
+  }
+  return fuori;
+}
+
 /** Quelli che non sanno servire il catalogo: una versione di Rymembra di prima. */
 export function nonSupportati(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio[] {
   return Object.values(avanzamenti).filter((a) => a.fase === "nonSupportato");

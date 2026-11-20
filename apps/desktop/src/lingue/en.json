@@ -1628,6 +1628,8 @@
   "devices.mirror.open": "Show in library",
   "devices.mirror.reading": "Reading the library of “{nome}”… {fatti}/{totali}",
   "devices.mirror.reading.sub": "You can use the library in the meantime: tracks appear as they arrive.",
+  "devices.mirror.announce.start": "Reading the library of “{nome}”",
+  "devices.mirror.announce.end": "Library of “{nome}” read",
   "devices.mirror.unsupported": "Update Rymembra on “{nome}” to see its music",
   "devices.mirror.unsupported.sub": "That device runs a version of Rymembra that can’t send its library. It stays linked: as soon as you update it, its music shows up here.",
   "devices.mirror.confirm.title": "“{nome}” no longer shares {brani}",
