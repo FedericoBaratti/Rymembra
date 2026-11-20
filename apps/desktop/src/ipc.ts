@@ -13,6 +13,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
+import { conIlSiDeiDatiMobili } from "./lontano";
 import type { ErroreIpc } from "./ipc/errori";
 import type {
   AnteprimaDimentica,
@@ -772,17 +773,38 @@ export const ipc = {
   // Nessuno di questi comandi restituisce lo stato: lo mandano tutti
   // sull'evento `riproduzione:stato`, e averne una sola sorgente è ciò che
   // impedisce alla finestra di credersi in pausa mentre il motore suona.
+  //
+  // I comandi che possono aprire una riga di un altro dispositivo — `suona`,
+  // `radio`, `riprendi`, `alterna`, `prossimo`, `precedente`, `codaVai` — passano
+  // da `conIlSiDeiDatiMobili`: sui dati mobili con «Chiedi» il nucleo risponde
+  // `lontano.reteAConsumo` e la finestrella «Usare i dati mobili?» chiede il sì,
+  // da qualunque gesto sia partito, invece di un errore che dice «Solo Wi-Fi»
+  // a chi non l'ha scelto (S11-4). Qui e non in venti chiamanti: è il confine
+  // con il nucleo. `prossimo`, `precedente` e `alterna` hanno già spostato la
+  // coda sul brano che non si apre, e dopo il sì si rifà `riprendi`.
   suona: (brani: number[], indice: number) =>
-    invoke<void>("suona", { brani, indice }),
+    conIlSiDeiDatiMobili(() => invoke<void>("suona", { brani, indice })),
   // La coda la costruisce il nucleo: sono trenta identificativi che la finestra
   // non guarda mai, e farseli mandare per rimandarli indietro sarebbe un
   // viaggio dell'IPC per niente.
-  radio: (brano: number) => invoke<void>("radio", { brano }),
+  radio: (brano: number) => conIlSiDeiDatiMobili(() => invoke<void>("radio", { brano })),
   pausa: () => invoke<void>("pausa"),
-  riprendi: () => invoke<void>("riprendi"),
-  alterna: () => invoke<void>("alterna"),
-  prossimo: () => invoke<void>("prossimo"),
-  precedente: () => invoke<void>("precedente"),
+  riprendi: () => conIlSiDeiDatiMobili(() => invoke<void>("riprendi")),
+  alterna: () =>
+    conIlSiDeiDatiMobili(
+      () => invoke<void>("alterna"),
+      () => invoke<void>("riprendi"),
+    ),
+  prossimo: () =>
+    conIlSiDeiDatiMobili(
+      () => invoke<void>("prossimo"),
+      () => invoke<void>("riprendi"),
+    ),
+  precedente: () =>
+    conIlSiDeiDatiMobili(
+      () => invoke<void>("precedente"),
+      () => invoke<void>("riprendi"),
+    ),
   vaiA: (ms: number) => invoke<void>("vai_a", { ms }),
   volume: (volume: number, muto: boolean) =>
     invoke<void>("volume", { volume, muto }),
@@ -928,7 +950,8 @@ export const ipc = {
   // già arrivato, un «Riproduci dopo» di chi ascolta insieme — a quella
   // posizione c'è un altro brano, e il nucleo non fa niente. Lo stato che
   // torna ridisegna la coda vera.
-  codaVai: (indice: number, brano: number) => invoke<void>("coda_vai", { indice, brano }),
+  codaVai: (indice: number, brano: number) =>
+    conIlSiDeiDatiMobili(() => invoke<void>("coda_vai", { indice, brano })),
   codaTogli: (indice: number, brano: number) => invoke<void>("coda_togli", { indice, brano }),
   codaRiordina: (da: number, a: number, brano: number) =>
     invoke<void>("coda_riordina", { da, a, brano }),

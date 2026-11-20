@@ -72,6 +72,7 @@ import {
   archivioScarico,
   archivioSpecchio,
   causeDiRilettura,
+  chiaveDelTestoErrore,
   chiedeConfermaPerLoScarico,
   conAvanzamento,
   conIlSiDeiDatiMobili,
@@ -1427,7 +1428,7 @@ export function App() {
       const che = titolo
         ? t("playback.skipped", { titolo })
         : t("playback.skipped.unknown");
-      const perche = tSe(`errors.${codice}`, "");
+      const perche = tSe(chiaveDelTestoErrore(`errors.${codice}`), "");
       setNotizia(perche === "" ? che : `${che} ${perche}`);
     },
   );
@@ -2121,8 +2122,9 @@ export function App() {
       }
       const ids = brani.map((b) => b.id);
       // Una riga di un altro dispositivo sui dati mobili, con «Chiedi»: il gesto
-      // aspetta il sì della finestrella invece di fallire.
-      await conIlSiDeiDatiMobili(() => ipc.suona(ids, da));
+      // aspetta il sì della finestrella invece di fallire — lo fa `ipc.suona`,
+      // come ogni comando che apre una riga (S11-4).
+      await ipc.suona(ids, da);
     },
     [avvisaNonRaggiungibile],
   );
@@ -3025,9 +3027,7 @@ export function App() {
             premuto !== undefined && ids[indice] !== premuto.id
               ? ids.indexOf(premuto.id)
               : indice;
-          return ids.length > 0
-            ? conIlSiDeiDatiMobili(() => ipc.suona(ids, Math.max(dove, 0)))
-            : undefined;
+          return ids.length > 0 ? ipc.suona(ids, Math.max(dove, 0)) : undefined;
         })
         .catch(segnalaErrore);
     },

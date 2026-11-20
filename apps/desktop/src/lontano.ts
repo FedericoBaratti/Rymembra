@@ -738,12 +738,44 @@ export function rileggereDopo(
  * Come [`gestoLontano`], ma gli altri errori **salgono**: chi suona una lista
  * dalla libreria (`suonaDa`) li lascia a chi l'ha chiamata, che li dice con la
  * sua fascia. Con «No» sui dati mobili l'errore sale e dice perché.
+ *
+ * `rifai` è quel che si fa dopo il sì, e di serie è lo stesso gesto. Non lo è
+ * per i gesti che spostano la coda prima di aprire il brano — «avanti»,
+ * «indietro» — né per «play/pausa» dopo un fallimento: il brano non si è aperto
+ * ma la coda è già dove si voleva, e il motore è fermo (`avvio_fallito`). Rifarli
+ * saltava un altro brano, o metteva in pausa; lì si rifà `riprendi`, che apre
+ * quello raggiunto.
  */
-export async function conIlSiDeiDatiMobili(fai: () => Promise<void>): Promise<void> {
+export async function conIlSiDeiDatiMobili(
+  fai: () => Promise<void>,
+  rifai: () => Promise<void> = fai,
+): Promise<void> {
   try {
     await fai();
   } catch (errore) {
     if (!chiedeIDatiMobili(errore, archivioLontano.leggi())) throw errore;
-    archivioDatiMobili.scrivi(() => fai);
+    archivioDatiMobili.scrivi(() => rifai);
   }
+}
+
+/**
+ * La chiave della frase di un errore, scelta per chi la legge.
+ *
+ * Il nucleo manda un codice solo, `lontano.reteAConsumo`, per «sei sui dati
+ * mobili e non si può»: con «Solo Wi-Fi» la frase dice proprio quello, ma con
+ * «Chiedi» sarebbe una bugia — l'impostazione non è «Solo Wi-Fi» — e chi la legge
+ * non ha nessuna domanda a cui rispondere. Con «Chiedi» l'errore arriva da un
+ * gesto che la finestra non può chiedere (la notifica, i tasti, l'auto, il
+ * brano dopo), e la frase dice di aprire Rymembra e riprovare da lì (S11-4).
+ *
+ * `stato` è quello del pannello; di serie quello di adesso.
+ */
+export function chiaveDelTestoErrore(
+  chiave: string,
+  stato: StatoLontano | null = archivioLontano.leggi(),
+): string {
+  if (chiave === "errors.lontano.reteAConsumo" && stato?.datiMobili === "chiedi") {
+    return "errors.lontano.reteAConsumo.chiedi";
+  }
+  return chiave;
 }

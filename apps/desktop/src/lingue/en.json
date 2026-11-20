@@ -524,6 +524,7 @@
   "errors.lontano.fileCambiato": "This track’s file is no longer on the other device, or it changed while you were listening. Try again in a moment: if it keeps happening, the track is gone from there.",
   "errors.lontano.nonQui": "This track is on another device: you can’t edit or delete its file from here.",
   "errors.lontano.reteAConsumo": "You are on mobile data and “Wi-Fi only” is on: tracks from your other devices, and “Listen together” over the internet, wait for Wi-Fi.",
+  "errors.lontano.reteAConsumo.chiedi": "You’re on mobile data and tracks from your other devices need your OK first, which can’t be asked from here: open Rymembra and try again from there, and it will ask whether to use mobile data. Or wait for Wi-Fi.",
   "errors.lontano.spento": "The internet link is off: turn on “Reachable from the internet” in Settings › Devices.",
   "errors.lontano.protocollo": "The other device answered in a way this version of Rymembra does not understand. Update Rymembra on both.",
   "errors.lontano.identitaPersa": "This PC’s identity for the internet link cannot be read from Windows Credential Manager. Without it, your other devices would not recognize it. Restart Rymembra; if it keeps happening, restart Windows.",

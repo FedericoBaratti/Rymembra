@@ -1,5 +1,6 @@
 /** Parte del contratto con il nucleo: l'errore come arriva, e come si legge. La riesporta `ipc.ts`: si importa da lì. */
 import { tSe } from "../lingue";
+import { chiaveDelTestoErrore } from "../lontano";
 
 /** Un errore, come lo manda il nucleo. */
 export interface ErroreIpc {
@@ -72,7 +73,9 @@ export function eRitentabile(value: unknown): boolean {
  */
 export function testoErrore(value: unknown): string {
   if (eErroreIpc(value)) {
-    return tSe(value.i18nKey, value.serviceText ?? value.cause ?? value.code, valoriDi(value));
+    // La chiave è quella del codice, tranne dove la frase dipende da una scelta di
+    // chi legge: «sei sui dati mobili» con «Chiedi» non è «Solo Wi-Fi» (S11-4).
+    return tSe(chiaveDelTestoErrore(value.i18nKey), value.serviceText ?? value.cause ?? value.code, valoriDi(value));
   }
   return value instanceof Error ? value.message : String(value);
 }

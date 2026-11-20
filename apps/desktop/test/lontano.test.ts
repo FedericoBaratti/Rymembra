@@ -5,6 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type {
   DispositivoLontano,
@@ -21,6 +22,7 @@ import {
   gestoLontano,
   annullatoDaQui,
   causeDiRilettura,
+  chiaveDelTestoErrore,
   linkDa,
   ordinaDispositivi,
   qrScaduto,
@@ -376,4 +378,54 @@ test("S9-3: le riletture accorpate dicono se qualcuna riguarda il filtro", () =>
   // Ogni raffica parte da zero: la causa di prima non si trascina.
   cause.aggiungi(false);
   assert.equal(cause.preleva(), false);
+});
+
+// ── S11-4: «Chiedi» si chiede da ogni gesto, e l'errore non mente ───────────
+
+test("S11-4: dopo il sì si rifà quel che si dice, non per forza lo stesso gesto", async () => {
+  // «Avanti» ha già spostato la coda sul brano che non si apre: rifare «avanti»
+  // dopo il sì lo salterebbe. Chi chiama dice cosa rifare (`riprendi`).
+  const prima = archivioLontano.leggi();
+  archivioLontano.scrivi(stato({ datiMobili: "chiedi" }));
+  try {
+    const fatti: string[] = [];
+    await conIlSiDeiDatiMobili(
+      async () => {
+        fatti.push("avanti");
+        throw { code: "lontano.reteAConsumo", params: {} };
+      },
+      async () => {
+        fatti.push("riprendi");
+      },
+    );
+    assert.deepEqual(fatti, ["avanti"], "il gesto è in attesa del sì");
+    await archivioDatiMobili.leggi()?.();
+    assert.deepEqual(fatti, ["avanti", "riprendi"], "dopo il sì parte `riprendi`, non un secondo «avanti»");
+  } finally {
+    archivioLontano.scrivi(prima);
+    archivioDatiMobili.scrivi(null);
+  }
+});
+
+test("S11-4: con «Chiedi» la frase dell'errore non dice «Solo Wi-Fi è attivo»", () => {
+  const chiave = "errors.lontano.reteAConsumo";
+  // «Chiedi»: la frase che dice che serve il sì e dove darlo.
+  assert.equal(chiaveDelTestoErrore(chiave, stato({ datiMobili: "chiedi" })), `${chiave}.chiedi`);
+  // «No» è la frase di sempre; senza lo stato non si indovina.
+  assert.equal(chiaveDelTestoErrore(chiave, stato({ datiMobili: "no" })), chiave);
+  assert.equal(chiaveDelTestoErrore(chiave, null), chiave);
+  // Gli altri errori restano com'erano.
+  assert.equal(
+    chiaveDelTestoErrore("errors.lontano.spento", stato({ datiMobili: "chiedi" })),
+    "errors.lontano.spento",
+  );
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    const chiedi = testi[`${chiave}.chiedi`];
+    assert.ok(chiedi, `${lingua}: manca la frase per «Chiedi»`);
+    assert.doesNotMatch(chiedi, /Solo Wi-Fi|Wi-Fi only/, `${lingua}: dice un'impostazione che non è quella`);
+    assert.match(testi[chiave] ?? "", /Solo Wi-Fi|Wi-Fi only/, `${lingua}: «No» dice ancora il suo nome`);
+  }
 });
