@@ -87,29 +87,96 @@ test("la chiave dice di quale elenco è la selezione", () => {
   const playlist = { id: 3, updatedAt: 17 } as Playlist;
   const album = { albumKey: "a|b" } as Album;
   const artista = { name: "Nina" } as Artista;
-  // Le viste tenute montate: i Brani con l'ordinamento, le altre per nome.
-  assert.equal(chiaveDellaSelezione({ tipo: "libreria", vista: "brani" }, "brani", "titolo", ""), "brani:titolo");
-  assert.equal(chiaveDellaSelezione({ tipo: "libreria", vista: "album" }, "album", "titolo", ""), "album");
+  // Le viste tenute montate: i Brani con l'ordinamento, le altre per nome; e
+  // tutte con il filtro per dispositivo (S9-1).
+  assert.equal(
+    chiaveDellaSelezione({ tipo: "libreria", vista: "brani" }, "brani", "titolo", "", "tutti"),
+    "brani:titolo:tutti",
+  );
+  assert.equal(
+    chiaveDellaSelezione({ tipo: "libreria", vista: "album" }, "album", "titolo", "", "tutti"),
+    "album:tutti",
+  );
   // Le altre pagine, ciascuna con quel che la distingue.
-  assert.equal(chiaveDellaSelezione({ tipo: "ricerca" }, null, "titolo", "sub"), "ricerca:sub");
-  assert.equal(chiaveDellaSelezione({ tipo: "playlist", playlist }, null, "titolo", ""), "playlist:3:17");
-  assert.equal(chiaveDellaSelezione({ tipo: "album", album }, null, "titolo", ""), "album:a|b");
-  // La pagina di un artista ha i suoi brani da scegliere: la chiave porta quel
-  // che App passa come ordine — l'ordinamento e il filtro per dispositivo —,
-  // perché le posizioni ricordate sono di quell'elenco e di nessun altro.
-  assert.equal(chiaveDellaSelezione({ tipo: "artista", artista }, null, "titolo:tutti", ""), "artista:Nina:titolo:tutti");
+  assert.equal(chiaveDellaSelezione({ tipo: "ricerca" }, null, "titolo", "sub", "tutti"), "ricerca:tutti:sub");
+  assert.equal(chiaveDellaSelezione({ tipo: "playlist", playlist }, null, "titolo", "", "tutti"), "playlist:3:17");
+  assert.equal(chiaveDellaSelezione({ tipo: "album", album }, null, "titolo", "", "tutti"), "album:a|b");
+  // La pagina di un artista ha i suoi brani da scegliere: la chiave porta
+  // l'ordinamento dei suoi brani e il filtro per dispositivo, perché le
+  // posizioni ricordate sono di quell'elenco e di nessun altro.
+  assert.equal(
+    chiaveDellaSelezione({ tipo: "artista", artista }, null, "titolo", "", "tutti"),
+    "artista:Nina:titolo:tutti",
+  );
   assert.notEqual(
-    chiaveDellaSelezione({ tipo: "artista", artista }, null, "anno:tutti", ""),
-    chiaveDellaSelezione({ tipo: "artista", artista }, null, "titolo:tutti", ""),
+    chiaveDellaSelezione({ tipo: "artista", artista }, null, "anno", "", "tutti"),
+    chiaveDellaSelezione({ tipo: "artista", artista }, null, "titolo", "", "tutti"),
     "un altro ordinamento è un'altra selezione",
   );
   assert.notEqual(
-    chiaveDellaSelezione({ tipo: "artista", artista }, null, "anno:locale", ""),
-    chiaveDellaSelezione({ tipo: "artista", artista }, null, "anno:tutti", ""),
+    chiaveDellaSelezione({ tipo: "artista", artista }, null, "anno", "", "locale"),
+    chiaveDellaSelezione({ tipo: "artista", artista }, null, "anno", "", "tutti"),
     "un altro filtro è un'altra selezione",
   );
-  assert.equal(chiaveDellaSelezione({ tipo: "libreria", vista: "cartelle" }, null, "titolo", ""), "cartelle");
-  assert.equal(chiaveDellaSelezione({ tipo: "home" }, null, "titolo", ""), "home");
+  assert.equal(chiaveDellaSelezione({ tipo: "libreria", vista: "cartelle" }, null, "titolo", "", "tutti"), "cartelle");
+  assert.equal(chiaveDellaSelezione({ tipo: "home" }, null, "titolo", "", "tutti"), "home");
+});
+
+// ── S9-1: un altro filtro per dispositivo è un'altra selezione ─────────────
+
+test("S9-1: Brani, Preferiti, Album, Artisti e Ricerca non tengono la selezione di un altro filtro", () => {
+  // Il difetto: Ctrl+A in «Tutti» (50 000 id), poi «Questo dispositivo». La
+  // chiave restava `brani:scaffale`, la selezione non si azzerava, e la barra
+  // diceva ancora «50 000 selezionati» sopra una lista da 12 000 righe: i
+  // comandi agivano su id che la lista non mostrava più.
+  const viste = ["brani", "preferiti", "album", "artisti"] as const;
+  for (const v of viste) {
+    const chiave = (origine: string) =>
+      chiaveDellaSelezione({ tipo: "libreria", vista: v }, v, "scaffale", "", origine);
+    assert.notEqual(chiave("tutti"), chiave("locale"), `${v}: Tutti e Questo dispositivo`);
+    assert.notEqual(chiave("tutti"), chiave("d:abc"), `${v}: Tutti e un PC`);
+    assert.notEqual(chiave("d:abc"), chiave("d:xyz"), `${v}: due PC`);
+  }
+  const ricerca = (origine: string) =>
+    chiaveDellaSelezione({ tipo: "ricerca" }, null, "scaffale", "sub", origine);
+  assert.notEqual(ricerca("tutti"), ricerca("locale"), "ricerca: la ricerca ha il filtro");
+  // Nessun numero che cambia da sé (totali, conti) nella chiave: durante la
+  // prima lettura di un catalogo le liste si riordinano, e la selezione deve
+  // restare dov'è. La chiave è fatta solo di cose che sceglie l'utente.
+  assert.equal(
+    chiaveDellaSelezione({ tipo: "libreria", vista: "brani" }, "brani", "scaffale", "", "tutti"),
+    chiaveDellaSelezione({ tipo: "libreria", vista: "brani" }, "brani", "scaffale", "", "tutti"),
+  );
+});
+
+test("S9-1: App passa il filtro alla chiave della selezione, per ogni pagina", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const chiamata = app.slice(app.indexOf("chiave: chiaveDellaSelezione("));
+  const fine = chiamata.indexOf("),\n");
+  assert.ok(fine > 0);
+  // `chiaveOrigine` è l'ultimo argomento: lo stesso filtro che dà la chiave alle liste rade.
+  assert.match(chiamata.slice(0, fine), /chiaveOrigine,?\s*$/);
+  // E non incollato all'ordinamento dell'artista, dove si vedeva solo per lui.
+  assert.doesNotMatch(chiamata.slice(0, fine), /\$\{ordineArtista\}:\$\{chiaveOrigine\}/);
+});
+
+// ── S9-7: cambiando il filtro lo scorrimento torna in cima ─────────────────
+
+test("S9-7: la chiave di ogni elenco tenuto porta il filtro, e lo scorrimento torna in cima", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const tenuta = app.slice(app.indexOf("const disegnaTenuta"), app.indexOf("const corpo = () =>"));
+  // Brani e Preferiti: nello stesso elenco, l'ordinamento (solo i Brani) e il filtro.
+  assert.match(tenuta, /chiave=\{v === "brani" \? `\$\{ordine\}:\$\{chiaveOrigine\}` : chiaveOrigine\}/);
+  // Album e Artisti: la griglia riceve la chiave.
+  const album = tenuta.slice(tenuta.indexOf("<GrigliaAlbum"), tenuta.indexOf("<Artisti"));
+  assert.match(album, /chiave=\{chiaveOrigine\}/);
+  const artisti = tenuta.slice(tenuta.indexOf("<Artisti"));
+  assert.match(artisti, /chiave=\{chiaveOrigine\}/);
+  // La griglia la gira a `useVirtuale`, che con una chiave nuova torna in cima.
+  const libreria = readFileSync(new URL("../src/schermate/Libreria.tsx", import.meta.url), "utf8");
+  assert.match(libreria.slice(libreria.indexOf("export function useGrigliaVirtuale")), /chiave,?\s*\}\);/);
+  const schermataArtisti = readFileSync(new URL("../src/schermate/Artisti.tsx", import.meta.url), "utf8");
+  assert.match(schermataArtisti, /useGrigliaVirtuale\(\{[\s\S]*?chiave,[\s\S]*?\}\)/);
 });
 
 test("i selezionati nell'ordine della vista, piena o rada", () => {

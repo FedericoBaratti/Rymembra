@@ -33,6 +33,7 @@ import { dataOraBreve } from "../formato";
 import { MASSIMO_NOME, nomePulito } from "../insieme";
 import {
   ipc,
+  type AnteprimaDimentica,
   type DatiMobili,
   type DispositivoLontano,
   type DispositivoSincronia,
@@ -57,6 +58,7 @@ import {
   eTelefono,
   eventoDelPannello,
   fraseScaricoFinito,
+  frasiDelDimentica,
   FINESTRA_COLLEGATO_MS,
   linkDa,
   percorsoQr,
@@ -307,7 +309,13 @@ export function LontanoInApp({
   return (
     <>
       {richiesta !== null && (
+        // Una finestrella per richiesta (`key`): con A che parte e B che subentra
+        // in testa non c'è un disegno senza richiesta in mezzo, e lo stesso
+        // `Dialogo` terrebbe il fuoco sul «Collega» appena premuto. Un secondo
+        // Invio (o un tasto che si ripete) accetterebbe B senza che nessuno abbia
+        // letto nome e impronta. Rifatta, il fuoco torna a «Rifiuta» (S9-4).
         <Dialogo
+          key={richiesta.id}
           titolo={t("devices.request.title")}
           descrizione={t(
             eTelefono(richiesta.piattaforma)
@@ -635,15 +643,15 @@ function RigaDispositivo({
             // spariscono. Se il conto non arriva si chiede lo stesso — dimenticare
             // non dipende da lui — ma si dice che non lo si è potuto fare: tacere
             // direbbe «nessuna playlist perde niente».
-            const chiedi = (perse: number | null) =>
+            //
+            // E la cronologia d'ascolto dei brani che esistono solo su quel
+            // dispositivo, che con le sue righe se ne va (S2-2): `frasiDelDimentica`.
+            const chiedi = (anteprima: AnteprimaDimentica | null) =>
               onDomanda({
                 titolo: t("devices.forget.title", { nome: dispositivo.nome }),
-                descrizione:
-                  perse === null
-                    ? `${t("devices.forget.sub")} ${t("devices.mirror.forget.unknown")}`
-                    : perse > 0
-                      ? `${t("devices.forget.sub")} ${t("devices.mirror.forget.loses", { n: perse })}`
-                      : t("devices.forget.sub"),
+                descrizione: frasiDelDimentica(anteprima)
+                  .map((frase) => t(frase.chiave, frase.valori))
+                  .join(" "),
                 conferma: t("devices.forget"),
                 consenso: true,
                 fai: () => {
@@ -652,7 +660,7 @@ function RigaDispositivo({
               });
             ipc
               .lontanoDimenticaAnteprima(dispositivo.chiave)
-              .then((anteprima) => chiedi(anteprima.playlistChePerdono))
+              .then(chiedi)
               .catch(() => chiedi(null));
           }}
         >

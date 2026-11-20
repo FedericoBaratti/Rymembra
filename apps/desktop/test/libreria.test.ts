@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import type { Avvio, Playlist } from "../src/ipc";
-import { conteggiDi, creaLibreria, type Domande } from "../src/libreria";
+import { conteggiDelFiltro, conteggiDi, creaLibreria, type Domande } from "../src/libreria";
 
 /** Una promessa che si risolve o fallisce quando lo dice il test. */
 function sospesa<T>() {
@@ -130,6 +130,39 @@ test("i conteggi: niente prima di avvio, e le radici per le cartelle", () => {
     cartelle: 2,
     preferiti: 4,
   });
+});
+
+test("S9-6: col filtro per dispositivo la barra e le testate contano quel che si vede", () => {
+  // Il difetto: filtro «Questo dispositivo» sui Brani, la testata diceva
+  // «50.000 in libreria» sopra una lista da 12.000 righe (e un lettore di
+  // schermo leggeva `aria-rowcount` 12.001 contro un numero scritto diverso).
+  // Scelta dell'utente: testate e barra laterale contano il filtrato.
+  const tutti = conteggiDi(avvio(50_000, ["C:/A", "D:/B"]));
+  const filtrati = { tracks: 12_000, albums: 900, artists: 410, liked: 33, durationMs: 0 };
+  // «Tutti»: i numeri di `avvio`, com'era.
+  assert.deepEqual(conteggiDelFiltro(tutti, undefined, false), tutti);
+  assert.deepEqual(conteggiDelFiltro(tutti, filtrati, false), tutti);
+  // Un filtro, coi numeri arrivati: quelli del filtro, e le cartelle restano (non
+  // sono righe di un dispositivo).
+  assert.deepEqual(conteggiDelFiltro(tutti, filtrati, true), {
+    album: 900,
+    artisti: 410,
+    brani: 12_000,
+    cartelle: 2,
+    preferiti: 33,
+  });
+  // Un filtro, numeri non ancora arrivati: nessun numero, e non quelli di «Tutti»,
+  // che sarebbero falsi.
+  assert.deepEqual(conteggiDelFiltro(tutti, undefined, true), { cartelle: 2 });
+});
+
+test("S9-6: la testata e la barra seguono il filtro (cablaggio)", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const da = app.indexOf("{...testaLibreria({");
+  const testata = app.slice(da, app.indexOf("query={query}", da));
+  // I numeri del filtro, non `avvio.numeri`.
+  assert.match(testata, /numeri: numeriDelFiltro,/);
+  assert.match(app, /conteggiDelFiltro\(conteggiDiTutti, numeriDelFiltro, origine\.tipo !== "tutti"\)/);
 });
 
 // ── R21-2: durante la prima scansione i numeri salgono ─────────────────────

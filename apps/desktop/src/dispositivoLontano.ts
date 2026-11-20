@@ -15,7 +15,7 @@ import { dataOraBreve } from "./formato";
 import { dispositivoDellaRiga } from "./ipc/libreria";
 import { t } from "./lingue";
 import { archivioLontano, eTelefono } from "./lontano";
-import { statoDellaRiga, type StatoDellaRiga } from "./origine";
+import { frasePerLaRiga, statoDellaRiga, type StatoDellaRiga } from "./origine";
 
 /**
  * Di quale dispositivo è una riga della libreria e se risponde, o `null` per
@@ -71,9 +71,6 @@ export function sottotitoloDispositivo(
  * viene, o che non risponde.
  */
 export function etichettaDellaRiga(riga: StatoDellaRiga): string {
-  if (riga.nome === "") return t("library.origin.gone");
-  if (riga.inGrazia === true) return t("library.origin.faded", { nome: riga.nome });
-  return riga.spenta
-    ? t("library.origin.offline", { nome: riga.nome })
-    : t("library.origin.from", { nome: riga.nome });
+  const frase = frasePerLaRiga(riga);
+  return t(frase.chiave, frase.valori);
 }

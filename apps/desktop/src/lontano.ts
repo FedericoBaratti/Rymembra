@@ -25,6 +25,7 @@ import { eventiEFotografia } from "./ultima";
 import { dispositivoDellaRiga } from "./ipc/libreria";
 import type { Chiave, Valori } from "./lingue";
 import type {
+  AnteprimaDimentica,
   AnteprimaScarico,
   AvanzamentoSpecchio,
   DispositivoLontano,
@@ -347,6 +348,61 @@ export function percentualeScarico(stato: ScaricoLontano): number {
   return Math.min(100, Math.floor((stato.byte / stato.totale) * 100));
 }
 
+/**
+ * Una cosa alla volta: un lavoro che parte mentre un altro è in corso si scarta.
+ *
+ * Restituisce `true` se il lavoro è partito (e finito), `false` se se n'era già
+ * uno e questo non è partito; un guasto sale a chi ha chiamato e rilascia, così
+ * si può riprovare. Serve a «Scarica qui»: fra il clic e la domanda di conferma
+ * passano uno o tre secondi (le righe in pagina, poi l'anteprima del nucleo), e un
+ * secondo clic apriva una seconda anteprima e, a conferma data, una seconda coda
+ * (S9-9).
+ */
+export function unaAllaVolta(): (lavoro: () => Promise<void>) => Promise<boolean> {
+  let inCorso = false;
+  return async (lavoro) => {
+    if (inCorso) return false;
+    inCorso = true;
+    try {
+      await lavoro();
+      return true;
+    } finally {
+      inCorso = false;
+    }
+  };
+}
+
+/**
+ * Le frasi della domanda «Dimenticare questo dispositivo?», in ordine.
+ *
+ * Dimenticare un dispositivo toglie le sue righe dalla libreria, e con esse — la
+ * cronologia ha la cascata sulle righe — la cronologia d'ascolto di quei brani.
+ * Quella dei brani che hai anche qui passa alla tua copia (lo fa il nucleo); dei
+ * brani che esistono **solo** su quel dispositivo andrà persa, e la domanda lo
+ * dice (S2-2). Senza un numero: l'anteprima non conta ancora gli ascolti, e una
+ * frase che dice quel che resta vero in tutti e due i casi è meglio di una cifra
+ * indovinata. Sul dispositivo del proprietario gli ascolti già mandati restano,
+ * ed è quel che dice `devices.forget.sub`.
+ *
+ * Senza righe non c'è cronologia da perdere e non si dice; senza anteprima — il
+ * conto non è arrivato — si dice lo stesso, e che non si è potuto controllare
+ * quante playlist perdono: tacere direbbe «non si perde niente».
+ */
+export function frasiDelDimentica(
+  anteprima: Pick<AnteprimaDimentica, "righe" | "playlistChePerdono"> | null,
+): { chiave: Chiave; valori: Valori }[] {
+  const frasi: { chiave: Chiave; valori: Valori }[] = [{ chiave: "devices.forget.sub", valori: {} }];
+  if (anteprima === null) {
+    frasi.push({ chiave: "devices.mirror.forget.unknown", valori: {} });
+  } else if (anteprima.playlistChePerdono > 0) {
+    frasi.push({ chiave: "devices.mirror.forget.loses", valori: { n: anteprima.playlistChePerdono } });
+  }
+  if (anteprima === null || anteprima.righe > 0) {
+    frasi.push({ chiave: "devices.mirror.forget.history", valori: {} });
+  }
+  return frasi;
+}
+
 /** Il codice di un errore che dice «sei sui dati mobili, e serve un sì». */
 export const RETE_A_CONSUMO = "lontano.reteAConsumo";
 
@@ -586,27 +642,50 @@ export const archivioSpecchio = creaArchivio<AvanzamentiSpecchio>({});
  * disparte (`lontano:copertina` quando arriva). Un segnaposto che ha ricevuto
  * quel «non c'è» si iscrive qui (`Copertina`) e, a ogni cambio, ci riprova.
  */
-export const archivioCopertine = creaArchivio<number>(0);
+export const archivioCopertine = creaArchivio<ArrivoDiCopertine>({ giro: 0, impronte: new Set() });
+
+/**
+ * Le copertine arrivate nell'ultima raccolta: quante raccolte ci sono state, e
+ * le impronte di quelle dell'ultima. Un segnaposto riprova solo se è la sua
+ * (`riprovaPerLaCopertina`).
+ */
+export interface ArrivoDiCopertine {
+  giro: number;
+  impronte: ReadonlySet<string>;
+}
 
 /** Per quanto si raccolgono gli arrivi prima di dirlo ai segnaposto. */
 export const RITARDO_COPERTINE_MS = 300;
 
 let copertineInAttesa: ReturnType<typeof setTimeout> | undefined;
+let impronteInAttesa = new Set<string>();
 
 /**
- * Una copertina è arrivata (`lontano:copertina`): i segnaposto ci riprovano.
+ * Una copertina è arrivata (`lontano:copertina`, con la sua impronta): i
+ * segnaposto che la aspettano ci riprovano.
  *
  * Gli arrivi si raccolgono — una pagina con duecento righe specchio ne riceve
  * duecento in pochi secondi, e duecento giri di richieste da ogni segnaposto
  * sarebbero lo stesso carico che si voleva togliere — e il conto cambia una volta
- * sola per raccolta.
+ * sola per raccolta. La raccolta porta le impronte: senza, ogni arrivo faceva
+ * riprovare **tutti** i segnaposto in vista — le righe, la griglia degli album, i
+ * mosaici degli artisti: decine di richieste al protocollo ogni 300 ms — anche se
+ * la copertina era una sola e di un'altra riga (S9-15).
  */
-export function copertinaArrivata(): void {
+export function copertinaArrivata(impronta: string): void {
+  impronteInAttesa.add(impronta);
   if (copertineInAttesa !== undefined) return;
   copertineInAttesa = setTimeout(() => {
     copertineInAttesa = undefined;
-    archivioCopertine.scrivi((n) => n + 1);
+    const impronte = impronteInAttesa;
+    impronteInAttesa = new Set();
+    archivioCopertine.scrivi((prima) => ({ giro: prima.giro + 1, impronte }));
   }, RITARDO_COPERTINE_MS);
+}
+
+/** Il segnaposto della copertina `hash` deve riprovare dopo questo arrivo? */
+export function riprovaPerLaCopertina(arrivo: ArrivoDiCopertine, hash: string | null): boolean {
+  return hash !== null && arrivo.impronte.has(hash);
 }
 
 /** Gli avanzamenti con questo in più, o al posto di quello di prima. */
@@ -622,9 +701,105 @@ export function daFotografia(elenco: readonly AvanzamentoSpecchio[]): Avanzament
   return Object.fromEntries(elenco.map((a) => [a.dispositivo, a]));
 }
 
+/**
+ * Gli eventi `lontano:specchio` contro le fotografie (`lontanoSpecchioStato`),
+ * dispositivo per dispositivo.
+ *
+ * La fotografia si chiede all'apertura della finestra e dopo «Togli», e la sua
+ * risposta — calcolata prima — può arrivare **dopo** un evento più nuovo: letta
+ * con `leggo`, ricopriva l'evento `fine` di quel dispositivo, e la striscia
+ * «Leggo la libreria…» restava a schermo fino al prossimo evento, cinque minuti
+ * dopo; `daConfermare` poteva non vedere mai un `inAttesa` (S9-13). È lo schema
+ * di `eventiEFotografia` (`ultima.ts`, quello del pannello), per dispositivo:
+ * un evento di un dispositivo non toglie alla fotografia quel che dice degli
+ * altri, che nessun evento ha ancora detto.
+ */
+const eventiDelloSpecchio = (() => {
+  let numero = 0;
+  const ultimoPer = new Map<string, number>();
+  return {
+    evento(dispositivo: string): void {
+      numero += 1;
+      ultimoPer.set(dispositivo, numero);
+    },
+    chiedi(): (elenco: readonly AvanzamentoSpecchio[]) => void {
+      const prima = numero;
+      return (elenco) => {
+        // Solo i dispositivi senza eventi da quando la fotografia è stata chiesta.
+        const valida = elenco.filter((a) => (ultimoPer.get(a.dispositivo) ?? 0) <= prima);
+        archivioSpecchio.scrivi({ ...archivioSpecchio.leggi(), ...daFotografia(valida) });
+      };
+    },
+  };
+})();
+
+/**
+ * Un `lontano:specchio` mandato dal nucleo: si scrive e si conta, e le
+ * fotografie chieste prima non lo ricoprono più. Restituisce com'era
+ * l'avanzamento di quel dispositivo, per chi deve capire cosa è cambiato.
+ */
+export function eventoDelloSpecchio(nuovo: AvanzamentoSpecchio): AvanzamentoSpecchio | undefined {
+  const prima = archivioSpecchio.leggi()[nuovo.dispositivo];
+  eventiDelloSpecchio.evento(nuovo.dispositivo);
+  archivioSpecchio.scrivi(conAvanzamento(archivioSpecchio.leggi(), nuovo));
+  return prima;
+}
+
+/**
+ * Chiamala **prima** di chiedere `lontanoSpecchioStato`: restituisce chi adotta
+ * la risposta, che scrive solo i dispositivi su cui nel frattempo non è
+ * arrivato nessun evento.
+ */
+export function chiediLaFotografiaDelloSpecchio(): (elenco: readonly AvanzamentoSpecchio[]) => void {
+  return eventiDelloSpecchio.chiedi();
+}
+
 /** Quelli che stanno leggendo adesso. */
 export function inLettura(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio[] {
   return Object.values(avanzamenti).filter((a) => a.fase === "leggo");
+}
+
+/**
+ * Quelli la cui ultima lettura si è interrotta.
+ *
+ * Il nucleo riprova da sé ogni cinque minuti, e fino ad allora la libreria resta
+ * con le righe già arrivate: senza una frase, chi guarda non sa perché il
+ * catalogo è a metà (S9-12). «Riprova ora» è `lontanoSpecchioOra`.
+ */
+export function inErrore(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio[] {
+  return Object.values(avanzamenti).filter((a) => a.fase === "errore");
+}
+
+/** Una lettura di catalogo che comincia, finisce o si interrompe, da dire a chi ascolta lo schermo. */
+export interface AnnuncioDelloSpecchio {
+  tipo: "inizio" | "fine" | "errore";
+  dispositivo: string;
+}
+
+/**
+ * Quel che va detto passando da `prima` ad `adesso`: le letture cominciate e
+ * quelle finite bene.
+ *
+ * La striscia «Leggo la libreria di “PC”… 12.000/50.000» era una regione viva con
+ * un contatore dentro, e il catalogo manda un passo ogni pochi secondi (e lo
+ * scarico uno ogni 2 MiB): un lettore di schermo rileggeva il testo intero a ogni
+ * cambio, per i minuti della prima lettura. Si annuncia il passaggio, non lo
+ * stato (`Annuncio.tsx`, `AnnuncioScansione.tsx`); chi vuole il punto guarda la
+ * striscia. Una lettura che si interrompe (`errore`) non è «letta»: si dice che
+ * si è interrotta, una volta (S9-12).
+ */
+export function annunciDelloSpecchio(
+  prima: AvanzamentiSpecchio,
+  adesso: AvanzamentiSpecchio,
+): AnnuncioDelloSpecchio[] {
+  const fuori: AnnuncioDelloSpecchio[] = [];
+  for (const a of Object.values(adesso)) {
+    const era = prima[a.dispositivo]?.fase;
+    if (a.fase === "leggo" && era !== "leggo") fuori.push({ tipo: "inizio", dispositivo: a.dispositivo });
+    else if (a.fase === "fine" && era === "leggo") fuori.push({ tipo: "fine", dispositivo: a.dispositivo });
+    else if (a.fase === "errore" && era !== "errore") fuori.push({ tipo: "errore", dispositivo: a.dispositivo });
+  }
+  return fuori;
 }
 
 /** Quelli che non sanno servire il catalogo: una versione di Rymembra di prima. */
@@ -672,6 +847,41 @@ export function domandaSullePerdite(
 export const RILEGGI_DURANTE_LA_LETTURA_MS = 3_000;
 
 /**
+ * Le cause di una raffica di riletture, accorpate in una sola (`accorpa`).
+ *
+ * Una rilettura nata dalla lettura del catalogo di un dispositivo che il filtro
+ * non vede — «Questo dispositivo» acceso e un PC che manda la sua musica — non
+ * cambia niente di quel che si mostra, e non vale la pena di rileggere per essa
+ * gli artisti per due numeri della pagina aperta (S9-3). Ma la rilettura è una
+ * sola per raffica, e se dentro la raffica c'è anche una scansione o un brano
+ * scaricato quei numeri vanno rifatti: basta una causa che conta.
+ *
+ * `aggiungi(true)` per ogni causa che può cambiare quel che il filtro mostra,
+ * `aggiungi(false)` per una che sicuramente no. `preleva` dice se qualcuna
+ * contava, e riparte da zero. Senza cause dette vale «sì»: nel dubbio, i
+ * numeri non restano vecchi.
+ */
+export function causeDiRilettura(): {
+  aggiungi: (riguardaIlFiltro: boolean) => void;
+  preleva: () => boolean;
+} {
+  let dette = 0;
+  let contava = false;
+  return {
+    aggiungi(riguardaIlFiltro) {
+      dette += 1;
+      if (riguardaIlFiltro) contava = true;
+    },
+    preleva() {
+      const esito = dette === 0 || contava;
+      dette = 0;
+      contava = false;
+      return esito;
+    },
+  };
+}
+
+/**
  * Dopo questo avanzamento gli elenchi vanno riletti?
  *
  * Il giro del catalogo scrive in `tracks` e non manda `cartelle:cambiate`: le
@@ -703,12 +913,44 @@ export function rileggereDopo(
  * Come [`gestoLontano`], ma gli altri errori **salgono**: chi suona una lista
  * dalla libreria (`suonaDa`) li lascia a chi l'ha chiamata, che li dice con la
  * sua fascia. Con «No» sui dati mobili l'errore sale e dice perché.
+ *
+ * `rifai` è quel che si fa dopo il sì, e di serie è lo stesso gesto. Non lo è
+ * per i gesti che spostano la coda prima di aprire il brano — «avanti»,
+ * «indietro» — né per «play/pausa» dopo un fallimento: il brano non si è aperto
+ * ma la coda è già dove si voleva, e il motore è fermo (`avvio_fallito`). Rifarli
+ * saltava un altro brano, o metteva in pausa; lì si rifà `riprendi`, che apre
+ * quello raggiunto.
  */
-export async function conIlSiDeiDatiMobili(fai: () => Promise<void>): Promise<void> {
+export async function conIlSiDeiDatiMobili(
+  fai: () => Promise<void>,
+  rifai: () => Promise<void> = fai,
+): Promise<void> {
   try {
     await fai();
   } catch (errore) {
     if (!chiedeIDatiMobili(errore, archivioLontano.leggi())) throw errore;
-    archivioDatiMobili.scrivi(() => fai);
+    archivioDatiMobili.scrivi(() => rifai);
   }
+}
+
+/**
+ * La chiave della frase di un errore, scelta per chi la legge.
+ *
+ * Il nucleo manda un codice solo, `lontano.reteAConsumo`, per «sei sui dati
+ * mobili e non si può»: con «Solo Wi-Fi» la frase dice proprio quello, ma con
+ * «Chiedi» sarebbe una bugia — l'impostazione non è «Solo Wi-Fi» — e chi la legge
+ * non ha nessuna domanda a cui rispondere. Con «Chiedi» l'errore arriva da un
+ * gesto che la finestra non può chiedere (la notifica, i tasti, l'auto, il
+ * brano dopo), e la frase dice di aprire Rymembra e riprovare da lì (S11-4).
+ *
+ * `stato` è quello del pannello; di serie quello di adesso.
+ */
+export function chiaveDelTestoErrore(
+  chiave: string,
+  stato: StatoLontano | null = archivioLontano.leggi(),
+): string {
+  if (chiave === "errors.lontano.reteAConsumo" && stato?.datiMobili === "chiedi") {
+    return "errors.lontano.reteAConsumo.chiedi";
+  }
+  return chiave;
 }

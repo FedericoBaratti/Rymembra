@@ -81,6 +81,31 @@ test("la finestrella di una richiesta dice quante altre aspettano, e non guarda 
   }
 });
 
+test("S9-4: fra una richiesta e la successiva la finestrella si rifà, e il fuoco torna a «Rifiuta»", () => {
+  // Il percorso vero: il sì alla richiesta A la toglie dallo stato, e B prende il
+  // suo posto in testa — **senza** un disegno con `richiesta === null` in mezzo.
+  const A = richiesta(7, "STUDIO");
+  const B = richiesta(9, "SALOTTO");
+  assert.equal(richiesteInFila([A, B]).adesso?.id, 7);
+  assert.equal(richiesteInFila([B]).adesso?.id, 9, "B subentra direttamente: la finestrella non si smonta da sé");
+  // Quindi per React è lo stesso `Dialogo`, con gli stessi bottoni: il fuoco
+  // lasciato su «Collega» di A resta su «Collega» di B, e un secondo Invio
+  // (o un tasto che si ripete, o un lettore di schermo in ritardo) accetta un
+  // dispositivo di cui nessuno ha letto nome e impronta. Una `key` per richiesta
+  // la smonta e la rimonta: il fuoco iniziale torna a «Rifiuta».
+  const finestrella = DISPOSITIVI.slice(
+    DISPOSITIVI.indexOf("{richiesta !== null && ("),
+    DISPOSITIVI.indexOf("{link !== null && richiesta === null"),
+  );
+  assert.match(finestrella, /<Dialogo\s+key=\{richiesta\.id\}/);
+  // E il fuoco iniziale è il no, e il no viene per primo: è quel che la `key` rimette.
+  const rifiuta = finestrella.indexOf('t("devices.request.refuse")');
+  const consenti = finestrella.indexOf('t("devices.request.allow")');
+  assert.ok(rifiuta > 0 && rifiuta < consenti, "«Rifiuta» prima di «Collega»");
+  assert.match(finestrella.slice(0, rifiuta), /data-fuoco-iniziale/);
+  assert.equal([...finestrella.matchAll(/data-fuoco-iniziale/g)].length, 1, "il fuoco iniziale è uno, e non è «Collega»");
+});
+
 // ── il nome al collegamento ─────────────────────────────────────────────────
 
 test("il dispositivo appena collegato è il più recente con quel nome, dentro la finestra", () => {

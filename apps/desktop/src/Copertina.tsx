@@ -80,7 +80,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useArchivio } from "./archivio";
 import { indirizzoCopertina, sizesPer, srcsetCopertina } from "./copertine";
 import { useDati } from "./dati";
-import { archivioCopertine } from "./lontano";
+import { archivioCopertine, riprovaPerLaCopertina } from "./lontano";
 import { useCambio, type AttributiSuono } from "./segnali";
 
 /**
@@ -93,14 +93,16 @@ import { useCambio, type AttributiSuono } from "./segnali";
  * dell'elenco non può permettersi un abbonamento in più, e quella che ha la sua
  * immagine non aspetta niente.
  */
-function RiprovaAllArrivo({ onRiprova }: { onRiprova: () => void }) {
+function RiprovaAllArrivo({ hash, onRiprova }: { hash: string | null; onRiprova: () => void }) {
   const arrivate = useArchivio(archivioCopertine);
   const viste = useRef(arrivate);
   useEffect(() => {
     if (arrivate === viste.current) return;
     viste.current = arrivate;
-    onRiprova();
-  }, [arrivate, onRiprova]);
+    // Solo se l'arrivata è la sua: ogni segnaposto in vista che riprovava per ogni
+    // copertina era un'ondata di richieste per niente (S9-15).
+    if (riprovaPerLaCopertina(arrivate, hash)) onRiprova();
+  }, [arrivate, hash, onRiprova]);
   return null;
 }
 
@@ -179,7 +181,7 @@ export function Copertina({
     return (
       <div className={`${classe} vuota`} aria-hidden="true" {...segnali}>
         ♪
-        {url && <RiprovaAllArrivo onRiprova={riprova} />}
+        {url && <RiprovaAllArrivo hash={hash} onRiprova={riprova} />}
       </div>
     );
   }

@@ -33,6 +33,7 @@
  */
 import { dispositivoDellaRiga, type OrigineLibreria } from "./ipc/libreria";
 import type { StatoLontano } from "./ipc/lontano";
+import type { Chiave, Valori } from "./lingue";
 
 /** «Tutti»: la libreria unica. */
 export const TUTTI: OrigineLibreria = { tipo: "tutti" };
@@ -147,6 +148,26 @@ export interface StatoDellaRiga {
    * grazia, e la sua voce di playlist con lei. Presente — e `true` — solo allora.
    */
   inGrazia?: true;
+}
+
+/**
+ * La frase che dice di una riga da dove viene, o che non risponde: la chiave del
+ * catalogo e i suoi dati, per chi la traduce (`etichettaDellaRiga`).
+ *
+ * Una riga il cui dispositivo non risponde ma che ha una copia di qui suona, e
+ * non è grigia: dirla «non raggiungibile» al sorvolo e a un lettore di schermo
+ * era una frase falsa su una riga che si ascolta (S9-14). Dice invece che suona
+ * la copia di qui.
+ */
+export function frasePerLaRiga(riga: StatoDellaRiga): {
+  chiave: Chiave;
+  valori: Valori;
+} {
+  if (riga.nome === "") return { chiave: "library.origin.gone", valori: {} };
+  const valori = { nome: riga.nome };
+  if (riga.inGrazia === true) return { chiave: "library.origin.faded", valori };
+  if (riga.spenta && riga.copiaQui === true) return { chiave: "library.origin.copyHere", valori };
+  return { chiave: riga.spenta ? "library.origin.offline" : "library.origin.from", valori };
 }
 
 /**
@@ -291,6 +312,25 @@ export function chiaviDiLibreria(stato: StatoLontano | null): string | null {
     .map((d) => d.chiave)
     .sort()
     .join(",");
+}
+
+/**
+ * Il filtro mostra le righe di questo dispositivo?
+ *
+ * «Tutti» le ha tutte; «Questo dispositivo» solo quelle di qui, e il filtro di un
+ * dispositivo solo le sue. Serve a chi deve decidere se la lettura del catalogo
+ * di un dispositivo cambia qualcosa di quel che si vede (S9-3): sotto un filtro
+ * che non lo contiene, no.
+ */
+export function origineVedeIlDispositivo(origine: OrigineLibreria, dispositivo: string): boolean {
+  switch (origine.tipo) {
+    case "tutti":
+      return true;
+    case "locale":
+      return false;
+    case "dispositivo":
+      return origine.chiave === dispositivo;
+  }
 }
 
 /**

@@ -378,6 +378,11 @@
   .nodo-spento .icona-nodo {
     opacity: 1;
   }
+  /* Lo stesso per la miniatura di una riga grigia (`libreria.css`): a dire che
+     la riga è spenta resta il corsivo del titolo. */
+  .riga[data-spenta] .miniatura {
+    opacity: 1;
+  }
 
   /* Dove i colori sono il contenuto. Lo spettro; le fasce d'anteprima delle
      skin e di «Crea tema», e i campioni e le pastiglie di colore dello Studio:

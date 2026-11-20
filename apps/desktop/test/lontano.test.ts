@@ -5,8 +5,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type {
+  AvanzamentoSpecchio,
   DispositivoLontano,
   DispositivoSincronia,
   FidatoInsieme,
@@ -16,10 +18,18 @@ import type {
 import {
   archivioDatiMobili,
   archivioLontano,
+  archivioSpecchio,
+  chiediLaFotografiaDelloSpecchio,
   chiedeIDatiMobili,
   conIlSiDeiDatiMobili,
+  eventoDelloSpecchio,
   gestoLontano,
   annullatoDaQui,
+  annunciDelloSpecchio,
+  causeDiRilettura,
+  chiaveDelTestoErrore,
+  frasiDelDimentica,
+  inErrore,
   linkDa,
   ordinaDispositivi,
   qrScaduto,
@@ -30,6 +40,7 @@ import {
   scaricoConNonAudio,
   scaricoFinito,
   serveAccendere,
+  unaAllaVolta,
   unisciDispositivi,
 } from "../src/lontano";
 
@@ -354,4 +365,364 @@ test("sui dati mobili con «Chiedi» il gesto aspetta il sì invece di fallire; 
     archivioLontano.scrivi(prima);
     archivioDatiMobili.scrivi(null);
   }
+});
+
+// ── S9-3: le cause di una raffica di riletture ─────────────────────────────
+
+test("S9-3: le riletture accorpate dicono se qualcuna riguarda il filtro", () => {
+  const cause = causeDiRilettura();
+  // Senza cause dette (un modo di chiedere che non si è presentato) si rilegge
+  // tutto: nel dubbio, i numeri dell'artista non restano vecchi.
+  assert.equal(cause.preleva(), true);
+  // Solo letture di dispositivi che il filtro non vede: niente da rifare.
+  cause.aggiungi(false);
+  cause.aggiungi(false);
+  assert.equal(cause.preleva(), false);
+  // Basta una causa che conta, in qualunque posto della raffica.
+  cause.aggiungi(false);
+  cause.aggiungi(true);
+  cause.aggiungi(false);
+  assert.equal(cause.preleva(), true);
+  // Ogni raffica parte da zero: la causa di prima non si trascina.
+  cause.aggiungi(false);
+  assert.equal(cause.preleva(), false);
+});
+
+// ── S11-4: «Chiedi» si chiede da ogni gesto, e l'errore non mente ───────────
+
+test("S11-4: dopo il sì si rifà quel che si dice, non per forza lo stesso gesto", async () => {
+  // «Avanti» ha già spostato la coda sul brano che non si apre: rifare «avanti»
+  // dopo il sì lo salterebbe. Chi chiama dice cosa rifare (`riprendi`).
+  const prima = archivioLontano.leggi();
+  archivioLontano.scrivi(stato({ datiMobili: "chiedi" }));
+  try {
+    const fatti: string[] = [];
+    await conIlSiDeiDatiMobili(
+      async () => {
+        fatti.push("avanti");
+        throw { code: "lontano.reteAConsumo", params: {} };
+      },
+      async () => {
+        fatti.push("riprendi");
+      },
+    );
+    assert.deepEqual(fatti, ["avanti"], "il gesto è in attesa del sì");
+    await archivioDatiMobili.leggi()?.();
+    assert.deepEqual(fatti, ["avanti", "riprendi"], "dopo il sì parte `riprendi`, non un secondo «avanti»");
+  } finally {
+    archivioLontano.scrivi(prima);
+    archivioDatiMobili.scrivi(null);
+  }
+});
+
+test("S11-4: con «Chiedi» la frase dell'errore non dice «Solo Wi-Fi è attivo»", () => {
+  const chiave = "errors.lontano.reteAConsumo";
+  // «Chiedi»: la frase che dice che serve il sì e dove darlo.
+  assert.equal(chiaveDelTestoErrore(chiave, stato({ datiMobili: "chiedi" })), `${chiave}.chiedi`);
+  // «No» è la frase di sempre; senza lo stato non si indovina.
+  assert.equal(chiaveDelTestoErrore(chiave, stato({ datiMobili: "no" })), chiave);
+  assert.equal(chiaveDelTestoErrore(chiave, null), chiave);
+  // Gli altri errori restano com'erano.
+  assert.equal(
+    chiaveDelTestoErrore("errors.lontano.spento", stato({ datiMobili: "chiedi" })),
+    "errors.lontano.spento",
+  );
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    const chiedi = testi[`${chiave}.chiedi`];
+    assert.ok(chiedi, `${lingua}: manca la frase per «Chiedi»`);
+    assert.doesNotMatch(chiedi, /Solo Wi-Fi|Wi-Fi only/, `${lingua}: dice un'impostazione che non è quella`);
+    assert.match(testi[chiave] ?? "", /Solo Wi-Fi|Wi-Fi only/, `${lingua}: «No» dice ancora il suo nome`);
+    // La frase si legge **dentro** Rymembra (fascia, avviso del brano saltato):
+    // l'azione che dice è quella di qui — premere play, che adesso chiede il sì —
+    // e non «apri Rymembra» o «da qui», che sono falsi dove si legge.
+    assert.doesNotMatch(chiedi, /apri Rymembra|open Rymembra|da qui|from here/i, `${lingua}: manda fuori dall'app`);
+    assert.match(chiedi, /play/i, `${lingua}: dice di premere play`);
+  }
+});
+
+// ── S2-2, la parte della pagina: «Dimentica» dice che la cronologia si perde ──
+
+test("S2-2: l'anteprima di «Dimentica» dice che la cronologia dei brani solo di quel dispositivo andrà persa", () => {
+  // `play_history` ha la cascata sulle righe specchio, e `togli` non la sposta:
+  // dimenticato il dispositivo, la cronologia dei suoi brani sparisce (quella dei
+  // brani con una copia di qui passa alla copia: lo fa il nucleo). Il sottotitolo
+  // diceva «Gli ascolti già mandati restano», che si leggeva come una
+  // rassicurazione sulla cronologia.
+  const chiavi = (a: Parameters<typeof frasiDelDimentica>[0]) => frasiDelDimentica(a).map((f) => f.chiave);
+  // Un dispositivo con righe: la sua cronologia si perde.
+  assert.deepEqual(chiavi({ righe: 120, playlistChePerdono: 0 }), [
+    "devices.forget.sub",
+    "devices.mirror.forget.history",
+  ]);
+  // E le playlist, se ce ne sono che perdono qualcosa, con il numero.
+  assert.deepEqual(frasiDelDimentica({ righe: 120, playlistChePerdono: 3 }).slice(1), [
+    { chiave: "devices.mirror.forget.loses", valori: { n: 3 } },
+    { chiave: "devices.mirror.forget.history", valori: {} },
+  ]);
+  // Senza righe non c'è cronologia da perdere, e non si dice.
+  assert.deepEqual(chiavi({ righe: 0, playlistChePerdono: 0 }), ["devices.forget.sub"]);
+  // Anteprima che non è arrivata: tacere direbbe «non si perde niente».
+  assert.deepEqual(chiavi(null), [
+    "devices.forget.sub",
+    "devices.mirror.forget.unknown",
+    "devices.mirror.forget.history",
+  ]);
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    assert.ok(testi["devices.mirror.forget.history"], `${lingua}: manca la frase`);
+    // Il sottotitolo non si legge più come una rassicurazione sulla cronologia.
+    assert.doesNotMatch(testi["devices.forget.sub"] ?? "", /Gli ascolti già mandati restano|Listens already sent stay/, lingua);
+  }
+});
+
+// ── S9-11: le strisce non sono regioni vive con un contatore dentro ─────────
+
+function passo(dispositivo: string, campi: Partial<AvanzamentoSpecchio> = {}): AvanzamentoSpecchio {
+  return {
+    dispositivo,
+    fase: "leggo",
+    fatti: 0,
+    totali: 50_000,
+    righe: 0,
+    inAttesa: 0,
+    ultimoMs: null,
+    errore: null,
+    ...campi,
+  };
+}
+
+test("S9-11: la lettura di un catalogo si annuncia all'inizio e alla fine, non a ogni passo", () => {
+  // Il difetto: `role="status"` su un testo con «12.000/50.000», e un
+  // `lontano:specchio` a ogni passo del catalogo: per i minuti della prima
+  // lettura un lettore di schermo rileggeva il testo intero a ogni cambio. Si
+  // annuncia il passaggio, non lo stato (`Annuncio.tsx`).
+  const prima = { pc: passo("pc", { fatti: 0 }) };
+  assert.deepEqual(annunciDelloSpecchio({}, prima), [{ tipo: "inizio", dispositivo: "pc" }]);
+  // I passi in mezzo non dicono niente.
+  assert.deepEqual(annunciDelloSpecchio(prima, { pc: passo("pc", { fatti: 12_000 }) }), []);
+  // Finita: si dice, e una volta.
+  const fine = { pc: passo("pc", { fase: "fine", fatti: 50_000, righe: 50_000 }) };
+  assert.deepEqual(annunciDelloSpecchio(prima, fine), [{ tipo: "fine", dispositivo: "pc" }]);
+  assert.deepEqual(annunciDelloSpecchio(fine, fine), []);
+  // Interrotta: non «letta», e si dice che si è interrotta (S9-12).
+  assert.deepEqual(annunciDelloSpecchio(prima, { pc: passo("pc", { fase: "errore", errore: "x" }) }), [
+    { tipo: "errore", dispositivo: "pc" },
+  ]);
+  assert.deepEqual(
+    annunciDelloSpecchio({ pc: passo("pc", { fase: "errore", errore: "x" }) }, { pc: passo("pc", { fase: "errore", errore: "x" }) }),
+    [],
+    "una volta sola, non a ogni evento",
+  );
+  // Due dispositivi: ognuno il suo.
+  assert.deepEqual(
+    annunciDelloSpecchio(
+      { a: passo("a"), b: passo("b", { fase: "fine" }) },
+      { a: passo("a", { fase: "fine" }), b: passo("b") },
+    ),
+    [
+      { tipo: "fine", dispositivo: "a" },
+      { tipo: "inizio", dispositivo: "b" },
+    ],
+  );
+});
+
+test("S9-11: nessun role=\"status\" sopra un testo che porta un conteggio", () => {
+  const striscia = readFileSync(new URL("../src/parti/StrisciaSpecchio.tsx", import.meta.url), "utf8");
+  // L'unica regione viva è quella montata sempre e vuota, col testo dell'annuncio.
+  const regioni = [...striscia.matchAll(/role="status"/g)];
+  assert.equal(regioni.length, 1, "una regione viva sola");
+  const annuncio = striscia.slice(striscia.indexOf("function AnnuncioSpecchio"), striscia.indexOf("export function StrisciaSpecchio"));
+  assert.match(annuncio, /role="status"/);
+  assert.match(annuncio, /className="solo-lettori"/);
+  // La striscia dello scarico (`percento`, ogni 2 MiB) e quella della lettura
+  // (`fatti`/`totali`) non lo sono.
+  const scarico = striscia.slice(striscia.indexOf("export function StrisciaScarico"));
+  assert.doesNotMatch(scarico, /role="status"/);
+  const lettura = striscia.slice(striscia.indexOf("export function StrisciaSpecchio"), striscia.indexOf("/**\n * La striscia di «Scarica qui»"));
+  assert.doesNotMatch(lettura, /role="status"/);
+  // Le due frasi dell'annuncio ci sono in italiano e in inglese, senza segnaposto di conteggio.
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    for (const chiave of ["devices.mirror.announce.start", "devices.mirror.announce.end"]) {
+      assert.ok(testi[chiave], `${lingua}: manca ${chiave}`);
+      assert.doesNotMatch(testi[chiave] ?? "", /\{fatti\}|\{totali\}/, `${lingua}: ${chiave} ha un conteggio`);
+    }
+  }
+});
+
+// ── S9-12: la lettura del catalogo che si interrompe si dice ────────────────
+
+test("S9-12: i dispositivi la cui lettura si è interrotta si riconoscono", () => {
+  // `FaseSpecchio` ha `"errore"` da sempre, e nessun punto della finestra lo
+  // guardava: la striscia spariva (non era più `leggo`), la libreria restava con
+  // le righe già arrivate e nessuna spiegazione, e col filtro del dispositivo la
+  // pagina diceva «non ha ancora mandato la sua musica, o non ne condivide»,
+  // falso se c'era stato un errore.
+  const avanzamenti = {
+    a: passo("a", { fase: "errore", errore: "lontano.irraggiungibile" }),
+    b: passo("b"),
+    c: passo("c", { fase: "fine" }),
+    d: passo("d", { fase: "nonSupportato" }),
+  };
+  assert.deepEqual(inErrore(avanzamenti).map((x) => x.dispositivo), ["a"]);
+  assert.deepEqual(inErrore({}), []);
+});
+
+test("S9-12: la striscia e il vuoto del filtro dicono che la lettura si è interrotta, con «Riprova adesso»", () => {
+  const striscia = readFileSync(new URL("../src/parti/StrisciaSpecchio.tsx", import.meta.url), "utf8");
+  assert.match(striscia, /inErrore\(avanzamenti\)/);
+  assert.match(striscia, /t\("devices\.mirror\.failed", \{ nome \}\)/);
+  assert.match(striscia, /ipc\.lontanoSpecchioOra\(a\.dispositivo\)\.catch\(onErrore\)/);
+  // Solo per un dispositivo acceso: se il PC si spegne a metà lettura la sua ultima
+  // fase resta `errore` finché non torna, e la scheda «riprovo fra poco» resterebbe
+  // nella pila per giorni. Le sue righe grigie dicono già che non risponde, come il
+  // vuoto del filtro (che ha il ramo `online`).
+  assert.match(striscia, /const inLinea = new Set\(/);
+  assert.match(striscia, /inErrore\(avanzamenti\)\.filter\(\(a\) => inLinea\.has\(a\.dispositivo\)\)/);
+  assert.match(striscia, /<AnnuncioSpecchio avanzamenti=\{avanzamenti\} nomi=\{nomi\} inLinea=\{inLinea\} \/>/);
+  const vuoto = readFileSync(new URL("../src/parti/VuotoDelFiltro.tsx", import.meta.url), "utf8");
+  const ramo = vuoto.slice(vuoto.indexOf('avanzamento?.fase === "errore"'));
+  assert.ok(ramo.length > 0, "il vuoto ha un ramo per `errore`");
+  assert.ok(
+    vuoto.indexOf('avanzamento?.fase === "errore"') < vuoto.indexOf('t("library.origin.empty.device"'),
+    "prima della frase «non ha ancora mandato la sua musica»",
+  );
+  assert.match(ramo.slice(0, 600), /t\("devices\.mirror\.failed", \{ nome \}\)/);
+  assert.match(ramo.slice(0, 900), /ipc\.lontanoSpecchioOra\(origine\.chiave\)/);
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    assert.ok(testi["devices.mirror.failed"], lingua);
+    assert.match(testi["devices.mirror.failed"] ?? "", /\{nome\}/, lingua);
+  }
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /<StrisciaSpecchio onErrore=\{segnalaErrore\} \/>/);
+});
+
+// ── S9-13: la fotografia dello specchio non ricopre un evento più nuovo ─────
+
+test("S9-13: una fotografia chiesta prima di un evento e arrivata dopo non ricopre il dispositivo dell'evento", () => {
+  // Il difetto: all'apertura della finestra la fotografia (`lontanoSpecchioStato`)
+  // sostituiva l'intera mappa. Se l'evento `fine` di un dispositivo arrivava fra
+  // la richiesta e la risposta — letta prima, con `leggo` — la risposta lo
+  // ricopriva: la striscia «Leggo la libreria…» restava fino al prossimo evento
+  // (cinque minuti) e `daConfermare` poteva non vedere mai un `inAttesa`.
+  archivioSpecchio.scrivi({});
+  const adotta = chiediLaFotografiaDelloSpecchio();
+  eventoDelloSpecchio(passo("pc", { fase: "fine", fatti: 50_000, righe: 50_000, inAttesa: 3 }));
+  adotta([
+    passo("pc", { fase: "leggo", fatti: 100 }),
+    passo("telefono", { fase: "fine", righe: 7 }),
+  ]);
+  const adesso = archivioSpecchio.leggi();
+  assert.equal(adesso["pc"]?.fase, "fine", "l'evento più nuovo resta");
+  assert.equal(adesso["pc"]?.inAttesa, 3);
+  assert.equal(adesso["telefono"]?.righe, 7, "un dispositivo senza eventi si prende dalla fotografia");
+  archivioSpecchio.scrivi({});
+});
+
+test("S9-13: senza eventi in mezzo la fotografia vale tutta, e `eventoDelloSpecchio` dice com'era", () => {
+  archivioSpecchio.scrivi({});
+  assert.equal(eventoDelloSpecchio(passo("pc", { fatti: 1 })), undefined);
+  assert.equal(eventoDelloSpecchio(passo("pc", { fatti: 2 }))?.fatti, 1, "restituisce l'avanzamento di prima");
+  const adotta = chiediLaFotografiaDelloSpecchio();
+  adotta([passo("pc", { fase: "fine" })]);
+  assert.equal(archivioSpecchio.leggi()["pc"]?.fase, "fine");
+  archivioSpecchio.scrivi({});
+});
+
+test("S9-13: la fotografia dello specchio passa da un posto solo, e un guasto si dice", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /const prima = eventoDelloSpecchio\(nuovo\);/);
+  assert.match(
+    app,
+    /const adotta = chiediLaFotografiaDelloSpecchio\(\);\s*ipc\.lontanoSpecchioStato\(\)\.then\(adotta\)\.catch\(segnalaErrore\);/,
+  );
+  assert.doesNotMatch(app, /daFotografia\(/);
+  const conferma = readFileSync(new URL("../src/ConfermaSpecchio.tsx", import.meta.url), "utf8");
+  assert.match(conferma, /chiediLaFotografiaDelloSpecchio\(\)/);
+  assert.doesNotMatch(conferma, /daFotografia\(/);
+});
+
+// ── S9-9: «Scarica qui» una volta alla volta ────────────────────────────────
+
+test("S9-9: un secondo «Scarica qui» mentre il primo prepara non parte", async () => {
+  // Il difetto: fra il clic e la domanda di conferma passano 1-3 secondi o più
+  // (le righe intere in pagina, poi l'anteprima del nucleo), senza un segno di
+  // lavoro: un secondo clic apriva una seconda anteprima e, a conferma data, una
+  // seconda coda.
+  const una = unaAllaVolta();
+  let fatti = 0;
+  let finisci!: () => void;
+  const lungo = una(async () => {
+    fatti += 1;
+    await new Promise<void>((r) => {
+      finisci = r;
+    });
+  });
+  // Mentre il primo lavora, il secondo si scarta e dice di essere stato scartato.
+  assert.equal(await una(async () => void (fatti += 1)), false);
+  assert.equal(fatti, 1);
+  finisci();
+  assert.equal(await lungo, true);
+  // Finito il primo, si può rifare.
+  assert.equal(await una(async () => void (fatti += 1)), true);
+  assert.equal(fatti, 2);
+  // Un lavoro che fallisce rilascia, e l'errore sale a chi ha chiamato.
+  await assert.rejects(
+    una(async () => {
+      throw new Error("no");
+    }),
+  );
+  assert.equal(await una(async () => void (fatti += 1)), true, "dopo un guasto si riparte");
+});
+
+test("S9-9: «Scarica qui» passa dalla guardia, dal menù e dagli altri punti, e dice che sta contando", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /const \[unoScarico\] = useState\(\(\) => unaAllaVolta\(\)\);/);
+  // Il menù di una selezione grande: la guardia copre anche le righe intere in pagina.
+  const menu = app.slice(app.indexOf("scaricaQui: (ids) => {"), app.indexOf("vaiAlDisco: conBrano"));
+  assert.match(menu, /unoScarico\(/);
+  // Il segno di lavoro solo dove c'è da aspettare: da una selezione che chiede la
+  // conferma, non per una riga sola.
+  assert.match(
+    menu,
+    /if \(chiedeConfermaPerLoScarico\(ids\.length\)\) setNotizia\(t\("devices\.download\.counting"\)\);/,
+  );
+  assert.match(menu, /ipc\.braniPerId\(ids\)/);
+  // Gli altri punti passano da `scaricaQui`, che ha la stessa guardia.
+  const scarica = app.slice(app.indexOf("const scaricaQui = useCallback("), app.indexOf("/**\n   * Fa partire **un** brano, da solo."));
+  assert.match(scarica, /unoScarico\(\(\) => preparaLoScarico\(brani\)\)/);
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    assert.ok(testi["devices.download.counting"], lingua);
+  }
+});
+
+// ── S9-16: la domanda sulle righe tolte aspetta le Novità e il giro ─────────
+
+test("S9-16: «Lasciali / Togli» non si apre sopra le Novità, il giro o il primo avvio", () => {
+  // `Novita` e il giro guardavano `unModaleAperto()` prima di aprirsi, ma
+  // `DomandaSpecchio` no: a lettura finita con righe in attesa apriva il suo
+  // `alertdialog` sopra le Novità o sopra il giro, due modali impilati (il
+  // fuoco rubato due volte, Escape alla cima e il fuoco che torna alla prima).
+  // Aspetta la stessa condizione della proposta del sottofondo, che si decide
+  // in un posto solo (`propostaPuoComparire`).
+  const conferma = readFileSync(new URL("../src/ConfermaSpecchio.tsx", import.meta.url), "utf8");
+  const dom = conferma.slice(conferma.indexOf("export function DomandaSpecchio"));
+  assert.match(dom, /pronta,\s*onErrore,/);
+  assert.match(dom, /pronta: boolean;/);
+  assert.match(dom, /if \(domanda === undefined \|\| !pronta\) return null;/);
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /<DomandaSpecchio\s+pronta=\{propostaPuoMostrarsi\}/);
 });

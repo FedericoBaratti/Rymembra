@@ -45,7 +45,7 @@
 import { createContext, useContext } from "react";
 
 import { creaArchivio, type Archivio } from "./archivio";
-import type { Avanzamento, Avvio, EsitoScansione, Playlist } from "./ipc";
+import type { Avanzamento, Avvio, EsitoScansione, Numeri, Playlist } from "./ipc";
 import type { Vista } from "./parti/Navigazione";
 import { vinceLUltima } from "./ultima";
 
@@ -193,6 +193,33 @@ export function conteggiDi(avvio: Avvio | null): Partial<Record<Vista, number>> 
     // quello giusto, perché dice quante cartelle sorvegliate ci sono.
     cartelle: avvio.cartelle.length,
     preferiti: numeri.liked,
+  };
+}
+
+/**
+ * I numeri della navigazione, vista dal filtro per dispositivo.
+ *
+ * Con un filtro acceso la barra conta quel che la lista mostra — scelta
+ * dell'utente, come la testata — e non la libreria intera: «Brani 50.000» a
+ * fianco di una lista da 12.000 righe era un numero che nessuna riga spiegava
+ * (S9-6). Le cartelle restano: non sono righe di un dispositivo. Finché i
+ * numeri del filtro non sono arrivati non se ne scrivono, invece di scrivere
+ * quelli di «Tutti», che sarebbero falsi.
+ */
+export function conteggiDelFiltro(
+  tutti: Partial<Record<Vista, number>>,
+  filtrati: Numeri | undefined,
+  filtroAttivo: boolean,
+): Partial<Record<Vista, number>> {
+  if (!filtroAttivo) return tutti;
+  const { album: _a, artisti: _r, brani: _b, preferiti: _p, ...resto } = tutti;
+  if (filtrati === undefined) return resto;
+  return {
+    ...resto,
+    album: filtrati.albums,
+    artisti: filtrati.artists,
+    brani: filtrati.tracks,
+    preferiti: filtrati.liked,
   };
 }
 

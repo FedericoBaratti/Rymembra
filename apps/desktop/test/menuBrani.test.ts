@@ -444,6 +444,110 @@ test("«Scarica qui» compare solo se c'è un brano di un altro dispositivo da p
   assert.ok(!vociBrani([1], inMano(file(1)), con, t).some((v) => v.etichetta === "devices.download"));
 });
 
+// ── S9-2: «Seleziona tutto» e tasto destro su una lista rada ────────────────
+
+/**
+ * Le righe in mano come le tiene una lista rada: poche pagine, e `inMano(id)`
+ * che per un id mancante le scorre **tutte** (`ArchivioRado.cerca`). Conta quante
+ * volte si chiede un brano per id e quante volte una scansione guarda una riga.
+ */
+function listaRada(inManoRighe: Brano[]) {
+  const conti = { perId: 0, righeGuardate: 0 };
+  const perId = (id: number) => {
+    conti.perId += 1;
+    // Il costo vero di un id mancante: ogni pagina in mano, riga per riga.
+    for (const b of inManoRighe) {
+      conti.righeGuardate += 1;
+      if (b.id === id) return b;
+    }
+    return undefined;
+  };
+  const cerca = (predicato: (b: Brano) => boolean) => {
+    for (const b of inManoRighe) {
+      conti.righeGuardate += 1;
+      if (predicato(b)) return b;
+    }
+    return undefined;
+  };
+  return { conti, perId, cerca };
+}
+
+const scelteTutte = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+
+test("S9-2: 50 000 selezionati su una lista rada non chiedono 50 000 volte un brano per id", () => {
+  // Il difetto: due `some(inMano(id) …)` senza cortocircuito. Con 50 000 scelti
+  // (quasi tutti non in mano) e nessun dispositivo di mezzo, ogni id scorreva
+  // tutte le righe in mano, due volte: 100 000 ricerche × R righe. Qui R = 1 000
+  // e i brani in mano sono gli id 1…1 000, tutti file di qui.
+  const inManoRighe = Array.from({ length: 1_000 }, (_, i) => file(i + 1_000_000));
+  const { conti, perId, cerca } = listaRada(inManoRighe);
+  const { fai } = azioni();
+  const prima = performance.now();
+  const voci = vociBrani(
+    scelteTutte(50_000),
+    perId,
+    { ...fai, scaricaQui: () => undefined },
+    t,
+    false,
+    false,
+    cerca,
+  );
+  const ms = performance.now() - prima;
+  console.log(
+    `S9-2 con scansione: ${conti.perId} ricerche per id, ${conti.righeGuardate} righe guardate, ${ms.toFixed(1)} ms`,
+  );
+  // I due `every` che c'erano già si fermano al primo id che non trovano: una
+  // ricerca per id ciascuno. Il resto è una scansione delle righe in mano.
+  assert.ok(conti.perId <= 10, `ricerche per id: ${conti.perId}`);
+  assert.ok(conti.righeGuardate <= 10 * 1_000 + 1_000, `righe guardate: ${conti.righeGuardate}`);
+  // Stesse voci di prima: nessun dispositivo, quindi «Togli» e «Elimina» ci sono.
+  const etichette = voci.map((v) => v.etichetta);
+  assert.ok(etichette.includes("menu.removeFromLibrary"));
+  assert.ok(!etichette.includes("devices.download"));
+});
+
+test("S9-2: senza la scansione la ricerca per id si fa una volta sola, non due", () => {
+  // Chi apre il menù da un pannello con le sue righe (le Cartelle) passa solo
+  // `inMano`: resta la strada per id, ma `scaricaQui` non la rifà.
+  let chiamate = 0;
+  const { fai } = azioni();
+  vociBrani(
+    scelteTutte(50_000),
+    () => {
+      chiamate += 1;
+      return undefined;
+    },
+    { ...fai, scaricaQui: () => undefined },
+    t,
+  );
+  // 50 000 per «c'è un brano di un altro dispositivo?», più i due `every`.
+  assert.ok(chiamate <= 50_002, `ricerche per id: ${chiamate}`);
+});
+
+test("S9-2: la scansione conta solo le righe in mano che sono fra gli scelti", () => {
+  const { fai } = azioni();
+  const con = { ...fai, scaricaQui: () => undefined };
+  const righe = [file(1), remoto(2), file(3)];
+  const { perId, cerca } = listaRada(righe);
+  const etichette = (scelti: number[]) =>
+    vociBrani(scelti, perId, con, t, false, false, cerca).map((v) => v.etichetta);
+  // Il remoto è in mano ma non è scelto: non toglie voci e non offre «Scarica qui».
+  assert.ok(etichette([1, 3]).includes("menu.removeFromLibrary"));
+  assert.ok(!etichette([1, 3]).includes("devices.download"));
+  // Scelto, sì: come con la strada per id.
+  assert.ok(!etichette([1, 2]).includes("menu.removeFromLibrary"));
+  assert.ok(etichette([1, 2]).includes("devices.download"));
+  // Un id che l'elenco non ha si dà per «di qui», come prima.
+  assert.ok(etichette([1, 99]).includes("menu.removeFromLibrary"));
+});
+
+test("S9-2: App passa a vociBrani la scansione delle righe in mano", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const apri = app.slice(app.indexOf("const apriMenu = useCallback("), app.indexOf("/** Il menù di una playlist nella barra"));
+  assert.match(apri, /elencoCorrenteRef\.current\.cerca\(/);
+  assert.match(apri, /vociBrani\(\s*elenco,\s*inMano,\s*fai,\s*t,[\s\S]*?cercaInMano,?\s*\)/);
+});
+
 test("la coda e «In riproduzione» aprono il menù sulle righe di libreria, anche dell'altro dispositivo", () => {
   // Le righe specchio hanno id > 0: `idDiLibreria` le lascia passare, e il menù
   // c'è dove c'era per i brani di qui. Chi guarda una voce di sessione (id < 0)

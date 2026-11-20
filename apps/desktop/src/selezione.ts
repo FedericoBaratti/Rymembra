@@ -88,6 +88,16 @@ export function gestoDelClic(
  * `updatedAt`: una playlist cambiata è un altro elenco, e le posizioni di
  * prima non vi indicano più gli stessi brani.
  *
+ * Il filtro per dispositivo (`origine`: la chiave che `App` dà alle liste
+ * rade) entra nella chiave di tutto quel che lo ha — le viste tenute, la
+ * ricerca, la pagina di un artista —: un altro filtro è un altro elenco, con
+ * altre righe e altre posizioni. Senza, «Seleziona tutto» in «Tutti» restava
+ * una selezione di cinquantamila brani anche dopo il passaggio a «Questo
+ * dispositivo», e i comandi della barra agivano su id che la lista non
+ * mostrava più (S9-1). Passando dalla chiave cambia anche il giro della
+ * selezione, e una risposta di `vistaBraniId` ancora in volo per il filtro di
+ * prima si butta.
+ *
  * `tenuta` è la vista tenuta montata che si guarda, o `null` (vedi
  * `VISTE_TENUTE` in `App.tsx`).
  */
@@ -96,21 +106,21 @@ export function chiaveDellaSelezione(
   tenuta: string | null,
   ordine: string,
   query: string,
+  origine: string,
 ): string {
-  if (tenuta === "brani") return `brani:${ordine}`;
-  if (tenuta !== null) return tenuta;
+  if (tenuta === "brani") return `brani:${ordine}:${origine}`;
+  if (tenuta !== null) return `${tenuta}:${origine}`;
   switch (pagina.tipo) {
     case "ricerca":
-      return `ricerca:${query}`;
+      return `ricerca:${origine}:${query}`;
     case "playlist":
       return `playlist:${pagina.playlist.id}:${pagina.playlist.updatedAt}`;
     case "album":
       return `album:${pagina.album.albumKey}`;
     case "artista":
-      // Con `ordine` — qui l'ordinamento dei suoi brani e il filtro per
-      // dispositivo, messi insieme da chi chiama — come i Brani: le posizioni
-      // ricordate sono di quell'elenco.
-      return `artista:${pagina.artista.name}:${ordine}`;
+      // Con `ordine` — qui l'ordinamento dei suoi brani — e il filtro, come i
+      // Brani: le posizioni ricordate sono di quell'elenco.
+      return `artista:${pagina.artista.name}:${ordine}:${origine}`;
     case "libreria":
       return pagina.vista;
     default:

@@ -58,7 +58,9 @@ test("`dettaglioErrore` dà vuoto per un errore senza testo del servizio", () =>
 
 test("la frase si riempie con i dati dell'errore", () => {
   const corpo = corpoDi("testoErrore");
-  assert.match(corpo, /tSe\(value\.i18nKey, [^)]*valoriDi\(value\)\)/);
+  // La chiave è quella del codice; `chiaveDelTestoErrore` la cambia solo dove la
+  // frase dipende da una scelta di chi legge (S11-4, i dati mobili con «Chiedi»).
+  assert.match(corpo, /tSe\(chiaveDelTestoErrore\(value\.i18nKey\), [^)]*valoriDi\(value\)\)/);
   // Un `Error` di JavaScript ha il suo `message`; un errore del nucleo non più.
   assert.doesNotMatch(corpo, /value\.message \?\?/);
 });

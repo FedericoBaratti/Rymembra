@@ -70,15 +70,17 @@ import {
   PER_VOLTA_SCARICO,
   archivioLontano,
   archivioScarico,
-  archivioSpecchio,
+  causeDiRilettura,
+  chiaveDelTestoErrore,
+  chiediLaFotografiaDelloSpecchio,
   chiedeConfermaPerLoScarico,
-  conAvanzamento,
   conIlSiDeiDatiMobili,
   copertinaArrivata,
-  daFotografia,
   domandaDelloScarico,
+  eventoDelloSpecchio,
   inBlocchi,
   rileggereDopo,
+  unaAllaVolta,
 } from "./lontano";
 import { useArtisti } from "./artisti";
 import {
@@ -154,7 +156,7 @@ import {
   type VistaBrani,
   type VoceSkin,
 } from "./ipc";
-import { conteggiDi, creaLibreria, dopoLaLettura } from "./libreria";
+import { conteggiDelFiltro, conteggiDi, creaLibreria, dopoLaLettura } from "./libreria";
 import { nomeDiFile } from "./nomeDiFile";
 import { t, tSe } from "./lingue";
 import { Trans } from "./lingue/Trans";
@@ -205,6 +207,7 @@ import {
   origineCheContiene,
   origineConChiavi,
   origineDi,
+  origineVedeIlDispositivo,
   ugualiOrigini,
   perIlNucleo,
   primoSpento,
@@ -1122,15 +1125,33 @@ export function App() {
    * con zero: la pagina lo dice, invece di sparire sotto le dita.
    *
    * Letto anche da una libreria che cambia (`giroArtista`): un brano tolto, una
-   * scansione finita.
+   * scansione finita. Non per la lettura del catalogo di un dispositivo che il
+   * filtro non vede: vedi `ricaricaContorno`.
+   *
+   * # Due letture, non una (S9-3)
+   *
+   * I conti delle partecipazioni sono veloci e non aspettano l'elenco intero
+   * degli artisti: legati in un `Promise.all`, un database occupato dallo specchio
+   * che faceva fallire la seconda lettura toglieva anche le sezioni «Compare anche
+   * in». Quanto all'elenco intero — migliaia di artisti, megabyte di JSON, per
+   * due numeri — serve un comando del nucleo che dia l'artista solo: finché non
+   * c'è, si rilegge meno spesso che si può.
    */
   useEffect(() => {
     if (nomeAperto === "") return;
     let superata = false;
-    Promise.all([ipc.artisti(origineIpc), ipc.partecipazioniConta(nomeAperto, origineIpc)])
-      .then(([elenco, conto]) => {
+    ipc
+      .partecipazioniConta(nomeAperto, origineIpc)
+      .then((conto) => {
+        if (!superata) setConteggioPartecipazioni({ chiave: chiaveArtista, conto });
+      })
+      .catch((e: unknown) => {
+        if (!superata) segnalaErrore(e);
+      });
+    ipc
+      .artisti(origineIpc)
+      .then((elenco) => {
         if (superata) return;
-        setConteggioPartecipazioni({ chiave: chiaveArtista, conto });
         const suo = elenco.find((a) => a.name === nomeAperto);
         setArtistaAperto((prima) => {
           if (prima === null || prima.name !== nomeAperto) return prima;
@@ -1248,11 +1269,14 @@ export function App() {
    * tre elenchi un «togli una riga» non ce l'hanno, perché quanti brani abbia
    * davvero un album lo sa solo il nucleo — la finestra ne vede una pagina.
    */
-  const ricaricaContorno = useCallback(() => {
+  const ricaricaContorno = useCallback((opzioni?: { senzaArtista?: boolean }) => {
     ricaricaAlbum();
     // L'artista aperto: i suoi numeri sono la lunghezza dei suoi elenchi, e un
-    // brano che se ne va li cambia (`giroArtista`).
-    setGiroArtista((giro) => giro + 1);
+    // brano che se ne va li cambia (`giroArtista`). Non per la lettura del
+    // catalogo di un dispositivo che il filtro non vede (`senzaArtista`): rileggeva
+    // l'elenco intero degli artisti ogni 3 s per numeri che non potevano cambiare
+    // (S9-3).
+    if (!opzioni?.senzaArtista) setGiroArtista((giro) => giro + 1);
     // Gli artisti si rileggono subito se la vista è aperta, entrandoci se no.
     invalidaArtisti();
     // La Home dopo una scansione o dei brani scaricati: i suoi ripiani sono
@@ -1262,10 +1286,13 @@ export function App() {
     if (vista === "home") rileggiCasa();
   }, [ricaricaAlbum, invalidaArtisti, vista, rileggiCasa]);
 
-  const caricaVista = useCallback(() => {
-    ricaricaBrani();
-    ricaricaContorno();
-  }, [ricaricaBrani, ricaricaContorno]);
+  const caricaVista = useCallback(
+    (opzioni?: { senzaArtista?: boolean }) => {
+      ricaricaBrani();
+      ricaricaContorno(opzioni);
+    },
+    [ricaricaBrani, ricaricaContorno],
+  );
 
   /**
    * Rilegge la libreria dopo un cambiamento venuto dal nucleo: una volta per
@@ -1284,20 +1311,37 @@ export function App() {
    * quello del disegno in cui la finestra si è aperta.
    */
   const ricaricaDalNucleo = useRef(() => {});
+  /** Perché si rilegge, nella raffica in corso: vedi `causeDiRilettura`. */
+  const cause = useRef(causeDiRilettura());
   useEffect(() => {
     ricaricaDalNucleo.current = () => {
+      // Se ogni causa della raffica è la lettura di un catalogo che il filtro non
+      // vede, i numeri dell'artista aperto non possono essere cambiati (S9-3).
+      const senzaArtista = !cause.current.preleva();
       // `rileggi` e non `ricarica`: la rilettura nata da un evento toglie solo
       // il guasto messo dalla libreria. Una scansione a mano fallita manda
       // `cartelle:cambiate` e poi l'errore, e con `ricarica` la sua fascia
       // spariva cinquanta millesimi dopo. Vedi `dopoLaLettura`.
       void rileggi();
-      caricaVista();
+      caricaVista({ senzaArtista });
     };
   });
   const [ricaricaAccorpata] = useState(() =>
     accorpa(() => ricaricaDalNucleo.current(), ACCORPA_RICARICHE_MS),
   );
   useEffect(() => () => ricaricaAccorpata.butta(), [ricaricaAccorpata]);
+  /**
+   * Chiede la rilettura accorpata, dicendo se la causa può cambiare quel che il
+   * filtro mostra: tutte tranne la lettura del catalogo di un dispositivo che il
+   * filtro non contiene.
+   */
+  const chiediRilettura = useCallback(
+    (riguardaIlFiltro: boolean) => {
+      cause.current.aggiungi(riguardaIlFiltro);
+      ricaricaAccorpata.chiama();
+    },
+    [ricaricaAccorpata],
+  );
 
   /**
    * I brani scaricati sono entrati in libreria.
@@ -1312,7 +1356,7 @@ export function App() {
    * quanti brani sono entrati, ed è qui che andrebbe una notizia per i
    * download, se un giorno la si vorrà.
    */
-  useAscolto("scarico:in_libreria", () => ricaricaAccorpata.chiama());
+  useAscolto("scarico:in_libreria", () => chiediRilettura(true));
 
   /*
    * La libreria è cambiata sotto: una scansione — anche quella che parte da
@@ -1328,7 +1372,7 @@ export function App() {
    * cose per conto suo e non passa di qui: là la barra resta finché la
    * libreria non è riletta, e quella rilettura `scansiona` la deve aspettare.
    */
-  useAscolto("cartelle:cambiate", () => ricaricaAccorpata.chiama());
+  useAscolto("cartelle:cambiate", () => chiediRilettura(true));
 
   /*
    * Il catalogo di un dispositivo collegato sta entrando in libreria (o ha
@@ -1341,20 +1385,23 @@ export function App() {
   useAscolto<AvanzamentoSpecchio>(
     "lontano:specchio",
     (nuovo) => {
-      const prima = archivioSpecchio.leggi()[nuovo.dispositivo];
-      archivioSpecchio.scrivi(conAvanzamento(archivioSpecchio.leggi(), nuovo));
+      // Si scrive e si conta: la fotografia chiesta prima di questo evento non lo
+      // ricoprirà (S9-13).
+      const prima = eventoDelloSpecchio(nuovo);
       const adesso = Date.now();
       if (rileggereDopo(prima, nuovo, adesso, ultimaRilettura.current)) {
         ultimaRilettura.current = adesso;
-        ricaricaAccorpata.chiama();
+        // Sotto «Questo dispositivo», o il filtro di un altro, il catalogo che
+        // arriva non cambia le righe che si vedono, né i numeri dell'artista.
+        chiediRilettura(origineVedeIlDispositivo(origine, nuovo.dispositivo));
       }
     },
     true,
     () => {
-      ipc
-        .lontanoSpecchioStato()
-        .then((elenco) => archivioSpecchio.scrivi(daFotografia(elenco)))
-        .catch(() => undefined);
+      // La fotografia di chi è già a metà lettura, adottata solo per i dispositivi
+      // su cui nel frattempo non è arrivato un evento; un guasto si dice (S9-13).
+      const adotta = chiediLaFotografiaDelloSpecchio();
+      ipc.lontanoSpecchioStato().then(adotta).catch(segnalaErrore);
     },
   );
 
@@ -1365,7 +1412,7 @@ export function App() {
    * chiede in disparte (`media/lontane.rs`) —, e i segnaposto (`Copertina`) ci
    * riprovano quando arriva. Gli arrivi si raccolgono: vedi `copertinaArrivata`.
    */
-  useAscolto<string>("lontano:copertina", () => copertinaArrivata());
+  useAscolto<string>("lontano:copertina", (impronta) => copertinaArrivata(impronta));
 
   /*
    * Un brano saltato perché non si apriva: lo dice la fascia, con il titolo e
@@ -1382,7 +1429,7 @@ export function App() {
       const che = titolo
         ? t("playback.skipped", { titolo })
         : t("playback.skipped.unknown");
-      const perche = tSe(`errors.${codice}`, "");
+      const perche = tSe(chiaveDelTestoErrore(`errors.${codice}`), "");
       setNotizia(perche === "" ? che : `${che} ${perche}`);
     },
   );
@@ -2076,8 +2123,9 @@ export function App() {
       }
       const ids = brani.map((b) => b.id);
       // Una riga di un altro dispositivo sui dati mobili, con «Chiedi»: il gesto
-      // aspetta il sì della finestrella invece di fallire.
-      await conIlSiDeiDatiMobili(() => ipc.suona(ids, da));
+      // aspetta il sì della finestrella invece di fallire — lo fa `ipc.suona`,
+      // come ogni comando che apre una riga (S11-4).
+      await ipc.suona(ids, da);
     },
     [avvisaNonRaggiungibile],
   );
@@ -2115,7 +2163,9 @@ export function App() {
    * non conta le righe che il proprietario non manda più né le tracce di un CD:
    * se a conti fatti sono meno della soglia, non si chiede.
    */
-  const scaricaQui = useCallback(
+  // Una preparazione alla volta (S9-9): vedi `unaAllaVolta`.
+  const [unoScarico] = useState(() => unaAllaVolta());
+  const preparaLoScarico = useCallback(
     async (brani: readonly Brano[]) => {
       const pannello = archivioLontano.leggi();
       const lontani = brani.filter(
@@ -2154,6 +2204,12 @@ export function App() {
       await accodaRighe(ids);
     },
     [avvisaNonRaggiungibile, setNotizia, setConfermaScarico, accodaRighe, segnalaErrore],
+  );
+  const scaricaQui = useCallback(
+    async (brani: readonly Brano[]) => {
+      await unoScarico(() => preparaLoScarico(brani));
+    },
+    [unoScarico, preparaLoScarico],
   );
 
   /**
@@ -2377,6 +2433,19 @@ export function App() {
           : conosciuto !== undefined && conosciuto.id === id
             ? conosciuto
             : elencoCorrenteRef.current.cerca((b) => b.id === id);
+      // Le righe in mano scorse una volta, per «c'è fra gli scelti un brano di
+      // un altro dispositivo?»: con «Seleziona tutto» gli scelti sono decine di
+      // migliaia, e chiederlo per id scorreva tutte le righe in mano per ognuno
+      // (S9-2). Con un elenco che solo chi apre sa trovare (`conosciuto` è una
+      // funzione: le Cartelle, le partecipazioni) l'universo delle righe non è
+      // scorribile da qui, e `vociBrani` torna alla strada per id.
+      const cercaInMano =
+        typeof conosciuto === "function"
+          ? undefined
+          : (predicato: (brano: Brano) => boolean): Brano | undefined =>
+              conosciuto !== undefined && predicato(conosciuto)
+                ? conosciuto
+                : elencoCorrenteRef.current.cerca(predicato);
       // Il brano si legge al momento del gesto: l'elenco che ha aperto il menù
       // ha solo i numeri.
       const conBrano =
@@ -2409,10 +2478,15 @@ export function App() {
         },
         aggiungiAPlaylist: (brani) => setDaAggiungere(brani),
         scaricaQui: (ids) => {
-          ipc
-            .braniPerId(ids)
-            .then(scaricaQui)
-            .catch(segnalaErrore);
+          // La guardia copre anche le righe intere che `braniPerId` porta in
+          // pagina — con una selezione grande, secondi — e dice che sta
+          // contando: senza, un secondo clic apriva una seconda anteprima (S9-9).
+          unoScarico(async () => {
+            // Solo da una selezione che chiederà la conferma: per una riga sola
+            // non c'è niente da aspettare, e la notizia sarebbe rumore.
+            if (chiedeConfermaPerLoScarico(ids.length)) setNotizia(t("devices.download.counting"));
+            await preparaLoScarico(await ipc.braniPerId(ids));
+          }).catch(segnalaErrore);
         },
         vaiAlDisco: conBrano(async (brano) => {
           // Sul telefono «In riproduzione» copre la pagina, schede comprese:
@@ -2494,10 +2568,18 @@ export function App() {
           // sessione, e il menù si costruisce adesso. Vedi `vociBrani`.
           !gestoPermesso(riproduzione.archivio.leggi().insieme, "radio"),
           !gestoPermesso(riproduzione.archivio.leggi().insieme, "coda"),
+          cercaInMano,
         ),
       });
     },
-    [segnalaErrore, apriArtistaDelBrano, riproduzione.archivio, scaricaQui],
+    [
+      segnalaErrore,
+      apriArtistaDelBrano,
+      riproduzione.archivio,
+      unoScarico,
+      preparaLoScarico,
+      setNotizia,
+    ],
   );
 
   /** Il menù di una playlist nella barra di navigazione: vedi `vociPlaylist`. */
@@ -2769,9 +2851,12 @@ export function App() {
     chiave: chiaveDellaSelezione(
       pagina,
       vistaTenuta,
-      // Di un artista, l'ordinamento dei suoi brani e il filtro: vedi `selezione.ts`.
-      pagina.tipo === "artista" ? `${ordineArtista}:${chiaveOrigine}` : ordine,
+      // Di un artista, l'ordinamento dei suoi brani: vedi `selezione.ts`.
+      pagina.tipo === "artista" ? ordineArtista : ordine,
       query,
+      // Lo stesso filtro che dà la chiave alle liste rade: un altro filtro è
+      // un'altra selezione (S9-1).
+      chiaveOrigine,
     ),
     // Sul telefono la selezione finisce cambiando vista, come in ogni app di
     // Android: tenerla da parte e ritrovarla tornando lì vorrebbe dire una
@@ -2963,9 +3048,7 @@ export function App() {
             premuto !== undefined && ids[indice] !== premuto.id
               ? ids.indexOf(premuto.id)
               : indice;
-          return ids.length > 0
-            ? conIlSiDeiDatiMobili(() => ipc.suona(ids, Math.max(dove, 0)))
-            : undefined;
+          return ids.length > 0 ? ipc.suona(ids, Math.max(dove, 0)) : undefined;
         })
         .catch(segnalaErrore);
     },
@@ -3400,7 +3483,22 @@ export function App() {
   // dipendenze di `contesto`, e un `avvio` riletto dopo ogni gesto — con gli
   // stessi conteggi — ne faceva uno nuovo, e con lui una navigazione
   // ridisegnata per niente. Vedi `conteggiDi` in `libreria.ts`.
-  const conteggi = useArchivio(libreria.avvio, conteggiDi, ugualiInSuperficie);
+  const conteggiDiTutti = useArchivio(libreria.avvio, conteggiDi, ugualiInSuperficie);
+  // Col filtro per dispositivo acceso la barra conta quel che la lista mostra (S9-6).
+  // Con la stessa identità finché i numeri sono gli stessi, per la stessa ragione.
+  const conteggi = useMemo(
+    () => conteggiDelFiltro(conteggiDiTutti, numeriDelFiltro, origine.tipo !== "tutti"),
+    // `numeriDelFiltro` è un oggetto nuovo a ogni rilettura: contano i quattro numeri.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      conteggiDiTutti,
+      origine.tipo,
+      numeriDelFiltro?.tracks,
+      numeriDelFiltro?.albums,
+      numeriDelFiltro?.artists,
+      numeriDelFiltro?.liked,
+    ],
+  );
 
   const etichettaOrdine =
     ordinamenti().find(([c]) => c === ordine)?.[1] ?? t("sort.shelf");
@@ -4164,7 +4262,8 @@ export function App() {
       <Intestazione
         {...testaLibreria({
           vista: pagina.vista,
-          numeri,
+          // Col filtro acceso, la lista che sta sotto (S9-6).
+          numeri: numeriDelFiltro,
           cartelle: avvio?.cartelle.length ?? 0,
           ordinamento: { etichetta: etichettaOrdine, onApri: menuOrdine },
         })}
@@ -4568,7 +4667,6 @@ export function App() {
                 <button
                   type="button"
                   className="pillola btn-ghost"
-                  aria-label={t("artist.tracks.sort.aria", { nome: nomeArtista(nome) })}
                   onClick={menuOrdineArtista}
                 >
                   <Icona nome="i-sort" dim={14} />
@@ -4779,8 +4877,10 @@ export function App() {
         return (
           <ElencoBraniCollegato
             rada={v === "brani" ? radaBrani : radaPreferiti}
-            /* Un altro ordinamento è un altro elenco: in cima. */
-            chiave={v === "brani" ? ordine : undefined}
+            /* Un altro ordinamento, o un altro filtro per dispositivo, è un altro
+               elenco: in cima (S9-7). Solo scelte dell'utente: un totale che
+               cresce leggendo un catalogo non deve riportare in cima. */
+            chiave={v === "brani" ? `${ordine}:${chiaveOrigine}` : chiaveOrigine}
             memoria
             scorrevole={contenuto}
             suonabile={riproduzione.disponibile}
@@ -4807,6 +4907,7 @@ export function App() {
             onMenu={menuAlbum}
             scorrevole={contenuto}
             memoria
+            chiave={chiaveOrigine}
           />
         );
       case "artisti":
@@ -4834,6 +4935,7 @@ export function App() {
             artisti={artisti}
             scorrevole={contenuto}
             memoria
+            chiave={chiaveOrigine}
             /* `apriArtista` e non `setArtistaAperto`: aprire un artista è un
                cambio di pagina come gli altri, e passando dal setter nudo era
                l'unico che avveniva di scatto — mentre la voce «Apri» del menù
@@ -5693,7 +5795,7 @@ export function App() {
                     toast non compare: sarebbe la stessa barra due volte. */}
                 {/* Il primo collegamento di un dispositivo: «Leggo la libreria di <PC>…
                     12.000/50.000». Nel frattempo la libreria si usa. */}
-                <StrisciaSpecchio />
+                <StrisciaSpecchio onErrore={segnalaErrore} />
                 <StrisciaScarico onErrore={segnalaErrore} />
                 <ConImportazioni>
                   {(importazioni) => (
@@ -5787,9 +5889,10 @@ export function App() {
         {/* Le righe che un dispositivo non manda più, e che aspettano un sì per
             andarsene: vedi `ConfermaSpecchio.tsx`. */}
         <DomandaSpecchio
+          pronta={propostaPuoMostrarsi}
           onErrore={segnalaErrore}
           onNotizia={setNotizia}
-          onRilegge={() => ricaricaAccorpata.chiama()}
+          onRilegge={() => chiediRilettura(true)}
         />
       </div>
 
