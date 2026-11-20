@@ -340,3 +340,64 @@ fn il_conto_di_un_disco_condiviso_non_conta_le_righe_degli_altri_dispositivi() {
         "tre brani di qui, non i quattro di tutti: {condivisi:?}"
     );
 }
+
+// ── S2-11 ───────────────────────────────────────────────────────────────────
+
+/// L'identificativo MusicBrainz del gruppo di pubblicazione di «Formati».
+const MBRG: &str = "01234567-89ab-cdef-0123-456789abcdef";
+
+#[test]
+fn un_pari_non_cambia_titolo_e_artista_di_un_album_locale() {
+    // Il telefono ha «Formati» da tre brani, con il suo identificativo
+    // MusicBrainz. Un pari manda venti righe che dichiarano **lo stesso**
+    // identificativo, ma un altro titolo e un altro artista: gli identificativi
+    // «uniscono», e il disco di qui si ritrovava con il titolo e l'artista di chi
+    // ha più righe — le sue.
+    let c = libreria();
+    for n in 1..=3 {
+        locale_formati(&c, n, n, 128);
+    }
+    c.execute(
+        "UPDATE tracks SET mb_release_group_id = ?1 WHERE album = 'Formati'",
+        [MBRG],
+    )
+    .expect("identificativo di qui");
+    ricostruisci(&c);
+    let formati_di_qui = |c: &Connection| {
+        let schede = list_albums(c, &Origine::Locale, 0, 50).expect("album");
+        schede
+            .into_iter()
+            .map(|a| (a.title, a.artist, a.total_tracks))
+            .collect::<Vec<_>>()
+    };
+    let prima = formati_di_qui(&c);
+    assert_eq!(prima, vec![("Formati".to_owned(), "Artista".to_owned(), 3)]);
+
+    let intrusi: Vec<_> = (100..120)
+        .map(|n| {
+            let mut r = riga(n);
+            r.album = "Un altro disco".to_owned();
+            r.artist = "Un altro artista".to_owned();
+            r.mb_release_group_id = Some(MBRG.to_owned());
+            r.album_key = Some("e".repeat(32));
+            r
+        })
+        .collect();
+    giro(&c, &chiave(PC), &intrusi, ADESSO);
+    assert_eq!(
+        formati_di_qui(&c),
+        prima,
+        "il disco di qui ha ancora il suo titolo e il suo artista"
+    );
+    // E i brani di qui non sono stati spostati sotto un altro album.
+    let chiavi_di_qui: Vec<String> = {
+        let mut st = c
+            .prepare("SELECT DISTINCT album_key FROM tracks WHERE path LIKE '/musica/%'")
+            .expect("chiavi");
+        st.query_map([], |r| r.get(0))
+            .expect("chiavi")
+            .map(|r| r.expect("chiave"))
+            .collect()
+    };
+    assert_eq!(chiavi_di_qui.len(), 1, "{chiavi_di_qui:?}");
+}

@@ -27,8 +27,14 @@ fn member_from_row(row: &Row<'_>) -> rusqlite::Result<AlbumMember> {
         mb_release_group_id: row.get(10)?,
         mb_release_id: row.get(11)?,
         spotify_album_id: row.get(12)?,
+        da_pari: row.get(13)?,
     })
 }
+
+/// La colonna `da_pari` di `member_from_row`: la riga è specchio, di un altro
+/// dispositivo (`crate::specchio::SQL_SPECCHIO`). `COALESCE` perché un brano di
+/// catalogo non ha un `path`, e il confronto con `NULL` non è né vero né falso.
+const COLONNA_DA_PARI: &str = "COALESCE(t.path >= 'lontano://' AND t.path < 'lontano:/0', 0)";
 
 /// L'artista sotto cui elencare un brano, in SQL.
 ///
@@ -89,15 +95,16 @@ pub fn rebuild_aggregates(tx: &Transaction<'_>) -> Result<Aggregates, AppError> 
     }
     let members = {
         let mut statement = tx
-            .prepare(
+            .prepare(&format!(
                 "SELECT t.album_key, t.album, t.album_artist, t.artist, t.year, t.genre,
                         t.cover_art_hash, c.source, c.width, c.height,
-                        t.mb_release_group_id, t.mb_release_id, t.spotify_album_id
+                        t.mb_release_group_id, t.mb_release_id, t.spotify_album_id,
+                        {COLONNA_DA_PARI}
                  FROM tracks t
                  LEFT JOIN cover_art c ON c.hash = t.cover_art_hash
                  WHERE t.album_key IS NOT NULL AND t.album_key <> ''
-                 ORDER BY t.id",
-            )
+                 ORDER BY t.id"
+            ))
             .map_err(|err| db_error("lettura dei brani per gli album", &err))?;
         let rows = statement
             .query_map([], member_from_row)
@@ -713,7 +720,8 @@ fn membri_delle_chiavi(
         let sql = format!(
             "SELECT t.album_key, t.album, t.album_artist, t.artist, t.year, t.genre,
                     t.cover_art_hash, c.source, c.width, c.height,
-                    t.mb_release_group_id, t.mb_release_id, t.spotify_album_id, t.id
+                    t.mb_release_group_id, t.mb_release_id, t.spotify_album_id,
+                    {COLONNA_DA_PARI}, t.id
              FROM tracks t
              LEFT JOIN cover_art c ON c.hash = t.cover_art_hash
              WHERE t.album_key IN ({})",
@@ -724,7 +732,7 @@ fn membri_delle_chiavi(
             .map_err(|err| db_error("lettura dei brani per gli album", &err))?;
         let righe = statement
             .query_map(rusqlite::params_from_iter(pezzo), |riga| {
-                Ok((riga.get::<_, i64>(13)?, member_from_row(riga)?))
+                Ok((riga.get::<_, i64>(14)?, member_from_row(riga)?))
             })
             .map_err(|err| db_error("lettura dei brani per gli album", &err))?;
         for riga in righe {
