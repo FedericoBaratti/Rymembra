@@ -130,6 +130,19 @@ export function vociBrani(
    * `gestoPermesso`.
    */
   senzaCoda = false,
+  /**
+   * Come si scorrono le righe in mano: la prima che risponde a `predicato`,
+   * come `Elenco.cerca` di `rada.ts`.
+   *
+   * Serve a una domanda sola, «fra gli scelti c'è un brano di un altro
+   * dispositivo?». Con «Seleziona tutto» su una lista rada gli scelti sono
+   * decine di migliaia e le righe in mano qualche migliaio: chiederlo per id
+   * (`inMano`) vuol dire, per ogni id che non c'è, scorrere tutte le righe in
+   * mano — scelti × righe, due volte (S9-2). Scorrendo le righe una volta e
+   * guardando se sono fra gli scelti il conto è righe in mano. Senza, si
+   * chiede per id, una volta sola.
+   */
+  cercaInMano?: (predicato: (brano: Brano) => boolean) => Brano | undefined,
 ): Voce[] {
   /*
    * Solo le righe della libreria di questo PC.
@@ -167,9 +180,19 @@ export function vociBrani(
    * sono voci di questo menù (i tag si rileggono tutti da Impostazioni, e quella
    * scansione non prende le righe specchio: `rileggi_tutti_i_tag`).
    */
-  const conUnoDiUnAltroDispositivo = brani.some(
-    (id) => dispositivoDellaRiga(inMano(id)?.path) !== null,
-  );
+  const conUnoDiUnAltroDispositivo = (() => {
+    if (cercaInMano === undefined) {
+      return brani.some((id) => dispositivoDellaRiga(inMano(id)?.path) !== null);
+    }
+    // Un insieme e una scansione che si ferma alla prima riga che risponde: le
+    // righe in mano sono poche, gli scelti no. Un id che non è in mano non si
+    // sa di che dispositivo sia, e conta come di qui (vedi sopra): non ha una
+    // riga da trovare.
+    const scelti = new Set(brani);
+    return (
+      cercaInMano((b) => scelti.has(b.id) && dispositivoDellaRiga(b.path) !== null) !== undefined
+    );
+  })();
   const servizioDelPrimo = eNuvola(delPrimo?.path) ? nomeServizioDi(delPrimo?.path) : null;
   /*
    * Le tre voci che su un brano solo mancavano: portarsi al suo disco, al
@@ -263,8 +286,7 @@ export function vociBrani(
           { etichetta: t("action.enqueue"), icona: "i-queue" as const, azione: () => fai.accoda(brani) },
         ]),
     // Solo se c'è un brano di un altro dispositivo da portare qui.
-    ...(fai.scaricaQui !== undefined &&
-    brani.some((id) => dispositivoDellaRiga(inMano(id)?.path) !== null)
+    ...(fai.scaricaQui !== undefined && conUnoDiUnAltroDispositivo
       ? [{ etichetta: t("devices.download"), icona: "i-import" as const, azione: () => fai.scaricaQui?.(brani) }]
       : []),
     { etichetta: t("action.addToPlaylist"), icona: "i-plus" as const, azione: () => fai.aggiungiAPlaylist(brani) },

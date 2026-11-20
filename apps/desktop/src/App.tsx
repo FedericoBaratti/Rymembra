@@ -2377,6 +2377,19 @@ export function App() {
           : conosciuto !== undefined && conosciuto.id === id
             ? conosciuto
             : elencoCorrenteRef.current.cerca((b) => b.id === id);
+      // Le righe in mano scorse una volta, per «c'è fra gli scelti un brano di
+      // un altro dispositivo?»: con «Seleziona tutto» gli scelti sono decine di
+      // migliaia, e chiederlo per id scorreva tutte le righe in mano per ognuno
+      // (S9-2). Con un elenco che solo chi apre sa trovare (`conosciuto` è una
+      // funzione: le Cartelle, le partecipazioni) l'universo delle righe non è
+      // scorribile da qui, e `vociBrani` torna alla strada per id.
+      const cercaInMano =
+        typeof conosciuto === "function"
+          ? undefined
+          : (predicato: (brano: Brano) => boolean): Brano | undefined =>
+              conosciuto !== undefined && predicato(conosciuto)
+                ? conosciuto
+                : elencoCorrenteRef.current.cerca(predicato);
       // Il brano si legge al momento del gesto: l'elenco che ha aperto il menù
       // ha solo i numeri.
       const conBrano =
@@ -2494,6 +2507,7 @@ export function App() {
           // sessione, e il menù si costruisce adesso. Vedi `vociBrani`.
           !gestoPermesso(riproduzione.archivio.leggi().insieme, "radio"),
           !gestoPermesso(riproduzione.archivio.leggi().insieme, "coda"),
+          cercaInMano,
         ),
       });
     },
