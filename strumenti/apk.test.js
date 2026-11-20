@@ -446,10 +446,15 @@ const os = require("node:os");
 const { spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
 
-/** `keytool` del JDK (da JAVA_HOME o dal PATH), o `null`: le prove che lo usano si saltano. */
+/**
+ * `keytool` del JDK, o `null`: le prove che lo usano si saltano. Si preferisce il
+ * JDK 17 dell'immagine (`JAVA_HOME_17_X64`), che è quello che `segreti` usa in
+ * produzione, a un `JAVA_HOME` qualunque: queste prove girano anche nel lavoro
+ * `verifica` di Windows, e un JDK diverso non deve poterle rompere.
+ */
 function keytoolOppureNull() {
   const { cercaKeytool } = require("./apk.js");
-  const k = cercaKeytool();
+  const k = cercaKeytool({ ...process.env, JAVA_HOME: process.env.JAVA_HOME_17_X64 || process.env.JAVA_HOME });
   return spawnSync(k, ["-help"], { encoding: "utf8" }).error ? null : k;
 }
 
@@ -493,8 +498,8 @@ test("la forma dei segreti di Android: ci sono tutti e tre, e il keystore è bas
 });
 
 test("keytool apre il keystore con la password e l'alias, e l'impronta è quella dei rilasci (S10-3)", { skip: keytoolOppureNull() ? false : "keytool non c'è (JAVA_HOME o PATH)" }, () => {
-  const { problemiKeystore, cercaKeytool } = require("./apk.js");
-  const keytool = cercaKeytool();
+  const { problemiKeystore } = require("./apk.js");
+  const keytool = keytoolOppureNull();
   const k = keystoreVero(keytool);
   const dati = { keystore: k.keystore, password: k.password, alias: k.alias };
   // La cartella temporanea è quella che dice RUNNER_TEMP: dopo il controllo non deve restare niente, il keystore è una chiave.
@@ -515,9 +520,12 @@ test("keytool apre il keystore con la password e l'alias, e l'impronta è quella
     // Un certificato che non è quello inchiodato: nessun telefono si aggiornerebbe.
     const altra = problemiKeystore(dati, { impronta: IMPRONTA, keytool }).join("\n");
     assert.match(altra, /non quello dei rilasci/);
-    // Byte che cominciano come un PKCS12 ma non lo sono.
-    const finto = problemiKeystore({ ...dati, keystore: Buffer.concat([Buffer.from([0x30, 0x82]), crypto.randomBytes(80)]) }, { impronta: k.impronta, keytool }).join("\n");
-    assert.match(finto, /non è un keystore che keytool apra/);
+    // Byte che cominciano come un PKCS12 ma non lo sono: la frase esatta dipende dal JDK (può
+    // essere «formato non riconosciuto» o un errore di lettura del DER), quindi non la si
+    // pretende. Vale che non passa, e che non stampa un segreto: il ramo generico copre il resto.
+    const finto = problemiKeystore({ ...dati, keystore: Buffer.concat([Buffer.from([0x30, 0x82]), crypto.randomBytes(80)]) }, { impronta: k.impronta, keytool });
+    assert.ok(finto.length > 0, "un keystore finto è passato per buono");
+    assert.ok(!finto.join("\n").includes(k.password), finto.join("\n"));
     assert.deepEqual(fs.readdirSync(runner), []);
   } finally {
     if (prima === undefined) delete process.env.RUNNER_TEMP;
