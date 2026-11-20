@@ -1195,3 +1195,171 @@ fn le_righe_sparite_si_nascondono_a_blocchi_e_alla_fine_non_resta_niente_di_visi
         "{ancora:?}"
     );
 }
+
+// ── la cronologia d'ascolto e le voci seguono la copia di qui (S2-2, S2-1) ──────
+
+/// Gli ascolti di una riga, in `play_history`.
+fn ascolti_di(c: &Connection, brano: i64) -> i64 {
+    c.query_row(
+        "SELECT COUNT(*) FROM play_history WHERE track_id = ?1",
+        [brano],
+        |r| r.get(0),
+    )
+    .expect("ascolti")
+}
+
+/// Un ascolto fatto su `brano` a `quando`.
+fn ascolto(c: &Connection, brano: i64, quando: i64) {
+    c.execute(
+        "INSERT INTO play_history (track_id, played_at, ms_played) VALUES (?1, ?2, 90000)",
+        rusqlite::params![brano, quando],
+    )
+    .expect("ascolto");
+}
+
+/// Il telefono ha il brano 1 di qui, e dal PC le righe 1 (lo stesso brano) e 2
+/// (solo sul PC). Il telefono ha suonato la copia migliore, quella del PC:
+/// tre ascolti sulla riga specchio del brano 1 — uno nello stesso istante di un
+/// ascolto di qui —, due su quella del brano 2. Restituisce la connessione e
+/// gli id delle due righe specchio.
+fn telefono_con_ascolti_di_un_pari() -> (Connection, i64, i64) {
+    let c = libreria();
+    locale(&c, 1, 1);
+    giro(&c, &chiave(PC), &[riga(1), riga(2)], ADESSO);
+    let (r1, r2) = (id_specchio(&c, PC, 1), id_specchio(&c, PC, 2));
+    for quando in [1_700, 1_800, 1_900] {
+        ascolto(&c, r1, quando);
+    }
+    for quando in [2_700, 2_800] {
+        ascolto(&c, r2, quando);
+    }
+    // Lo stesso istante, già sulla copia di qui: è lo stesso ascolto, e il
+    // passaggio non lo deve duplicare né fallire (indice unico della 020).
+    ascolto(&c, 1, 1_800);
+    (c, r1, r2)
+}
+
+#[test]
+fn dimenticare_un_dispositivo_tiene_la_cronologia_sulla_copia_di_qui() {
+    let (c, _r1, _r2) = telefono_con_ascolti_di_un_pari();
+    specchio::archivio::dimentica_dispositivo(&c, &chiave(PC)).expect("dimenticato");
+    assert_eq!(
+        ascolti_di(&c, 1),
+        3,
+        "i tre ascolti del brano 1 stanno sulla copia di qui, quello dello stesso istante una volta sola"
+    );
+    assert_eq!(
+        c.query_row("SELECT COUNT(*) FROM play_history", [], |r| r
+            .get::<_, i64>(0))
+            .expect("totale"),
+        3,
+        "quelli del brano che c'è solo sul PC se ne vanno con lui"
+    );
+}
+
+#[test]
+fn la_grazia_scaduta_tiene_la_cronologia_sulla_copia_di_qui() {
+    let (c, _r1, _r2) = telefono_con_ascolti_di_un_pari();
+    // Il PC non manda più il brano 1: in grazia, poi scaduta.
+    giro(&c, &chiave(PC), &[riga(2)], ADESSO + 10_000);
+    // In grazia la riga è nascosta con i suoi ascolti (se ritorna li ritrova):
+    // è alla rimozione che passano alla copia di qui.
+    let chiusura = giro(
+        &c,
+        &chiave(PC),
+        &[riga(2)],
+        ADESSO + 10_000 + specchio::archivio::GRAZIA_MS + 1_000,
+    );
+    assert_eq!(chiusura.tolte, 1, "{chiusura:?}");
+    assert_eq!(
+        ascolti_di(&c, 1),
+        3,
+        "la riga se n'è andata, gli ascolti no"
+    );
+}
+
+#[test]
+fn la_conferma_di_massa_tiene_la_cronologia_sulla_copia_di_qui() {
+    let c = libreria();
+    locale(&c, 1, 1);
+    let righe: Vec<_> = (1..=60).map(riga).collect();
+    giro(&c, &chiave(PC), &righe, ADESSO);
+    let r1 = id_specchio(&c, PC, 1);
+    for quando in [1_700, 1_900] {
+        ascolto(&c, r1, quando);
+    }
+    // Il PC non manda più niente: più di cinquanta righe, in attesa di conferma.
+    let chiusura = giro(&c, &chiave(PC), &[riga(1000)], ADESSO + 10_000);
+    assert!(chiusura.in_attesa >= 60, "{chiusura:?}");
+    specchio::archivio::conferma_rimozioni(&c, &chiave(PC)).expect("conferma");
+    assert_eq!(
+        ascolti_di(&c, 1),
+        2,
+        "gli ascolti stanno sulla copia di qui"
+    );
+}
+
+#[test]
+fn la_voce_su_una_riga_che_sparisce_segue_la_chiave_di_contenuto() {
+    // S2-1. Il PC ha corretto un tag a mano: la sua `track_key` è nuova e la sua
+    // chiave di contenuto (i tag grezzi) è quella di prima, la stessa della copia
+    // di qui, che ha la `track_key` vecchia. Per `track_key` non si trovano; per
+    // contenuto sì, ed è la regola di «Dimentica» (rev2-02): vale anche quando è
+    // il PC a non mandare più il brano.
+    let c = libreria();
+    let mut dal_pc = riga(7);
+    dal_pc.track_key = "pc|corretta|album".to_owned();
+    dal_pc.content_key = Some("grezza|chiave".to_owned());
+    giro(&c, &chiave(PC), &[dal_pc, riga(8)], ADESSO);
+    c.execute(
+        "INSERT INTO tracks (id, path, track_key, content_key, title, artist, album, file_size,
+                             date_added, date_modified)
+         VALUES (900, '/musica/7.mp3', 'qui|vecchia|album', 'grezza|chiave', 'T', 'A', 'B', 1, 1, 1)",
+        [],
+    )
+    .expect("copia di qui");
+    let m7 = id_specchio(&c, PC, 7);
+    playlist_con(&c, "sera", &[m7]);
+    ascolto(&c, m7, 1_700);
+
+    // Il brano sparisce: la voce e l'ascolto passano subito, in grazia.
+    giro(&c, &chiave(PC), &[riga(8)], ADESSO + 10_000);
+    let voce = |c: &Connection| -> Vec<i64> {
+        let mut st = c
+            .prepare("SELECT track_id FROM playlist_tracks ORDER BY position")
+            .expect("voci");
+        st.query_map([], |r| r.get(0))
+            .expect("voci")
+            .map(|r| r.expect("voce"))
+            .collect()
+    };
+    assert_eq!(
+        voce(&c),
+        vec![900],
+        "in grazia la voce sta già sulla copia di qui"
+    );
+    // Passata la grazia la riga se ne va, e la voce no.
+    giro(
+        &c,
+        &chiave(PC),
+        &[riga(8)],
+        ADESSO + 10_000 + specchio::archivio::GRAZIA_MS + 1_000,
+    );
+    assert_eq!(voce(&c), vec![900], "la voce è ancora sulla copia di qui");
+    assert_eq!(ascolti_di(&c, 900), 1, "e l'ascolto con lei");
+}
+
+#[test]
+fn l_anteprima_di_dimentica_conta_gli_ascolti_che_si_perdono() {
+    // Il brano 1 ha una copia di qui, e i suoi tre ascolti passano; il brano 2
+    // c'è solo sul PC, e i suoi due se ne vanno: sono quelli che la domanda dice.
+    let (c, _r1, _r2) = telefono_con_ascolti_di_un_pari();
+    let anteprima = specchio::archivio::anteprima_dimentica(&c, &chiave(PC)).expect("anteprima");
+    assert_eq!(anteprima.ascolti_persi, 2, "{anteprima:?}");
+    // Senza ascolti, niente da dire.
+    let senza = libreria();
+    giro(&senza, &chiave(PC), &[riga(1)], ADESSO);
+    let anteprima =
+        specchio::archivio::anteprima_dimentica(&senza, &chiave(PC)).expect("anteprima");
+    assert_eq!(anteprima.ascolti_persi, 0, "{anteprima:?}");
+}

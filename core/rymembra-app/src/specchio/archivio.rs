@@ -508,7 +508,7 @@ fn aggiorna(
     // vecchia non ha più righe, e per la sincronia è un brano assente,
     // invisibile e non tolto. È la regola di quando una riga se ne va.
     if cambia_la_chiave_di_una_riga_con_voci(tx, track_id, &riga.track_key)? {
-        sposta_le_voci(tx, &[track_id])?;
+        sposta_le_voci(tx, &[track_id], false)?;
     }
     let cover = registra_la_copertina(tx, riga.cover_art_hash.as_deref(), adesso_ms)?;
     tx.execute(
@@ -1031,8 +1031,165 @@ fn cambia_la_chiave_di_una_riga_con_voci(
     .map_err(|err| db_error("chiave di una riga specchio", &err))
 }
 
+/// Un elenco di interi in JSON: `json_each` lo legge per intero in una
+/// condizione sola, senza il tetto dei parametri di SQLite.
+fn in_json<T: serde::Serialize + ?Sized>(elenco: &T) -> String {
+    serde_json::to_string(elenco).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// Come si cerca l'altra copia di un brano ([`altre_copie`]).
+#[derive(Debug, Clone, Copy)]
+struct Ricerca<'a> {
+    /// Righe che stanno per andarsene insieme alle cercate: mai una copia.
+    in_corso: &'a HashSet<i64>,
+    /// Le righe di questo dispositivo non sono copie: lo si sta dimenticando, e
+    /// la domanda è cosa resterebbe.
+    fuori_dal_dispositivo: Option<&'a str>,
+    /// Se per `track_key` non si trova niente, si prova con la chiave di
+    /// contenuto del proprietario.
+    anche_per_contenuto: bool,
+}
+
+/// Dov'è ancora lo stesso brano di ciascuna di queste righe: `riga → altra`.
+/// Le righe senza un'altra copia non ci sono.
+///
+/// È **l'unica** regola con cui lo si cerca — per le voci di playlist quando la
+/// riga se ne va ([`sposta_le_voci`]), per la cronologia d'ascolto
+/// ([`sposta_la_cronologia`]), per quel che «Dimentica» dice di perdere
+/// ([`anteprima_dimentica`]) —: due regole diverse fanno mentire l'anteprima, e
+/// una voce che in grazia seguiva la chiave di contenuto e alla scadenza no
+/// (S2-1) è proprio una regola detta due volte.
+///
+/// Si cerca per **`track_key`**, come la sincronia, il riaggancio e
+/// `remove_tracks`; e solo per chi così non trova niente, e se `Ricerca::
+/// anche_per_contenuto`, per **chiave di contenuto**: quella del proprietario
+/// quando ha corretto un tag e le due chiavi divergono (`lontano_brani.
+/// content_key`; per le righe di qui, `tracks.content_key`). L'altra riga è, nell'
+/// ordine, una di questa macchina; poi quella di un altro dispositivo che il
+/// proprietario manda ancora, la più vecchia. **Mai** una riga segnata sparita
+/// (la voce, o l'ascolto, ci morirebbe alla conferma), né la riga stessa, né una
+/// di quelle che si stanno togliendo.
+///
+/// Le chiavi si cercano tutte insieme, in un parametro JSON: su tremila righe una
+/// scansione per chiave, col lucchetto preso, costava minuti (indici sulla
+/// `track_key` e `idx_lontano_brani_content_key`).
+fn altre_copie(
+    tx: &Connection,
+    righe: &[i64],
+    ricerca: Ricerca<'_>,
+) -> Result<HashMap<i64, i64>, AppError> {
+    let cosa = "altra copia dello stesso brano";
+    if righe.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // Le chiavi di ogni riga.
+    let chiavi: Vec<(i64, String, Option<String>)> = {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT t.id, t.track_key, COALESCE(l.content_key, t.content_key)
+                   FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
+                  WHERE t.id IN (SELECT value FROM json_each(?1))",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        st.query_map([in_json(righe)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<_, _>>()
+            .map_err(|err| db_error(cosa, &err))?
+    };
+    // Le righe con quella chiave, di qui per prime. Una chiave può averne molte
+    // (i brani senza tag): se ne tengono tutte, e si sceglie la prima che serve.
+    let per_chiave: HashMap<String, Vec<i64>> = {
+        let chiavi_cercate: BTreeSet<&str> = chiavi.iter().map(|(_, k, _)| k.as_str()).collect();
+        let mut st = tx
+            .prepare_cached(
+                "SELECT t.track_key, t.id
+                   FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
+                  WHERE t.track_key IN (SELECT value FROM json_each(?1))
+                    AND (l.track_id IS NULL
+                         OR (l.sparito_ms IS NULL AND (?2 IS NULL OR l.dispositivo <> ?2)))
+                  ORDER BY (l.track_id IS NOT NULL), t.id",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let lette = st
+            .query_map(
+                params![in_json(&chiavi_cercate), ricerca.fuori_dal_dispositivo],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let mut mappa: HashMap<String, Vec<i64>> = HashMap::new();
+        for riga in lette {
+            let (chiave, id) = riga.map_err(|err| db_error(cosa, &err))?;
+            mappa.entry(chiave).or_default().push(id);
+        }
+        mappa
+    };
+    let la_prima = |riga: i64, candidate: Option<&Vec<i64>>| -> Option<i64> {
+        candidate?
+            .iter()
+            .copied()
+            .find(|id| *id != riga && !ricerca.in_corso.contains(id))
+    };
+    let mut trovate: HashMap<i64, i64> = HashMap::new();
+    for (riga, chiave, _) in &chiavi {
+        if let Some(altra) = la_prima(*riga, per_chiave.get(chiave)) {
+            trovate.insert(*riga, altra);
+        }
+    }
+    if !ricerca.anche_per_contenuto {
+        return Ok(trovate);
+    }
+    // Per chiave di contenuto, solo per chi non ha trovato niente.
+    let senza: BTreeSet<&str> = chiavi
+        .iter()
+        .filter(|(riga, _, _)| !trovate.contains_key(riga))
+        .filter_map(|(_, _, contenuto)| contenuto.as_deref())
+        .collect();
+    if senza.is_empty() {
+        return Ok(trovate);
+    }
+    let per_contenuto: HashMap<String, Vec<i64>> = {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT k, id FROM (
+                   SELECT t.content_key AS k, t.id AS id, 0 AS fuori
+                     FROM tracks t
+                    WHERE t.content_key IN (SELECT value FROM json_each(?1))
+                      AND (t.path IS NULL OR t.path < 'lontano://' OR t.path >= 'lontano:/0')
+                   UNION ALL
+                   SELECT l.content_key, l.track_id, 1
+                     FROM lontano_brani l
+                    WHERE l.content_key IN (SELECT value FROM json_each(?1))
+                      AND l.sparito_ms IS NULL AND (?2 IS NULL OR l.dispositivo <> ?2)
+                 ) ORDER BY fuori, id",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let lette = st
+            .query_map(
+                params![in_json(&senza), ricerca.fuori_dal_dispositivo],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let mut mappa: HashMap<String, Vec<i64>> = HashMap::new();
+        for riga in lette {
+            let (chiave, id) = riga.map_err(|err| db_error(cosa, &err))?;
+            mappa.entry(chiave).or_default().push(id);
+        }
+        mappa
+    };
+    for (riga, _, contenuto) in &chiavi {
+        if trovate.contains_key(riga) {
+            continue;
+        }
+        let candidate = contenuto.as_deref().and_then(|c| per_contenuto.get(c));
+        if let Some(altra) = la_prima(*riga, candidate) {
+            trovate.insert(*riga, altra);
+        }
+    }
+    Ok(trovate)
+}
+
 /// Prima di togliere delle righe specchio: le loro voci di playlist passano a
-/// un'altra riga dello stesso brano — stessa `track_key` — se ce n'è una.
+/// un'altra riga dello stesso brano, se ce n'è una ([`altre_copie`]).
 ///
 /// `playlist_tracks` ha `ON DELETE CASCADE`: togliere una riga con le sue voci
 /// le svuoterebbe, e se la `track_key` c'è ancora su un'altra riga, per la
@@ -1042,21 +1199,26 @@ fn cambia_la_chiave_di_una_riga_con_voci(
 /// ritira. È lo stesso gesto che `remove_tracks` fa nel verso opposto, per la
 /// copia di qui che se ne va.
 ///
-/// L'altra riga è, nell'ordine: una di questa macchina; poi quella di un altro
-/// dispositivo che il proprietario manda ancora. **Mai** una riga segnata
-/// sparita (la voce ci morirebbe alla conferma) né una delle righe che si stanno
-/// togliendo. Se non c'è, la voce se ne va con la riga, e la sua chiave resta
+/// `per_contenuto`: se per `track_key` non c'è niente si prova con la chiave di
+/// contenuto del proprietario. Vale quando la riga **se ne va** (grazia,
+/// conferma, «Dimentica»): il brano ce l'ha ancora, qui, con un'altra chiave. Non
+/// vale quando la riga resta e cambia chiave ([`aggiorna`]): lì la voce si
+/// sposta solo per tenere la chiave vecchia dov'è ancora viva, e un'altra chiave
+/// non è la stessa.
+///
+/// Se non c'è un'altra copia, la voce se ne va con la riga, e la sua chiave resta
 /// nella sequenza della sincronia: invisibile, non tolta.
 ///
 /// Quante voci ha spostato.
-pub(crate) fn sposta_le_voci(tx: &Connection, da_togliere: &[i64]) -> Result<usize, AppError> {
+pub(crate) fn sposta_le_voci(
+    tx: &Connection,
+    da_togliere: &[i64],
+    per_contenuto: bool,
+) -> Result<usize, AppError> {
     let cosa = "voci di playlist verso un'altra copia";
     if da_togliere.is_empty() {
         return Ok(0);
     }
-    // Un elenco di interi si scrive sempre: `json_each` lo legge per intero in
-    // una condizione sola, senza il tetto dei parametri di SQLite.
-    let insieme = serde_json::to_string(da_togliere).unwrap_or_else(|_| "[]".to_owned());
     // Solo le righe che hanno delle voci: sono poche, e per le altre non c'è
     // niente da cercare.
     let con_voci: Vec<i64> = {
@@ -1066,7 +1228,7 @@ pub(crate) fn sposta_le_voci(tx: &Connection, da_togliere: &[i64]) -> Result<usi
                   WHERE track_id IN (SELECT value FROM json_each(?1))",
             )
             .map_err(|err| db_error(cosa, &err))?;
-        st.query_map([&insieme], |r| r.get(0))
+        st.query_map([in_json(da_togliere)], |r| r.get(0))
             .map_err(|err| db_error(cosa, &err))?
             .collect::<Result<_, _>>()
             .map_err(|err| db_error(cosa, &err))?
@@ -1075,26 +1237,21 @@ pub(crate) fn sposta_le_voci(tx: &Connection, da_togliere: &[i64]) -> Result<usi
         return Ok(0);
     }
     let in_corso: HashSet<i64> = da_togliere.iter().copied().collect();
-    let mut cerca = tx
-        .prepare_cached(
-            "SELECT m.id FROM tracks m LEFT JOIN lontano_brani lm ON lm.track_id = m.id
-              WHERE m.track_key = (SELECT track_key FROM tracks WHERE id = ?1)
-                AND m.id <> ?1
-                AND (lm.track_id IS NULL OR lm.sparito_ms IS NULL)
-              ORDER BY (lm.track_id IS NOT NULL), m.id",
-        )
-        .map_err(|err| db_error(cosa, &err))?;
+    let altre = altre_copie(
+        tx,
+        &con_voci,
+        Ricerca {
+            in_corso: &in_corso,
+            fuori_dal_dispositivo: None,
+            anche_per_contenuto: per_contenuto,
+        },
+    )?;
     let mut sposta = tx
         .prepare_cached("UPDATE playlist_tracks SET track_id = ?2 WHERE track_id = ?1")
         .map_err(|err| db_error(cosa, &err))?;
     let mut spostate = 0;
     for da in con_voci {
-        let candidate: Vec<i64> = cerca
-            .query_map([da], |r| r.get(0))
-            .map_err(|err| db_error(cosa, &err))?
-            .collect::<Result<_, _>>()
-            .map_err(|err| db_error(cosa, &err))?;
-        if let Some(a) = candidate.into_iter().find(|id| !in_corso.contains(id)) {
+        if let Some(a) = altre.get(&da) {
             spostate += sposta
                 .execute(params![da, a])
                 .map_err(|err| db_error(cosa, &err))?;
@@ -1103,9 +1260,74 @@ pub(crate) fn sposta_le_voci(tx: &Connection, da_togliere: &[i64]) -> Result<usi
     Ok(spostate)
 }
 
+/// Prima di togliere delle righe specchio: la cronologia d'ascolto fatta su di
+/// loro passa all'altra copia dello stesso brano, se c'è ([`altre_copie`]).
+///
+/// `play_history` ha `ON DELETE CASCADE`, e `record_play_specchio` scrive gli
+/// ascolti di un brano remoto sulla **riga specchio** — la copia migliore è di
+/// norma quella del PC, anche quando qui c'è il file —: togliere la riga
+/// («Dimentica», la grazia scaduta, la conferma di una strage) portava via mesi
+/// di «Cronologia» di brani che sul telefono ci sono ancora (S2-2). Il
+/// proprietario ha lo stesso ascolto per conto suo, ma è una vista di qui.
+///
+/// Un passo suo e non dentro [`sposta_le_voci`]: quella esce subito se nessuna
+/// playlist ha voci, che è il caso comune. `UPDATE OR IGNORE`: un ascolto
+/// nello stesso istante su tutte e due le righe è lo stesso ascolto (indice
+/// unico della migrazione 20), e quel che resta sulla riga se ne va con lei. È
+/// lo stesso gesto di `desiderati`, quando un brano scaricato prende il posto
+/// del suo riferimento.
+///
+/// Senza un'altra copia gli ascolti se ne vanno con la riga: quanti, lo dice
+/// l'anteprima di «Dimentica» ([`Anteprima::ascolti_persi`]). Quanti ascolti ha
+/// spostato.
+fn sposta_la_cronologia(tx: &Connection, da_togliere: &[i64]) -> Result<usize, AppError> {
+    let cosa = "cronologia d'ascolto verso un'altra copia";
+    if da_togliere.is_empty() {
+        return Ok(0);
+    }
+    let con_ascolti: Vec<i64> = {
+        let mut st = tx
+            .prepare_cached(
+                "SELECT DISTINCT track_id FROM play_history
+                  WHERE track_id IN (SELECT value FROM json_each(?1))",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        st.query_map([in_json(da_togliere)], |r| r.get(0))
+            .map_err(|err| db_error(cosa, &err))?
+            .collect::<Result<_, _>>()
+            .map_err(|err| db_error(cosa, &err))?
+    };
+    if con_ascolti.is_empty() {
+        return Ok(0);
+    }
+    let in_corso: HashSet<i64> = da_togliere.iter().copied().collect();
+    let altre = altre_copie(
+        tx,
+        &con_ascolti,
+        Ricerca {
+            in_corso: &in_corso,
+            fuori_dal_dispositivo: None,
+            anche_per_contenuto: true,
+        },
+    )?;
+    let mut sposta = tx
+        .prepare_cached("UPDATE OR IGNORE play_history SET track_id = ?2 WHERE track_id = ?1")
+        .map_err(|err| db_error(cosa, &err))?;
+    let mut spostati = 0;
+    for da in con_ascolti {
+        if let Some(a) = altre.get(&da) {
+            spostati += sposta
+                .execute(params![da, a])
+                .map_err(|err| db_error(cosa, &err))?;
+        }
+    }
+    Ok(spostati)
+}
+
 /// Toglie le righe date, con la guardia del percorso come per la scansione: se
 /// la riga nel frattempo è un'altra, non si tocca. Prima, le voci di playlist
-/// passano a un'altra copia del brano, se c'è ([`sposta_le_voci`]).
+/// ([`sposta_le_voci`]) e la cronologia d'ascolto ([`sposta_la_cronologia`])
+/// passano a un'altra copia del brano, se c'è.
 fn togli(
     tx: &Connection,
     righe: &[(i64, String)],
@@ -1113,7 +1335,8 @@ fn togli(
 ) -> Result<usize, AppError> {
     let ids: Vec<i64> = righe.iter().map(|(id, _)| *id).collect();
     toccati.segna_brani(tx, &ids)?;
-    sposta_le_voci(tx, &ids)?;
+    sposta_le_voci(tx, &ids, true)?;
+    sposta_la_cronologia(tx, &ids)?;
     let mut st = tx
         .prepare_cached("DELETE FROM tracks WHERE id = ?1 AND path = ?2")
         .map_err(|err| db_error("rimozione di una riga specchio", &err))?;
@@ -1235,7 +1458,7 @@ fn nascondi_le_sparite(
     }
     // Le voci prima di nasconderle: una riga sparita non è più un'alternativa
     // per nessuno, e `sposta_le_voci` la scarta già dalle candidate.
-    let spostate = sposta_le_voci(tx, &da_nascondere)?;
+    let spostate = sposta_le_voci(tx, &da_nascondere, true)?;
     let mut nascondi = tx
         .prepare_cached("UPDATE tracks SET copia_di = id WHERE id = ?1")
         .map_err(|err| db_error(cosa, &err))?;
@@ -1841,7 +2064,8 @@ pub fn dispositivo_della_copertina(
     Ok(None)
 }
 
-/// Che cosa succederebbe alle playlist dimenticando un dispositivo.
+/// Che cosa succederebbe alle playlist e alla cronologia dimenticando un
+/// dispositivo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Anteprima {
@@ -1855,42 +2079,30 @@ pub struct Anteprima {
     pub perse: usize,
     /// In quante playlist si perde qualcosa: il numero da dire a chi conferma.
     pub playlist_che_perdono: usize,
+    /// Gli ascolti, in «Cronologia», dei brani che non hanno un'altra copia: si
+    /// perdono con le righe. Quelli dei brani che l'hanno passano a lei
+    /// ([`sposta_la_cronologia`]).
+    pub ascolti_persi: usize,
 }
 
 /// Per ogni voce di playlist su una riga di `dispositivo`: la riga con lo
-/// stesso brano che resterebbe, se c'è.
-///
-/// Si cerca per **`track_key`**, come tutto il resto — la sincronia, il
-/// riaggancio, `remove_tracks` —, e solo per le voci che così non trovano
-/// niente per **`content_key`**: la chiave di contenuto del proprietario
-/// quando ha corretto un tag e le due chiavi divergono. Prima la chiave di
-/// contenuto era la sola, e una copia di qui con la stessa `track_key` non si
-/// trovava: l'anteprima diceva «perde», e la voce si buttava.
-///
-/// L'altra riga è una di questa macchina, di preferenza, o la riga di un altro
-/// dispositivo che il proprietario manda ancora. Le chiavi si passano tutte
-/// insieme, in un solo parametro JSON (`json_each`): su tremila voci una
-/// scansione per chiave, col lucchetto preso, costava minuti (indici sulla
-/// `track_key` e, per la ricerca per contenuto, `idx_lontano_brani_content_key`).
+/// stesso brano che resterebbe, se c'è ([`altre_copie`]).
 fn voci_con_alternativa(
     tx: &Connection,
     dispositivo: &str,
 ) -> Result<Vec<(i64, i64, Option<i64>)>, AppError> {
     let cosa = "voci di playlist su un dispositivo";
-    let voci: Vec<(i64, i64, String, Option<String>)> = {
+    let voci: Vec<(i64, i64)> = {
         let mut st = tx
             .prepare(
-                "SELECT pt.playlist_id, pt.track_id, t.track_key, l.content_key
+                "SELECT pt.playlist_id, pt.track_id
                    FROM playlist_tracks pt
                    JOIN lontano_brani l ON l.track_id = pt.track_id
-                   JOIN tracks t ON t.id = pt.track_id
                   WHERE l.dispositivo = ?1",
             )
             .map_err(|err| db_error(cosa, &err))?;
         let lette = st
-            .query_map([dispositivo], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            })
+            .query_map([dispositivo], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(|err| db_error(cosa, &err))?;
         lette
             .collect::<Result<Vec<_>, _>>()
@@ -1899,88 +2111,67 @@ fn voci_con_alternativa(
     if voci.is_empty() {
         return Ok(Vec::new());
     }
-    let json = |chiavi: &BTreeSet<&str>| -> String {
-        serde_json::to_string(chiavi).unwrap_or_else(|_| "[]".to_owned())
-    };
-
-    // Per `track_key`: di qui per prima, poi la riga di un altro dispositivo.
-    let per_chiave: HashMap<String, i64> = {
-        let chiavi: BTreeSet<&str> = voci.iter().map(|(_, _, k, _)| k.as_str()).collect();
-        let mut st = tx
-            .prepare_cached(
-                "SELECT t.track_key, t.id
-                   FROM tracks t LEFT JOIN lontano_brani l ON l.track_id = t.id
-                  WHERE t.track_key IN (SELECT value FROM json_each(?1))
-                    AND (l.track_id IS NULL OR (l.dispositivo <> ?2 AND l.sparito_ms IS NULL))
-                  ORDER BY (l.track_id IS NOT NULL), t.id",
-            )
-            .map_err(|err| db_error(cosa, &err))?;
-        let lette = st
-            .query_map(params![json(&chiavi), dispositivo], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })
-            .map_err(|err| db_error(cosa, &err))?;
-        let mut mappa = HashMap::new();
-        for riga in lette {
-            let (chiave, id) = riga.map_err(|err| db_error(cosa, &err))?;
-            mappa.entry(chiave).or_insert(id);
-        }
-        mappa
-    };
-
-    // Per `content_key`, solo per chi non ha trovato niente.
-    let senza: BTreeSet<&str> = voci
+    let brani: Vec<i64> = voci
         .iter()
-        .filter(|(_, _, k, _)| !per_chiave.contains_key(k))
-        .filter_map(|(_, _, _, c)| c.as_deref())
+        .map(|(_, brano)| *brano)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect();
-    let per_contenuto: HashMap<String, i64> = if senza.is_empty() {
-        HashMap::new()
-    } else {
-        let mut st = tx
-            .prepare_cached(
-                "SELECT k, id FROM (
-                   SELECT t.content_key AS k, t.id AS id, 0 AS fuori
-                     FROM tracks t
-                    WHERE t.content_key IN (SELECT value FROM json_each(?1))
-                      AND (t.path IS NULL OR t.path < 'lontano://' OR t.path >= 'lontano:/0')
-                   UNION ALL
-                   SELECT l.content_key, l.track_id, 1
-                     FROM lontano_brani l
-                    WHERE l.content_key IN (SELECT value FROM json_each(?1))
-                      AND l.dispositivo <> ?2 AND l.sparito_ms IS NULL
-                 ) ORDER BY fuori, id",
-            )
-            .map_err(|err| db_error(cosa, &err))?;
-        let lette = st
-            .query_map(params![json(&senza), dispositivo], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })
-            .map_err(|err| db_error(cosa, &err))?;
-        let mut mappa = HashMap::new();
-        for riga in lette {
-            let (chiave, id) = riga.map_err(|err| db_error(cosa, &err))?;
-            mappa.entry(chiave).or_insert(id);
-        }
-        mappa
-    };
-
+    let altre = altre_copie(
+        tx,
+        &brani,
+        Ricerca {
+            in_corso: &HashSet::new(),
+            fuori_dal_dispositivo: Some(dispositivo),
+            anche_per_contenuto: true,
+        },
+    )?;
     Ok(voci
         .into_iter()
-        .map(|(playlist, brano, chiave, contenuto)| {
-            let altra = per_chiave.get(&chiave).copied().or_else(|| {
-                contenuto
-                    .as_deref()
-                    .and_then(|c| per_contenuto.get(c))
-                    .copied()
-            });
-            (playlist, brano, altra)
-        })
+        .map(|(playlist, brano)| (playlist, brano, altre.get(&brano).copied()))
         .collect())
 }
 
-/// Cosa succederebbe alle playlist se si dimenticasse `dispositivo`: per
-/// chiedere conferma dicendo quante playlist perdono brani.
+/// Quanti ascolti, in «Cronologia», stanno su righe di `dispositivo` che non
+/// hanno un'altra copia: quelli che «Dimentica» perderebbe.
+fn ascolti_senza_altra_copia(tx: &Connection, dispositivo: &str) -> Result<usize, AppError> {
+    let cosa = "cronologia su un dispositivo";
+    let per_riga: Vec<(i64, i64)> = {
+        let mut st = tx
+            .prepare(
+                "SELECT h.track_id, COUNT(*)
+                   FROM play_history h JOIN lontano_brani l ON l.track_id = h.track_id
+                  WHERE l.dispositivo = ?1
+                  GROUP BY h.track_id",
+            )
+            .map_err(|err| db_error(cosa, &err))?;
+        let lette = st
+            .query_map([dispositivo], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|err| db_error(cosa, &err))?;
+        lette
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| db_error(cosa, &err))?
+    };
+    let brani: Vec<i64> = per_riga.iter().map(|(brano, _)| *brano).collect();
+    let altre = altre_copie(
+        tx,
+        &brani,
+        Ricerca {
+            in_corso: &HashSet::new(),
+            fuori_dal_dispositivo: Some(dispositivo),
+            anche_per_contenuto: true,
+        },
+    )?;
+    Ok(per_riga
+        .iter()
+        .filter(|(brano, _)| !altre.contains_key(brano))
+        .map(|(_, quanti)| usize::try_from(*quanti).unwrap_or(0))
+        .sum())
+}
+
+/// Cosa succederebbe alle playlist e alla cronologia se si dimenticasse
+/// `dispositivo`: per chiedere conferma dicendo quante playlist perdono brani e
+/// quanti ascolti se ne vanno.
 ///
 /// # Errori
 ///
@@ -1994,6 +2185,7 @@ pub fn anteprima_dimentica(
     let mut anteprima = Anteprima {
         righe,
         voci: voci.len(),
+        ascolti_persi: ascolti_senza_altra_copia(connection, dispositivo)?,
         ..Anteprima::default()
     };
     let mut playlist = HashSet::new();
@@ -2830,7 +3022,8 @@ mod prove {
                 voci: 3,
                 rimappabili: 2,
                 perse: 1,
-                playlist_che_perdono: 1
+                playlist_che_perdono: 1,
+                ascolti_persi: 0
             }
         );
         let (rimappate, tolte) = dimentica_dispositivo(&c, &pc).unwrap();
