@@ -654,6 +654,59 @@ export function daFotografia(elenco: readonly AvanzamentoSpecchio[]): Avanzament
   return Object.fromEntries(elenco.map((a) => [a.dispositivo, a]));
 }
 
+/**
+ * Gli eventi `lontano:specchio` contro le fotografie (`lontanoSpecchioStato`),
+ * dispositivo per dispositivo.
+ *
+ * La fotografia si chiede all'apertura della finestra e dopo «Togli», e la sua
+ * risposta — calcolata prima — può arrivare **dopo** un evento più nuovo: letta
+ * con `leggo`, ricopriva l'evento `fine` di quel dispositivo, e la striscia
+ * «Leggo la libreria…» restava a schermo fino al prossimo evento, cinque minuti
+ * dopo; `daConfermare` poteva non vedere mai un `inAttesa` (S9-13). È lo schema
+ * di `eventiEFotografia` (`ultima.ts`, quello del pannello), per dispositivo:
+ * un evento di un dispositivo non toglie alla fotografia quel che dice degli
+ * altri, che nessun evento ha ancora detto.
+ */
+const eventiDelloSpecchio = (() => {
+  let numero = 0;
+  const ultimoPer = new Map<string, number>();
+  return {
+    evento(dispositivo: string): void {
+      numero += 1;
+      ultimoPer.set(dispositivo, numero);
+    },
+    chiedi(): (elenco: readonly AvanzamentoSpecchio[]) => void {
+      const prima = numero;
+      return (elenco) => {
+        // Solo i dispositivi senza eventi da quando la fotografia è stata chiesta.
+        const valida = elenco.filter((a) => (ultimoPer.get(a.dispositivo) ?? 0) <= prima);
+        archivioSpecchio.scrivi({ ...archivioSpecchio.leggi(), ...daFotografia(valida) });
+      };
+    },
+  };
+})();
+
+/**
+ * Un `lontano:specchio` mandato dal nucleo: si scrive e si conta, e le
+ * fotografie chieste prima non lo ricoprono più. Restituisce com'era
+ * l'avanzamento di quel dispositivo, per chi deve capire cosa è cambiato.
+ */
+export function eventoDelloSpecchio(nuovo: AvanzamentoSpecchio): AvanzamentoSpecchio | undefined {
+  const prima = archivioSpecchio.leggi()[nuovo.dispositivo];
+  eventiDelloSpecchio.evento(nuovo.dispositivo);
+  archivioSpecchio.scrivi(conAvanzamento(archivioSpecchio.leggi(), nuovo));
+  return prima;
+}
+
+/**
+ * Chiamala **prima** di chiedere `lontanoSpecchioStato`: restituisce chi adotta
+ * la risposta, che scrive solo i dispositivi su cui nel frattempo non è
+ * arrivato nessun evento.
+ */
+export function chiediLaFotografiaDelloSpecchio(): (elenco: readonly AvanzamentoSpecchio[]) => void {
+  return eventiDelloSpecchio.chiedi();
+}
+
 /** Quelli che stanno leggendo adesso. */
 export function inLettura(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio[] {
   return Object.values(avanzamenti).filter((a) => a.fase === "leggo");

@@ -70,15 +70,14 @@ import {
   PER_VOLTA_SCARICO,
   archivioLontano,
   archivioScarico,
-  archivioSpecchio,
   causeDiRilettura,
   chiaveDelTestoErrore,
+  chiediLaFotografiaDelloSpecchio,
   chiedeConfermaPerLoScarico,
-  conAvanzamento,
   conIlSiDeiDatiMobili,
   copertinaArrivata,
-  daFotografia,
   domandaDelloScarico,
+  eventoDelloSpecchio,
   inBlocchi,
   rileggereDopo,
 } from "./lontano";
@@ -1385,8 +1384,9 @@ export function App() {
   useAscolto<AvanzamentoSpecchio>(
     "lontano:specchio",
     (nuovo) => {
-      const prima = archivioSpecchio.leggi()[nuovo.dispositivo];
-      archivioSpecchio.scrivi(conAvanzamento(archivioSpecchio.leggi(), nuovo));
+      // Si scrive e si conta: la fotografia chiesta prima di questo evento non lo
+      // ricoprirà (S9-13).
+      const prima = eventoDelloSpecchio(nuovo);
       const adesso = Date.now();
       if (rileggereDopo(prima, nuovo, adesso, ultimaRilettura.current)) {
         ultimaRilettura.current = adesso;
@@ -1397,10 +1397,10 @@ export function App() {
     },
     true,
     () => {
-      ipc
-        .lontanoSpecchioStato()
-        .then((elenco) => archivioSpecchio.scrivi(daFotografia(elenco)))
-        .catch(() => undefined);
+      // La fotografia di chi è già a metà lettura, adottata solo per i dispositivi
+      // su cui nel frattempo non è arrivato un evento; un guasto si dice (S9-13).
+      const adotta = chiediLaFotografiaDelloSpecchio();
+      ipc.lontanoSpecchioStato().then(adotta).catch(segnalaErrore);
     },
   );
 

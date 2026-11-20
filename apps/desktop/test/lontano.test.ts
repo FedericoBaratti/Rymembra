@@ -18,8 +18,11 @@ import type {
 import {
   archivioDatiMobili,
   archivioLontano,
+  archivioSpecchio,
+  chiediLaFotografiaDelloSpecchio,
   chiedeIDatiMobili,
   conIlSiDeiDatiMobili,
+  eventoDelloSpecchio,
   gestoLontano,
   annullatoDaQui,
   annunciDelloSpecchio,
@@ -589,4 +592,49 @@ test("S9-12: la striscia e il vuoto del filtro dicono che la lettura si è inter
   }
   const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(app, /<StrisciaSpecchio onErrore=\{segnalaErrore\} \/>/);
+});
+
+// ── S9-13: la fotografia dello specchio non ricopre un evento più nuovo ─────
+
+test("S9-13: una fotografia chiesta prima di un evento e arrivata dopo non ricopre il dispositivo dell'evento", () => {
+  // Il difetto: all'apertura della finestra la fotografia (`lontanoSpecchioStato`)
+  // sostituiva l'intera mappa. Se l'evento `fine` di un dispositivo arrivava fra
+  // la richiesta e la risposta — letta prima, con `leggo` — la risposta lo
+  // ricopriva: la striscia «Leggo la libreria…» restava fino al prossimo evento
+  // (cinque minuti) e `daConfermare` poteva non vedere mai un `inAttesa`.
+  archivioSpecchio.scrivi({});
+  const adotta = chiediLaFotografiaDelloSpecchio();
+  eventoDelloSpecchio(passo("pc", { fase: "fine", fatti: 50_000, righe: 50_000, inAttesa: 3 }));
+  adotta([
+    passo("pc", { fase: "leggo", fatti: 100 }),
+    passo("telefono", { fase: "fine", righe: 7 }),
+  ]);
+  const adesso = archivioSpecchio.leggi();
+  assert.equal(adesso["pc"]?.fase, "fine", "l'evento più nuovo resta");
+  assert.equal(adesso["pc"]?.inAttesa, 3);
+  assert.equal(adesso["telefono"]?.righe, 7, "un dispositivo senza eventi si prende dalla fotografia");
+  archivioSpecchio.scrivi({});
+});
+
+test("S9-13: senza eventi in mezzo la fotografia vale tutta, e `eventoDelloSpecchio` dice com'era", () => {
+  archivioSpecchio.scrivi({});
+  assert.equal(eventoDelloSpecchio(passo("pc", { fatti: 1 })), undefined);
+  assert.equal(eventoDelloSpecchio(passo("pc", { fatti: 2 }))?.fatti, 1, "restituisce l'avanzamento di prima");
+  const adotta = chiediLaFotografiaDelloSpecchio();
+  adotta([passo("pc", { fase: "fine" })]);
+  assert.equal(archivioSpecchio.leggi()["pc"]?.fase, "fine");
+  archivioSpecchio.scrivi({});
+});
+
+test("S9-13: la fotografia dello specchio passa da un posto solo, e un guasto si dice", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /const prima = eventoDelloSpecchio\(nuovo\);/);
+  assert.match(
+    app,
+    /const adotta = chiediLaFotografiaDelloSpecchio\(\);\s*ipc\.lontanoSpecchioStato\(\)\.then\(adotta\)\.catch\(segnalaErrore\);/,
+  );
+  assert.doesNotMatch(app, /daFotografia\(/);
+  const conferma = readFileSync(new URL("../src/ConfermaSpecchio.tsx", import.meta.url), "utf8");
+  assert.match(conferma, /chiediLaFotografiaDelloSpecchio\(\)/);
+  assert.doesNotMatch(conferma, /daFotografia\(/);
 });

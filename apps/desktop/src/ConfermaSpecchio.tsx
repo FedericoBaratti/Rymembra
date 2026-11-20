@@ -28,7 +28,7 @@ import { t } from "./lingue";
 import {
   archivioLontano,
   archivioSpecchio,
-  daFotografia,
+  chiediLaFotografiaDelloSpecchio,
   domandaSullePerdite,
 } from "./lontano";
 import { unaVolta } from "./modale";
@@ -154,9 +154,11 @@ export function DomandaSpecchio({
           .then((tolte) => {
             onNotizia(t("devices.mirror.removed", { nome, brani: brani_(tolte) }));
             onRilegge();
-            return ipc.lontanoSpecchioStato();
+            // Adottata solo per i dispositivi su cui nel frattempo non è arrivato
+            // un evento più nuovo (S9-13).
+            const adotta = chiediLaFotografiaDelloSpecchio();
+            return ipc.lontanoSpecchioStato().then(adotta);
           })
-          .then((adesso) => archivioSpecchio.scrivi(daFotografia(adesso)))
           .catch(onErrore);
       }}
     />
