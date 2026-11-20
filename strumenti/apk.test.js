@@ -344,3 +344,19 @@ test("il .apk.sig con i byte cambiati non passa (S5-2)", () => {
   // Senza i byte non c'è niente da verificare, e non passa per buono in silenzio.
   assert.throws(() => problemiSig(firma, dati), /byte/);
 });
+
+/* ── S5-7: l'impronta del certificato esiste in due copie ─────────────── */
+
+test("l'impronta dell'app (rilasci.rs) è quella inchiodata per la CI (android-certificato.sha256)", () => {
+  // Due copie, due lettori: la CI approva l'APK se il certificato è quello di
+  // `android-certificato.sha256`; l'app sul telefono giudica «un'altra chiave»
+  // ogni copia che non sia quella di `IMPRONTA_DEL_RILASCIO`. Se divergono, la
+  // CI approva un APK che nessun telefono scarica più, senza un errore.
+  const rust = fs.readFileSync(path.join(__dirname, "../apps/desktop/src-tauri/src/rilasci.rs"), "utf8");
+  // La costante va a capo dopo `=`: `\s*` copre anche l'a capo.
+  const m = /pub const IMPRONTA_DEL_RILASCIO\s*:\s*&str\s*=\s*"([^"]*)"/.exec(rust);
+  assert.ok(m, "rilasci.rs non ha più `pub const IMPRONTA_DEL_RILASCIO: &str = \"…\"`");
+  assert.equal(normalizzaImpronta(m[1]), improntaInchiodata());
+  // La forma che l'app confronta è esadecimale minuscolo, senza due punti (`impronta_normale`).
+  assert.match(m[1], /^[0-9a-f]{64}$/);
+});
