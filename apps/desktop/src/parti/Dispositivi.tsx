@@ -307,7 +307,13 @@ export function LontanoInApp({
   return (
     <>
       {richiesta !== null && (
+        // Una finestrella per richiesta (`key`): con A che parte e B che subentra
+        // in testa non c'è un disegno senza richiesta in mezzo, e lo stesso
+        // `Dialogo` terrebbe il fuoco sul «Collega» appena premuto. Un secondo
+        // Invio (o un tasto che si ripete) accetterebbe B senza che nessuno abbia
+        // letto nome e impronta. Rifatta, il fuoco torna a «Rifiuta» (S9-4).
         <Dialogo
+          key={richiesta.id}
           titolo={t("devices.request.title")}
           descrizione={t(
             eTelefono(richiesta.piattaforma)
