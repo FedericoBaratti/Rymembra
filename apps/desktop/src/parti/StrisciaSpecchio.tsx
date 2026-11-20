@@ -46,15 +46,20 @@ import { Icona } from "./Icone";
 function AnnuncioSpecchio({
   avanzamenti,
   nomi,
+  inLinea,
 }: {
   avanzamenti: AvanzamentiSpecchio;
   nomi: ReadonlyMap<string, string>;
+  /** I dispositivi che rispondono: di uno spento non si dice che la lettura si è interrotta. */
+  inLinea: ReadonlySet<string>;
 }) {
   const [detto, setDetto] = useState("");
   /** Com'era al disegno prima: si annuncia il passaggio, non lo stato. */
   const prima = useRef(avanzamenti);
   const nomiDiAdesso = useRef(nomi);
   nomiDiAdesso.current = nomi;
+  const inLineaAdesso = useRef(inLinea);
+  inLineaAdesso.current = inLinea;
   /**
    * Chi ha già detto che la lettura si è interrotta: il nucleo riprova ogni
    * cinque minuti, e un dispositivo che non risponde la interromperebbe ogni
@@ -69,6 +74,7 @@ function AnnuncioSpecchio({
       if (e.tipo === "fine") dettiInErrore.current.delete(e.dispositivo);
       if (nome === undefined) return [];
       if (e.tipo === "errore") {
+        if (!inLineaAdesso.current.has(e.dispositivo)) return [];
         if (dettiInErrore.current.has(e.dispositivo)) return [];
         dettiInErrore.current.add(e.dispositivo);
         return [t("devices.mirror.failed", { nome })];
@@ -89,15 +95,19 @@ function AnnuncioSpecchio({
 export function StrisciaSpecchio({ onErrore }: { onErrore: (errore: unknown) => void }) {
   const avanzamenti = useArchivio(archivioSpecchio);
   const stato = useArchivio(archivioLontano);
-  const nomi = new Map(dispositiviDiLibreria(stato).map((d) => [d.chiave, d.nome]));
+  const dispositivi = dispositiviDiLibreria(stato);
+  const nomi = new Map(dispositivi.map((d) => [d.chiave, d.nome]));
+  const inLinea = new Set(dispositivi.filter((d) => d.online).map((d) => d.chiave));
   const leggendo = inLettura(avanzamenti).filter((a) => nomi.has(a.dispositivo));
   // La lettura che si è interrotta resta detta finché il nucleo non riprova da sé
-  // (ogni cinque minuti) o la persona non preme «Riprova adesso» (S9-12). Non per
-  // un dispositivo che sta già rileggendo.
-  const interrotte = inErrore(avanzamenti).filter((a) => nomi.has(a.dispositivo));
+  // (ogni cinque minuti) o la persona non preme «Riprova adesso» (S9-12). Solo per
+  // un dispositivo acceso: se si spegne a metà lettura la sua ultima fase resta
+  // `errore` finché non torna, e la scheda resterebbe nella pila per giorni — le
+  // sue righe grigie dicono già che non risponde, come il vuoto del filtro.
+  const interrotte = inErrore(avanzamenti).filter((a) => inLinea.has(a.dispositivo));
   return (
     <>
-      <AnnuncioSpecchio avanzamenti={avanzamenti} nomi={nomi} />
+      <AnnuncioSpecchio avanzamenti={avanzamenti} nomi={nomi} inLinea={inLinea} />
       <div>
         {leggendo.map((a) => (
           <div key={a.dispositivo} className="notizia toast-card">

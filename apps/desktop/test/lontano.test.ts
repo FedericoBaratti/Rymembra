@@ -580,6 +580,13 @@ test("S9-12: la striscia e il vuoto del filtro dicono che la lettura si è inter
   assert.match(striscia, /inErrore\(avanzamenti\)/);
   assert.match(striscia, /t\("devices\.mirror\.failed", \{ nome \}\)/);
   assert.match(striscia, /ipc\.lontanoSpecchioOra\(a\.dispositivo\)\.catch\(onErrore\)/);
+  // Solo per un dispositivo acceso: se il PC si spegne a metà lettura la sua ultima
+  // fase resta `errore` finché non torna, e la scheda «riprovo fra poco» resterebbe
+  // nella pila per giorni. Le sue righe grigie dicono già che non risponde, come il
+  // vuoto del filtro (che ha il ramo `online`).
+  assert.match(striscia, /const inLinea = new Set\(/);
+  assert.match(striscia, /inErrore\(avanzamenti\)\.filter\(\(a\) => inLinea\.has\(a\.dispositivo\)\)/);
+  assert.match(striscia, /<AnnuncioSpecchio avanzamenti=\{avanzamenti\} nomi=\{nomi\} inLinea=\{inLinea\} \/>/);
   const vuoto = readFileSync(new URL("../src/parti/VuotoDelFiltro.tsx", import.meta.url), "utf8");
   const ramo = vuoto.slice(vuoto.indexOf('avanzamento?.fase === "errore"'));
   assert.ok(ramo.length > 0, "il vuoto ha un ramo per `errore`");
