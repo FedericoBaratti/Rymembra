@@ -360,3 +360,82 @@ test("l'impronta dell'app (rilasci.rs) è quella inchiodata per la CI (android-c
   // La forma che l'app confronta è esadecimale minuscolo, senza due punti (`impronta_normale`).
   assert.match(m[1], /^[0-9a-f]{64}$/);
 });
+
+/* ── S6-5 = S10-4: le native di Ponte, dal Kotlin ─────────────────────── */
+
+const PONTE = "io.github.federicobaratti.rymembra.Ponte";
+
+/** Il `mapping.txt` di prova con queste righe di membro dentro `Ponte`. */
+function conMembri(righe) {
+  const testa = '# {"id":"sourceFile","fileName":"Ponte.kt"}\r\n';
+  return MAPPING.replace(testa, `${testa}${righe.map((r) => `${r}\r\n`).join("")}`);
+}
+
+const NATIVE_TENUTE = [
+  "    void avviaNucleo(android.content.Context,java.lang.String,boolean) -> avviaNucleo",
+  "    void rilasciaIlContestoDelServizio() -> rilasciaIlContestoDelServizio",
+  "    void contestoDiTaoPronto() -> contestoDiTaoPronto",
+];
+
+test("R8 che rinomina una native di Ponte ferma la release: Rust la cerca per nome (S6-5)", () => {
+  // `Ponte.chiama` conserva il nome, ma `avviaNucleo` diventa `a`: il servizio
+  // non avvia più il nucleo (boot, Android Auto senza attività), e l'errore si
+  // vedrebbe solo sul telefono, in `UnsatisfiedLinkError`.
+  const rinominata = conMembri([
+    "    void avviaNucleo(android.content.Context,java.lang.String,boolean) -> a",
+    "    void rilasciaIlContestoDelServizio() -> rilasciaIlContestoDelServizio",
+    "    void contestoDiTaoPronto() -> contestoDiTaoPronto",
+  ]);
+  assert.deepEqual(problemiMapping(rinominata), [`R8 ha rinominato ${PONTE}.avviaNucleo in a`]);
+  // Una per una, ognuna delle tre.
+  for (const [nome, riga] of [
+    ["rilasciaIlContestoDelServizio", "    void rilasciaIlContestoDelServizio() -> b"],
+    ["contestoDiTaoPronto", "    void contestoDiTaoPronto() -> c"],
+  ]) {
+    const mapping = conMembri(NATIVE_TENUTE.map((r) => (r.includes(` ${nome}(`) ? riga : r)));
+    assert.match(problemiMapping(mapping).join("\n"), new RegExp(`R8 ha rinominato ${PONTE.replace(/\./g, "\.")}\.${nome} in `));
+  }
+  // Con i nomi tenuti, o con la riga assente, non è un problema che ferma.
+  assert.deepEqual(problemiMapping(conMembri(NATIVE_TENUTE)), []);
+  assert.deepEqual(problemiMapping(MAPPING), []);
+});
+
+test("le native che la CI controlla sono i `external fun` di Ponte.kt, non una lista scritta a mano", () => {
+  const { nativiDi, nativiDelPonte } = require("./apk.js");
+  assert.deepEqual([...nativiDelPonte()].sort(), ["avviaNucleo", "contestoDiTaoPronto", "rilasciaIlContestoDelServizio"]);
+  const kotlin = [
+    "  /** Vedi anche `external fun finta` nei commenti: non è una dichiarazione. */",
+    "  // private external fun commentata()",
+    "  @JvmStatic private external fun una(contesto: Context, dati: String)",
+    "  external fun due()",
+    "  private external @JvmStatic fun tre(): Boolean",
+    "  fun nonNativa() = Unit",
+  ].join("\n");
+  assert.deepEqual(nativiDi(kotlin), ["una", "due", "tre"]);
+  // Una native nuova in Kotlin entra nel controllo da sé: R8 che la rinomina ferma.
+  const rinominata = conMembri(["    void nuova(int) -> a"]);
+  assert.deepEqual(problemiMapping(rinominata, undefined, ["nuova"]), [`R8 ha rinominato ${PONTE}.nuova in a`]);
+});
+
+test("nessun'altra classe Kotlin dichiara una native: la regola e il controllo sono di Ponte", () => {
+  // `proguard-rules.pro` tiene i nomi solo di `Ponte`, e `nativiDelPonte` legge
+  // solo `Ponte.kt`. Una native in un'altra classe sfuggirebbe a tutte e due.
+  const cartella = path.join(__dirname, "../apps/desktop/src-tauri/gen/android/app/src/main/java/io/github/federicobaratti/rymembra");
+  const altre = fs
+    .readdirSync(cartella)
+    .filter((f) => f.endsWith(".kt") && f !== "Ponte.kt")
+    .filter((f) => /^[ \t]*(?:@\w+[ \t]+)*(?:\w+[ \t]+)*external[ \t]+(?:\w+[ \t]+)*fun\b/m.test(fs.readFileSync(path.join(cartella, f), "utf8")));
+  assert.deepEqual(altre, [], "una native fuori da Ponte: va nella regola `-keepclasseswithmembernames` di proguard-rules.pro e in nativiDelPonte()");
+});
+
+test("una native che il mapping non elenca è un avviso, non un errore: R8 non dice come elenca un native tenuto", () => {
+  const { avvisiMapping } = require("./apk.js");
+  // Nessuno ha visto un mapping di rilascio con le native di F8: se R8 le
+  // elenca col loro nome o le omette, lo dirà la prima corsa vera.
+  assert.deepEqual(avvisiMapping(conMembri(NATIVE_TENUTE)), []);
+  const assenti = avvisiMapping(MAPPING);
+  assert.equal(assenti.length, 3);
+  assert.match(assenti.join("\n"), /avviaNucleo/);
+  // Il mapping non ha nemmeno `Ponte`: lo dice già `problemiMapping`, qui non si ripete.
+  assert.deepEqual(avvisiMapping("# compiler: R8\r\n"), []);
+});

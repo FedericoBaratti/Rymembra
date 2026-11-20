@@ -26,6 +26,9 @@
  *     attraverso JNI devono esserci, col loro nome. Senza `Ponte.chiama` ogni
  *     ponte verso Kotlin (portachiavi, sessione multimediale, selettore delle
  *     cartelle) fallisce; senza i costruttori di wry la finestra non nasce.
+ *     Le funzioni `native` di `Ponte` (il nucleo che parte dal servizio) non
+ *     sono in un elenco: si leggono dai `external fun` di `Ponte.kt`, e R8 non
+ *     deve averle rinominate (JNI le cerca per nome).
  *   - **Le icone di Android Auto** (`aapt2 dump resources`): ogni
  *     `res/drawable/auto_*.xml` del progetto c'è ancora nella tabella delle
  *     risorse. Arrivano all'auto per nome, come stringa, e la riduzione delle
@@ -89,14 +92,25 @@ const ABI = "arm64-v8a";
 /** Sedici kilobyte: la pagina più grande che Android ammette. */
 const PAGINA = 0x4000;
 
+/** La classe del ponte: Rust la cerca per nome, e le sue native sono di Rust. */
+const CLASSE_PONTE = "io.github.federicobaratti.rymembra.Ponte";
+
+/** Il sorgente di `Ponte`: da qui si ricavano le native, vedi [`nativiDelPonte`]. */
+const PONTE_KT = path.join(REPO, "apps/desktop/src-tauri/gen/android/app/src/main/java/io/github/federicobaratti/rymembra/Ponte.kt");
+
 /**
  * I nomi che passano il confine con Rust per nome, e che R8 deve lasciare
  * dove sono. Classe, e il membro come lo scrive `mapping.txt` (tipo di
  * ritorno, nome, parametri). Vedi l'inventario di R11 e `proguard-*.pro`.
+ *
+ * Le funzioni `native` di `Ponte` (il nucleo che parte dal servizio, F8) non
+ * stanno qui: si ricavano dai `external fun` del Kotlin ([`nativiDelPonte`]),
+ * così una nuova entra nel controllo da sé invece di essere dimenticata in una
+ * lista a mano (S6-5).
  */
 const TENUTI = [
-  // `rymembra-android/src/jvm.rs`: tutto il ponte verso Kotlin passa di qui.
-  ["io.github.federicobaratti.rymembra.Ponte", "java.lang.String chiama(java.lang.String,java.lang.String)"],
+  // `rymembra-android/src/jvm.rs`: il ponte verso Kotlin passa di qui (`chiama`).
+  [CLASSE_PONTE, "java.lang.String chiama(java.lang.String,java.lang.String)"],
   // wry crea la finestra con questi costruttori, da Rust.
   ["io.github.federicobaratti.rymembra.RustWebView", "void <init>(android.content.Context,java.lang.String[],java.lang.String)"],
   ["io.github.federicobaratti.rymembra.Ipc", "void <init>(io.github.federicobaratti.rymembra.RustWebView,io.github.federicobaratti.rymembra.RustWebViewClient)"],
@@ -242,29 +256,79 @@ function problemiBadging(testo, { pacchetto, versione: v }) {
 }
 
 /**
- * `mapping.txt` di R8: ogni membro di `TENUTI` nella sua classe, col suo nome.
+ * I nomi delle funzioni `native` di un sorgente Kotlin: i `external fun`.
+ *
+ * Una riga per dichiarazione, con le annotazioni e i modificatori in qualunque
+ * ordine (`@JvmStatic private external fun`, `private external @JvmStatic fun`);
+ * le righe di commento non contano, perché i commenti di `Ponte.kt` parlano di
+ * queste funzioni per nome.
+ */
+function nativiDi(kotlin) {
+  const nomi = [];
+  for (const riga of kotlin.split(/\r?\n/)) {
+    if (/^\s*(?:\/\/|\/?\*)/.test(riga)) continue;
+    const m = /^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:\w+\s+)*?external\s+(?:@\w+\s+)*(?:\w+\s+)*?fun\s+(?:<[^>]*>\s+)?(\w+)\s*\(/.exec(riga);
+    if (m) nomi.push(m[1]);
+  }
+  return nomi;
+}
+
+/**
+ * Le native di `Ponte`, lette da `Ponte.kt`: `avviaNucleo`,
+ * `rilasciaIlContestoDelServizio`, `contestoDiTaoPronto` (F8). Rust le esporta
+ * come `Java_…_Ponte_<nome>` e JNI le cerca per **nome**: se R8 le rinomina, il
+ * servizio non avvia il nucleo (boot, Android Auto senza attività) e l'errore è
+ * un `UnsatisfiedLinkError` che si vede solo sul telefono.
+ */
+function nativiDelPonte() {
+  return nativiDi(fs.readFileSync(PONTE_KT, "utf8"));
+}
+
+/**
+ * Le classi di un `mapping.txt` di R8, coi loro membri.
  * Una riga di membro è `    [a:b:]<ritorno> <nome>(<parametri>)[:c[:d]] -> <nome dopo R8>`;
  * le righe con un nome qualificato davanti sono quelle dei metodi incorporati.
+ * `membri`: «ritorno nome(parametri)» → nome dopo R8; `nomi`: il nome → i nomi
+ * che ha dopo R8, qualunque sia la firma (le native si cercano per nome).
  */
-function problemiMapping(testo, tenuti = TENUTI) {
+function classiDelMapping(testo) {
   const classi = new Map();
   let corrente = null;
   for (const riga of testo.split(/\r?\n/)) {
     const c = /^(\S+) -> (\S+):$/.exec(riga);
     if (c) {
-      corrente = { dopo: c[2], membri: new Map() };
+      corrente = { dopo: c[2], membri: new Map(), nomi: new Map() };
       classi.set(c[1], corrente);
       continue;
     }
     const m = /^\s+(?:\d+:\d+:)?(\S+ [^\s(]+\([^)]*\))(?::\d+(?::\d+)?)? -> (\S+)$/.exec(riga);
     if (m && corrente) {
       const [ritorno, firma] = m[1].split(" ");
+      const nome = firma.slice(0, firma.indexOf("("));
       // Un nome con la classe davanti è un metodo incorporato in questo, non un suo membro.
-      if (firma.slice(0, firma.indexOf("(")).includes(".")) continue;
+      if (nome.includes(".")) continue;
       const chiave = `${ritorno} ${firma}`;
       if (!corrente.membri.has(chiave)) corrente.membri.set(chiave, m[2]);
+      if (!corrente.nomi.has(nome)) corrente.nomi.set(nome, new Set());
+      corrente.nomi.get(nome).add(m[2]);
     }
   }
+  return classi;
+}
+
+/**
+ * `mapping.txt` di R8: ogni membro di `TENUTI` nella sua classe, col suo nome,
+ * e ogni native di `Ponte` (`nativi`, dal Kotlin) senza un altro nome.
+ *
+ * Per le native si vede solo la **ridenominazione**: una riga con un altro nome
+ * c'è sempre, per un membro rinominato. L'assenza non dice niente: una native
+ * non ha codice, e nessuno ha ancora visto un mapping di rilascio con quelle di
+ * F8, quindi non si sa se R8 elenchi un membro che ha tenuto col suo nome. Se
+ * non lo elencasse, fermare la release perché «manca» sarebbe un falso allarme
+ * dopo novanta minuti di build: l'assenza è un avviso (`avvisiMapping`).
+ */
+function problemiMapping(testo, tenuti = TENUTI, nativi = nativiDelPonte()) {
+  const classi = classiDelMapping(testo);
   const problemi = [];
   for (const [classe, membro] of tenuti) {
     const c = classi.get(classe);
@@ -278,7 +342,32 @@ function problemiMapping(testo, tenuti = TENUTI) {
     if (dopo === undefined) problemi.push(`R8 ha tolto ${classe}.${nome} (${membro})`);
     else if (dopo !== nome) problemi.push(`R8 ha rinominato ${classe}.${nome} in ${dopo}`);
   }
+  const ponte = classi.get(CLASSE_PONTE);
+  if (ponte) {
+    for (const nome of nativi) {
+      const dopo = ponte.nomi.get(nome);
+      if (dopo !== undefined && !dopo.has(nome)) problemi.push(`R8 ha rinominato ${CLASSE_PONTE}.${nome} in ${[...dopo].join(", ")}`);
+    }
+  }
   return problemi;
+}
+
+/**
+ * Le native di `Ponte` che il `mapping.txt` non elenca: un avviso che non
+ * ferma, per dire alla prima corsa vera com'è fatto il mapping (vedi
+ * `problemiMapping`). Se la classe non c'è, lo dice già `problemiMapping`.
+ */
+function avvisiMapping(testo, nativi = nativiDelPonte()) {
+  const ponte = classiDelMapping(testo).get(CLASSE_PONTE);
+  if (!ponte) return [];
+  return nativi
+    .filter((nome) => !ponte.nomi.has(nome))
+    .map(
+      (nome) =>
+        `${CLASSE_PONTE}.${nome} (native) non compare nel mapping.txt: R8 non la rinomina, ma non si sa ` +
+        "se omette le native che tiene col loro nome. Se il nucleo non parte dal servizio su un telefono, " +
+        "è il primo posto dove guardare",
+    );
 }
 
 /**
@@ -418,7 +507,12 @@ function main() {
     const risorse = lancia("aapt2", ["dump", "resources", a.file]);
     if (risorse.codice !== 0) problemi.push(`aapt2 dump resources non è riuscito:\n${risorse.uscita}`);
     else problemi.push(...problemiRisorse(risorse.uscita, iconeDellAuto()));
-    problemi.push(...problemiMapping(fs.readFileSync(a.mapping, "utf8")));
+    const mapping = fs.readFileSync(a.mapping, "utf8");
+    problemi.push(...problemiMapping(mapping));
+    // Non fermano: dicono alla prima corsa vera com'è fatto il mapping (vedi `problemiMapping`).
+    for (const avviso of avvisiMapping(mapping)) {
+      console.log(process.env.GITHUB_ACTIONS === "true" ? `::notice title=R8 e le native di Ponte::${avviso}` : `Avviso: ${avviso}`);
+    }
   } else {
     const firma = lancia("apksigner", ["verify", "--verbose", "--print-certs", a.file]);
     if (firma.codice !== 0) problemi.push(`apksigner verify non è riuscito:\n${firma.uscita}`);
@@ -451,6 +545,9 @@ module.exports = {
   problemiPagine,
   problemiBadging,
   problemiMapping,
+  avvisiMapping,
+  nativiDi,
+  nativiDelPonte,
   problemiRisorse,
   iconeDellAuto,
   problemiFirma,
