@@ -835,13 +835,28 @@ impl Riga {
 /// l'errore costerebbe il testo che le altre fonti avrebbero dato.
 #[must_use]
 pub fn leggi_riga(connection: &Connection, track_key: &str) -> Option<Riga> {
+    cerca_riga(connection, track_key).ok().flatten()
+}
+
+/// Come [`leggi_riga`], ma un guasto del database **si dice**.
+///
+/// Per chi decide **scrivendo** a partire da quel che trova: «non c'è» e «non si
+/// è potuto leggere» non sono la stessa cosa, e prendere la seconda per la
+/// prima vorrebbe dire, per esempio, sovrascrivere un testo a mano senza
+/// confrontare gli orologi e senza tenerne la copia.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+pub fn cerca_riga(connection: &Connection, track_key: &str) -> Result<Option<Riga>, AppError> {
+    let guasto = |err: rusqlite::Error| db_error("lettura della riga di un testo", &err);
     connection
         .prepare_cached(
             "SELECT synced, plain, source, offset_ms, instrumental, checked_at, duration_ms,
                     updated_at
              FROM lyrics WHERE track_key = ?1",
         )
-        .ok()?
+        .map_err(guasto)?
         .query_row([track_key], |row| {
             Ok(Riga {
                 synced: row.get(0)?,
@@ -859,8 +874,7 @@ pub fn leggi_riga(connection: &Connection, track_key: &str) -> Option<Riga> {
             })
         })
         .optional()
-        .ok()
-        .flatten()
+        .map_err(guasto)
 }
 
 /// Scrive quel che si è trovato, senza far cadere niente se non ci riesce.

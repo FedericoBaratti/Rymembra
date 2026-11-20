@@ -735,8 +735,15 @@ fn tempo_ms(grezzo: &str) -> Option<u32> {
 ///
 /// La conseguenza va detta: scrivere **arrotonda** al centesimo. Quindi
 /// `leggi(scrivi(x)) == x` vale sui tempi allineati al centesimo, e
-/// `scrivi(leggi(scrivi(x))) == scrivi(x)` vale sempre — cioè riscrivere un file
-/// non lo cambia mai due volte. È la proprietà che conta, ed è provata.
+/// `scrivi(leggi(scrivi(x))) == scrivi(x)` vale per ogni testo dentro i tetti del
+/// lettore — cioè per ogni testo che [`leggi`] restituisce — quindi riscrivere un
+/// file non lo cambia mai due volte. È la proprietà che conta, ed è provata,
+/// anche sugli ingressi che i tetti tagliano.
+///
+/// Un [`Testo`] **costruito a mano** oltre i tetti (un editor che salva più di
+/// [`MASSIME_RIGHE_ESPANSE`] righe, più di [`MASSIME_PAROLE_PER_RIGA`] parole in
+/// una riga o più di [`MASSIME_SECONDARIE_PER_RIGA`] secondarie) si scrive per
+/// intero, ma riletto si taglia: i tetti sono del lettore, non di chi scrive.
 #[must_use]
 pub fn scrivi(testo: &Testo) -> String {
     let mut fuori = String::new();

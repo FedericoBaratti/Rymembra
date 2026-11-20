@@ -1553,3 +1553,18 @@ fn il_tag_piatto_oltre_il_tetto_non_si_usa() {
     let id = inserisci(&connection, &brano, Some(&lrc_lungo(MASSIMO_TESTO_BYTE)));
     assert_eq!(per_brano(&connection, id).expect("testo").fonte, Fonte::Tag);
 }
+
+#[test]
+fn un_guasto_di_lettura_della_riga_si_dice_a_chi_scrive() {
+    // `leggi_riga` lo inghiotte, perché perdere una fonte non è un guasto; chi
+    // **scrive** a partire da quel che trova (la correzione di un dispositivo, il
+    // ripristino) non può prendere «non si è letto» per «non c'è»: sovrascriverebbe
+    // un testo a mano senza confrontare gli orologi e senza tenerne la copia.
+    let (_dir, connection) = libreria();
+    connection
+        .execute_batch("DROP TABLE lyrics")
+        .expect("tolgo la tabella");
+    assert!(leggi_riga(&connection, "chiave").is_none());
+    assert!(cerca_riga(&connection, "chiave").is_err());
+    assert!(copia::ripristina(&connection, "chiave", 1).is_err());
+}

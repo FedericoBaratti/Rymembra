@@ -147,7 +147,9 @@ pub fn ripristina(
     let Some((synced, scarto_ms, durata_ms)) = copia else {
         return Ok(false);
     };
-    match super::leggi_riga(&scambio, track_key) {
+    // Un guasto di lettura si dice: prenderlo per «non c'è» cancellerebbe la
+    // copia e sovrascriverebbe il testo, cioè perderebbe tutti e due.
+    match super::cerca_riga(&scambio, track_key)? {
         Some(attuale) if attuale.fonte.e_di_chi_ascolta() && attuale.ha_i_tempi() => {
             tieni(&scambio, track_key, &attuale, adesso_ms)?;
         }

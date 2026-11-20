@@ -43,8 +43,8 @@ use rymembra_meta::lrclib::Voce;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BranoDaTestare, COLONNE, DalDisco, Fonte, Riga, TestoBrano, brano_da_riga, componi_con, copia,
-    imposta_scarto_alle, leggi_riga, registra_a_mano_alle, ricorda_scelta, rifiuta,
+    BranoDaTestare, COLONNE, DalDisco, Fonte, Riga, TestoBrano, brano_da_riga, cerca_riga,
+    componi_con, copia, imposta_scarto_alle, registra_a_mano_alle, ricorda_scelta, rifiuta,
 };
 use crate::dispositivi::{self, POSTA_TESTO};
 use crate::library::condivisa::CONDIVISO;
@@ -400,7 +400,7 @@ pub fn scrivi_dal_dispositivo(
     let gesto = connection
         .unchecked_transaction()
         .map_err(|err| db_error("scrittura di un testo da un dispositivo", &err))?;
-    let attuale = leggi_riga(&gesto, &brano.track_key);
+    let attuale = cerca_riga(&gesto, &brano.track_key)?;
     let a_mano = attuale
         .as_ref()
         .filter(|riga| riga.fonte.e_di_chi_ascolta());
