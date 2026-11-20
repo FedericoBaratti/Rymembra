@@ -1062,6 +1062,37 @@ pub fn pagina_catalogo(
     })
 }
 
+/// Quando si è deciso ogni campo di una valutazione che arriva da un altro
+/// dispositivo (S2-9).
+///
+/// Un cuore a un istante e le stelle a uno dopo viaggiano in una voce sola, che
+/// ha per orologio il più recente dei due: se bastasse quello, il cuore deciso
+/// prima si «ringiovanirebbe» con le stelle date dopo, e batterebbe un cuore che
+/// il proprietario ha tolto in mezzo. Con un orologio per campo vince il più
+/// recente **di ognuno**. Una build di prima non manda i due campi, e vale
+/// `quando_ms` per tutti e due: com'era.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrologiValutazione {
+    /// L'orologio della voce, e di tutti i campi che non ne hanno uno proprio.
+    pub quando_ms: i64,
+    /// Quando si è deciso il mi piace, se è un momento diverso.
+    pub liked_ms: Option<i64>,
+    /// Quando si sono decise le stelle, se è un momento diverso.
+    pub rating_ms: Option<i64>,
+}
+
+impl OrologiValutazione {
+    /// Un orologio solo, per tutti e due i campi.
+    #[must_use]
+    pub const fn unico(quando_ms: i64) -> Self {
+        Self {
+            quando_ms,
+            liked_ms: None,
+            rating_ms: None,
+        }
+    }
+}
+
 /// Un mi piace o un voto arrivato da un altro dispositivo per un brano di qui:
 /// vince l'orologio più recente, **per campo** — con `liked_at` e `rating_at`,
 /// gli stessi di un gesto fatto qui — e quello che non cambia non si tocca.
@@ -1085,7 +1116,39 @@ pub fn valuta(
     quando_ms: i64,
     adesso_ms: i64,
 ) -> Result<bool, AppError> {
-    if quando_ms <= 0 || rating.is_some_and(|r| !(0..=5).contains(&r)) {
+    valuta_con_orologi(
+        connection,
+        brano,
+        liked,
+        rating,
+        OrologiValutazione::unico(quando_ms),
+        adesso_ms,
+    )
+}
+
+/// [`valuta`] con un orologio per ogni campo ([`OrologiValutazione`]).
+///
+/// # Errori
+///
+/// Quelli di [`valuta`]; anche per un orologio di un campo che non è un istante.
+pub fn valuta_con_orologi(
+    connection: &Connection,
+    brano: i64,
+    liked: Option<bool>,
+    rating: Option<i64>,
+    orologi: OrologiValutazione,
+    adesso_ms: i64,
+) -> Result<bool, AppError> {
+    let OrologiValutazione {
+        quando_ms,
+        liked_ms,
+        rating_ms,
+    } = orologi;
+    if quando_ms <= 0
+        || liked_ms.is_some_and(|ms| ms <= 0)
+        || rating_ms.is_some_and(|ms| ms <= 0)
+        || rating.is_some_and(|r| !(0..=5).contains(&r))
+    {
         return Err(AppError::new(ErrorCode::LontanoProtocollo)
             .with_cause("una valutazione con un voto o un orologio che non stanno"));
     }
@@ -1094,7 +1157,8 @@ pub fn valuta(
             .with_cause("il brano non è più condiviso"));
     }
     // Un orologio avanti non fissa un voto che nessun gesto vero scavalcherebbe.
-    let quando = quando_ms.min(adesso_ms);
+    let quando_liked = liked_ms.unwrap_or(quando_ms).min(adesso_ms);
+    let quando_rating = rating_ms.unwrap_or(quando_ms).min(adesso_ms);
     let toccate = connection
         .execute(
             &format!(
@@ -1103,16 +1167,18 @@ pub fn valuta(
                                 THEN ?2 ELSE liked END,
                    liked_at = CASE WHEN ?2 IS NOT NULL AND ?4 > COALESCE(liked_at, -1)
                                    THEN ?4 ELSE liked_at END,
-                   rating = CASE WHEN ?3 IS NOT NULL AND ?4 > COALESCE(rating_at, -1)
+                   rating = CASE WHEN ?3 IS NOT NULL AND ?5 > COALESCE(rating_at, -1)
                                  THEN ?3 ELSE rating END,
-                   rating_at = CASE WHEN ?3 IS NOT NULL AND ?4 > COALESCE(rating_at, -1)
-                                    THEN ?4 ELSE rating_at END,
-                   stats_updated_at = MAX(stats_updated_at, ?4)
+                   rating_at = CASE WHEN ?3 IS NOT NULL AND ?5 > COALESCE(rating_at, -1)
+                                    THEN ?5 ELSE rating_at END,
+                   stats_updated_at = MAX(stats_updated_at,
+                                          CASE WHEN ?2 IS NOT NULL THEN ?4 ELSE 0 END,
+                                          CASE WHEN ?3 IS NOT NULL THEN ?5 ELSE 0 END)
                  WHERE id = ?1 AND {CONDIVISO_SENZA_ALIAS}
                    AND ((?2 IS NOT NULL AND ?4 > COALESCE(liked_at, -1))
-                     OR (?3 IS NOT NULL AND ?4 > COALESCE(rating_at, -1)))"
+                     OR (?3 IS NOT NULL AND ?5 > COALESCE(rating_at, -1)))"
             ),
-            rusqlite::params![brano, liked, rating, quando],
+            rusqlite::params![brano, liked, rating, quando_liked, quando_rating],
         )
         .map_err(|err| db_error("valutazione di un brano condiviso", &err))?;
     Ok(toccate > 0)

@@ -598,6 +598,11 @@ pub(super) fn manda_la_posta<D: Dati>(dati: &D, chiave: &str) -> Result<usize, A
             liked: valutazione.liked,
             rating: valutazione.rating,
             quando_ms: voce.quando_ms,
+            // Ogni decisione col suo orologio: il proprietario sceglie per campo, e
+            // il cuore di prima non si ringiovanisce con le stelle di dopo (S2-9).
+            // Una build di prima non li legge, e usa `quando_ms`.
+            liked_ms: valutazione.liked_ms,
+            rating_ms: valutazione.rating_ms,
             chiave: format!("{}-{}", valutazione.brano, voce.quando_ms),
         };
         match dati.chiedi(chiave, domanda, ATTESA_POSTA) {
@@ -1244,9 +1249,22 @@ mod prove {
                     liked,
                     rating,
                     quando_ms,
+                    liked_ms,
+                    rating_ms,
                     ..
                 } => {
-                    condivisa::valuta(&db, brano, liked, rating, quando_ms, adesso_ms())?;
+                    condivisa::valuta_con_orologi(
+                        &db,
+                        brano,
+                        liked,
+                        rating,
+                        condivisa::OrologiValutazione {
+                            quando_ms,
+                            liked_ms,
+                            rating_ms,
+                        },
+                        adesso_ms(),
+                    )?;
                     Ok(Risposta::Fatto)
                 }
                 // Il testo, con le stesse funzioni di `servizio`: solo un brano

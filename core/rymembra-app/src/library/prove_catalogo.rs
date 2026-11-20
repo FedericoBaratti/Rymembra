@@ -328,3 +328,70 @@ fn la_scansione_dello_stesso_originale_prende_il_posto_della_copertina_nata_da_f
         "una già di qui non si tocca"
     );
 }
+
+#[test]
+fn un_cuore_vecchio_non_vince_su_un_cuore_del_proprietario_piu_nuovo_se_le_stelle_sono_dopo() {
+    // S2-9. Il telefono, col PC spento: a 100 mette il cuore, a 200 dà tre stelle
+    // allo stesso brano. La voce di posta porta i due campi con **un** orologio, il
+    // più recente (200). Nel frattempo, a 150, sul PC la persona ha tolto il cuore.
+    // Con l'orologio unico il cuore del telefono (deciso a 100) vince su quello del
+    // PC (150) perché viaggia con il 200 delle stelle: «vince il più recente, per
+    // campo» non valeva.
+    let c = libreria();
+    locali(&c, [1]);
+    c.execute(
+        "UPDATE tracks SET liked = 0, liked_at = 150, stats_updated_at = 150 WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let stato = |c: &Connection| -> (i64, i64) {
+        c.query_row("SELECT liked, rating FROM tracks WHERE id = 1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+    };
+    // Una build di prima manda un orologio solo, per tutti e due i campi, e
+    // continua a valere cosÃ¬: il cuore Â«ringiovanitoÂ» Ã¨ il suo limite.
+    condivisa::valuta(&c, 1, Some(true), Some(3), 200, ADESSO).unwrap();
+    assert_eq!(stato(&c), (1, 3), "con un orologio solo, com'era");
+    c.execute(
+        "UPDATE tracks SET liked = 0, liked_at = 150, rating = 0, rating_at = NULL WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    // Una di adesso porta un orologio per campo: il cuore Ã¨ di 100, le stelle di 200.
+    condivisa::valuta_con_orologi(
+        &c,
+        1,
+        Some(true),
+        Some(3),
+        condivisa::OrologiValutazione {
+            quando_ms: 200,
+            liked_ms: Some(100),
+            rating_ms: Some(200),
+        },
+        ADESSO,
+    )
+    .unwrap();
+    assert_eq!(
+        stato(&c),
+        (0, 3),
+        "il cuore tolto sul PC a 150 batte quello del telefono, deciso a 100; le stelle entrano"
+    );
+    // Un orologio di campo che non Ã¨ un istante si rifiuta, come quello della voce.
+    assert!(
+        condivisa::valuta_con_orologi(
+            &c,
+            1,
+            Some(true),
+            None,
+            condivisa::OrologiValutazione {
+                quando_ms: 200,
+                liked_ms: Some(0),
+                rating_ms: None,
+            },
+            ADESSO,
+        )
+        .is_err()
+    );
+}
