@@ -1630,6 +1630,8 @@
   "devices.mirror.reading.sub": "Nel frattempo puoi usare la libreria: i brani compaiono man mano.",
   "devices.mirror.announce.start": "Leggo la libreria di «{nome}»",
   "devices.mirror.announce.end": "Libreria di «{nome}» letta",
+  "devices.mirror.failed": "La lettura della libreria di «{nome}» si è interrotta: riprovo fra poco.",
+  "devices.mirror.failed.sub": "Per ora vedi solo i brani già arrivati. Se non vuoi aspettare, puoi riprovare adesso.",
   "devices.mirror.unsupported": "Aggiorna Rymembra su «{nome}» per vedere la sua musica",
   "devices.mirror.unsupported.sub": "Quel dispositivo ha una versione di Rymembra che non sa mandare la sua libreria. Resta collegato: appena lo aggiorni, la sua musica compare qui.",
   "devices.mirror.confirm.title": "«{nome}» non condivide più {brani}",

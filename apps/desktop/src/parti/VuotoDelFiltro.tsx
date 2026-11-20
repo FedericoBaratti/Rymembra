@@ -59,6 +59,24 @@ export function VuotoDelFiltro({
       />
     );
   }
+  // La lettura del catalogo si è interrotta: il dispositivo c'è e risponde, ma la
+  // libreria è a metà. «Non ha ancora mandato la sua musica» sarebbe falso, e il
+  // nucleo riprova da sé fra poco (S9-12).
+  if (dispositivo !== undefined && dispositivo.online && avanzamento?.fase === "errore") {
+    return (
+      <StatoVuoto
+        icona={icona}
+        titolo={t("devices.mirror.failed", { nome })}
+        testo={t("devices.mirror.failed.sub")}
+        azione={{
+          etichetta: t("devices.mirror.retryNow"),
+          fai: () => {
+            ipc.lontanoSpecchioOra(origine.chiave).catch(onErrore);
+          },
+        }}
+      />
+    );
+  }
   if (dispositivo !== undefined && !dispositivo.online) {
     return (
       <StatoVuoto

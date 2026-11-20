@@ -1630,6 +1630,8 @@
   "devices.mirror.reading.sub": "You can use the library in the meantime: tracks appear as they arrive.",
   "devices.mirror.announce.start": "Reading the library of “{nome}”",
   "devices.mirror.announce.end": "Library of “{nome}” read",
+  "devices.mirror.failed": "Reading the library of “{nome}” was interrupted: trying again shortly.",
+  "devices.mirror.failed.sub": "For now you only see the tracks that have already arrived. If you don’t want to wait, you can try again now.",
   "devices.mirror.unsupported": "Update Rymembra on “{nome}” to see its music",
   "devices.mirror.unsupported.sub": "That device runs a version of Rymembra that can’t send its library. It stays linked: as soon as you update it, its music shows up here.",
   "devices.mirror.confirm.title": "“{nome}” no longer shares {brani}",

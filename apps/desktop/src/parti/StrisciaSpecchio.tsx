@@ -29,6 +29,7 @@ import {
   archivioLontano,
   archivioScarico,
   archivioSpecchio,
+  inErrore,
   inLettura,
   percentualeScarico,
   type AvanzamentiSpecchio,
@@ -54,12 +55,24 @@ function AnnuncioSpecchio({
   const prima = useRef(avanzamenti);
   const nomiDiAdesso = useRef(nomi);
   nomiDiAdesso.current = nomi;
+  /**
+   * Chi ha già detto che la lettura si è interrotta: il nucleo riprova ogni
+   * cinque minuti, e un dispositivo che non risponde la interromperebbe ogni
+   * volta. Si dice una volta, finché non finisce bene.
+   */
+  const dettiInErrore = useRef(new Set<string>());
   useEffect(() => {
     const eventi = annunciDelloSpecchio(prima.current, avanzamenti);
     prima.current = avanzamenti;
     const frasi = eventi.flatMap((e) => {
       const nome = nomiDiAdesso.current.get(e.dispositivo);
+      if (e.tipo === "fine") dettiInErrore.current.delete(e.dispositivo);
       if (nome === undefined) return [];
+      if (e.tipo === "errore") {
+        if (dettiInErrore.current.has(e.dispositivo)) return [];
+        dettiInErrore.current.add(e.dispositivo);
+        return [t("devices.mirror.failed", { nome })];
+      }
       return [
         t(e.tipo === "inizio" ? "devices.mirror.announce.start" : "devices.mirror.announce.end", { nome }),
       ];
@@ -73,11 +86,15 @@ function AnnuncioSpecchio({
   );
 }
 
-export function StrisciaSpecchio() {
+export function StrisciaSpecchio({ onErrore }: { onErrore: (errore: unknown) => void }) {
   const avanzamenti = useArchivio(archivioSpecchio);
   const stato = useArchivio(archivioLontano);
   const nomi = new Map(dispositiviDiLibreria(stato).map((d) => [d.chiave, d.nome]));
   const leggendo = inLettura(avanzamenti).filter((a) => nomi.has(a.dispositivo));
+  // La lettura che si è interrotta resta detta finché il nucleo non riprova da sé
+  // (ogni cinque minuti) o la persona non preme «Riprova adesso» (S9-12). Non per
+  // un dispositivo che sta già rileggendo.
+  const interrotte = inErrore(avanzamenti).filter((a) => nomi.has(a.dispositivo));
   return (
     <>
       <AnnuncioSpecchio avanzamenti={avanzamenti} nomi={nomi} />
@@ -94,6 +111,24 @@ export function StrisciaSpecchio() {
             </span>
           </div>
         ))}
+        {interrotte.map((a) => {
+          const nome = nomi.get(a.dispositivo) ?? "";
+          return (
+            <div key={a.dispositivo} className="notizia toast-card">
+              <Icona nome="i-alert" dim={16} />
+              <span>{t("devices.mirror.failed", { nome })}</span>
+              <button
+                type="button"
+                className="bottone minuto btn-ghost"
+                onClick={() => {
+                  ipc.lontanoSpecchioOra(a.dispositivo).catch(onErrore);
+                }}
+              >
+                {t("devices.mirror.retryNow")}
+              </button>
+            </div>
+          );
+        })}
       </div>
     </>
   );

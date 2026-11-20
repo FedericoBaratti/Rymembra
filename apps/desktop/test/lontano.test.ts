@@ -26,6 +26,7 @@ import {
   causeDiRilettura,
   chiaveDelTestoErrore,
   frasiDelDimentica,
+  inErrore,
   linkDa,
   ordinaDispositivi,
   qrScaduto,
@@ -499,8 +500,15 @@ test("S9-11: la lettura di un catalogo si annuncia all'inizio e alla fine, non a
   const fine = { pc: passo("pc", { fase: "fine", fatti: 50_000, righe: 50_000 }) };
   assert.deepEqual(annunciDelloSpecchio(prima, fine), [{ tipo: "fine", dispositivo: "pc" }]);
   assert.deepEqual(annunciDelloSpecchio(fine, fine), []);
-  // Interrotta o non supportata: non «letta» (la dice la sua frase, S9-12).
-  assert.deepEqual(annunciDelloSpecchio(prima, { pc: passo("pc", { fase: "errore", errore: "x" }) }), []);
+  // Interrotta: non «letta», e si dice che si è interrotta (S9-12).
+  assert.deepEqual(annunciDelloSpecchio(prima, { pc: passo("pc", { fase: "errore", errore: "x" }) }), [
+    { tipo: "errore", dispositivo: "pc" },
+  ]);
+  assert.deepEqual(
+    annunciDelloSpecchio({ pc: passo("pc", { fase: "errore", errore: "x" }) }, { pc: passo("pc", { fase: "errore", errore: "x" }) }),
+    [],
+    "una volta sola, non a ogni evento",
+  );
   // Due dispositivi: ognuno il suo.
   assert.deepEqual(
     annunciDelloSpecchio(
@@ -538,4 +546,47 @@ test("S9-11: nessun role=\"status\" sopra un testo che porta un conteggio", () =
       assert.doesNotMatch(testi[chiave] ?? "", /\{fatti\}|\{totali\}/, `${lingua}: ${chiave} ha un conteggio`);
     }
   }
+});
+
+// ── S9-12: la lettura del catalogo che si interrompe si dice ────────────────
+
+test("S9-12: i dispositivi la cui lettura si è interrotta si riconoscono", () => {
+  // `FaseSpecchio` ha `"errore"` da sempre, e nessun punto della finestra lo
+  // guardava: la striscia spariva (non era più `leggo`), la libreria restava con
+  // le righe già arrivate e nessuna spiegazione, e col filtro del dispositivo la
+  // pagina diceva «non ha ancora mandato la sua musica, o non ne condivide»,
+  // falso se c'era stato un errore.
+  const avanzamenti = {
+    a: passo("a", { fase: "errore", errore: "lontano.irraggiungibile" }),
+    b: passo("b"),
+    c: passo("c", { fase: "fine" }),
+    d: passo("d", { fase: "nonSupportato" }),
+  };
+  assert.deepEqual(inErrore(avanzamenti).map((x) => x.dispositivo), ["a"]);
+  assert.deepEqual(inErrore({}), []);
+});
+
+test("S9-12: la striscia e il vuoto del filtro dicono che la lettura si è interrotta, con «Riprova adesso»", () => {
+  const striscia = readFileSync(new URL("../src/parti/StrisciaSpecchio.tsx", import.meta.url), "utf8");
+  assert.match(striscia, /inErrore\(avanzamenti\)/);
+  assert.match(striscia, /t\("devices\.mirror\.failed", \{ nome \}\)/);
+  assert.match(striscia, /ipc\.lontanoSpecchioOra\(a\.dispositivo\)\.catch\(onErrore\)/);
+  const vuoto = readFileSync(new URL("../src/parti/VuotoDelFiltro.tsx", import.meta.url), "utf8");
+  const ramo = vuoto.slice(vuoto.indexOf('avanzamento?.fase === "errore"'));
+  assert.ok(ramo.length > 0, "il vuoto ha un ramo per `errore`");
+  assert.ok(
+    vuoto.indexOf('avanzamento?.fase === "errore"') < vuoto.indexOf('t("library.origin.empty.device"'),
+    "prima della frase «non ha ancora mandato la sua musica»",
+  );
+  assert.match(ramo.slice(0, 600), /t\("devices\.mirror\.failed", \{ nome \}\)/);
+  assert.match(ramo.slice(0, 900), /ipc\.lontanoSpecchioOra\(origine\.chiave\)/);
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    assert.ok(testi["devices.mirror.failed"], lingua);
+    assert.match(testi["devices.mirror.failed"] ?? "", /\{nome\}/, lingua);
+  }
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /<StrisciaSpecchio onErrore=\{segnalaErrore\} \/>/);
 });

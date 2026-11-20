@@ -659,9 +659,20 @@ export function inLettura(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio
   return Object.values(avanzamenti).filter((a) => a.fase === "leggo");
 }
 
-/** Una lettura di catalogo che comincia o finisce, da dire a chi ascolta lo schermo. */
+/**
+ * Quelli la cui ultima lettura si è interrotta.
+ *
+ * Il nucleo riprova da sé ogni cinque minuti, e fino ad allora la libreria resta
+ * con le righe già arrivate: senza una frase, chi guarda non sa perché il
+ * catalogo è a metà (S9-12). «Riprova ora» è `lontanoSpecchioOra`.
+ */
+export function inErrore(avanzamenti: AvanzamentiSpecchio): AvanzamentoSpecchio[] {
+  return Object.values(avanzamenti).filter((a) => a.fase === "errore");
+}
+
+/** Una lettura di catalogo che comincia, finisce o si interrompe, da dire a chi ascolta lo schermo. */
 export interface AnnuncioDelloSpecchio {
-  tipo: "inizio" | "fine";
+  tipo: "inizio" | "fine" | "errore";
   dispositivo: string;
 }
 
@@ -674,8 +685,8 @@ export interface AnnuncioDelloSpecchio {
  * scarico uno ogni 2 MiB): un lettore di schermo rileggeva il testo intero a ogni
  * cambio, per i minuti della prima lettura. Si annuncia il passaggio, non lo
  * stato (`Annuncio.tsx`, `AnnuncioScansione.tsx`); chi vuole il punto guarda la
- * striscia. Una lettura che si interrompe (`errore`) non è «letta», e qui non si
- * dice.
+ * striscia. Una lettura che si interrompe (`errore`) non è «letta»: si dice che
+ * si è interrotta, una volta (S9-12).
  */
 export function annunciDelloSpecchio(
   prima: AvanzamentiSpecchio,
@@ -686,6 +697,7 @@ export function annunciDelloSpecchio(
     const era = prima[a.dispositivo]?.fase;
     if (a.fase === "leggo" && era !== "leggo") fuori.push({ tipo: "inizio", dispositivo: a.dispositivo });
     else if (a.fase === "fine" && era === "leggo") fuori.push({ tipo: "fine", dispositivo: a.dispositivo });
+    else if (a.fase === "errore" && era !== "errore") fuori.push({ tipo: "errore", dispositivo: a.dispositivo });
   }
   return fuori;
 }

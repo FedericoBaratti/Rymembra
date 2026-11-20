@@ -5774,7 +5774,7 @@ export function App() {
                     toast non compare: sarebbe la stessa barra due volte. */}
                 {/* Il primo collegamento di un dispositivo: «Leggo la libreria di <PC>…
                     12.000/50.000». Nel frattempo la libreria si usa. */}
-                <StrisciaSpecchio />
+                <StrisciaSpecchio onErrore={segnalaErrore} />
                 <StrisciaScarico onErrore={segnalaErrore} />
                 <ConImportazioni>
                   {(importazioni) => (
