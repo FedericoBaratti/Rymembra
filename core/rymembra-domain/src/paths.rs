@@ -227,14 +227,24 @@ pub fn path_key(path: &str, rules: PathRules) -> String {
 /// ```
 #[must_use]
 pub fn is_under(path: &str, folder: &str, rules: PathRules) -> bool {
-    let child = path_key(path, rules);
-    let parent = path_key(folder, rules);
+    key_is_under(&path_key(path, rules), &path_key(folder, rules))
+}
+
+/// [`is_under`] su due chiavi che [`path_key`] ha già normalizzato: per chi
+/// deve chiederlo per molti percorsi sotto le stesse cartelle (una funzione SQL
+/// che scorre la libreria) e non vuole rinormalizzare la cartella a ogni riga.
+/// È **la** regola, e `is_under` la usa: non una copia.
+#[must_use]
+pub fn key_is_under(child: &str, parent: &str) -> bool {
     // Una radice vuota non contiene niente. Senza questa guardia il prefisso
     // sarebbe `"/"` e mezzo filesystem risulterebbe sorvegliato.
     if parent.is_empty() {
         return false;
     }
-    child == parent || child.starts_with(&format!("{parent}/"))
+    child == parent
+        || child
+            .strip_prefix(parent)
+            .is_some_and(|resto| resto.starts_with('/'))
 }
 
 /// I nomi che Windows riserva ai dispositivi, fuori dalle porte numerate.

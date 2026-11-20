@@ -9,7 +9,7 @@
 //!
 //! | Dove | Decisione | Prova |
 //! |---|---|---|
-//! | `library/condivisa.rs` (`CONDIVISO`) | mai ricondivise: un terzo dispositivo non vede i brani del primo attraverso il secondo | `library::prove_catalogo` |
+//! | `library/condivisa.rs` (`CONDIVISO`) | mai ricondivise: un terzo dispositivo non vede i brani del primo attraverso il secondo; e solo i brani che stanno **adesso** sotto una cartella sorvegliata (una cartella tolta esce subito, anche dalle cose ricordate) | `library::prove_catalogo` |
 //! | `sincronia.rs`, ascolti e statistiche | le statistiche di una riga specchio sono una copia di quelle del proprietario: non entrano nei contatori, non si sommano, non partono, non si riscrivono da fuori | `le_statistiche_di_una_riga_specchio_non_entrano_nella_sincronia`, `quel_che_arriva_dalla_sincronia_non_scrive_sulle_righe_specchio` |
 //! | `sincronia.rs`, playlist (FSYNC) | due regole: **per agganciare** una riga specchio conta come presente (una voce viva entra in `playlist_tracks` anche su una riga del PC); **per seppellire** una chiave presente qui solo attraverso righe specchio conta come assente (invisibile, non tolta). Una riga che nasce, cambia chiave o sparisce non è mai un gesto: la lapide la scrive solo il gesto dell'utente, esplicita | gli scenari `fsync_*` (l'ultimo in `library::tests`), `specchio::gesti` e `specchio::revisione` |
 //! | `backup.rs`, `profilo/biblioteca.rs` | né brani né cronologia né copertine né cartelle: sono fatti di questa macchina, come `nuvola_voci` | `backup_e_profilo_non_portano_le_righe_specchio` |

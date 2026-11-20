@@ -274,6 +274,7 @@ pub fn brano_condiviso(
     connection: &Connection,
     id: i64,
 ) -> Result<Option<BranoDaTestare>, AppError> {
+    crate::library::condivisa::assicura_le_radici(connection)?;
     use rusqlite::OptionalExtension as _;
     let sql = format!("SELECT {COLONNE} FROM tracks t WHERE t.id = ?1 AND {CONDIVISO}");
     connection
@@ -845,6 +846,13 @@ mod prove {
         std::fs::write(&file, b"finto").expect("file");
         std::fs::write(file.with_extension("lrc"), LRC).expect("sidecar");
         let c = libreria();
+        // Il brano sta in una cartella vera, che si sorveglia: senza, niente si condivide.
+        crate::settings::write_json(
+            &c,
+            crate::settings::CHIAVE_CARTELLE,
+            &[dir.path().display().to_string()],
+        )
+        .expect("cartelle sorvegliate");
         locale(&c, 1, "k1", &file.display().to_string());
 
         let dato = brano_condiviso(&c, 1).unwrap().expect("condiviso");

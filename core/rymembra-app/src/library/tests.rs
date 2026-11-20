@@ -6720,6 +6720,9 @@ fn agli_altri_dispositivi_si_mostrano_solo_i_file() {
 /// titolo. Per le prove delle pagine che Sfoglia chiede agli altri dispositivi.
 fn libreria_da_sfogliare(n: i64) -> (tempfile::TempDir, CoverStore, Connection) {
     let (dir, store, connection) = banco();
+    // Le cartelle sorvegliate: senza, niente si condivide (S1-8).
+    crate::settings::write_json(&connection, crate::settings::CHIAVE_CARTELLE, &["/musica"])
+        .expect("cartelle sorvegliate");
     for id in 1..=n {
         connection
             .execute(

@@ -562,6 +562,9 @@ mod prove {
         let c = rymembra_app::db::open_in_memory()
             .expect("database in memoria")
             .connection;
+        // Il brano sta sotto una cartella sorvegliata: senza, niente si condivide.
+        rymembra_app::settings::write_json(&c, rymembra_app::settings::CHIAVE_CARTELLE, &["C:/m"])
+            .expect("cartelle sorvegliate");
         c.execute(
             "INSERT INTO tracks
                  (id, path, track_key, title, artist, album, duration_ms,
@@ -755,6 +758,8 @@ mod prove {
 
     /// Un brano condiviso, scritto nella libreria dello stato.
     fn metti_il_brano(c: &rusqlite::Connection, id: i64) -> Result<(), AppError> {
+        // Sotto una cartella sorvegliata: senza, niente si condivide.
+        rymembra_app::settings::write_json(c, rymembra_app::settings::CHIAVE_CARTELLE, &["C:/m"])?;
         c.execute(
             "INSERT INTO tracks
                  (id, path, track_key, title, artist, album, duration_ms,

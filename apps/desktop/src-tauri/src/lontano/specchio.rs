@@ -1414,10 +1414,19 @@ mod prove {
         )
     }
 
+    /// Una libreria vuota che sorveglia le cartelle dei brani di prova: senza
+    /// una cartella sorvegliata niente si condivide.
     fn libreria() -> rusqlite::Connection {
-        rymembra_app::db::open_in_memory()
+        let c = rymembra_app::db::open_in_memory()
             .expect("database")
-            .connection
+            .connection;
+        rymembra_app::settings::write_json(
+            &c,
+            rymembra_app::settings::CHIAVE_CARTELLE,
+            &["C:/Musica", "/storage/Musica"],
+        )
+        .expect("cartelle sorvegliate");
+        c
     }
 
     /// `quanti` brani nella libreria del PC, con gli id da 1.

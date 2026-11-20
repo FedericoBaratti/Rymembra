@@ -54,15 +54,135 @@ use super::*;
 /// per intervallo di prefisso, come in `enrich`: `'/' + 1` è `'0'`.
 ///
 /// Le righe specchio (`lontano://`) ne stanno fuori: vedi il `//!`.
+///
+/// E le righe che non stanno **adesso** sotto una cartella sorvegliata
+/// ([`SOTTO_LE_RADICI`]): una cartella tolta dall'elenco lascia in libreria le
+/// sue righe — la scansione le considera fuori competenza, non sparite, e non le
+/// toglie mai — e senza questa riga restavano elencate, valutabili e con il testo
+/// leggibile per sempre (S1-8). L'elenco si legge nella stessa istruzione, da
+/// `settings`: una cartella tolta esce alla domanda dopo, non alla scansione dopo.
 pub(crate) const CONDIVISO: &str = "t.path IS NOT NULL AND t.source_service IS NULL \
      AND NOT (t.path >= 'nuvola://' AND t.path < 'nuvola:/0') \
-     AND NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0')";
+     AND NOT (t.path >= 'lontano://' AND t.path < 'lontano:/0') \
+     AND rym_sotto_le_radici(t.path, (SELECT value FROM settings WHERE key = 'library.roots'))";
 
 /// La stessa per `tracks` senza alias, dove l'espressione dell'artista deve
 /// restare quella dell'indice.
 const CONDIVISO_SENZA_ALIAS: &str = "path IS NOT NULL AND source_service IS NULL \
      AND NOT (path >= 'nuvola://' AND path < 'nuvola:/0') \
-     AND NOT (path >= 'lontano://' AND path < 'lontano:/0')";
+     AND NOT (path >= 'lontano://' AND path < 'lontano:/0') \
+     AND rym_sotto_le_radici(path, (SELECT value FROM settings WHERE key = 'library.roots'))";
+
+/// La funzione SQL di [`CONDIVISO`]: il percorso sta sotto una delle cartelle
+/// dell'elenco (il JSON di `library.roots`)?
+///
+/// Quel che [`file_del_brano`] già chiedeva a Rust, con la stessa regola
+/// (`rymembra_domain::paths::is_under`: grafia delle barre e delle maiuscole di
+/// questa piattaforma, confine di separatore) e dentro SQL, perché valga per
+/// **ogni** domanda. Le cartelle del cloud (`nuvola://`) non contano: i loro file
+/// non sono di qui. Nessuna cartella — un elenco che manca, o che non si legge —
+/// vale che niente è condiviso.
+pub(crate) const SOTTO_LE_RADICI: &str = "rym_sotto_le_radici";
+
+/// Registra [`SOTTO_LE_RADICI`] su questa connessione, se manca: la stessa
+/// tecnica di `interrogazioni::assicura_ordine` (si prova con una `SELECT`
+/// preparata una volta sola, perché ridefinire una funzione scade tutte le
+/// istruzioni preparate). **Ogni** domanda che passa da [`CONDIVISO`] la chiama
+/// per prima.
+///
+/// La funzione ricorda l'ultimo elenco che ha visto — le cartelle già normalizzate
+/// con `path_key` — e lo rifà solo se cambia: dentro una scansione dell'indice è
+/// lo stesso per tutte le righe, e confrontarlo costa un confronto di byte. Una riga
+/// che comincia come una cartella scritta così com'è, con un separatore dopo,
+/// non passa dalla normalizzazione: è la scorciatoia per il caso comune, ed è
+/// sempre un sottoinsieme di quel che `is_under` risponde.
+///
+/// # Errori
+///
+/// `db.queryFailed` se SQLite non accetta la funzione.
+pub(crate) fn assicura_le_radici(connection: &Connection) -> Result<(), AppError> {
+    /// I due separatori di percorso: lo schema `/` e quello di Windows.
+    const SEPARATORI: [char; 2] = ['/', '\\'];
+    use rusqlite::functions::FunctionFlags;
+    use rusqlite::types::ValueRef;
+    use rymembra_domain::paths::{key_is_under, path_key};
+    if connection
+        .prepare_cached(&format!("SELECT {SOTTO_LE_RADICI}('', NULL)"))
+        .is_ok()
+    {
+        return Ok(());
+    }
+    let regole = PathRules::for_current_platform();
+    // L'elenco visto per ultimo, com'era scritto, e di ogni cartella la grafia
+    // senza i separatori in coda e la chiave normalizzata.
+    type Cartelle = Vec<(String, String)>;
+    let ricordo: std::cell::RefCell<Option<(Vec<u8>, Cartelle)>> = std::cell::RefCell::new(None);
+    connection
+        .create_scalar_function(
+            SOTTO_LE_RADICI,
+            2,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            move |contesto| {
+                let (ValueRef::Text(percorso), ValueRef::Text(elenco)) =
+                    (contesto.get_raw(0), contesto.get_raw(1))
+                else {
+                    return Ok(false);
+                };
+                let mut visto = ricordo.borrow_mut();
+                if visto.as_ref().is_none_or(|(prima, _)| prima != elenco) {
+                    let cartelle: Vec<String> = serde_json::from_slice(elenco).unwrap_or_default();
+                    let radici = cartelle
+                        .into_iter()
+                        .filter(|r| !r.starts_with("nuvola://"))
+                        .filter_map(|r| {
+                            let chiave = path_key(&r, regole);
+                            (!chiave.is_empty())
+                                .then(|| (r.trim_end_matches(SEPARATORI).to_owned(), chiave))
+                        })
+                        .collect();
+                    *visto = Some((elenco.to_vec(), radici));
+                }
+                let radici = visto
+                    .as_ref()
+                    .map_or(&[][..], |(_, radici)| radici.as_slice());
+                let percorso = String::from_utf8_lossy(percorso);
+                let scorciatoia = radici.iter().any(|(grezza, _)| {
+                    !grezza.is_empty()
+                        && percorso
+                            .strip_prefix(grezza.as_str())
+                            .is_some_and(|resto| resto.starts_with(SEPARATORI))
+                });
+                if scorciatoia {
+                    return Ok(true);
+                }
+                let figlio = path_key(&percorso, regole);
+                Ok(radici
+                    .iter()
+                    .any(|(_, chiave)| key_is_under(&figlio, chiave)))
+            },
+        )
+        .map_err(|err| db_error("cartelle sorvegliate di un brano condiviso", &err))
+}
+
+/// Il segno di quel che si ricorda: la generazione della libreria **e** le
+/// cartelle sorvegliate.
+///
+/// Togliere una cartella non scrive su `tracks`, quindi non cambia la
+/// generazione, e un elenco ricordato sotto la generazione di prima servirebbe
+/// ancora le righe di una cartella che non è più condivisa. Le cartelle nella
+/// chiave fanno ricalcolare quel che le guarda. Restituisce anche la generazione
+/// da sola, che è quella che il catalogo dice a chi lo legge: letta **prima**,
+/// come in `Ricordate`.
+fn segno(connection: &Connection) -> Result<(i64, i64), AppError> {
+    let generazione = generazione(connection)?;
+    let radici = crate::settings::read(connection, crate::settings::CHIAVE_CARTELLE)?;
+    let mut impronta = blake3::Hasher::new();
+    impronta.update(&generazione.to_le_bytes());
+    impronta.update(radici.as_deref().unwrap_or_default().as_bytes());
+    let mut otto = [0_u8; 8];
+    otto.copy_from_slice(&impronta.finalize().as_bytes()[..8]);
+    Ok((generazione, i64::from_le_bytes(otto)))
+}
 
 /// Le colonne di un album come le vede un altro dispositivo: `total_tracks` conta
 /// i brani **condivisi**, non tutte le righe dell'album.
@@ -377,7 +497,8 @@ pub(super) fn brani_con_scarto(
     scarto: i64,
 ) -> Result<Vec<BranoRemoto>, AppError> {
     // Prima di leggere, non dopo: vedi `Ricordate`.
-    let chiave = (generazione(connection)?, ordine.sql());
+    assicura_le_radici(connection)?;
+    let chiave = (segno(connection)?.1, ordine.sql());
     let ricordato = presa(cache).brani.get(&chiave).cloned();
     let id = match ricordato {
         Some(id) => id,
@@ -456,6 +577,7 @@ pub(super) fn brani_diretti(
     da: i64,
     quanti: i64,
 ) -> Result<Vec<BranoRemoto>, AppError> {
+    assicura_le_radici(connection)?;
     let sql = format!(
         "SELECT {COLONNE_REMOTO} FROM tracks t WHERE {CONDIVISO}
          ORDER BY {} LIMIT ?1 OFFSET ?2",
@@ -475,6 +597,7 @@ pub(super) fn brani_diretti(
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn brani_album(connection: &Connection, impronta: &str) -> Result<Vec<BranoRemoto>, AppError> {
+    assicura_le_radici(connection)?;
     let Some(album_key) = chiave_dell_impronta(connection, impronta)? else {
         return Ok(Vec::new());
     };
@@ -493,6 +616,7 @@ pub fn brani_album(connection: &Connection, impronta: &str) -> Result<Vec<BranoR
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn brano(connection: &Connection, id: i64) -> Result<Option<BranoRemoto>, AppError> {
+    assicura_le_radici(connection)?;
     let sql = format!("SELECT {COLONNE_REMOTO} FROM tracks t WHERE t.id = ?1 AND {CONDIVISO}");
     Ok(
         righe_di_brani(connection, &sql, [id], "un brano condiviso")?
@@ -507,6 +631,7 @@ pub fn brano(connection: &Connection, id: i64) -> Result<Option<BranoRemoto>, Ap
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn album(connection: &Connection, da: i64, quanti: i64) -> Result<Vec<AlbumSummary>, AppError> {
+    assicura_le_radici(connection)?;
     // Lo stesso ordine della griglia di qui (D-104).
     super::interrogazioni::assicura_ordine(connection)?;
     let ordine = super::interrogazioni::ORDINE_DEGLI_ALBUM;
@@ -536,6 +661,7 @@ pub fn album_artista(
     artista: &str,
     quanti: i64,
 ) -> Result<Vec<AlbumSummary>, AppError> {
+    assicura_le_radici(connection)?;
     let sql = format!(
         "SELECT {} FROM albums a
          WHERE a.album_key IN (SELECT album_key FROM tracks
@@ -575,20 +701,22 @@ pub(super) fn artisti_con(
     quanti: usize,
 ) -> Result<Vec<ArtistSummary>, AppError> {
     let cosa = "artisti condivisi";
-    // Prima di contare, non dopo: vedi `Ricordate`.
-    let generazione = generazione(connection)?;
-    let ricordati = presa(cache).artisti.get(&generazione).cloned();
+    // Prima di contare, non dopo: vedi `Ricordate`. Con le cartelle sorvegliate
+    // nella chiave: vedi `segno`.
+    assicura_le_radici(connection)?;
+    let (_, chiave) = segno(connection)?;
+    let ricordati = presa(cache).artisti.get(&chiave).cloned();
     let tutti = match ricordati {
         Some(tutti) => tutti,
         None => {
             let tutti = Arc::new(artisti_ordinati(connection)?);
             let mut ricordate = presa(cache);
             if ricordate.artisti.len() >= ARTISTI_RICORDATI
-                && !ricordate.artisti.contains_key(&generazione)
+                && !ricordate.artisti.contains_key(&chiave)
             {
                 ricordate.artisti.clear();
             }
-            ricordate.artisti.insert(generazione, Arc::clone(&tutti));
+            ricordate.artisti.insert(chiave, Arc::clone(&tutti));
             #[cfg(test)]
             {
                 ricordate.costruiti += 1;
@@ -672,6 +800,7 @@ pub fn cerca(
     da: i64,
     quanti: i64,
 ) -> Result<Vec<BranoRemoto>, AppError> {
+    assicura_le_radici(connection)?;
     let espressione = fts_query(testo);
     if espressione.is_empty() {
         return Ok(Vec::new());
@@ -697,6 +826,7 @@ pub fn cerca(
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn cerca_conteggio(connection: &Connection, testo: &str) -> Result<i64, AppError> {
+    assicura_le_radici(connection)?;
     let espressione = fts_query(testo);
     if espressione.is_empty() {
         return Ok(0);
@@ -718,11 +848,18 @@ pub fn cerca_conteggio(connection: &Connection, testo: &str) -> Result<i64, AppE
 ///
 /// `db.queryFailed` se il database non risponde.
 pub fn file_del_brano(connection: &Connection, id: i64) -> Result<Option<FileCondiviso>, AppError> {
+    assicura_le_radici(connection)?;
     let cosa = "file di un brano condiviso";
+    // Le cartelle sorvegliate le guarda già [`CONDIVISO`], sul percorso della
+    // riga. Qui in più sul file che si legge davvero: per un brano d'immagine CD
+    // è l'immagine, che può stare dove il percorso virtuale `…\Album.cue|03` non
+    // dice. La stessa funzione, la stessa regola.
     let trovato = connection
         .prepare_cached(&format!(
             "SELECT COALESCE(t.immagine, t.path), t.file_size, t.date_modified
-             FROM tracks t WHERE t.id = ?1 AND {CONDIVISO}"
+             FROM tracks t WHERE t.id = ?1 AND {CONDIVISO}
+               AND {SOTTO_LE_RADICI}(COALESCE(t.immagine, t.path),
+                                     (SELECT value FROM settings WHERE key = 'library.roots'))"
         ))
         .and_then(|mut statement| {
             statement
@@ -736,20 +873,7 @@ pub fn file_del_brano(connection: &Connection, id: i64) -> Result<Option<FileCon
                 .optional()
         })
         .map_err(|err| db_error(cosa, &err))?;
-    let Some(file) = trovato else {
-        return Ok(None);
-    };
-    let radici: Vec<String> =
-        crate::settings::read_json(connection, crate::settings::CHIAVE_CARTELLE)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-    let regole = PathRules::for_current_platform();
-    let dentro = radici
-        .iter()
-        .filter(|r| !r.starts_with("nuvola://"))
-        .any(|r| is_under(&file.percorso, r, regole));
-    Ok(dentro.then_some(file))
+    Ok(trovato)
 }
 
 // ── il catalogo ─────────────────────────────────────────────────────────────
@@ -965,21 +1089,20 @@ pub(super) fn riassunto_con(
     connection: &Connection,
     cache: &Mutex<Ricordate>,
 ) -> Result<Arc<RiassuntoCatalogo>, AppError> {
-    // Prima di calcolare, non dopo: vedi `Ricordate`.
-    let generazione = generazione(connection)?;
-    if let Some(ricordato) = presa(cache).catalogo.get(&generazione).cloned() {
+    // Prima di calcolare, non dopo: vedi `Ricordate`. Con le cartelle sorvegliate
+    // nella chiave: vedi `segno`; a chi legge si dice la sola generazione.
+    assicura_le_radici(connection)?;
+    let (generazione, chiave) = segno(connection)?;
+    if let Some(ricordato) = presa(cache).catalogo.get(&chiave).cloned() {
         return Ok(ricordato);
     }
     let calcolato = Arc::new(calcola_il_riassunto(connection, generazione)?);
     let mut ricordate = presa(cache);
-    if ricordate.catalogo.len() >= RIASSUNTI_RICORDATI
-        && !ricordate.catalogo.contains_key(&generazione)
+    if ricordate.catalogo.len() >= RIASSUNTI_RICORDATI && !ricordate.catalogo.contains_key(&chiave)
     {
         ricordate.catalogo.clear();
     }
-    ricordate
-        .catalogo
-        .insert(generazione, Arc::clone(&calcolato));
+    ricordate.catalogo.insert(chiave, Arc::clone(&calcolato));
     #[cfg(test)]
     {
         ricordate.costruiti += 1;
@@ -1054,6 +1177,7 @@ pub fn pagina_catalogo(
     da_id: i64,
     a_id: i64,
 ) -> Result<PaginaCatalogo, AppError> {
+    assicura_le_radici(connection)?;
     if da_id < 0 || a_id < da_id || a_id - da_id >= ID_PER_SECCHIO {
         return Err(AppError::new(ErrorCode::LontanoProtocollo)
             .with_cause("un secchio del catalogo più largo di quanto si serve"));
@@ -1174,6 +1298,7 @@ pub fn valuta_con_orologi(
         return Err(AppError::new(ErrorCode::LontanoProtocollo)
             .with_cause("una valutazione con un voto o un orologio che non stanno"));
     }
+    assicura_le_radici(connection)?;
     if self::brano(connection, brano)?.is_none() {
         return Err(AppError::new(ErrorCode::LontanoFileCambiato)
             .with_cause("il brano non è più condiviso"));
