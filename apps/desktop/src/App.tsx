@@ -2482,7 +2482,9 @@ export function App() {
           // pagina — con una selezione grande, secondi — e dice che sta
           // contando: senza, un secondo clic apriva una seconda anteprima (S9-9).
           unoScarico(async () => {
-            setNotizia(t("devices.download.counting"));
+            // Solo da una selezione che chiederà la conferma: per una riga sola
+            // non c'è niente da aspettare, e la notizia sarebbe rumore.
+            if (chiedeConfermaPerLoScarico(ids.length)) setNotizia(t("devices.download.counting"));
             await preparaLoScarico(await ipc.braniPerId(ids));
           }).catch(segnalaErrore);
         },

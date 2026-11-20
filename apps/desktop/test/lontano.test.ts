@@ -691,7 +691,12 @@ test("S9-9: «Scarica qui» passa dalla guardia, dal menù e dagli altri punti, 
   // Il menù di una selezione grande: la guardia copre anche le righe intere in pagina.
   const menu = app.slice(app.indexOf("scaricaQui: (ids) => {"), app.indexOf("vaiAlDisco: conBrano"));
   assert.match(menu, /unoScarico\(/);
-  assert.match(menu, /setNotizia\(t\("devices\.download\.counting"\)\)/);
+  // Il segno di lavoro solo dove c'è da aspettare: da una selezione che chiede la
+  // conferma, non per una riga sola.
+  assert.match(
+    menu,
+    /if \(chiedeConfermaPerLoScarico\(ids\.length\)\) setNotizia\(t\("devices\.download\.counting"\)\);/,
+  );
   assert.match(menu, /ipc\.braniPerId\(ids\)/);
   // Gli altri punti passano da `scaricaQui`, che ha la stessa guardia.
   const scarica = app.slice(app.indexOf("const scaricaQui = useCallback("), app.indexOf("/**\n   * Fa partire **un** brano, da solo."));
