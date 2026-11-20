@@ -261,3 +261,24 @@ test("le stringhe nuove hanno la loro frase in italiano e in inglese", () => {
     for (const chiave of usate) assert.ok(chiave in testi, `${lingua}: manca «${chiave}»`);
   }
 });
+
+// ── S9-10: il tasto d'ordinamento ha per nome quel che si legge ─────────────
+
+test("S9-10: il tasto d'ordinamento dei brani dell'artista si chiama come si legge, ordine compreso", () => {
+  // L'`aria-label` («Ordina i brani di <nome>») sostituiva il contenuto: il nome
+  // accessibile non conteneva il testo visibile («Ordinamento: Per disco»), un
+  // comando vocale «clic Ordinamento per disco» non lo trovava (WCAG 2.5.3), e chi
+  // usa un lettore di schermo non sentiva quale ordine fosse attivo. Il testo
+  // visibile basta, e dice l'ordine; di chi sono i brani lo dice la sezione che lo
+  // contiene («Brani», nella pagina dell'artista).
+  const sezione = brano(app, 'id="artista-brani"', "<ElencoBraniCollegato");
+  const tasto = brano(sezione, "<button", "</button>");
+  assert.match(tasto, /onClick=\{menuOrdineArtista\}/);
+  assert.match(tasto, /t\("header\.sort", \{ nome: etichettaOrdineArtista\(ordineArtista\) \}\)/);
+  assert.doesNotMatch(tasto, /aria-label/, "il nome accessibile è il testo visibile");
+  // E la frase che non serve più non resta nel catalogo.
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(sorgente(`lingue/${lingua}.json`)) as Record<string, string>;
+    assert.ok(!("artist.tracks.sort.aria" in testi), lingua);
+  }
+});

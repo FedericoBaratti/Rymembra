@@ -3844,7 +3844,6 @@
   "artist.openOther.aria": "{artista}, apre la pagina di {pagina}",
   "artist.none": "Questo brano non ha un artista da aprire.",
   "artist.tracks.title": "Brani",
-  "artist.tracks.sort.aria": "Ordina i brani di {nome}",
   "artist.sort.album": "Per album",
   "artist.sort.year": "Per anno",
   "artist.sort.title": "Per titolo",

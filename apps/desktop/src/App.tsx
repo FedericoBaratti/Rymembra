@@ -4646,7 +4646,6 @@ export function App() {
                 <button
                   type="button"
                   className="pillola btn-ghost"
-                  aria-label={t("artist.tracks.sort.aria", { nome: nomeArtista(nome) })}
                   onClick={menuOrdineArtista}
                 >
                   <Icona nome="i-sort" dim={14} />

@@ -3844,7 +3844,6 @@
   "artist.openOther.aria": "{artista}, opens the page of {pagina}",
   "artist.none": "This track has no artist to open.",
   "artist.tracks.title": "Tracks",
-  "artist.tracks.sort.aria": "Sort the tracks of {nome}",
   "artist.sort.album": "By album",
   "artist.sort.year": "By year",
   "artist.sort.title": "By title",
