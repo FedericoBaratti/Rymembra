@@ -525,7 +525,7 @@
   "errors.lontano.linkNonValido": "This is not a Rymembra link. Copy the link from the screen that shows the QR code, or scan the QR code.",
   "errors.lontano.rifiutato": "The link was refused on the other device.",
   "errors.lontano.fileCambiato": "This track’s file is no longer on the other device, or it changed while you were listening. Try again in a moment: if it keeps happening, the track is gone from there.",
-  "errors.lontano.nonQui": "This track is on another device: you can’t edit or delete its file from here.",
+  "errors.lontano.nonQui": "This track is on another device: its file isn’t here, so you can’t edit it, delete it or show it in its folder from here.",
   "errors.lontano.reteAConsumo": "You are on mobile data and “Wi-Fi only” is on: tracks from your other devices, and “Listen together” over the internet, wait for Wi-Fi.",
   "errors.lontano.reteAConsumo.chiedi": "You’re on mobile data and tracks from your other devices need your OK first: press play and it will ask whether to use mobile data. Or wait for Wi-Fi.",
   "errors.lontano.spento": "The internet link is off: turn on “Reachable from the internet” in Settings › Devices.",
