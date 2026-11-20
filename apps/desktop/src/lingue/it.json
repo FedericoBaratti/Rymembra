@@ -1618,6 +1618,7 @@
   "library.origin.from": "Da «{nome}»",
   "library.origin.offline": "«{nome}» non raggiungibile",
   "library.origin.faded": "«{nome}» non condivide più questo brano",
+  "library.origin.copyHere": "«{nome}» non risponde: suona la copia che hai qui",
   "library.origin.offline.sub": "Quando il dispositivo torna raggiungibile, la sua musica ricompare qui. Intanto l'elenco resta, ma non si può ascoltare.",
   "library.origin.gone": "Dispositivo non più collegato",
   "library.origin.empty.title": "Niente da mostrare",

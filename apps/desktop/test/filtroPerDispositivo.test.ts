@@ -5,6 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type { DispositivoLontano, StatoLontano } from "../src/ipc/lontano";
 import {
@@ -14,6 +15,7 @@ import {
   chiaveDiOrigine,
   dispositiviDiLibreria,
   eFiltrabile,
+  frasePerLaRiga,
   origineConChiavi,
   origineDi,
   origineValida,
@@ -250,4 +252,30 @@ test("una lista suonata da una playlist salta le righe in grazia, e le dice", ()
   assert.equal(primoSpento(lista, acceso)?.inGrazia, true);
   assert.equal(primoSpento(lista, acceso)?.nome, "Casa");
   assert.equal(primoSpento([lista[0], lista[2]], acceso), null);
+});
+
+// ── S9-14: il segno di una riga non dice «non raggiungibile» se suona ───────
+
+test("S9-14: una riga con la copia di qui non è detta «non raggiungibile»", () => {
+  // Il PC è spento e il brano ha una copia anche qui: la riga non è grigia e
+  // suona (`copiaQui`), ma il suo segno — letto al sorvolo e da un lettore di
+  // schermo — diceva «“PC” non raggiungibile».
+  const base = { chiave: PC, nome: "Casa", telefono: false };
+  assert.equal(frasePerLaRiga({ ...base, spenta: true, copiaQui: true }).chiave, "library.origin.copyHere");
+  assert.deepEqual(frasePerLaRiga({ ...base, spenta: true, copiaQui: true }).valori, { nome: "Casa" });
+  // Le altre non cambiano.
+  assert.equal(frasePerLaRiga({ ...base, spenta: true }).chiave, "library.origin.offline");
+  assert.equal(frasePerLaRiga({ ...base, spenta: false }).chiave, "library.origin.from");
+  assert.equal(frasePerLaRiga({ ...base, spenta: false, inGrazia: true }).chiave, "library.origin.faded");
+  assert.equal(frasePerLaRiga({ ...base, nome: "", spenta: true }).chiave, "library.origin.gone");
+  // `etichettaDellaRiga` ne traduce la frase, e le due lingue ce l'hanno.
+  const lontano = readFileSync(new URL("../src/dispositivoLontano.ts", import.meta.url), "utf8");
+  assert.match(lontano, /const frase = frasePerLaRiga\(riga\);\s*return t\(frase\.chiave, frase\.valori\);/);
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    assert.match(testi["library.origin.copyHere"] ?? "", /\{nome\}/, lingua);
+    assert.doesNotMatch(testi["library.origin.copyHere"] ?? "", /raggiungibile|reachable/, lingua);
+  }
 });
