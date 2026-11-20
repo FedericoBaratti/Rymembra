@@ -618,27 +618,50 @@ export const archivioSpecchio = creaArchivio<AvanzamentiSpecchio>({});
  * disparte (`lontano:copertina` quando arriva). Un segnaposto che ha ricevuto
  * quel «non c'è» si iscrive qui (`Copertina`) e, a ogni cambio, ci riprova.
  */
-export const archivioCopertine = creaArchivio<number>(0);
+export const archivioCopertine = creaArchivio<ArrivoDiCopertine>({ giro: 0, impronte: new Set() });
+
+/**
+ * Le copertine arrivate nell'ultima raccolta: quante raccolte ci sono state, e
+ * le impronte di quelle dell'ultima. Un segnaposto riprova solo se è la sua
+ * (`riprovaPerLaCopertina`).
+ */
+export interface ArrivoDiCopertine {
+  giro: number;
+  impronte: ReadonlySet<string>;
+}
 
 /** Per quanto si raccolgono gli arrivi prima di dirlo ai segnaposto. */
 export const RITARDO_COPERTINE_MS = 300;
 
 let copertineInAttesa: ReturnType<typeof setTimeout> | undefined;
+let impronteInAttesa = new Set<string>();
 
 /**
- * Una copertina è arrivata (`lontano:copertina`): i segnaposto ci riprovano.
+ * Una copertina è arrivata (`lontano:copertina`, con la sua impronta): i
+ * segnaposto che la aspettano ci riprovano.
  *
  * Gli arrivi si raccolgono — una pagina con duecento righe specchio ne riceve
  * duecento in pochi secondi, e duecento giri di richieste da ogni segnaposto
  * sarebbero lo stesso carico che si voleva togliere — e il conto cambia una volta
- * sola per raccolta.
+ * sola per raccolta. La raccolta porta le impronte: senza, ogni arrivo faceva
+ * riprovare **tutti** i segnaposto in vista — le righe, la griglia degli album, i
+ * mosaici degli artisti: decine di richieste al protocollo ogni 300 ms — anche se
+ * la copertina era una sola e di un'altra riga (S9-15).
  */
-export function copertinaArrivata(): void {
+export function copertinaArrivata(impronta: string): void {
+  impronteInAttesa.add(impronta);
   if (copertineInAttesa !== undefined) return;
   copertineInAttesa = setTimeout(() => {
     copertineInAttesa = undefined;
-    archivioCopertine.scrivi((n) => n + 1);
+    const impronte = impronteInAttesa;
+    impronteInAttesa = new Set();
+    archivioCopertine.scrivi((prima) => ({ giro: prima.giro + 1, impronte }));
   }, RITARDO_COPERTINE_MS);
+}
+
+/** Il segnaposto della copertina `hash` deve riprovare dopo questo arrivo? */
+export function riprovaPerLaCopertina(arrivo: ArrivoDiCopertine, hash: string | null): boolean {
+  return hash !== null && arrivo.impronte.has(hash);
 }
 
 /** Gli avanzamenti con questo in più, o al posto di quello di prima. */

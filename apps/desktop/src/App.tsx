@@ -1411,7 +1411,7 @@ export function App() {
    * chiede in disparte (`media/lontane.rs`) —, e i segnaposto (`Copertina`) ci
    * riprovano quando arriva. Gli arrivi si raccolgono: vedi `copertinaArrivata`.
    */
-  useAscolto<string>("lontano:copertina", () => copertinaArrivata());
+  useAscolto<string>("lontano:copertina", (impronta) => copertinaArrivata(impronta));
 
   /*
    * Un brano saltato perché non si apriva: lo dice la fascia, con il titolo e
