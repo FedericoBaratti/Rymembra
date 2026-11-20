@@ -23,6 +23,7 @@ import {
   annullatoDaQui,
   causeDiRilettura,
   chiaveDelTestoErrore,
+  frasiDelDimentica,
   linkDa,
   ordinaDispositivi,
   qrScaduto,
@@ -427,5 +428,42 @@ test("S11-4: con «Chiedi» la frase dell'errore non dice «Solo Wi-Fi è attivo
     assert.ok(chiedi, `${lingua}: manca la frase per «Chiedi»`);
     assert.doesNotMatch(chiedi, /Solo Wi-Fi|Wi-Fi only/, `${lingua}: dice un'impostazione che non è quella`);
     assert.match(testi[chiave] ?? "", /Solo Wi-Fi|Wi-Fi only/, `${lingua}: «No» dice ancora il suo nome`);
+  }
+});
+
+// ── S2-2, la parte della pagina: «Dimentica» dice che la cronologia si perde ──
+
+test("S2-2: l'anteprima di «Dimentica» dice che la cronologia dei brani solo di quel dispositivo andrà persa", () => {
+  // `play_history` ha la cascata sulle righe specchio, e `togli` non la sposta:
+  // dimenticato il dispositivo, la cronologia dei suoi brani sparisce (quella dei
+  // brani con una copia di qui passa alla copia: lo fa il nucleo). Il sottotitolo
+  // diceva «Gli ascolti già mandati restano», che si leggeva come una
+  // rassicurazione sulla cronologia.
+  const chiavi = (a: Parameters<typeof frasiDelDimentica>[0]) => frasiDelDimentica(a).map((f) => f.chiave);
+  // Un dispositivo con righe: la sua cronologia si perde.
+  assert.deepEqual(chiavi({ righe: 120, playlistChePerdono: 0 }), [
+    "devices.forget.sub",
+    "devices.mirror.forget.history",
+  ]);
+  // E le playlist, se ce ne sono che perdono qualcosa, con il numero.
+  assert.deepEqual(frasiDelDimentica({ righe: 120, playlistChePerdono: 3 }).slice(1), [
+    { chiave: "devices.mirror.forget.loses", valori: { n: 3 } },
+    { chiave: "devices.mirror.forget.history", valori: {} },
+  ]);
+  // Senza righe non c'è cronologia da perdere, e non si dice.
+  assert.deepEqual(chiavi({ righe: 0, playlistChePerdono: 0 }), ["devices.forget.sub"]);
+  // Anteprima che non è arrivata: tacere direbbe «non si perde niente».
+  assert.deepEqual(chiavi(null), [
+    "devices.forget.sub",
+    "devices.mirror.forget.unknown",
+    "devices.mirror.forget.history",
+  ]);
+  for (const lingua of ["it", "en"]) {
+    const testi = JSON.parse(
+      readFileSync(new URL(`../src/lingue/${lingua}.json`, import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    assert.ok(testi["devices.mirror.forget.history"], `${lingua}: manca la frase`);
+    // Il sottotitolo non si legge più come una rassicurazione sulla cronologia.
+    assert.doesNotMatch(testi["devices.forget.sub"] ?? "", /Gli ascolti già mandati restano|Listens already sent stay/, lingua);
   }
 });

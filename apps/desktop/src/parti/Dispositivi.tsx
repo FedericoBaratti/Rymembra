@@ -33,6 +33,7 @@ import { dataOraBreve } from "../formato";
 import { MASSIMO_NOME, nomePulito } from "../insieme";
 import {
   ipc,
+  type AnteprimaDimentica,
   type DatiMobili,
   type DispositivoLontano,
   type DispositivoSincronia,
@@ -57,6 +58,7 @@ import {
   eTelefono,
   eventoDelPannello,
   fraseScaricoFinito,
+  frasiDelDimentica,
   FINESTRA_COLLEGATO_MS,
   linkDa,
   percorsoQr,
@@ -641,15 +643,15 @@ function RigaDispositivo({
             // spariscono. Se il conto non arriva si chiede lo stesso — dimenticare
             // non dipende da lui — ma si dice che non lo si è potuto fare: tacere
             // direbbe «nessuna playlist perde niente».
-            const chiedi = (perse: number | null) =>
+            //
+            // E la cronologia d'ascolto dei brani che esistono solo su quel
+            // dispositivo, che con le sue righe se ne va (S2-2): `frasiDelDimentica`.
+            const chiedi = (anteprima: AnteprimaDimentica | null) =>
               onDomanda({
                 titolo: t("devices.forget.title", { nome: dispositivo.nome }),
-                descrizione:
-                  perse === null
-                    ? `${t("devices.forget.sub")} ${t("devices.mirror.forget.unknown")}`
-                    : perse > 0
-                      ? `${t("devices.forget.sub")} ${t("devices.mirror.forget.loses", { n: perse })}`
-                      : t("devices.forget.sub"),
+                descrizione: frasiDelDimentica(anteprima)
+                  .map((frase) => t(frase.chiave, frase.valori))
+                  .join(" "),
                 conferma: t("devices.forget"),
                 consenso: true,
                 fai: () => {
@@ -658,7 +660,7 @@ function RigaDispositivo({
               });
             ipc
               .lontanoDimenticaAnteprima(dispositivo.chiave)
-              .then((anteprima) => chiedi(anteprima.playlistChePerdono))
+              .then(chiedi)
               .catch(() => chiedi(null));
           }}
         >

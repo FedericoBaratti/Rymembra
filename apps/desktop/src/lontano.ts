@@ -25,6 +25,7 @@ import { eventiEFotografia } from "./ultima";
 import { dispositivoDellaRiga } from "./ipc/libreria";
 import type { Chiave, Valori } from "./lingue";
 import type {
+  AnteprimaDimentica,
   AnteprimaScarico,
   AvanzamentoSpecchio,
   DispositivoLontano,
@@ -345,6 +346,37 @@ export function domandaDelloScarico(
 export function percentualeScarico(stato: ScaricoLontano): number {
   if (stato.totale <= 0) return 0;
   return Math.min(100, Math.floor((stato.byte / stato.totale) * 100));
+}
+
+/**
+ * Le frasi della domanda «Dimenticare questo dispositivo?», in ordine.
+ *
+ * Dimenticare un dispositivo toglie le sue righe dalla libreria, e con esse — la
+ * cronologia ha la cascata sulle righe — la cronologia d'ascolto di quei brani.
+ * Quella dei brani che hai anche qui passa alla tua copia (lo fa il nucleo); dei
+ * brani che esistono **solo** su quel dispositivo andrà persa, e la domanda lo
+ * dice (S2-2). Senza un numero: l'anteprima non conta ancora gli ascolti, e una
+ * frase che dice quel che resta vero in tutti e due i casi è meglio di una cifra
+ * indovinata. Sul dispositivo del proprietario gli ascolti già mandati restano,
+ * ed è quel che dice `devices.forget.sub`.
+ *
+ * Senza righe non c'è cronologia da perdere e non si dice; senza anteprima — il
+ * conto non è arrivato — si dice lo stesso, e che non si è potuto controllare
+ * quante playlist perdono: tacere direbbe «non si perde niente».
+ */
+export function frasiDelDimentica(
+  anteprima: Pick<AnteprimaDimentica, "righe" | "playlistChePerdono"> | null,
+): { chiave: Chiave; valori: Valori }[] {
+  const frasi: { chiave: Chiave; valori: Valori }[] = [{ chiave: "devices.forget.sub", valori: {} }];
+  if (anteprima === null) {
+    frasi.push({ chiave: "devices.mirror.forget.unknown", valori: {} });
+  } else if (anteprima.playlistChePerdono > 0) {
+    frasi.push({ chiave: "devices.mirror.forget.loses", valori: { n: anteprima.playlistChePerdono } });
+  }
+  if (anteprima === null || anteprima.righe > 0) {
+    frasi.push({ chiave: "devices.mirror.forget.history", valori: {} });
+  }
+  return frasi;
 }
 
 /** Il codice di un errore che dice «sei sui dati mobili, e serve un sì». */
