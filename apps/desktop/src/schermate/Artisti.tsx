@@ -57,6 +57,7 @@ export function Artisti({
   onMenu,
   scorrevole,
   memoria,
+  chiave,
 }: {
   artisti: Artista[];
   onApri: (artista: Artista) => void;
@@ -65,6 +66,8 @@ export function Artisti({
   scorrevole?: RefObject<HTMLDivElement | null> | undefined;
   /** Lo scorrimento si ricorda: solo sotto un `<Activity>`. */
   memoria?: boolean | undefined;
+  /** L'identità dell'elenco (il filtro per dispositivo): una nuova riporta in cima. */
+  chiave?: string | undefined;
 }) {
   /*
    * La lettera di ogni artista, quali lettere hanno qualcuno sotto, e dove
@@ -86,6 +89,7 @@ export function Artisti({
     selettore: ".scheda-artista",
     selettoreMisura: ".scheda-artista",
     memoria,
+    chiave,
   });
 
   /**

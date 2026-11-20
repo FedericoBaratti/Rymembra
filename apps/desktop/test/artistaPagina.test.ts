@@ -146,7 +146,8 @@ test("il filtro per dispositivo vale per tutti gli elenchi della pagina dell'art
   assert.match(rilegge, /albums: 0, tracks: 0/, "un artista senza niente col filtro nuovo resta aperto con zero");
   assert.match(app, /\[nomeAperto, chiaveArtista, giroArtista\]/);
   // La selezione dei brani dell'artista porta il filtro e l'ordinamento.
-  assert.match(app, /pagina\.tipo === "artista" \? `\$\{ordineArtista\}:\$\{chiaveOrigine\}` : ordine/);
+  // (L'ordinamento e il filtro sono due argomenti di `chiaveDellaSelezione`: S9-1.)
+  assert.match(app, /pagina\.tipo === "artista" \? ordineArtista : ordine,[\s\S]*?chiaveOrigine,\s*\),/);
   // Il nucleo sa quale elenco è, per «Seleziona tutto» e per suonare da una riga.
   assert.match(app, /\{ tipo: "artista", nome: nomeArtistaCorrente, ordine: ordineArtista \}/);
 });

@@ -2769,9 +2769,12 @@ export function App() {
     chiave: chiaveDellaSelezione(
       pagina,
       vistaTenuta,
-      // Di un artista, l'ordinamento dei suoi brani e il filtro: vedi `selezione.ts`.
-      pagina.tipo === "artista" ? `${ordineArtista}:${chiaveOrigine}` : ordine,
+      // Di un artista, l'ordinamento dei suoi brani: vedi `selezione.ts`.
+      pagina.tipo === "artista" ? ordineArtista : ordine,
       query,
+      // Lo stesso filtro che dà la chiave alle liste rade: un altro filtro è
+      // un'altra selezione (S9-1).
+      chiaveOrigine,
     ),
     // Sul telefono la selezione finisce cambiando vista, come in ogni app di
     // Android: tenerla da parte e ritrovarla tornando lì vorrebbe dire una
@@ -4779,8 +4782,10 @@ export function App() {
         return (
           <ElencoBraniCollegato
             rada={v === "brani" ? radaBrani : radaPreferiti}
-            /* Un altro ordinamento è un altro elenco: in cima. */
-            chiave={v === "brani" ? ordine : undefined}
+            /* Un altro ordinamento, o un altro filtro per dispositivo, è un altro
+               elenco: in cima (S9-7). Solo scelte dell'utente: un totale che
+               cresce leggendo un catalogo non deve riportare in cima. */
+            chiave={v === "brani" ? `${ordine}:${chiaveOrigine}` : chiaveOrigine}
             memoria
             scorrevole={contenuto}
             suonabile={riproduzione.disponibile}
@@ -4807,6 +4812,7 @@ export function App() {
             onMenu={menuAlbum}
             scorrevole={contenuto}
             memoria
+            chiave={chiaveOrigine}
           />
         );
       case "artisti":
@@ -4834,6 +4840,7 @@ export function App() {
             artisti={artisti}
             scorrevole={contenuto}
             memoria
+            chiave={chiaveOrigine}
             /* `apriArtista` e non `setArtistaAperto`: aprire un artista è un
                cambio di pagina come gli altri, e passando dal setter nudo era
                l'unico che avveniva di scatto — mentre la voce «Apri» del menù

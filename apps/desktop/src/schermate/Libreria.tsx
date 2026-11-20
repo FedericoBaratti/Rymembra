@@ -50,8 +50,10 @@ export function useGrigliaVirtuale(opzioni: {
   selettore: string;
   selettoreMisura: string;
   memoria?: boolean | undefined;
+  /** L'identità di quel che si mostra: cambiandola si torna in cima (vedi `useVirtuale`). */
+  chiave?: string | undefined;
 }) {
-  const { totale, griglia, scorrevole, selettore, selettoreMisura, memoria } = opzioni;
+  const { totale, griglia, scorrevole, selettore, selettoreMisura, memoria, chiave } = opzioni;
   const finestra = useVirtuale({
     totale,
     contenitore: scorrevole ?? SENZA_SCORREVOLE,
@@ -60,6 +62,7 @@ export function useGrigliaVirtuale(opzioni: {
     selettoreMisura,
     griglia: true,
     memoria,
+    chiave,
   });
   const intera = scorrevole === undefined;
   const primo = intera ? 0 : finestra.primo;
@@ -138,6 +141,7 @@ export function GrigliaAlbum({
   onMenu,
   scorrevole,
   memoria,
+  chiave,
 }: {
   /** I dischi, quando sono tutti in mano. */
   album?: readonly Album[] | undefined;
@@ -152,6 +156,8 @@ export function GrigliaAlbum({
   scorrevole?: RefObject<HTMLDivElement | null> | undefined;
   /** Lo scorrimento si ricorda: solo sotto un `<Activity>`. */
   memoria?: boolean | undefined;
+  /** L'identità dell'elenco (il filtro per dispositivo): una nuova riporta in cima. */
+  chiave?: string | undefined;
 }) {
   const ora = useQuelCheSuona();
   const inVolo = useContext(Volo);
@@ -165,6 +171,7 @@ export function GrigliaAlbum({
     selettore: ".scheda",
     selettoreMisura: ".scheda:not(.finta)",
     memoria,
+    chiave,
   });
 
   // Le pagine che la finestra guarda: vedi `ElencoBrani`.
