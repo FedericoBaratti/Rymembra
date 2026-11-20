@@ -395,3 +395,46 @@ fn un_cuore_vecchio_non_vince_su_un_cuore_del_proprietario_piu_nuovo_se_le_stell
         .is_err()
     );
 }
+
+#[test]
+fn una_chiave_troppo_lunga_non_si_taglia_nel_catalogo() {
+    // S2-8. Chi riceve il catalogo non taglia una chiave d'identità («tagliata
+    // direbbe un altro brano»: `specchio::convalida`), e rifiuta la riga se non sta
+    // nel tetto. Chi lo serve la tagliava a quel tetto lo stesso, e due brani con
+    // lo stesso inizio di chiave — titoli in giapponese a tre byte a carattere,
+    // due album con lo stesso inizio di nome — diventavano lo stesso brano.
+    use crate::specchio::convalida::{MAX_CHIAVE, convalida_riga};
+    let c = libreria();
+    locali(&c, [1, 2, 3]);
+    let lunga = format!("artista|{}|album", "x".repeat(MAX_CHIAVE));
+    // Il brano 2 ha la `track_key` oltre il tetto; il 3 ha solo la chiave di
+    // contenuto oltre il tetto.
+    c.execute("UPDATE tracks SET track_key = ?1 WHERE id = 2", [&lunga])
+        .unwrap();
+    c.execute("UPDATE tracks SET content_key = ?1 WHERE id = 3", [&lunga])
+        .unwrap();
+    let pagina = condivisa::pagina_catalogo(&c, 0, ID_PER_SECCHIO - 1).unwrap();
+    assert_eq!(
+        pagina.brani.iter().map(|b| b.id).collect::<Vec<_>>(),
+        vec![1, 3],
+        "una riga la cui chiave non sta nel tetto non si manda: l'altro la rifiuterebbe, o peggio la prenderebbe tagliata"
+    );
+    let tre = pagina.brani.iter().find(|b| b.id == 3).unwrap();
+    assert_eq!(
+        (tre.track_key.as_str(), tre.content_key.as_deref()),
+        ("k3", None),
+        "la chiave di contenuto troppo lunga non si manda tagliata: il brano ripiega su `track_key`"
+    );
+    // Quel che si manda, chi riceve lo prende com'è.
+    for brano in &pagina.brani {
+        assert_eq!(
+            convalida_riga(brano.clone(), ADESSO).as_ref(),
+            Ok(brano),
+            "{brano:?}"
+        );
+    }
+    // E il riassunto conta le righe della pagina, nient'altro: se contasse anche
+    // quella che la pagina non manda, chi legge i secchi non si fermerebbe.
+    let riassunto = condivisa::riassunto_catalogo(&c).unwrap();
+    assert_eq!(riassunto.secchi.iter().map(|s| s.righe).sum::<i64>(), 2);
+}

@@ -881,6 +881,21 @@ const COLONNE_CATALOGO: &str = "t.id, t.title, t.artist, t.album, t.album_key, t
      t.stats_updated_at, t.bitrate, t.sample_rate, t.channels, t.codec, t.track_key,
      t.content_key, t.mb_recording_id, t.mb_release_group_id, t.mb_release_id";
 
+/// Le righe condivise ([`CONDIVISO`]) che il **catalogo** manda: quelle la cui
+/// `track_key` sta nel tetto che chi riceve accetta
+/// (`specchio::convalida::MAX_CHIAVE`, in **byte**: `length` su un blob, che su
+/// un testo conta i caratteri).
+///
+/// Una chiave d'identità non si taglia — tagliata direbbe un altro brano —, e chi
+/// riceve scarta la riga che non ci sta: mandarla tagliata, com'era, faceva
+/// diventare lo stesso brano due brani con lo stesso inizio di chiave (S2-8). Lo
+/// stesso filtro serve il riassunto e le pagine: se contassero righe diverse, i
+/// secchi non coinciderebbero con le loro impronte e chi legge non si fermerebbe.
+const NEL_CATALOGO: &str = "length(CAST(t.track_key AS BLOB)) <= 300";
+
+/// Il tetto di [`NEL_CATALOGO`] è quello di chi riceve.
+const _: () = assert!(crate::specchio::convalida::MAX_CHIAVE == 300);
+
 /// Le colonne di [`COLONNE_REMOTO`] seguite da quelle del catalogo, nei limiti
 /// della cornice.
 fn catalogo_da_riga(row: &Row<'_>) -> rusqlite::Result<BranoCatalogo> {
@@ -913,8 +928,15 @@ fn catalogo_da_riga(row: &Row<'_>) -> rusqlite::Result<BranoCatalogo> {
         sample_rate: row.get(26)?,
         channels: row.get(27)?,
         codec: tronca_opz(row.get(28)?, MAX_CODEC),
-        track_key: tronca(&row.get::<_, String>(29)?, MAX_CHIAVE),
-        content_key: tronca_opz(row.get(30)?, MAX_CHIAVE),
+        // Mai tagliate: una chiave tagliata direbbe un altro brano (S2-8). Le righe la
+        // cui `track_key` non sta nel tetto non arrivano qui ([`NEL_CATALOGO`]), e
+        // una chiave di contenuto troppo lunga si manda assente: chi riceve fa a
+        // meno di lei, e il brano ripiega su `track_key`, come per ogni chiave che
+        // non sta nel tetto (`specchio::convalida::convalida_riga`).
+        track_key: row.get::<_, String>(29)?,
+        content_key: row
+            .get::<_, Option<String>>(30)?
+            .filter(|chiave| chiave.len() <= MAX_CHIAVE),
         mb_recording_id: tronca_opz(row.get(31)?, MAX_ID_MB),
         mb_release_group_id: tronca_opz(row.get(32)?, MAX_ID_MB),
         mb_release_id: tronca_opz(row.get(33)?, MAX_ID_MB),
@@ -974,7 +996,7 @@ fn calcola_il_riassunto(
     let cosa = "riassunto del catalogo condiviso";
     let mut statement = connection
         .prepare_cached(&format!(
-            "SELECT {COLONNE_CATALOGO} FROM tracks t WHERE {CONDIVISO} ORDER BY t.id"
+            "SELECT {COLONNE_CATALOGO} FROM tracks t WHERE {CONDIVISO} AND {NEL_CATALOGO} ORDER BY t.id"
         ))
         .map_err(|err| db_error(cosa, &err))?;
     let mut righe = statement.query([]).map_err(|err| db_error(cosa, &err))?;
@@ -1042,7 +1064,7 @@ pub fn pagina_catalogo(
     let mut statement = connection
         .prepare_cached(&format!(
             "SELECT {COLONNE_CATALOGO} FROM tracks t
-              WHERE t.id BETWEEN ?1 AND ?2 AND {CONDIVISO}
+              WHERE t.id BETWEEN ?1 AND ?2 AND {CONDIVISO} AND {NEL_CATALOGO}
               ORDER BY t.id LIMIT ?3"
         ))
         .map_err(|err| db_error(cosa, &err))?;
