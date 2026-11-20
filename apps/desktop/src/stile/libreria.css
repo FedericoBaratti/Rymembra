@@ -1110,8 +1110,29 @@
 }
 
 /* Il dispositivo non risponde: la riga resta, in grigio. Il fuoco, il menù, il
-   cuore e le stelle restano com'erano; il tocco non suona e dice perché. */
-.riga[data-spenta] {
+   cuore e le stelle restano com'erano; il tocco non suona e dice perché.
+
+   Grigia col colore e non con `opacity` sulla riga (S9-5): a 0,55 titolo,
+   artista, album e durata scendevano sotto 4,5:1 — nel tema chiaro anche il
+   titolo, 3,6:1 — e il cuore e le stelle, che qui sono comandi attivi, sotto 3:1.
+   Tutto il testo va sul terzo grado (`--color-text-3`), che ogni tema di serie
+   tiene sopra 4,5:1 su ogni fondo di una riga; la gerarchia fra titolo e resto
+   si perde, e il segno che non è un colore — il corsivo del titolo, come per
+   `.nodo-spento` — dice «spenta» anche con i colori di sistema forzati. Il
+   motivo («“PC” non è raggiungibile») sta già come testo accanto al titolo, in
+   `role="img"`, ed è quello che legge un lettore di schermo. La riga che suona
+   tiene il titolo d'accento. L'opacità resta sulla miniatura, che non è testo. */
+.riga[data-spenta]:not([aria-current="true"]) .nome {
+  font-style: italic;
+  color: var(--color-text-3);
+}
+.riga[data-spenta] .autore,
+.riga[data-spenta] .disco,
+.riga[data-spenta] .durata,
+.riga[data-spenta] .indice {
+  color: var(--color-text-3);
+}
+.riga[data-spenta] .miniatura {
   opacity: 0.55;
 }
 .riga[data-spenta] .indice {

@@ -680,6 +680,70 @@ test("nessuna opacità porta un testo informativo sotto 4,5:1", () => {
   assert.deepEqual(cadute, []);
 });
 
+test("S9-5: una riga grigia si attenua col colore e non con l'opacità, e il suo testo resta sopra 4,5:1", () => {
+  // Il difetto: `.riga[data-spenta] { opacity: 0.55 }` su tutta la riga. Titolo,
+  // artista, album e durata scendevano sotto 4,5:1 (nel tema chiaro anche il
+  // titolo, 3,5:1; l'album 2,4:1) e con loro il cuore e le stelle, che nella riga
+  // grigia restano comandi attivi. Qui si legge dal foglio di che colore sono, e
+  // si fa il conto con i token di tutte le skin di serie, sopra ogni fondo su cui
+  // sta una riga: le quattro superfici, il sorvolo e la riga scelta.
+  const fuori = regole(senzaCommenti(FOGLIO.replace(bloccoForzato(), "")));
+  const spente = fuori.filter((r) => r.selettori.some((s) => s.startsWith(".riga[data-spenta]")));
+  assert.ok(spente.length > 0, "la riga grigia ha le sue regole");
+  for (const r of spente) {
+    // L'opacità sta bene solo sulla miniatura, che non è testo (come l'icona di
+    // `.nodo-spento`): sul resto — la riga, i testi, i comandi — no.
+    const soloMiniatura = r.selettori.every((s) => s.endsWith(".miniatura"));
+    if (!soloMiniatura) assert.doesNotMatch(r.dichiarazioni, /opacity:/, r.selettori.join(", "));
+  }
+  const figli = [".nome", ".autore", ".disco", ".durata", ".indice"];
+  const cadute: string[] = [];
+  let minimo = Infinity;
+  for (const figlio of figli) {
+    const colorata = spente.find(
+      (r) =>
+        r.selettori.some((s) => s.startsWith(".riga[data-spenta]") && s.endsWith(` ${figlio}`)) &&
+        /(^|[;\s])color:/.test(r.dichiarazioni),
+    );
+    assert.ok(colorata, `${figlio}: la riga grigia lo colora, con un token del tema`);
+    const token = /(?:^|[;\s])color:\s*var\((--[a-z0-9-]+)\)/.exec(colorata.dichiarazioni)?.[1];
+    assert.ok(token, `${figlio}: un token, non un colore scritto a mano`);
+    for (const { nome, colore } of temiDiSerie()) {
+      const testo = colore(token);
+      const fondi: [string, Rgba][] = [];
+      // Una riga di elenco sta sulla pagina o su un pannello: `surface-0…2`.
+      // `surface-3` è dei menù e della coda al sorvolo, e le righe di brani non ci
+      // stanno: lì vale solo il fondo nudo.
+      for (const s of ["0", "1", "2", "3"]) {
+        const superficie = colore(`--color-surface-${s}`);
+        fondi.push([`surface-${s}`, superficie]);
+        if (s === "3") continue;
+        // `.riga:hover`: il 6 % del testo sopra la superficie.
+        fondi.push([`sorvolo su surface-${s}`, componi(colore("--color-text-1"), superficie, 0.06)]);
+        // `.riga[data-scelta]`: `--accent-soft` sopra la superficie.
+        fondi.push([`scelta su surface-${s}`, componi(colore("--accent-soft"), superficie)]);
+      }
+      for (const [dove, fondo] of fondi) {
+        const valore = contrasto(testo, fondo);
+        minimo = Math.min(minimo, valore);
+        if (valore < SOGLIA_AA) cadute.push(`${nome}, ${figlio} (${token}) su ${dove}: ${valore.toFixed(2)}:1`);
+      }
+    }
+  }
+  console.log(`S9-5: il rapporto più basso del testo di una riga grigia è ${minimo.toFixed(2)}:1`);
+  assert.deepEqual(cadute, []);
+  // Il titolo corrente resta d'accento anche se la riga è grigia, e il segno
+  // «spenta» che non è un colore (il corsivo) sopravvive al contrasto elevato.
+  const nome = spente.find((r) => r.selettori.some((s) => s.endsWith(" .nome")));
+  assert.ok(nome && /font-style:\s*italic/.test(nome.dichiarazioni), "il titolo grigio è in corsivo");
+  assert.ok(
+    nome.selettori.every((s) => s.includes(':not([aria-current="true"])')),
+    "la riga che suona tiene il titolo d'accento",
+  );
+  // In contrasto elevato la miniatura torna piena, come l'icona di `.nodo-spento`.
+  assert.match(bloccoForzato(), /\.riga\[data-spenta\] \.miniatura\s*\{\s*opacity:\s*1;/);
+});
+
 test("con lo spettro acceso l'alone dei comandi è del colore del fondo del tema", () => {
   // Sopra le barre i comandi non hanno un fondo, solo un'ombra. Nera, reggeva il
   // tema scuro (testo chiaro su ombra scura) e non il chiaro: icone scure con
