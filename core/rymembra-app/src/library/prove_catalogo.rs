@@ -723,3 +723,136 @@ fn misura_il_costo_delle_cartelle_sorvegliate_sul_catalogo_condiviso() {
         t.elapsed().as_millis()
     );
 }
+
+// ── S1-9: le copertine che si servono ────────────────────────────────────────
+
+/// Un'impronta di copertina fatta di `c` ripetuta: sono 64 cifre esadecimali.
+fn impronta(c: char) -> String {
+    c.to_string().repeat(64)
+}
+
+fn con_copertina(c: &Connection, id: i64, path: &str, hash: &str) {
+    brano(c, id, path);
+    c.execute(
+        "INSERT OR IGNORE INTO cover_art (hash, mime_type, width, height, byte_size, source, created_at)
+         VALUES (?1, 'image/jpeg', 1, 1, 1, 'provider', 1)",
+        [hash],
+    )
+    .unwrap();
+    c.execute(
+        "UPDATE tracks SET cover_art_hash = ?2 WHERE id = ?1",
+        rusqlite::params![id, hash],
+    )
+    .unwrap();
+}
+
+#[test]
+fn una_copertina_che_non_e_di_un_brano_condiviso_non_si_serve() {
+    // S1-9. Lo store delle copertine è uno solo per tutti i brani — di qui, del
+    // cloud, di catalogo, quelle prese da altri dispositivi — e un pari che
+    // conosce l'impronta di un'immagine (BLAKE3 dei suoi byte) sapeva dire se è
+    // in libreria, anche per un brano che non gli è mai stato elencato.
+    let c = libreria();
+    con_copertina(&c, 1, "C:/M/1.flac", &impronta('1'));
+    con_copertina(
+        &c,
+        2,
+        "nuvola://onedrive-abcdefgh/Musica/2.flac",
+        &impronta('2'),
+    );
+    con_copertina(
+        &c,
+        3,
+        &format!("lontano://{}/9", chiave('a')),
+        &impronta('3'),
+    );
+    con_copertina(&c, 4, "D:/Vecchia/4.flac", &impronta('4'));
+    c.execute("UPDATE tracks SET source = 'lontano' WHERE id = 3", [])
+        .unwrap();
+    let si = |h: &str| condivisa::copertina_condivisa(&c, h).unwrap();
+    assert!(
+        si(&impronta('1')),
+        "il controllo: quella di un brano condiviso"
+    );
+    assert!(!si(&impronta('2')), "di un brano del cloud");
+    assert!(!si(&impronta('3')), "di una riga specchio");
+    assert!(
+        !si(&impronta('4')),
+        "di un brano fuori dalle cartelle sorvegliate"
+    );
+    assert!(!si(&impronta('5')), "che non c'è in nessuna riga");
+    // E come ogni cosa che dipende dalle cartelle: tolta la cartella, esce.
+    radici(&c, &["D:/Altra"]);
+    assert!(!si(&impronta('1')));
+}
+
+#[test]
+fn la_copertina_di_un_album_elencato_si_serve_anche_se_viene_da_un_altro_dispositivo() {
+    // La copertina di un album è un voto fra le righe del disco, e un disco di qui
+    // con righe specchio unite può prenderla da una di loro. È quella che
+    // `condivisa::album` dice all'altro: non serve altro che quel che già dice.
+    let c = libreria();
+    con_copertina(&c, 1, "C:/M/1.flac", &impronta('1'));
+    for n in 2..=4 {
+        con_copertina(
+            &c,
+            n,
+            &format!("lontano://{}/{n}", chiave('a')),
+            &impronta('9'),
+        );
+        c.execute("UPDATE tracks SET source = 'lontano' WHERE id = ?1", [n])
+            .unwrap();
+    }
+    let mut c = c;
+    let tx = c.transaction().unwrap();
+    super::rebuild_aggregates(&tx).unwrap();
+    tx.commit().unwrap();
+    let album = condivisa::album(&c, 0, 50).unwrap();
+    assert_eq!(album.len(), 1, "un disco con un brano condiviso");
+    let detta = album[0].cover_art_hash.clone().expect("una copertina");
+    assert!(
+        condivisa::copertina_condivisa(&c, &detta).unwrap(),
+        "l'impronta che l'album dice ({detta}) si serve"
+    );
+}
+
+// ── S1-10: i brani di un album hanno un tetto ────────────────────────────────
+
+#[test]
+fn i_brani_di_un_album_hanno_il_tetto_della_cornice() {
+    // S1-10. Una cartella senza tag d'album, o una raccolta con la stessa chiave,
+    // può essere un disco da decine di migliaia di brani: la risposta non ha una
+    // pagina, e tutti i `BranoRemoto` si costruivano per una cornice che poi li
+    // rifiutava. Come ogni altra domanda d'elenco, al più una pagina.
+    let c = libreria();
+    let troppi = i64::from(condivisa::MASSIMI_BRANI_ALBUM) + 10;
+    {
+        let tx = c.unchecked_transaction().unwrap();
+        for id in 1..=troppi {
+            brano(&tx, id, &format!("C:/M/{id}.flac"));
+        }
+        tx.commit().unwrap();
+    }
+    c.execute("UPDATE tracks SET track_number = id", [])
+        .unwrap();
+    let album = condivisa::brani_album(&c, &condivisa::impronta_album("al")).unwrap();
+    assert_eq!(
+        album.len(),
+        usize::try_from(condivisa::MASSIMI_BRANI_ALBUM).unwrap(),
+        "al più una pagina"
+    );
+    assert_eq!(
+        album.iter().map(|b| b.id).take(3).collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "i primi del disco, nell'ordine del disco"
+    );
+    // Un disco normale si serve intero.
+    let piccolo = libreria();
+    locali(&piccolo, [1, 2, 3]);
+    assert_eq!(
+        condivisa::brani_album(&piccolo, &condivisa::impronta_album("al"))
+            .unwrap()
+            .len(),
+        3
+    );
+}

@@ -42,7 +42,7 @@
 //! e all'altro arriva al suo posto un'impronta ([`impronta_album`]), stabile
 //! finché non cambia la chiave, che solo chi serve sa ritradurre.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use rusqlite::OptionalExtension as _;
@@ -411,6 +411,8 @@ pub(super) struct Ricordate {
     artisti: HashMap<i64, Arc<Vec<ArtistSummary>>>,
     /// Il riassunto del catalogo condiviso: vedi [`riassunto_catalogo`].
     catalogo: HashMap<i64, Arc<RiassuntoCatalogo>>,
+    /// Le impronte di copertina che si servono: vedi [`copertina_condivisa`].
+    copertine: HashMap<i64, Arc<HashSet<String>>>,
     /// Quante volte si è calcolato un elenco intero: lo guardano le prove.
     #[cfg(test)]
     costruiti: usize,
@@ -591,7 +593,93 @@ pub(super) fn brani_diretti(
     )
 }
 
-/// I brani condivisi di un album, dalla sua impronta, nell'ordine del disco.
+/// Quanti brani al più in una risposta di [`brani_album`]: quanti una pagina di
+/// qualunque altra domanda d'elenco (`rymembra_lontano::protocollo::MASSIMA_PAGINA`,
+/// che il servizio confronta con questo numero a tempo di compilazione).
+///
+/// La domanda non ha una pagina, e un album può essere una cartella senza tag
+/// d'album da ventimila brani: si costruivano tutti i `BranoRemoto` — decine di
+/// mebibyte — per una cornice che poi li rifiutava, e lo si poteva ripetere
+/// senza tetto (S1-10). Con la cornice di una pagina di cinquecento brani sempre
+/// dentro, un disco più lungo si serve **tagliato**: i primi, nell'ordine del
+/// disco. Senza una pagina nel protocollo, non c'è un altro modo di dirlo.
+pub const MASSIMI_BRANI_ALBUM: u32 = 500;
+
+/// Le impronte di copertina che questo dispositivo serve: quelle dei brani
+/// condivisi ([`CONDIVISO`]) e quelle degli album che [`album`] elenca, che sono
+/// già dette all'altro e possono venire da una riga specchio unita al disco.
+fn copertine_condivise(connection: &Connection) -> Result<HashSet<String>, AppError> {
+    let cosa = "copertine condivise";
+    let mut statement = connection
+        .prepare_cached(&format!(
+            "SELECT t.cover_art_hash FROM tracks t
+              WHERE t.cover_art_hash IS NOT NULL AND {CONDIVISO}
+             UNION
+             SELECT a.cover_art_hash FROM albums a
+              WHERE a.cover_art_hash IS NOT NULL
+                AND EXISTS (SELECT 1 FROM tracks t
+                             WHERE t.album_key = a.album_key AND {CONDIVISO})"
+        ))
+        .map_err(|err| db_error(cosa, &err))?;
+    statement
+        .query_map([], |riga| riga.get::<_, String>(0))
+        .map_err(|err| db_error(cosa, &err))?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|err| db_error(cosa, &err))
+}
+
+/// Questa impronta è di una copertina che un altro dispositivo può chiedere?
+///
+/// Lo store delle copertine è uno solo per tutti i brani — di qui, del cloud, di
+/// catalogo, quelle prese da altri dispositivi — e chi conosce l'impronta di
+/// un'immagine (il BLAKE3 dei suoi byte: la ricava da un'immagine pubblica) poteva
+/// sapere se è in libreria, anche per un brano che non gli è mai stato elencato, e
+/// scaricarla (S1-9). Si serve solo quel che questa libreria condivide: per ogni
+/// altra impronta si risponde come per una che non c'è.
+///
+/// L'insieme si ricorda per generazione e cartelle sorvegliate, come gli altri
+/// elenchi ([`Ricordate`]): `cover_art_hash` non ha un indice, e una scansione di
+/// `tracks` per ogni copertina di una griglia sarebbe una per tessera.
+///
+/// # Errori
+///
+/// `db.queryFailed` se il database non risponde.
+pub fn copertina_condivisa(connection: &Connection, impronta: &str) -> Result<bool, AppError> {
+    copertina_condivisa_con(connection, ricordate(), impronta)
+}
+
+/// [`copertina_condivisa`] con la sua cache a parte: per le prove.
+pub(super) fn copertina_condivisa_con(
+    connection: &Connection,
+    cache: &Mutex<Ricordate>,
+    impronta: &str,
+) -> Result<bool, AppError> {
+    assicura_le_radici(connection)?;
+    // Prima di leggere, non dopo: vedi `Ricordate`.
+    let (_, chiave) = segno(connection)?;
+    let ricordate = presa(cache).copertine.get(&chiave).cloned();
+    let insieme = match ricordate {
+        Some(insieme) => insieme,
+        None => {
+            let insieme = Arc::new(copertine_condivise(connection)?);
+            let mut ricordate = presa(cache);
+            if ricordate.copertine.len() >= COPERTINE_RICORDATE
+                && !ricordate.copertine.contains_key(&chiave)
+            {
+                ricordate.copertine.clear();
+            }
+            ricordate.copertine.insert(chiave, Arc::clone(&insieme));
+            insieme
+        }
+    };
+    Ok(insieme.contains(impronta))
+}
+
+/// Quanti insiemi di copertine si tengono: quello di adesso, e uno.
+const COPERTINE_RICORDATE: usize = 2;
+
+/// I brani condivisi di un album, dalla sua impronta, nell'ordine del disco: al
+/// più [`MASSIMI_BRANI_ALBUM`], i primi.
 ///
 /// # Errori
 ///
@@ -604,9 +692,14 @@ pub fn brani_album(connection: &Connection, impronta: &str) -> Result<Vec<BranoR
     let album_key = album_key.as_str();
     let sql = format!(
         "SELECT {COLONNE_REMOTO} FROM tracks t WHERE t.album_key = ?1 AND {CONDIVISO}
-         ORDER BY t.disc_number, t.track_number, t.title COLLATE NOCASE"
+         ORDER BY t.disc_number, t.track_number, t.title COLLATE NOCASE LIMIT ?2"
     );
-    righe_di_brani(connection, &sql, [album_key], "brani condivisi di un album")
+    righe_di_brani(
+        connection,
+        &sql,
+        rusqlite::params![album_key, i64::from(MASSIMI_BRANI_ALBUM)],
+        "brani condivisi di un album",
+    )
 }
 
 /// Alcuni brani condivisi, per id: quelli che non lo sono, o non ci sono
