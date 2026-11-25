@@ -79,6 +79,83 @@ const MASSIMO = 256 * 1024;
 /** Dove sta l'interfaccia, e il suo lockfile. */
 const INTERFACCIA = path.join("apps", "desktop");
 
+/**
+ * Il paragrafo sulle librerie Kotlin e Java dell'APK: testo fisso, perché Gradle
+ * non passa da `cargo` né da `npm`.
+ *
+ * Da aggiornare quando cambia `gen/android/app/build.gradle.kts`: la prova
+ * `ogni dipendenza gradle diretta è nominata nel paragrafo Android`
+ * (`licenze.test.js`) lo ricorda. Nomina anche quel che le dipendenze portano con
+ * sé (Guava, jspecify, Jackson, le annotazioni del Checker Framework), perché la
+ * lista di sola lettura dei crate non le vede, e dà il testo della licenza che
+ * non è Apache-2.0 (`checker-qual` è MIT, e lo vuole scritto). Con R8 l'APK di
+ * rilascio perde quel che non usa, quindi non tutto sta in ogni APK: si elenca
+ * lo stesso, perché attribuire in più non costa niente e in meno sì.
+ */
+const PARAGRAFO_ANDROID = [
+  "## The Android app",
+  "",
+  "The APK also carries Kotlin and Java libraries that Gradle adds and that",
+  "this list does not read. The ones Rymembra asks for: **AndroidX** (`webkit`,",
+  "`appcompat`, `activity-ktx`, `lifecycle-process`), **CameraX**",
+  "(`camera-camera2`, `camera-lifecycle`, `camera-view`: the QR scanner that",
+  "links a device), **Media3** (`media3-session` and `media3-common`: the player",
+  "service, its notification and Android Auto), the **Car App Library** (`app`:",
+  "only `CarConnection`, to know when the phone is connected to Android Auto),",
+  "**ZXing** (`core`: reading the QR code), **Material Components for Android**",
+  "and the **Kotlin standard library**. And what they bring with them:",
+  "**Guava**, **jspecify**, the pieces of **AndroidX** they build on",
+  "(`activity`, `annotation`, `core`, `lifecycle`, `media`), the annotations of",
+  "the **Checker Framework** (`checker-qual`, which the Car App Library brings",
+  "through Guava) and **Jackson**, which comes with Tauri's Android library. R8",
+  "removes from the release APK what is not used, so not every one of them is in",
+  "every build; they are all listed, because attributing too much costs nothing",
+  "and attributing too little does.",
+  "",
+  "All of them are under **Apache-2.0**, whose text is below, except two. The",
+  "annotations of the Checker Framework (`checker-qual`) are under the **MIT**",
+  "license, whose text follows. And `jackson-core` carries two small parts of its",
+  "own, whose notices travel in its `META-INF`: **FastDoubleParser** (MIT,",
+  "copyright 2023 Werner Randelshofer) and a big-integer implementation by Tim",
+  "Buktu (BSD-2-Clause). Sources:",
+  "<https://android.googlesource.com/platform/frameworks/support>,",
+  "<https://github.com/androidx/media>, <https://github.com/zxing/zxing>,",
+  "<https://github.com/material-components/material-components-android>,",
+  "<https://github.com/JetBrains/kotlin>, <https://github.com/google/guava>,",
+  "<https://github.com/typetools/checker-framework> and",
+  "<https://github.com/FasterXML/jackson-core>.",
+  "",
+  "```text",
+  "Checker Framework qualifiers",
+  "Copyright 2004-present by the Checker Framework developers",
+  "",
+  "MIT License:",
+  "",
+  "Permission is hereby granted, free of charge, to any person obtaining a copy",
+  'of this software and associated documentation files (the "Software"), to deal',
+  "in the Software without restriction, including without limitation the rights",
+  "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell",
+  "copies of the Software, and to permit persons to whom the Software is",
+  "furnished to do so, subject to the following conditions:",
+  "",
+  "The above copyright notice and this permission notice shall be included in",
+  "all copies or substantial portions of the Software.",
+  "",
+  'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR',
+  "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,",
+  "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE",
+  "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER",
+  "LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,",
+  "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN",
+  "THE SOFTWARE.",
+  "```",
+  "",
+  "The six icons of the Android Auto tabs (`res/drawable/auto_*.xml`) are",
+  "drawn from Google's **Material Icons** — `history`, `queue_music`,",
+  "`album`, `person`, `favorite`, `play_circle` — under **Apache-2.0**:",
+  "<https://github.com/google/material-design-icons>.",
+];
+
 /** `cargo metadata` per una piattaforma. */
 function metadataPer(piattaforma) {
   const grezzo = execFileSync(
@@ -305,31 +382,7 @@ function main() {
     "is therefore nothing to pay and nothing to ask for.",
   );
   righe.push("");
-  righe.push("## The Android app");
-  righe.push("");
-  righe.push(
-    "The APK also carries Kotlin and Java libraries that Gradle adds and that",
-    "this list does not read: **AndroidX** (`webkit`, `appcompat`,",
-    "`activity-ktx`, `lifecycle-process`), **CameraX** (`camera-camera2`,",
-    "`camera-lifecycle`, `camera-view`: the QR scanner that links a device),",
-    "**Media3** (`media3-session` and `media3-common`: the player service, its",
-    "notification and Android Auto), the **Car App Library** (`app`: only",
-    "`CarConnection`, to know when the phone is connected to Android Auto),",
-    "**ZXing** (`core`: reading the QR code),",
-    "**Material Components for Android** and the **Kotlin standard library**.",
-    "All of them are under **Apache-2.0**, whose text is below; their sources",
-    "are at <https://android.googlesource.com/platform/frameworks/support>,",
-    "<https://github.com/androidx/media>, <https://github.com/zxing/zxing>,",
-    "<https://github.com/material-components/material-components-android> and",
-    "<https://github.com/JetBrains/kotlin>.",
-  );
-  righe.push("");
-  righe.push(
-    "The six icons of the Android Auto tabs (`res/drawable/auto_*.xml`) are",
-    "drawn from Google's **Material Icons** — `history`, `queue_music`,",
-    "`album`, `person`, `favorite`, `play_circle` — under **Apache-2.0**:",
-    "<https://github.com/google/material-design-icons>.",
-  );
+  righe.push(...PARAGRAFO_ANDROID);
   righe.push("");
   righe.push("---");
   righe.push("");
@@ -432,4 +485,4 @@ function main() {
 // `licenze.test.js`, senza `cargo` e senza scrivere niente.
 if (require.main === module) main();
 
-module.exports = { testiDi, MASSIMO, NOMI };
+module.exports = { testiDi, MASSIMO, NOMI, PARAGRAFO_ANDROID };
