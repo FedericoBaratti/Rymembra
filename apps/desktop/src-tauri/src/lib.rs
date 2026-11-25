@@ -1337,6 +1337,8 @@ pub fn run() {
                     // Il QR del collegamento non resta valido nel vassoio, dove
                     // nessuno lo vede (decisione D-30).
                     lontano::finestra_nascosta(mano);
+                    // Una proposta che non ha avuto risposta vale «Più tardi» (D5).
+                    avvio_con_windows::proposta_ignorata();
                 }
             }
         })

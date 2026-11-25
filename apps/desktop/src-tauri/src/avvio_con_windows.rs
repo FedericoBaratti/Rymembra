@@ -257,24 +257,46 @@ fn da_proporre_sul_telefono(risposta: Option<RispostaProposta>, sottofondo: bool
 /// (`ui.proposta.sottofondo` resta com'è), e il prossimo avvio la rifà. Una
 /// risposta data è per sempre; questo no.
 #[derive(Debug, Default)]
-pub struct Rimando(AtomicBool);
+pub struct Rimando {
+    /// «Più tardi» è stato premuto, o la finestra si è chiusa sulla scheda.
+    rimandata: AtomicBool,
+    /// La scheda è comparsa in questa sessione.
+    mostrata: AtomicBool,
+}
 
 impl Rimando {
     /// Nessun rimando: la proposta si fa, se c'è da farla.
     #[must_use]
     pub const fn nuovo() -> Self {
-        Self(AtomicBool::new(false))
+        Self {
+            rimandata: AtomicBool::new(false),
+            mostrata: AtomicBool::new(false),
+        }
     }
 
     /// Da qui in poi la proposta non si rifà, finché il processo vive.
     pub fn imposta(&self) {
-        self.0.store(true, Ordering::Release);
+        self.rimandata.store(true, Ordering::Release);
     }
 
     /// La proposta è stata rimandata in questa sessione?
     #[must_use]
     pub fn attivo(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.rimandata.load(Ordering::Acquire)
+    }
+
+    /// La scheda sta per comparire.
+    pub fn segna_mostrata(&self) {
+        self.mostrata.store(true, Ordering::Release);
+    }
+
+    /// La finestra si è chiusa (la X col vassoio): se la scheda era comparsa, chi
+    /// l'ha chiusa non ha risposto e non ha scelto — ha detto «non adesso», e vale
+    /// «Più tardi». Senza, ogni «Mostra» rifaceva nascere la scheda.
+    pub fn finestra_chiusa(&self) {
+        if self.mostrata.load(Ordering::Acquire) {
+            self.imposta();
+        }
     }
 }
 
@@ -325,7 +347,12 @@ pub async fn proposta_sottofondo_da_fare(app: tauri::AppHandle) -> Esito<bool> {
             })
             .map_err(errore)?;
             match da_proporre(risposta, &avvio, secondo_piano) {
-                Proposta::DaFare => Ok(true),
+                Proposta::DaFare => {
+                    // La scheda sta per comparire: se la finestra si chiude senza una
+                    // risposta, vale «Più tardi» (D5).
+                    RIMANDO.segna_mostrata();
+                    Ok(true)
+                }
                 Proposta::No => Ok(false),
                 Proposta::GiaAcceso => {
                     con_libreria(&stato, |libreria| {
@@ -357,7 +384,12 @@ pub async fn proposta_sottofondo_da_fare(app: tauri::AppHandle) -> Esito<bool> {
             .map_err(errore)?
             .sottofondo;
             match da_proporre_sul_telefono(risposta, sottofondo) {
-                Proposta::DaFare => Ok(true),
+                Proposta::DaFare => {
+                    // La scheda sta per comparire: se la finestra si chiude senza una
+                    // risposta, vale «Più tardi» (D5).
+                    RIMANDO.segna_mostrata();
+                    Ok(true)
+                }
                 Proposta::No => Ok(false),
                 Proposta::GiaAcceso => {
                     con_libreria(&stato, |libreria| {
@@ -380,6 +412,12 @@ pub async fn proposta_sottofondo_da_fare(app: tauri::AppHandle) -> Esito<bool> {
 #[tauri::command]
 pub fn proposta_sottofondo_rimanda() {
     RIMANDO.imposta();
+}
+
+/// La finestra si è chiusa (la X col vassoio): se la scheda era lì senza risposta,
+/// vale «Più tardi». Vedi [`Rimando::finestra_chiusa`].
+pub fn proposta_ignorata() {
+    RIMANDO.finestra_chiusa();
 }
 
 /// Risponde alla proposta. «Sì» accende l'avvio con Windows e la X sul vassoio;
@@ -554,6 +592,69 @@ mod prove {
         assert!(rimando.attivo(), "dopo «Più tardi» la proposta non si rifà");
         rimando.imposta();
         assert!(rimando.attivo(), "alzarlo due volte non lo abbassa");
+    }
+
+    /// D5: chiudere la finestra sulla scheda senza rispondere vale «Più tardi».
+    ///
+    /// Il CHANGELOG promette «“Later” puts it off until Rymembra next starts; once
+    /// you answer, it is not asked again»: due stati. Ma la scheda non ha né una X
+    /// né Escape — la sola «chiusura» è quella della finestra, la X col vassoio — e
+    /// «Mostra» ne faceva nascere una pagina nuova con la scheda di nuovo lì, a
+    /// ogni giro, senza che nessuno avesse risposto o rimandato. Chi chiude la
+    /// finestra non ha scelto: ha detto «non adesso».
+    #[test]
+    fn chiudere_la_finestra_sulla_scheda_vale_piu_tardi() {
+        let rimando = Rimando::nuovo();
+        rimando.segna_mostrata();
+        assert!(!rimando.attivo(), "la scheda è lì, e nessuno ha scelto");
+        rimando.finestra_chiusa();
+        assert!(
+            rimando.attivo(),
+            "la finestra si è chiusa sulla scheda e la scheda tornerebbe a ogni «Mostra»"
+        );
+    }
+
+    /// Una finestra chiusa **senza** che la scheda sia comparsa — la proposta
+    /// aspetta il giro, le Novità, la libreria — non rimanda niente: nessuno l'ha
+    /// vista, e al prossimo «Mostra» ha ancora il diritto di comparire.
+    #[test]
+    fn chiudere_la_finestra_prima_che_la_scheda_compaia_non_la_rimanda() {
+        let rimando = Rimando::nuovo();
+        rimando.finestra_chiusa();
+        assert!(!rimando.attivo());
+    }
+
+    /// Le due strade stanno dove devono: la domanda segna la scheda come
+    /// mostrata quando risponde «sì, falla», e la finestra che si chiude col
+    /// vassoio avvisa il rimando.
+    #[test]
+    fn la_scheda_mostrata_e_la_finestra_chiusa_sono_cablate() {
+        let sorgente = include_str!("avvio_con_windows.rs");
+        let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
+        let da_fare = sorgente
+            .split("pub async fn proposta_sottofondo_da_fare(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .expect("la domanda c'è");
+        assert!(
+            da_fare.matches("RIMANDO.segna_mostrata()").count() >= 2,
+            "la scheda va segnata mostrata sul computer e sul telefono"
+        );
+        let lib = include_str!("lib.rs");
+        let gestore = lib
+            .split(".on_window_event(|finestra, evento| {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n        })\n").next())
+            .unwrap_or_default();
+        let nascondi = gestore
+            .split("chiusura::Decisione::Nascondi => {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n                }\n").next())
+            .unwrap_or_default();
+        assert!(
+            nascondi.contains("avvio_con_windows::proposta_ignorata()"),
+            "la X col vassoio non rimanda la proposta"
+        );
     }
 
     /// La domanda guarda il rimando **prima** di ogni lettura (non costa né la
