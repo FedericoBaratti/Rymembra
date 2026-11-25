@@ -25,9 +25,9 @@
  * # Cosa non guarda
  *
  * - I numeri di una libreria o di una norma. Non li prende il lookbehind (`tauri-plugin-updater/2.13.0`,
- *   `ndk-context-0.1.1`: li precede un `/` o un `-`) né due eccezioni dichiarate qui sotto, che non
- *   dipendono dal numero: così un aggiornamento di dipendenza non rompe la prova. Un numero nuovo di
- *   questo tipo si aggiunge a `ESTRANEI`, con la ragione.
+ *   `ndk-context-0.1.1`: li precede un `/` o un `-`) né le eccezioni dichiarate qui sotto (un nome fra
+ *   apici, la norma WCAG, SQLite), che non dipendono dal numero: così un aggiornamento di dipendenza
+ *   non rompe la prova. Un numero nuovo di questo tipo si aggiunge a `ESTRANEI`, con la ragione.
  * - Le versioni precedenti alla 2.0.0: sono le righe vecchie, e i numeri di libreria
  *   cominciano per 0 e per 1.
  *
@@ -63,6 +63,9 @@ const ESTRANEI = [
   /WCAG\s*$/,
   // Il pavimento di SQLite, nelle pagine del sito: «SQLite version floor (3.53.2)».
   /SQLite[^\n]{0,60}$/,
+  // Una libreria col suo numero, scritta fra apici: «`tauri` 2.12.7». Il CHANGELOG
+  // dice quali dipendenze sono salite, e sono numeri loro, non di Rymembra.
+  /`[^`\s]+`\s*$/,
 ];
 
 /** Le versioni uscite e la sezione più recente del CHANGELOG. */
@@ -96,7 +99,7 @@ function nonUsciti(testo, uscite) {
 
 test("la prova guarda davvero: un numero senza intestazione si trova, uno con l'intestazione no", () => {
   const uscite = new Set(["3.2.0", "3.3.0"]);
-  const trovati = nonUsciti("da 3.2.0 in poi\nma non la 3.2.1, né tauri-plugin-updater/2.13.0\nWCAG 2.5.3, SQLite floor (3.53.2)", uscite);
+  const trovati = nonUsciti("da 3.2.0 in poi\nma non la 3.2.1, né tauri-plugin-updater/2.13.0\nWCAG 2.5.3, SQLite floor (3.53.2), `tauri` 2.12.7", uscite);
   assert.deepEqual(trovati, [{ numero: "3.2.1", riga: 2 }]);
 });
 
