@@ -305,38 +305,57 @@ impl rymembra_play::Flusso for FlussoDiRete {
     }
 }
 
-/// I byte di un brano che sta sul disco di un altro PC della sessione, vestiti
-/// da [`rymembra_play::Flusso`].
+/// I byte di un brano che sta sul disco di un altro PC, vestiti da
+/// [`rymembra_play::Flusso`]: quelli di una voce di sessione e quelli di una
+/// riga della libreria unica.
 ///
-/// Gemello di [`FlussoDiRete`], con una differenza sola che è tutto il punto:
-/// **`remoto()` è falso**. Per un catalogo «remoto» vuol dire salti
-/// grossolani, perché un salto accurato su un MP3 rileggerebbe megabyte da un
-/// server lontano. Qui la stessa scelta sarebbe la peggiore: in una sessione il
-/// salto deve finire **esattamente** sul fotogramma che l'host sta suonando,
-/// e un salto «a grandi linee» lascerebbe al regolatore un errore di decine di
-/// millisecondi da correggere a gradini dopo ogni riapertura. In una LAN
-/// rileggere qualche megabyte costa poco: vedi la misura nel rapporto della
-/// fase 1 e la prova `una_riapertura_in_rete_si_misura`.
-pub(super) struct FlussoDiPari(FlussoHttp);
+/// Gemello di [`FlussoDiRete`], con una differenza che dipende dall'uso, e che
+/// sta nel campo `remoto`:
+///
+/// - **una voce di sessione, `remoto` falso.** Per un catalogo «remoto» vuol
+///   dire salti grossolani, perché un salto accurato su un MP3 rileggerebbe
+///   megabyte da un server lontano. In una sessione la stessa scelta sarebbe la
+///   peggiore: il salto deve finire **esattamente** sul fotogramma che l'host
+///   sta suonando, e un salto «a grandi linee» lascerebbe al regolatore un
+///   errore di decine di millisecondi da correggere a gradini dopo ogni
+///   riapertura. In una LAN rileggere qualche megabyte costa poco: vedi la
+///   misura nel rapporto della fase 1 e la prova `una_riapertura_in_rete_si_misura`;
+/// - **una riga della libreria unica, `remoto` vero.** Lì nessuno chiede il
+///   fotogramma esatto, e il salto accurato di un MP3 senza indice conta i
+///   fotogrammi dall'inizio del file: un cursore portato a 2:30, un «Riprova»
+///   o la ripresa dal segno rileggerebbero i megabyte fino a lì attraverso il
+///   relay o i dati mobili (S11-5). Come per il cloud, i confini di un brano
+///   d'immagine MP3 sono stimati: vedi `rymembra_play::Flusso::remoto`.
+pub(super) struct FlussoDiPari {
+    flusso: FlussoHttp,
+    /// I byte arrivano da lontano: vedi il tipo.
+    remoto: bool,
+}
 
 impl FlussoDiPari {
-    /// L'involucro intorno a un flusso, per le prove degli altri moduli: qui
-    /// lo costruisce solo [`apri_da_pari`].
+    /// L'involucro intorno a un flusso. `remoto` dice a che uso serve: vedi il
+    /// tipo.
+    pub(super) const fn nuovo(flusso: FlussoHttp, remoto: bool) -> Self {
+        Self { flusso, remoto }
+    }
+
+    /// L'involucro intorno a un flusso, per le prove degli altri moduli: come
+    /// quello di una voce di sessione.
     #[cfg(test)]
     pub(super) const fn per_prova(flusso: FlussoHttp) -> Self {
-        Self(flusso)
+        Self::nuovo(flusso, false)
     }
 }
 
 impl std::io::Read for FlussoDiPari {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read(buf)
+        self.flusso.read(buf)
     }
 }
 
 impl std::io::Seek for FlussoDiPari {
     fn seek(&mut self, verso: std::io::SeekFrom) -> std::io::Result<u64> {
-        self.0.seek(verso)
+        self.flusso.seek(verso)
     }
 }
 
@@ -344,12 +363,12 @@ impl rymembra_play::Flusso for FlussoDiPari {
     /// La dimensione del file, come l'ha detta chi lo serve: senza, symphonia
     /// dichiarerebbe il flusso non percorribile e il salto non si farebbe.
     fn lunghezza(&self) -> Option<u64> {
-        self.0.lunghezza()
+        self.flusso.lunghezza()
     }
 
-    /// Falso: vedi il tipo.
+    /// Dipende dall'uso: vedi il tipo.
     fn remoto(&self) -> bool {
-        false
+        self.remoto
     }
 
     /// Un salto o una voce nuova: la lettura in corso smette di aspettare
@@ -357,7 +376,7 @@ impl rymembra_play::Flusso for FlussoDiPari {
     /// `LettoreRemoto`), che è il solo modo di annullare una richiesta già
     /// partita.
     fn ascolta_annullo(&mut self, annullo: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-        self.0.ascolta_annullo(annullo);
+        self.flusso.ascolta_annullo(annullo);
     }
 }
 
@@ -376,6 +395,9 @@ pub(super) struct DaPari {
     pub(super) picco: Option<f32>,
     /// Il tratto, per un brano d'immagine CD.
     pub(super) segmento: Option<rymembra_play::Segmento>,
+    /// A che uso serve: `true` per una riga della libreria unica, `false` per
+    /// una voce di sessione. Vedi [`FlussoDiPari`].
+    pub(super) remoto: bool,
 }
 
 /// Apre una voce che sta sul disco di un altro PC: la sorgente dalla
@@ -404,7 +426,7 @@ pub(super) fn apri_da_pari(
             let flusso = FlussoHttp::da(sorgente)?;
             let sorgente = rymembra_play::Sorgente {
                 track_id: dati.maniglia,
-                media: Box::new(FlussoDiPari(flusso)),
+                media: Box::new(FlussoDiPari::nuovo(flusso, dati.remoto)),
                 estensione: dati.estensione,
                 durata_ms: dati.durata_ms,
                 replaygain_db: dati.replaygain_db,
@@ -949,7 +971,7 @@ mod prove {
                 .expect("il pari finto risponde");
             let sorgente = rymembra_play::Sorgente {
                 track_id: -1,
-                media: Box::new(FlussoDiPari(flusso)),
+                media: Box::new(FlussoDiPari::nuovo(flusso, false)),
                 estensione: Some("mp3".to_owned()),
                 durata_ms: 0,
                 replaygain_db: None,
@@ -1000,9 +1022,26 @@ mod prove {
         let Ok(flusso) = FlussoHttp::da(Box::new(FintaRete(vec![0; 64]))) else {
             panic!("la finta non fallisce mai");
         };
-        let pari = FlussoDiPari(flusso);
+        let pari = FlussoDiPari::nuovo(flusso, false);
         assert!(!rymembra_play::Flusso::remoto(&pari));
         assert_eq!(rymembra_play::Flusso::lunghezza(&pari), Some(64));
+    }
+
+    /// S11-5: una riga della libreria unica dichiara i byte remoti. Con «locale» un
+    /// salto in un MP3 senza indice rileggerebbe il file dall'inizio attraverso
+    /// il relay o i dati mobili: il decodificatore salta «a grandi linee» solo
+    /// su un flusso che si dice remoto.
+    #[test]
+    fn l_involucro_di_una_riga_lontana_dichiara_i_byte_remoti() {
+        let Ok(flusso) = FlussoHttp::da(Box::new(FintaRete(vec![0; 64]))) else {
+            panic!("la finta non fallisce mai");
+        };
+        let riga = FlussoDiPari::nuovo(flusso, true);
+        assert!(
+            rymembra_play::Flusso::remoto(&riga),
+            "una riga lontana si apre come un flusso remoto"
+        );
+        assert_eq!(rymembra_play::Flusso::lunghezza(&riga), Some(64));
     }
 
     /// Quel che arriva al motore è indistinguibile da un file.

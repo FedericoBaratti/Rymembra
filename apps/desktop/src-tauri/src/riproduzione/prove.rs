@@ -1253,6 +1253,54 @@ fn l_avvio_non_apre_il_dispositivo_sul_filo_della_finestra() {
     assert!(avvia.contains("ErrorCode::PlaybackEngineOpening"));
 }
 
+
+/// S11-6: un brano di un altro dispositivo che si interrompe a metà arriva dalla
+/// rete, come uno del cloud: la frase parla del dispositivo, non di una cartella
+/// di rete («il server può essere spento, la VPN caduta»).
+#[test]
+fn un_brano_di_un_altro_dispositivo_interrotto_non_parla_di_cartelle() {
+    let scheda = |percorso: &str| playback::SchedaSorgente {
+        track_id: 1,
+        collocazione: playback::Collocazione::File(percorso.to_owned()),
+        durata_ms: 0,
+        replaygain_db: None,
+        picco: None,
+    };
+    let chiave = "ab".repeat(32);
+    assert!(
+        arriva_dalla_rete(&scheda(&rymembra_app::specchio::percorso(&chiave, 7))),
+        "una riga di un altro dispositivo è rete"
+    );
+    // E tutto il resto com'era.
+    assert!(!arriva_dalla_rete(&scheda(r"\\nas\musica\brano.flac")));
+    assert!(!arriva_dalla_rete(&scheda(r"C:\Musica\brano.flac")));
+}
+
+/// S11-5: chi apre una riga della libreria unica dichiara i byte remoti, chi
+/// apre una voce di sessione no: in sessione il salto deve finire sul fotogramma
+/// dell'host.
+#[test]
+fn una_riga_lontana_si_apre_con_un_flusso_remoto_e_una_voce_di_sessione_no() {
+    let riga =
+        corpo_privato(include_str!("mod.rs"), "fn apri_riga_lontana(").expect("apri_riga_lontana");
+    assert!(
+        riga.contains("remoto: true"),
+        "una riga lontana si apre con un salto accurato, che rilegge l'MP3 dall'inizio"
+    );
+    let sessione = senza_prove(include_str!("ospiti.rs"));
+    assert!(
+        sessione.contains("remoto: false"),
+        "una voce di sessione deve saltare al fotogramma esatto"
+    );
+}
+
+/// Il corpo di una funzione privata, dalla firma alla graffa che la chiude a
+/// inizio riga.
+fn corpo_privato<'a>(testo: &'a str, firma: &str) -> Option<&'a str> {
+    let testo = senza_prove(testo);
+    let resto = &testo[testo.find(firma)?..];
+    Some(&resto[..resto.find("\n}\n")?])
+}
 /// S7-4: «Salva curva» legge la curva dalla **corsia del lettore**, la stessa
 /// su cui sta `equalizzatore`. Sul pool la lettura poteva passare davanti a un
 /// `equalizzatore` ancora in coda dietro un lettore tenuto, e si salvava una

@@ -2095,6 +2095,12 @@ fn apri_riga_lontana(
             replaygain_db: scheda.replaygain_db.map(a_f32),
             picco: scheda.picco.map(a_f32),
             segmento,
+            // Una riga della libreria unica non deve seguire il fotogramma di un
+            // host, come una voce di sessione: un salto «a grandi linee» è quel che
+            // si vuole, e quello accurato rileggerebbe un MP3 dall'inizio attraverso
+            // la rete — il relay, o i dati mobili — a ogni cursore portato avanti,
+            // «Riprova» o ripresa dal segno (S11-5).
+            remoto: true,
         },
         formato,
     )
@@ -2731,7 +2737,8 @@ fn e_un_flusso(app: &Nucleo, track_id: i64) -> bool {
     .is_ok_and(|scheda| arriva_dalla_rete(&scheda))
 }
 
-/// I byte di questa scheda arrivano dalla rete: un catalogo, o il cloud.
+/// I byte di questa scheda arrivano dalla rete: un catalogo, il cloud o un altro
+/// dispositivo (una riga della libreria unica, S11-6).
 ///
 /// Lo stesso criterio con cui [`brano_di_libreria`] sceglie la scadenza e la
 /// frase di un'apertura mancata. Qui c'era il solo catalogo, e un brano di
@@ -2739,10 +2746,10 @@ fn e_un_flusso(app: &Nucleo, track_id: i64) -> bool {
 /// risponde: il server può essere spento, la VPN caduta» (R23-5).
 fn arriva_dalla_rete(scheda: &playback::SchedaSorgente) -> bool {
     riferimento_di(scheda).is_some()
-        || scheda
-            .collocazione
-            .file_audio()
-            .is_some_and(rymembra_domain::nuvola::e_nuvola)
+        || scheda.collocazione.file_audio().is_some_and(|percorso| {
+            rymembra_domain::nuvola::e_nuvola(percorso)
+                || rymembra_app::specchio::e_specchio(percorso)
+        })
 }
 
 /// Il guasto di rete di un brano che arriva da un catalogo, con la sua frase.
