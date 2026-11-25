@@ -97,7 +97,7 @@ impl StatoLontano {
     /// Lo stato, col filo ancora da far partire.
     #[must_use]
     pub fn nuovo() -> Self {
-        let (posta, cassetta) = channel();
+        let (posta, cassetta) = filo::nuova_cassetta();
         Self::da_corpo(CorpoLontano {
             comune: Arc::new(Comune::nuovo(posta)),
             cassetta: Mutex::new(Some(cassetta)),
@@ -747,7 +747,7 @@ mod prove {
         // Decisione D-30: il QR restava valido per i suoi dieci minuti con la
         // finestra nel vassoio — la scheda che lo mostra resta montata — e
         // `rymembra/associa/1` aperto a chi lo presentava.
-        let (posta, _cassetta) = channel();
+        let (posta, _cassetta) = filo::nuova_cassetta();
         let comune = Comune::nuovo(posta);
         *prendi(&comune.nodo) = Some(Arc::new(nodo()));
         let annullati = comune.qr_annullati.load(Ordering::Acquire);
@@ -768,7 +768,7 @@ mod prove {
 
     #[test]
     fn un_qr_che_nasce_mentre_la_finestra_va_nel_vassoio_non_vale() {
-        let (posta, _cassetta) = channel();
+        let (posta, _cassetta) = filo::nuova_cassetta();
         let comune = Comune::nuovo(posta);
         *prendi(&comune.nodo) = Some(Arc::new(nodo()));
         // «Mostra il QR»: il comando comincia…
