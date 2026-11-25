@@ -890,10 +890,15 @@ answer.
   `process.env` and `@types/node` was not a declared dependency, so `tsc`
   failed and with it `build:web`, CI and the release build; it is now a dev
   dependency.
-- **`cargo deny check` passes again**: BSD-2-Clause (`spez`, through iroh) is
-  allowed, and three advisories that do not reach Rymembra's code are listed
-  with the reason (RUSTSEC-2026-0429, `zip::extract`; -0459, SQLite opening
-  someone else's `-wal`; -0386, tokio `AsyncFd`).
+- **`cargo deny check` passes**: BSD-2-Clause (`spez`, through iroh) is allowed, and the few
+  advisories that do not reach Rymembra's code are listed in `deny.toml`, each with its
+  reason. Two are closed by an update and no longer listed: `tokio` 1.53.3 (`AsyncFd`) and
+  SQLite 3.54.0, which `rusqlite` 0.41 bundles (a database opened with a `-wal` built by
+  someone else).
+- **Dependencies.** `tokio` 1.53.3; `tauri` 2.12.7 with `wry` 0.57.1 and
+  `tauri-plugin-dialog` 2.8.3 (patch releases: an empty URI path no longer panics the IPC
+  and asset handlers, among others); `zip` 9, which closes the advisories about extraction
+  that Rymembra never calls; and `rusqlite` 0.41 with SQLite 3.54.0.
 - **Gradle 9.8.2**, with the distribution’s SHA-256 checked by the wrapper; vite 7.3.8.
 - **The release workflow checks the APK’s Android Auto icons.**
   `strumenti/apk.js controlla` runs `aapt2 dump resources` and stops the
@@ -1157,6 +1162,8 @@ findings are still open, and signing the sync documents is planned work
 - **A profile that carries library data with an empty library identity** is
   treated as coming from another library.
 - Renaming a sync device that is waiting to be accepted no longer accepts it.
+- A zip entry that unpacks beyond its declared size is refused by the library itself, as
+  corrupt, before Rymembra’s own total limits are reached.
 
 **Imports and catalogs.**
 
