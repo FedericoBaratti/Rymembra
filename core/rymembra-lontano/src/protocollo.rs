@@ -1678,8 +1678,10 @@ mod prove {
         // Il riassunto più lungo che un pari vero può mandare — questa build o `8b89651`: la cornice
         // compressa non supera 1 MiB (`MASSIMA_CORNICE`) —, cercato per bisezione con la `cornice`
         // vera. Il commento di una volta dava 80 000 secchi (quaranta milioni di id): compressi sono
-        // 2,3 MB, e nessuno dei due lati li manda.
-        let (mut sta, mut non_sta) = (30_000_u64, 80_000_u64);
+        // 2,3 MB, e nessuno dei due lati li manda. Il compressore cambia con la build — `miniz_oxide`
+        // con il crate da solo, zlib-rs nel workspace, dove ne passano meno di 30 000 —, quindi la
+        // bisezione parte da un numero che sta con tutti e due.
+        let (mut sta, mut non_sta) = (1_000_u64, 80_000_u64);
         assert!(cornice(&riassunto_di(sta), MASSIMA_TESTA).is_ok());
         assert!(
             cornice(&riassunto_di(non_sta), MASSIMA_TESTA).is_err(),
