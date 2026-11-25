@@ -160,8 +160,8 @@ test("la firma vera della 3.2.0 non passa con un bit cambiato nel file o nel com
 });
 
 // L'installer vero pesa quindici megabyte e sta fuori dal repository: chi ce
-// l'ha (`D:\Rymembra-audit\scaricati\github-3.2.0\` sul PC del progetto) lo
-// indica con questa variabile, e la prova passa dal file e non dal digest.
+// l'ha (scaricato dalla release v3.2.0) lo indica con questa variabile, e la
+// prova passa dal file e non dal digest.
 test("l'installer vero della 3.2.0, se c'è, torna per intero", { skip: process.env.RYMEMBRA_INSTALLER_320 ? false : "RYMEMBRA_INSTALLER_320 non è impostata" }, () => {
   assert.deepEqual(verificaFirma(fs.readFileSync(process.env.RYMEMBRA_INSTALLER_320), SIG_320, PUBKEY), { ok: true });
 });
