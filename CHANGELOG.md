@@ -2277,6 +2277,9 @@ release:
   the smart playlists you start from the app also leave out the tracks that
   exist only on another device, because nobody can be asked while they are
   built; “Yes” brings them back.
+- **Linking dialogs.** After accepting two linking requests in a row with the
+  keyboard, the focus does not return to the control that had it before the
+  dialogs.
 - **Playback.** The track boundaries of an MP3 CD image played from another
   device are estimated, as on the cloud: exact only at a constant bitrate. When
   the audio device is lost, a pause still waits for the device to reopen.
