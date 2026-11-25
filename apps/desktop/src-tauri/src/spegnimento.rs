@@ -193,9 +193,7 @@ pub trait Emette<R: tauri::Runtime>: tauri::Emitter<R> {
         // L'errore del lettore a finestra distrutta non ha nessuno a cui arrivare:
         // il nucleo ne tiene una copia finché una pagina non ascolta (S4-5).
         #[cfg(desktop)]
-        if evento == crate::perso::EVENTO_ERRORE_DEL_LETTORE {
-            crate::perso::errore_del_lettore_emesso(&carico);
-        }
+        crate::perso::evento_in_partenza(evento, &carico);
         let _ = self.emit(evento, carico);
     }
 }

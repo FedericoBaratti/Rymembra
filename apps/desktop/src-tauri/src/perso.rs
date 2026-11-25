@@ -25,8 +25,13 @@
 //! ricarica) fino alla richiesta della pagina nuova. Un errore di più di un'ora fa
 //! non si ripresenta come se fosse di adesso.
 //!
-//! Sta qui e non in `riproduzione`: è la cucitura fra il nucleo e la pagina, e
-//! passa da `spegnimento::Emette::emetti`, da cui passa ogni evento.
+//! Sta qui e non in `riproduzione`: è la cucitura fra il nucleo e la pagina. La
+//! copia la fa [`evento_in_partenza`], che chiamano i **due** posti da cui parte un
+//! `emit` vero: `spegnimento::Emette::emetti`, per chi ha un `AppHandle`, e
+//! `Nucleo::alla_finestra`, per chi ha il nucleo — il lettore, i tasti
+//! multimediali, il vassoio. La prima versione stava solo nel primo, e il
+//! collaudo dal vivo ha mostrato che gli errori di questo difetto partono tutti
+//! dal secondo.
 
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -34,7 +39,7 @@ use std::time::{Duration, Instant};
 /// L'evento con cui il lettore dice che non riesce a suonare. Solo sul computer:
 /// il telefono non ha una finestra che muore e rinasce da sola.
 #[cfg(desktop)]
-pub const EVENTO_ERRORE_DEL_LETTORE: &str = "riproduzione:errore";
+const EVENTO_ERRORE_DEL_LETTORE: &str = "riproduzione:errore";
 
 /// Quanto un errore perso resta buono da mostrare.
 const ETA_MASSIMA_DELL_ERRORE: Duration = Duration::from_secs(60 * 60);
@@ -92,10 +97,23 @@ fn persi() -> MutexGuard<'static, Persi> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Il lettore ha emesso un errore: chiamata da [`crate::spegnimento::Emette`]
-/// per questo evento soltanto, e solo sul computer.
+/// Un evento sta per partire verso la pagina: se è l'errore del lettore, il
+/// nucleo ne tiene la copia finché una pagina non ascolta.
+///
+/// Va chiamata appena prima di ogni `emit` vero — sono due, vedi la
+/// documentazione del modulo —, e la prova
+/// `ogni_emit_del_programma_passa_dagli_errori_persi` lo controlla su tutti i
+/// sorgenti. Per ogni altro evento è un confronto fra due stringhe.
 #[cfg(desktop)]
-pub fn errore_del_lettore_emesso<C: serde::Serialize>(carico: &C) {
+pub fn evento_in_partenza<C: serde::Serialize>(evento: &str, carico: &C) {
+    if evento == EVENTO_ERRORE_DEL_LETTORE {
+        errore_del_lettore_emesso(carico);
+    }
+}
+
+/// Il lettore ha emesso un errore.
+#[cfg(desktop)]
+fn errore_del_lettore_emesso<C: serde::Serialize>(carico: &C) {
     let mut persi = persi();
     // La copia in JSON costa solo se nessuna pagina ascolta.
     if persi.ascolta {
