@@ -571,11 +571,7 @@ pub async fn aggiornamenti_attivo(app: AppHandle, attivo: bool) -> Esito<StatoAg
             if attivo {
                 let _ = aggiornamenti.sveglia.send(Sveglia::Subito);
             } else {
-                butta(&aggiornamenti.trovato, &aggiornamenti.generazione);
-                // Anche il pacchetto già scaricato: chi ha detto di non voler essere
-                // avvisato non vuole nemmeno un installer che aspetta di partire.
-                scarta_pronto(&aggiornamenti);
-                azzera_errore(&aggiornamenti);
+                spegni_il_controllo(&aggiornamenti);
             }
             // Anche a chi non ha chiesto: vedi `riferisci`.
             riferisci(&app);
@@ -682,6 +678,10 @@ fn installa_ora(app: &AppHandle, quando: Quando) -> Esito<()> {
             what: Some("sulla copia del Microsoft Store non si installa alla chiusura".to_owned()),
         })));
     }
+    // La generazione di adesso, **prima** di prendere l'aggiornamento: se
+    // l'interruttore si spegne da qui in poi il pacchetto che il filo scaricherà non
+    // trova più la stessa, e non resta in attesa (S5-3).
+    let partenza = aggiornamenti.generazione.load(Ordering::Acquire);
     // Il pacchetto già pronto, se c'è: «Installa ora» dopo «Alla chiusura» non
     // riscarica l'installer. Si prende dal posto **dopo** aver alzato il
     // bit, così un secondo click non trova un posto vuoto e un installer solo.
@@ -738,7 +738,7 @@ fn installa_ora(app: &AppHandle, quando: Quando) -> Esito<()> {
     let avviato = std::thread::Builder::new()
         .name("rymembra-aggiornamento".to_owned())
         .spawn(move || {
-            scarica_e_installa(&suo, &aggiornamento, byte, quando);
+            scarica_e_installa(&suo, &aggiornamento, byte, quando, partenza);
         });
     if let Err(err) = avviato {
         // Il bit va rimesso giù, o il tasto resta spento per sempre senza che
@@ -1218,6 +1218,7 @@ fn scarica_e_installa(
     aggiornamento: &Update,
     byte: Option<Vec<u8>>,
     quando: Quando,
+    partenza: u64,
 ) {
     // Prima di tutto il resto, e prima di qualunque cosa che possa cadere.
     // L'ordine di dichiarazione è l'ordine di rilascio al contrario: il turno si
@@ -1251,13 +1252,18 @@ fn scarica_e_installa(
     let esito = scaricato.and_then(|byte| match quando {
         // Verificato dentro `download()`: i byte sono buoni, e aspettano.
         Quando::AllaChiusura => {
-            tieni_per_la_chiusura(app, aggiornamento, byte);
+            tieni_per_la_chiusura(app, aggiornamento, byte, partenza);
             Ok(())
         }
         Quando::Subito => {
             fermare_la_musica(app);
             musica_fermata = true;
             imposta_fase(app, Some(FaseAggiornamento::Installo));
+            // L'installer rilancia il programma con gli argomenti di questo
+            // processo (`/R /ARGS`): se è partito con Windows o con un link, la copia
+            // nuova non deve ripartire ridotta a icona né ripresentare il link, davanti
+            // a chi ha appena premuto «Installa ora» (S5-6).
+            segna_il_rilancio(app);
             aggiornamento
                 .install(byte)
                 .map_err(|err| guasto_dell_installazione(err, aggancio_eseguito()))
@@ -1311,24 +1317,55 @@ fn scarica_e_installa(
     imposta_fase(app, None);
 }
 
+/// Lascia il contrassegno del rilancio nella cartella dei dati: vedi
+/// [`crate::comparsa::dopo_un_aggiornamento`]. Un guasto si dice e non ferma
+/// l'installazione: nel peggiore dei casi la copia nuova riparte com'è partita
+/// questa.
+fn segna_il_rilancio(app: &AppHandle) {
+    let Some(stato) = app.try_state::<Stato>() else {
+        return;
+    };
+    // La cartella in cui la libreria sta: la stessa che il rilancio guarda all'avvio.
+    let Some(cartella) = stato.cartella_della_libreria() else {
+        return;
+    };
+    if let Err(err) = crate::comparsa::segna_il_rilancio(cartella, adesso_ms()) {
+        nota!("[aggiornamenti] il contrassegno del rilancio non si scrive: {err}");
+    }
+}
+
 /// Mette il pacchetto verificato in attesa della chiusura: vedi
 /// [`StatoAggiornamenti::pronto`].
-fn tieni_per_la_chiusura(app: &AppHandle, aggiornamento: &Update, byte: Vec<u8>) {
+///
+/// `partenza` è la [`StatoAggiornamenti::generazione`] letta prima di partire: se
+/// l'interruttore è stato spento mentre l'installer scendeva, il pacchetto si
+/// butta invece di restare in attesa di un'uscita che lo installerebbe, senza una
+/// scheda su cui toglierlo (S5-3).
+fn tieni_per_la_chiusura(app: &AppHandle, aggiornamento: &Update, byte: Vec<u8>, partenza: u64) {
     let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
         return;
     };
-    nota!(
-        "[aggiornamenti] la {} è scaricata e verificata: si installa alla chiusura",
-        aggiornamento.version
+    let tenuto = deposita_pronto_se_vale(
+        &aggiornamenti.pronto,
+        &aggiornamenti.generazione,
+        partenza,
+        Pronto {
+            aggiornamento: aggiornamento.clone(),
+            byte,
+            dal_ms: adesso_ms(),
+        },
     );
-    *aggiornamenti
-        .pronto
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Pronto {
-        aggiornamento: aggiornamento.clone(),
-        byte,
-        dal_ms: adesso_ms(),
-    });
+    if tenuto {
+        nota!(
+            "[aggiornamenti] la {} è scaricata e verificata: si installa alla chiusura",
+            aggiornamento.version
+        );
+    } else {
+        nota!(
+            "[aggiornamenti] la {} è arrivata a controllo spento: il pacchetto si butta",
+            aggiornamento.version
+        );
+    }
 }
 
 /// L'uscita vera: si installa il pacchetto in attesa, senza riaprire Rymembra.
@@ -1551,6 +1588,12 @@ fn scarica(app: &AppHandle, aggiornamento: &Update) -> Result<Vec<u8>, AppError>
     // compito dello scaricamento, lo legge questo filo.
     let ultimo_byte = Arc::new(AtomicU64::new(0));
     let suo_ultimo = Arc::clone(&ultimo_byte);
+    // Quanti byte sono scesi e quanti il server dice che sono: li scrive il
+    // compito dello scaricamento, li guarda il ciclo qui sotto per il tetto.
+    let scesi = Arc::new(AtomicU64::new(0));
+    let suoi_scesi = Arc::clone(&scesi);
+    let dichiarato = Arc::new(AtomicU64::new(0));
+    let suo_dichiarato = Arc::clone(&dichiarato);
     let mano = app.clone();
     let mut scaricati: u64 = 0;
     let mut ultimo_detto = Instant::now()
@@ -1558,6 +1601,10 @@ fn scarica(app: &AppHandle, aggiornamento: &Update) -> Result<Vec<u8>, AppError>
         .unwrap_or_else(Instant::now);
     let per_pezzo = move |quanto: usize, totale: Option<u64>| {
         scaricati = scaricati.saturating_add(u64::try_from(quanto).unwrap_or(0));
+        suoi_scesi.store(scaricati, Ordering::Relaxed);
+        if let Some(totale) = totale {
+            suo_dichiarato.store(totale, Ordering::Relaxed);
+        }
         suo_ultimo.store(
             u64::try_from(inizio.elapsed().as_millis()).unwrap_or(u64::MAX),
             Ordering::Relaxed,
@@ -1596,9 +1643,21 @@ fn scarica(app: &AppHandle, aggiornamento: &Update) -> Result<Vec<u8>, AppError>
         let silenzio = inizio
             .elapsed()
             .saturating_sub(Duration::from_millis(ultimo_byte.load(Ordering::Relaxed)));
+        // Un tetto ai byte: chi risponde al posto di GitHub può servire un flusso
+        // che non finisce, e ogni pezzo azzera il silenzio qui sotto. Il plugin
+        // tiene tutto in un `Vec<u8>`: senza questo il processo moriva per memoria.
+        let dichiarato_ora = Some(dichiarato.load(Ordering::Relaxed)).filter(|&totale| totale > 0);
         if annullato {
             fermato = Some(AppError::new(ErrorCode::InternalAborted {
                 what: Some("scaricamento dell'aggiornamento".to_owned()),
+            }));
+        } else if supera_il_tetto(scesi.load(Ordering::Relaxed), dichiarato_ora) {
+            fermato = Some(AppError::new(ErrorCode::NetBadSchema {
+                service: Some("aggiornamenti".to_owned()),
+                detail: Some(format!(
+                    "lo scaricamento supera il tetto di {} MB che questo client si dà",
+                    TETTO_DELL_INSTALLER >> 20
+                )),
             }));
         } else if silenzio >= SILENZIO_MASSIMO {
             fermato = Some(
@@ -1629,6 +1688,18 @@ fn scarica(app: &AppHandle, aggiornamento: &Update) -> Result<Vec<u8>, AppError>
         })
         .with_cause(err.to_string())),
     }
+}
+
+/// Il più che si accetta di scaricare per l'installer.
+const TETTO_DELL_INSTALLER: u64 = 256 * 1024 * 1024;
+
+/// Lo scaricamento è oltre il tetto?
+///
+/// Un `Content-Length` più grande del tetto basta da solo: si ferma al primo
+/// pezzo, senza scaricare niente.
+fn supera_il_tetto(scaricati: u64, totale_dichiarato: Option<u64>) -> bool {
+    scaricati > TETTO_DELL_INSTALLER
+        || totale_dichiarato.is_some_and(|totale| totale > TETTO_DELL_INSTALLER)
 }
 
 /// Mette in pausa, se c'è un lettore e se sta suonando.
@@ -1774,6 +1845,36 @@ fn butta<T>(posto: &Mutex<Option<T>>, generazione: &AtomicU64) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     generazione.fetch_add(1, Ordering::AcqRel);
     *posto = None;
+}
+
+/// Il pacchetto scaricato e verificato che aspetta la chiusura, messo via.
+///
+/// La gemella di [`deposita_se_vale`] per il pacchetto: lo scaricamento può
+/// finire dopo che l'interruttore è stato spento, e [`butta`] aveva già cambiato
+/// la generazione. `partenza` è quella letta **prima** di partire.
+fn deposita_pronto_se_vale<T>(
+    posto: &Mutex<Option<T>>,
+    generazione: &AtomicU64,
+    partenza: u64,
+    pronto: T,
+) -> bool {
+    deposita_se_vale(posto, generazione, partenza, Some(pronto))
+}
+
+/// L'interruttore si è spento: quel che il controllo teneva se ne va.
+fn spegni_il_controllo(aggiornamenti: &StatoAggiornamenti) {
+    butta(&aggiornamenti.trovato, &aggiornamenti.generazione);
+    // Anche il pacchetto già scaricato: chi ha detto di non voler essere
+    // avvisato non vuole nemmeno un installer che aspetta di partire.
+    scarta_pronto(aggiornamenti);
+    azzera_errore(aggiornamenti);
+    // E lo scaricamento che sta scendendo: il filo guarda `annulla` dieci volte al
+    // secondo, e lo scaricamento di un installer non voluto non serve a niente.
+    // Il pacchetto che dovesse finire comunque non resta in attesa: vedi
+    // [`deposita_pronto_se_vale`].
+    if aggiornamenti.installazione.load(Ordering::Acquire) {
+        aggiornamenti.annulla.store(true, Ordering::Release);
+    }
 }
 
 /// Dimentica l'ultimo guasto.
@@ -1972,6 +2073,108 @@ mod prove {
         let partenza = generazione.load(Ordering::Acquire);
         assert!(deposita_se_vale(&posto, &generazione, partenza, Some(2)));
         assert_eq!(*posto.lock().expect("posto"), Some(2));
+    }
+
+    /// S5-3 (PC): lo scaricamento finisce dopo che l'interruttore è stato spento.
+    /// `butta` aveva già cambiato la generazione, ma `tieni_per_la_chiusura`
+    /// scriveva `pronto` senza guardarla: il pacchetto aspettava l'uscita, senza una
+    /// scheda per toglierlo, contro «Switched off, … you'll stay on this version».
+    #[test]
+    fn un_pacchetto_finito_a_interruttore_spento_non_resta_in_attesa() {
+        let posto: Mutex<Option<u32>> = Mutex::new(None);
+        let generazione = AtomicU64::new(0);
+        let partenza = generazione.load(Ordering::Acquire);
+        butta(&posto, &generazione);
+        assert!(!deposita_pronto_se_vale(&posto, &generazione, partenza, 1));
+        assert_eq!(
+            *posto.lock().expect("posto"),
+            None,
+            "il pacchetto è rimasto"
+        );
+        // Uno scaricamento partito dopo lo spegnimento — un «Aggiorna» dopo averlo
+        // riacceso — deposita.
+        let partenza = generazione.load(Ordering::Acquire);
+        assert!(deposita_pronto_se_vale(&posto, &generazione, partenza, 2));
+        assert_eq!(*posto.lock().expect("posto"), Some(2));
+    }
+
+    /// Spegnere l'interruttore ferma anche lo scaricamento che sta scendendo: il
+    /// filo guarda `annulla` dieci volte al secondo, e i megabyte non arrivano
+    /// per niente.
+    #[test]
+    fn spegnere_il_controllo_ferma_anche_lo_scaricamento_in_corso() {
+        let (stato, _orecchio) = StatoAggiornamenti::nuovo();
+        stato.installazione.store(true, Ordering::Release);
+        spegni_il_controllo(&stato);
+        assert!(
+            stato.annulla.load(Ordering::Acquire),
+            "lo scaricamento continua"
+        );
+        assert_eq!(stato.generazione.load(Ordering::Acquire), 1);
+        // Senza uno scaricamento non si alza niente: `annulla` si abbassa
+        // all'inizio del prossimo, ma non c'è motivo di lasciarlo alto.
+        let (fermo, _orecchio) = StatoAggiornamenti::nuovo();
+        spegni_il_controllo(&fermo);
+        assert!(!fermo.annulla.load(Ordering::Acquire));
+    }
+
+    /// Il filo che scarica deposita sotto la generazione che ha letto prima di
+    /// partire, e la legge **prima** di prendere l'aggiornamento: chi spegne fra
+    /// il clic e la lettura non lascia un pacchetto in attesa.
+    #[test]
+    fn il_pacchetto_si_deposita_sotto_la_generazione_letta_prima_di_partire() {
+        let tieni = corpo_di("fn tieni_per_la_chiusura(");
+        assert!(tieni.contains("deposita_pronto_se_vale("));
+        let installa = corpo_di("fn installa_ora(");
+        let partenza = installa
+            .find("generazione.load(")
+            .expect("«Installa» non legge la generazione");
+        let trovato = installa
+            .find(".trovato")
+            .expect("«Installa» non prende l'aggiornamento");
+        assert!(
+            partenza < trovato,
+            "la generazione si legge dopo l'aggiornamento"
+        );
+        assert!(installa.contains("partenza"));
+    }
+
+    /// S5-5 (PC): chi risponde al posto di GitHub — un proxy aziendale, una CA di
+    /// troppo — può servire un flusso che non finisce. Il plugin teneva tutto in
+    /// un `Vec<u8>` e l'unico limite era il silenzio di sessanta secondi, che ogni
+    /// pezzo azzera: il processo moriva per memoria. Il telefono ha il tetto
+    /// (512 MiB); sul PC un installer è di decine di megabyte.
+    #[test]
+    fn uno_scaricamento_oltre_il_tetto_si_ferma() {
+        assert!(!supera_il_tetto(0, None));
+        assert!(!supera_il_tetto(16 * 1024 * 1024, Some(16 * 1024 * 1024)));
+        assert!(
+            !supera_il_tetto(TETTO_DELL_INSTALLER, None),
+            "il tetto è incluso"
+        );
+        // I byte arrivati oltre il tetto, qualunque cosa il server dica.
+        assert!(supera_il_tetto(TETTO_DELL_INSTALLER + 1, None));
+        assert!(supera_il_tetto(TETTO_DELL_INSTALLER + 1, Some(1024)));
+        // Un `Content-Length` più grande del tetto ferma subito, al primo pezzo.
+        assert!(supera_il_tetto(0, Some(TETTO_DELL_INSTALLER + 1)));
+        assert!(supera_il_tetto(1, Some(u64::MAX)));
+    }
+
+    /// Il filo di sorveglianza guarda il tetto nel suo ciclo dei cento millisecondi,
+    /// leggendo quel che il compito dello scaricamento scrive pezzo per pezzo.
+    #[test]
+    fn il_ciclo_della_sorveglianza_guarda_il_tetto() {
+        let scarica = corpo_di("fn scarica(app: &AppHandle");
+        let ciclo = scarica
+            .find("while !lavoro.inner().is_finished()")
+            .expect("il ciclo");
+        let tetto = scarica
+            .find("supera_il_tetto(")
+            .expect("lo scaricamento non guarda il tetto");
+        assert!(
+            ciclo < tetto,
+            "il tetto si guarda fuori dal ciclo di sorveglianza"
+        );
     }
 
     /// Un database vero, migrato, in memoria: la fixture di `rymembra-app`.
@@ -2509,7 +2712,7 @@ mod prove {
     #[test]
     fn il_pacchetto_in_attesa_se_ne_va_con_chi_lo_rifiuta() {
         for firma in [
-            "pub async fn aggiornamenti_attivo(",
+            "fn spegni_il_controllo(",
             "pub async fn aggiornamenti_salta(",
             "pub async fn aggiornamenti_annulla(",
         ] {
@@ -2518,6 +2721,11 @@ mod prove {
                 "{firma} lascia il pacchetto in memoria"
             );
         }
+        // E l'interruttore spento passa da lì.
+        assert!(
+            corpo_di("pub async fn aggiornamenti_attivo(").contains("spegni_il_controllo("),
+            "spegnere il controllo lascia il pacchetto in memoria"
+        );
         assert!(corpo_di("fn passata(").contains("pacchetto_ancora_buono("));
     }
 

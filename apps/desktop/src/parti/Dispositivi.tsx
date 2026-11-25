@@ -61,6 +61,7 @@ import {
   frasiDelDimentica,
   FINESTRA_COLLEGATO_MS,
   linkDa,
+  linkDaMostrare,
   percorsoQr,
   proponiNome,
   qrScaduto,
@@ -158,6 +159,14 @@ export function LontanoInApp({
   const stato = useArchivio(archivioLontano);
   const riprova = useArchivio(archivioDatiMobili);
   const link = useArchivio(archivioLink);
+  // Il nucleo sa se il dialogo di un link è aperto (S4-4): un altro link aperto da
+  // fuori non lo sostituisce e non alza la finestra. Lo si dice a ogni cambio e una
+  // volta al montaggio: una pagina nuova non ha dialoghi, e un «aperto» rimasto di
+  // quella di prima si azzera da sé.
+  const dialogoDelLink = link !== null;
+  useEffect(() => {
+    ipc.lontanoLinkDialogo(dialogoDelLink).catch(() => undefined);
+  }, [dialogoDelLink]);
   const [collegando, setCollegando] = useState(false);
   // «Collega» col collegamento spento: prima il sì per accenderlo.
   const [accendere, setAccendere] = useState(false);
@@ -183,7 +192,7 @@ export function LontanoInApp({
       .lontanoLinkInAttesa()
       .then((preso) => (preso === null ? null : ipc.lontanoLinkEsamina(preso)))
       .then((visto) => {
-        if (visto !== null) archivioLink.scrivi(visto);
+        archivioLink.scrivi(linkDaMostrare(archivioLink.leggi(), visto));
       })
       .catch(onErrore);
   };

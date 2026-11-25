@@ -40,6 +40,7 @@ import { Interruttore } from "./Interruttore";
 import {
   attesaLunga,
   avanzamentoDopo,
+  guastoDaMostrare,
   passiDi,
   quantoManca,
   SOLLECITO_MS,
@@ -240,6 +241,14 @@ export function AvvisoAggiornamento({
    * gesto, e chi lo ha fatto sta guardando.
    */
   const [tentato, setTentato] = useState(false);
+  // Il tentativo è riuscito: il pacchetto è scaricato e verificato. Quel che il
+  // nucleo scriverà da qui in poi — il controllo periodico che non trova la rete —
+  // non è l'esito di un gesto di chi guarda, e un nuovo tentativo si segna da sé
+  // (`installa`). Lasciarlo alzato faceva tornare l'errore rosso sulla scheda
+  // «Disponibile» se il pacchetto veniva buttato (S5-1).
+  useEffect(() => {
+    if (fase === "pronto") setTentato(false);
+  }, [fase]);
 
   const installa = useCallback(
     (quando: QuandoInstallare) => {
@@ -288,7 +297,7 @@ export function AvvisoAggiornamento({
    */
   const altraChiave = disponibile?.altraChiave === true;
   const inCorso = fase !== null && fase !== "pronto";
-  const guasto = tentato && !inCorso && stato?.errore != null ? stato.errore : null;
+  const guasto = guastoDaMostrare(tentato, fase, stato?.errore);
   const pronto = fase === "pronto";
 
   /*

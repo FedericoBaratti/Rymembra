@@ -68,6 +68,10 @@
   ; NSIS_HOOK_PREINSTALL prima di disinstallarla, li usa NSIS_HOOK_POSTINSTALL.
   Var PrecedenteMenuStart
   Var PrecedenteDesktop
+  ; Il valore `Run` dell'avvio con Windows com'era all'inizio della
+  ; disinstallazione: lo legge NSIS_HOOK_PREUNINSTALL, lo rimette
+  ; NSIS_HOOK_POSTUNINSTALL se a lanciarla è stato un installer.
+  Var PrecedenteAvvio
 
   ; I testi, nelle lingue dell'installer (bundle.windows.nsis.languages). Con
   ; l'id in cifre e non con ${LANG_ENGLISH} / ${LANG_ITALIAN}: quelle costanti
@@ -356,13 +360,53 @@
 ; che Windows scrive quando l'utente lo spegne da Gestione attività e non toglie
 ; mai da solo: una copia che si disinstalla non deve lasciare né l'avvio né il
 ; ricordo di averlo spento, che bloccherebbe l'interruttore di una copia nuova.
+;
+; MA NON SE A LANCIARE LA DISINSTALLAZIONE È UN INSTALLER. Chi esegue a mano
+; l'installer di una versione più alta sopra quella installata trova «Disinstalla
+; prima di installare» scelto di serie, e l'installer lancia il disinstallatore
+; già installato come `uninstall.exe _?=<cartella>`: senza /UPDATE, che è solo
+; dell'updater, quindi per lui è una disinstallazione vera. L'avvio con Windows
+; spariva in silenzio, e la domanda «una volta sola» che lo propone non torna.
+; Il disinstallatore che gira è quello **già installato**: questo gancio vale per
+; i passaggi dalla 3.3.0 in poi, non per chi parte dalla 3.2.0.
+;
+; Come si distingue: `_?=` «stops the uninstaller from copying itself to the
+; temporary directory» (NSIS, §3.2.2 delle istruzioni). Una disinstallazione
+; vera — da «App e funzionalità», con un doppio clic — si copia in una cartella
+; temporanea e gira da lì; quella lanciata da un installer gira dal posto suo.
+; `$EXEDIR`, la cartella dell'eseguibile in corso, vale `$INSTDIR` nel secondo
+; caso e non nel primo. Se i due percorsi non coincidono per un dettaglio —
+; un'abbreviazione 8.3, un collegamento — si ricade nel primo caso, che è
+; quello di prima: l'avvio si toglie.
+;
+; Il modello toglie `Run` PRIMA di questo gancio: per questo il valore si legge
+; in NSIS_HOOK_PREUNINSTALL, e qui si rimette. `StartupApproved` il modello non
+; lo tocca: basta non toglierlo. Chi ha spuntato «elimina i dati» ha chiesto di
+; ripartire da zero, e per lui vale la disinstallazione vera. Il protocollo si
+; toglie sempre: il nuovo installer lo riscrive subito dopo.
+;
+; Resta un caso: scegliere «Disinstalla» sulla pagina di reinstallazione
+; dell'installer, a stessa versione, lascia `Run` (a un eseguibile che non c'è
+; più) perché per il disinstallatore è la stessa cosa. Windows ignora una voce
+; che non si avvia.
+!macro NSIS_HOOK_PREUNINSTALL
+  ReadRegStr $PrecedenteAvvio HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+!macroend
+
 !macro NSIS_HOOK_POSTUNINSTALL
   ${If} $UpdateMode <> 1
     ReadRegStr $R7 HKCU "Software\Classes\rymembra\shell\open\command" ""
     ${If} $R7 == "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
       DeleteRegKey HKCU "Software\Classes\rymembra"
     ${EndIf}
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "${PRODUCTNAME}"
+    ${If} $EXEDIR == $INSTDIR
+    ${AndIf} $DeleteAppDataCheckboxState <> 1
+      ${If} $PrecedenteAvvio != ""
+        WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}" "$PrecedenteAvvio"
+      ${EndIf}
+    ${Else}
+      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "${PRODUCTNAME}"
+    ${EndIf}
   ${EndIf}
 !macroend

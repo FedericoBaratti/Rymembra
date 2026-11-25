@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type { AvanzamentoAggiornamento } from "../src/ipc";
 import * as modulo from "../src/parti/avanzamentoAggiornamento";
@@ -245,4 +246,38 @@ test("il tempo rimasto si dice in secondi sotto il minuto e in minuti sopra", ()
   assert.deepEqual(quantoManca(59), { unita: "s", n: 59 });
   assert.deepEqual(quantoManca(61), { unita: "min", n: 2 });
   assert.deepEqual(quantoManca(600), { unita: "min", n: 10 });
+});
+
+/*
+ * L'errore di un controllo periodico non compare sul pacchetto pronto (S5-1).
+ *
+ * Il nucleo scrive `ultimo_errore` a ogni controllo che non trova la rete, anche
+ * con un pacchetto già scaricato che aspetta la chiusura. `tentato` — qualcuno ha
+ * premuto «Aggiorna» — non si abbassava mai dopo un successo, e la scheda «È
+ * pronta» mostrava in rosso «Nessuna connessione a Internet» ogni volta che il
+ * wifi cadeva, e l'area `aria-live` lo annunciava al posto di «pronto».
+ */
+test("S5-1: la scheda usa la regola, e il tentativo riuscito si abbassa", () => {
+  const scheda = readFileSync(new URL("../src/parti/Aggiornamenti.tsx", import.meta.url), "utf8");
+  assert.match(scheda, /const guasto = guastoDaMostrare\(tentato, fase, stato\?\.errore\);/);
+  assert.match(scheda, /useEffect\(\(\) => \{\s*if \(fase === "pronto"\) setTentato\(false\);\s*\}, \[fase\]\);/);
+});
+
+test("un_errore_di_un_controllo_non_si_mostra_sul_pacchetto_pronto", () => {
+  const offline = { code: "net.offline" };
+  // Il pacchetto aspetta, il wifi cade: la scheda resta quella del pacchetto.
+  assert.equal(modulo.guastoDaMostrare(true, "pronto", offline), null);
+  assert.equal(modulo.guastoDaMostrare(false, "pronto", offline), null);
+  // Uno scaricamento che non è riuscito — nessun passo, e c'è stato un tentativo —
+  // si dice com'è sempre stato.
+  assert.equal(modulo.guastoDaMostrare(true, null, offline), offline);
+  // Un controllo periodico senza nessun tentativo non ha una scheda rossa.
+  assert.equal(modulo.guastoDaMostrare(false, null, offline), null);
+  // Mentre si scarica non si mostra niente: la barra va avanti.
+  for (const fase of ["scarico", "verifico", "installo", "riavvio"] as const) {
+    assert.equal(modulo.guastoDaMostrare(true, fase, offline), null, fase);
+  }
+  // E senza errore non c'è niente da mostrare.
+  assert.equal(modulo.guastoDaMostrare(true, null, null), null);
+  assert.equal(modulo.guastoDaMostrare(true, null, undefined), null);
 });

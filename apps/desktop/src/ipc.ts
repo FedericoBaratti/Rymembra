@@ -129,6 +129,9 @@ export const ipc = {
   // **programma** — non della pagina, che con la X sul vassoio muore e rinasce —
   // e non ricorda nessuna risposta: il prossimo avvio la rifà.
   propostaSottofondoRimanda: () => invoke<void>("proposta_sottofondo_rimanda"),
+  // L'ultimo errore del lettore emesso mentre nessuna pagina ascoltava (la finestra
+  // era chiusa col vassoio): una volta sola, dopo aver aperto l'ascolto (S4-5).
+  riproduzioneErrorePerso: () => invoke<ErroreIpc | null>("riproduzione_errore_perso"),
 
   avvio: () => invoke<Avvio>("avvio"),
   // Scrive le cartelle sorvegliate e dice cosa ne ha fatto: le annidate si
@@ -1582,6 +1585,9 @@ export const ipc = {
   // Il link aperto da fuori (il QR letto con la fotocamera del sistema) e non
   // ancora preso: una volta sola.
   lontanoLinkInAttesa: () => invoke<string | null>("lontano_link_in_attesa"),
+  // La pagina dice al nucleo se ha un dialogo di collegamento aperto: finché lo è,
+  // un altro link aperto da fuori non lo sostituisce e non alza la finestra (S4-4).
+  lontanoLinkDialogo: (aperto: boolean) => invoke<void>("lontano_link_dialogo", { aperto }),
 
   // La libreria unica e «Scarica qui».
   // «Scarica qui» le righe della libreria che stanno su un altro dispositivo: in coda

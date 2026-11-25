@@ -161,6 +161,9 @@ pub(crate) fn pagina_finita(app: &AppHandle) {
         let _ = crate::riproduzione::spettro_ora(lettore.inner().clone(), false);
     }
     crate::lontano::finestra_nascosta(app);
+    // Da qui un errore del lettore non ha nessuna pagina che lo riceva: lo tiene
+    // il nucleo, e la pagina nuova lo chiede (S4-5).
+    crate::perso::pagina_finita_per_gli_errori();
     // Lo Studio della pagina di prima non c'è più: una chiusura non deve
     // aspettare che scriva (`chiusura.rs`). Se la pagina nuova lo riapre, lo
     // ridice la barra del titolo.

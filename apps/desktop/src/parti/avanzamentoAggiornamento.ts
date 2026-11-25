@@ -224,3 +224,28 @@ export function quantoManca(secondi: number): { unita: "s" | "min"; n: number } 
   const n = Math.max(1, Math.ceil(secondi));
   return n <= 59 ? { unita: "s", n } : { unita: "min", n: Math.ceil(n / 60) };
 }
+
+// ── l'errore che la scheda mostra ────────────────────────────────────────────
+
+/**
+ * L'errore da mostrare sulla scheda, o `null`.
+ *
+ * Il nucleo scrive `ultimo_errore` a ogni controllo che non trova la rete —
+ * ogni mezz'ora sul computer, ogni sei ore sul telefono — **anche con un
+ * pacchetto già scaricato** che aspetta la chiusura: il portatile in sospensione,
+ * una VPN che cambia, il wifi che si riaggancia. Quell'errore non dice niente di
+ * quel che la scheda racconta, e la scheda «È pronta» non lo mostra: l'errore
+ * appartiene a un tentativo — qualcuno ha premuto «Aggiorna» e il pacchetto non è
+ * arrivato — e si vede solo quando **non c'è nessun passo**, né uno in corso né
+ * un pacchetto in sosta.
+ *
+ * Con un passo in corso la barra va avanti, e il guasto che ne verrà arriverà con
+ * il passo che finisce.
+ */
+export function guastoDaMostrare<E>(
+  tentato: boolean,
+  fase: FaseAggiornamento | null,
+  errore: E | null | undefined,
+): E | null {
+  return tentato && fase === null && errore != null ? errore : null;
+}

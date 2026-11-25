@@ -67,7 +67,7 @@ use rymembra_app::settings;
 use tauri::Manager as _;
 
 use crate::argomenti::{Argomenti, SecondoAvvio, secondo_avvio as decisione};
-use crate::geometria::{self, Area, Geometria, Lettura, Rimessa};
+use crate::geometria::{self, Area, Geometria, Lettura, Misura, MisuraDellaFinestra, Rimessa};
 use crate::stato::{Stato, con_libreria, con_libreria_entro};
 use crate::{nota, spegnimento, vassoio};
 
@@ -127,6 +127,62 @@ pub fn registra_l_avvio(argomenti: Argomenti, dal_login_store: bool) {
 /// automatico non vale più.
 pub fn annulla_la_riduzione() {
     COMPARSA.imposta(false);
+}
+
+/// Il nome del contrassegno che «Installa ora» lascia nella cartella dei dati.
+const FILE_RILANCIO: &str = "rilancio-aggiornamento";
+
+/// Quanto vale il contrassegno: il tempo che l'installer impiega a installare e a
+/// rilanciare il programma, con un margine per un computer lento.
+const FINESTRA_DEL_RILANCIO_MS: i64 = 5 * 60 * 1000;
+
+/// Questo avvio è il rilancio dell'installer dopo «Installa ora»?
+static RILANCIO: AtomicBool = AtomicBool::new(false);
+
+/// Il contrassegno scritto a `scritto_ms` vale ancora a `adesso_ms`?
+#[must_use]
+pub fn rilancio_dopo_aggiornamento(scritto_ms: Option<i64>, adesso_ms: i64) -> bool {
+    // Un orologio spostato indietro dà un'età negativa: non vale.
+    scritto_ms
+        .is_some_and(|scritto| (0..=FINESTRA_DEL_RILANCIO_MS).contains(&(adesso_ms - scritto)))
+}
+
+/// «Installa ora» sta per lanciare l'installer: lascia un contrassegno nella
+/// cartella dei dati.
+///
+/// # Errori
+///
+/// Il guasto della scrittura.
+pub fn segna_il_rilancio(dati: &std::path::Path, adesso_ms: i64) -> std::io::Result<()> {
+    std::fs::write(dati.join(FILE_RILANCIO), adesso_ms.to_string())
+}
+
+/// Questo avvio è il rilancio dell'installer dopo «Installa ora»: la finestra
+/// compare normale e il link con cui il processo di prima era partito non si
+/// ripresenta. Lo chiama l'avvio del nucleo, **prima** di qualunque cosa che
+/// mostri la finestra o consegni il link.
+pub fn dopo_un_aggiornamento(dati: &std::path::Path) {
+    if consuma_il_rilancio(dati, crate::stato::adesso_ms()) {
+        COMPARSA.imposta(false);
+        RILANCIO.store(true, Ordering::Release);
+        nota!("[avvio] rilancio dell'installer dopo «Installa ora»: la finestra compare normale");
+    }
+}
+
+/// Il rilancio dopo «Installa ora» ha già deciso: il link degli argomenti non si
+/// ripresenta.
+pub fn e_un_rilancio() -> bool {
+    RILANCIO.load(Ordering::Acquire)
+}
+
+/// Legge il contrassegno e lo toglie, sempre. `true` se vale.
+pub fn consuma_il_rilancio(dati: &std::path::Path, adesso_ms: i64) -> bool {
+    let percorso = dati.join(FILE_RILANCIO);
+    let scritto = std::fs::read_to_string(&percorso)
+        .ok()
+        .and_then(|testo| testo.trim().parse::<i64>().ok());
+    let _ = std::fs::remove_file(&percorso);
+    rilancio_dopo_aggiornamento(scritto, adesso_ms)
 }
 
 /// Gli argomenti dell'avvio, o nessuno se non sono stati registrati.
@@ -222,13 +278,14 @@ pub fn rileggi_se_mossa(app: &tauri::AppHandle) {
 
 /// La finestra com'è adesso, o `None` se il sistema non risponde.
 fn leggi(finestra: &tauri::WebviewWindow) -> Option<Lettura> {
+    // Posizione e misura **esterne**, della stessa cornice: vedi `geometria`.
     let posizione = finestra.outer_position().ok()?;
-    let misura = finestra.inner_size().ok()?;
+    let misura = geometria::misura_da_ricordare(&mut SullaFinestra(finestra))?;
     Some(Lettura {
         x: posizione.x,
         y: posizione.y,
-        larghezza: misura.width,
-        altezza: misura.height,
+        larghezza: misura.larghezza,
+        altezza: misura.altezza,
         ingrandita: finestra.is_maximized().ok()?,
         ridotta: finestra.is_minimized().ok()?,
         schermo_intero: finestra.is_fullscreen().ok()?,
@@ -303,6 +360,27 @@ fn aree(finestra: &tauri::WebviewWindow) -> Vec<Area> {
     geometria::principale_per_prima(tutti, principale)
 }
 
+/// La finestra vera, vista da `geometria::rimetti_la_misura`.
+struct SullaFinestra<'a>(&'a tauri::WebviewWindow);
+
+impl MisuraDellaFinestra for SullaFinestra<'_> {
+    fn esterna(&mut self) -> Option<Misura> {
+        let misura = self.0.outer_size().ok()?;
+        Some(Misura::nuova(misura.width, misura.height))
+    }
+
+    fn interna(&mut self) -> Option<Misura> {
+        let misura = self.0.inner_size().ok()?;
+        Some(Misura::nuova(misura.width, misura.height))
+    }
+
+    fn chiedi_interna(&mut self, misura: Misura) -> Result<(), String> {
+        self.0
+            .set_size(tauri::PhysicalSize::new(misura.larghezza, misura.altezza))
+            .map_err(|err| err.to_string())
+    }
+}
+
 /// Rimette la finestra dov'era: la posizione, la misura, e ingrandita se lo era
 /// e `ingrandisci` lo vuole.
 ///
@@ -327,8 +405,19 @@ fn applica(finestra: &tauri::WebviewWindow, ingrandisci: bool) {
     if let Err(err) = finestra.set_position(tauri::PhysicalPosition::new(messa.x, messa.y)) {
         nota!("[finestra] la posizione non si rimette: {err}");
     }
-    if let Err(err) = finestra.set_size(tauri::PhysicalSize::new(messa.larghezza, messa.altezza)) {
-        nota!("[finestra] la misura non si rimette: {err}");
+    let voluta = Misura::nuova(messa.larghezza, messa.altezza);
+    match geometria::rimetti_la_misura(&mut SullaFinestra(finestra), voluta) {
+        Ok(esito) => nota!(
+            "[finestra] misura rimessa: voluta={}x{} chiesta={}x{} ottenuta={}x{}{}",
+            voluta.larghezza,
+            voluta.altezza,
+            esito.chiesta.larghezza,
+            esito.chiesta.altezza,
+            esito.ottenuta.larghezza,
+            esito.ottenuta.altezza,
+            if esito.corretta { " (corretta)" } else { "" }
+        ),
+        Err(err) => nota!("[finestra] la misura non si rimette: {err}"),
     }
     if ingrandisci
         && messa.ingrandita
@@ -522,8 +611,14 @@ pub fn secondo_avvio(app: &tauri::AppHandle, argomenti: &[String]) {
             // `argomenti` e `lontano::link_arrivato` — e la finestra, se manca,
             // nasce per mostrargliela: la pagina prende il link rimasto in
             // attesa appena si monta.
-            crate::lontano::link_arrivato(app, &link);
-            vassoio::mostra(app);
+            if crate::lontano::link_arrivato(app, &link) {
+                vassoio::mostra(app);
+            } else {
+                // Scartato (non è un link, o un altro aspetta): non si alza
+                // niente — una pagina web non deve poter togliere il fuoco al
+                // browser a ogni clic (S4-4).
+                nota!("[avvio] un link scartato: la finestra resta com'è");
+            }
         }
     }
 }
@@ -531,6 +626,109 @@ pub fn secondo_avvio(app: &tauri::AppHandle, argomenti: &[String]) {
 #[cfg(test)]
 mod prove {
     use super::*;
+
+    // ── il rilancio dopo «Installa ora» (S5-6) ──────────────────────────────
+
+    /// «Installa ora» da un'istanza partita con Windows (`--avvio-automatico`) o con
+    /// un link: l'updater passa a NSIS `/R /ARGS <gli argomenti di prima>`, e
+    /// l'installer rilancia il programma con gli stessi. La copia nuova partiva
+    /// come all'accensione di Windows — ridotta a icona — e ripresentava il link,
+    /// davanti a chi aveva appena premuto «Installa ora». Il contrassegno lascia
+    /// dire al processo nuovo che quegli argomenti sono vecchi.
+    #[test]
+    fn il_rilancio_dell_installer_vale_per_pochi_minuti() {
+        let t = 1_000_000_000_i64;
+        assert!(rilancio_dopo_aggiornamento(Some(t), t));
+        assert!(rilancio_dopo_aggiornamento(Some(t), t + 20_000));
+        assert!(rilancio_dopo_aggiornamento(
+            Some(t),
+            t + FINESTRA_DEL_RILANCIO_MS
+        ));
+        // Scaduto: l'installer non è mai partito, e un avvio di Windows è un avvio di Windows.
+        assert!(!rilancio_dopo_aggiornamento(
+            Some(t),
+            t + FINESTRA_DEL_RILANCIO_MS + 1
+        ));
+        // Nessun contrassegno, o un orologio spostato indietro: niente.
+        assert!(!rilancio_dopo_aggiornamento(None, t));
+        assert!(!rilancio_dopo_aggiornamento(Some(t), t - 1));
+    }
+
+    #[test]
+    fn il_contrassegno_si_scrive_si_legge_e_si_consuma_una_volta() {
+        let cartella =
+            std::env::temp_dir().join(format!("rymembra-rilancio-{}", std::process::id()));
+        std::fs::create_dir_all(&cartella).expect("la cartella si crea");
+        let t = 1_700_000_000_000_i64;
+        segna_il_rilancio(&cartella, t).expect("si scrive");
+        assert!(consuma_il_rilancio(&cartella, t + 10_000));
+        assert!(
+            !cartella.join(FILE_RILANCIO).exists(),
+            "va tolto alla lettura"
+        );
+        assert!(
+            !consuma_il_rilancio(&cartella, t + 10_000),
+            "una volta sola"
+        );
+        // Scaduto: si toglie lo stesso, e non vale.
+        segna_il_rilancio(&cartella, t).expect("si scrive");
+        assert!(!consuma_il_rilancio(
+            &cartella,
+            t + FINESTRA_DEL_RILANCIO_MS + 1
+        ));
+        assert!(!cartella.join(FILE_RILANCIO).exists());
+        // Un contenuto che non è un numero non vale, e si toglie.
+        std::fs::write(cartella.join(FILE_RILANCIO), "non un numero").expect("si scrive");
+        assert!(!consuma_il_rilancio(&cartella, t));
+        assert!(!cartella.join(FILE_RILANCIO).exists());
+        let _ = std::fs::remove_dir_all(&cartella);
+    }
+
+    /// Il contrassegno si legge **prima** che qualcuno mostri la finestra — la
+    /// rete di sicurezza dei due secondi, o `finestra_mostra` durante una
+    /// migrazione — e prima che il link del processo parta: nell'avvio del nucleo,
+    /// dove la cartella dei dati si sa e la libreria non è ancora aperta.
+    #[test]
+    fn il_rilancio_si_legge_prima_del_link_e_della_rete_di_sicurezza() {
+        let lib = include_str!("lib.rs");
+        let setup = lib
+            .split(".setup(|app| {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n        })\n").next())
+            .unwrap_or_default();
+        let da_capo = lib
+            .split("fn avvia_da_capo(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        let legge = da_capo
+            .find("comparsa::dopo_un_aggiornamento(")
+            .expect("l'avvio non legge il contrassegno del rilancio");
+        assert!(legge < da_capo.find("apri_e_avvia(").unwrap_or(usize::MAX));
+        let link = setup
+            .find("comparsa::avvio().link")
+            .expect("il setup consegna il link");
+        assert!(
+            setup
+                .get(link..link + 200)
+                .unwrap_or_default()
+                .contains("comparsa::e_un_rilancio()"),
+            "il link del rilancio si ripresenta"
+        );
+        assert!(setup.find("avvia_da_capo(").unwrap_or(usize::MAX) < link);
+        assert!(link < setup.find("rete_di_sicurezza(").unwrap_or(0));
+        // E chi lancia l'installer lo segna prima.
+        let aggiornamenti = include_str!("aggiornamenti.rs");
+        let subito = aggiornamenti
+            .split("Quando::Subito => {")
+            .nth(1)
+            .and_then(|resto| resto.split("Quando::AllaChiusura").next())
+            .unwrap_or_default();
+        let segna = subito
+            .find("segna_il_rilancio(app)")
+            .expect("«Installa ora» non segna il rilancio");
+        assert!(segna < subito.find(".install(byte)").unwrap_or(0));
+    }
 
     #[test]
     fn la_comparsa_ridotta_si_consuma_alla_prima_finestra_mostrata() {
@@ -651,6 +849,44 @@ mod prove {
             .find("finestra_nata(app)")
             .expect("la finestra ricreata non riprende guardia e pulsanti");
         assert!(costruita < rimessa && rimessa < nata);
+    }
+
+    /// D1: la misura si ricorda **esterna** — la stessa cornice della posizione — e si
+    /// rimette dopo la posizione, chiedendola alla cornice della finestra nata:
+    /// `set_size` a mano, con la misura interna di prima, la faceva crescere di
+    /// trenta pixel a ogni ricreazione (L-WSB33).
+    #[test]
+    fn la_misura_si_ricorda_esterna_e_si_rimette_dopo_la_posizione() {
+        let sorgente = include_str!("comparsa.rs");
+        let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
+        let corpo = |firma: &str| {
+            sorgente
+                .split(firma)
+                .nth(1)
+                .and_then(|resto| resto.split("\n}\n").next())
+                .unwrap_or_default()
+        };
+        let leggi = corpo("fn leggi(");
+        assert!(leggi.contains("geometria::misura_da_ricordare("));
+        assert!(
+            !leggi.contains("inner_size"),
+            "si ricorda la misura interna"
+        );
+        let applica = corpo("fn applica(");
+        let posizione = applica
+            .find("set_position(")
+            .expect("la posizione non si rimette");
+        let misura = applica
+            .find("geometria::rimetti_la_misura(")
+            .expect("la misura non passa dalla cornice");
+        assert!(
+            posizione < misura,
+            "la misura si rimette prima della posizione"
+        );
+        assert!(
+            !applica.contains(".set_size("),
+            "la misura si chiede alla finestra cruda, senza la sua cornice"
+        );
     }
 
     /// Dove si legge la finestra: `Moved` e `Resized` **segnano** soltanto, e si

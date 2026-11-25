@@ -75,6 +75,8 @@ mod nuvola_app;
 mod nuvola_musica;
 mod pacchetto;
 mod pagina;
+// Gli eventi una tantum che a finestra distrutta non hanno una pagina (S4-5).
+mod perso;
 mod playlist;
 mod procura;
 mod profilo;
@@ -793,6 +795,11 @@ fn avvia_da_capo(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
     // resto dell'avvio parte subito, com'era.
     match esito {
         Ok(data_dir) => {
+            // Il rilancio dopo «Installa ora» (S5-6): prima di qualunque cosa che
+            // mostri la finestra — la rete di sicurezza, l'attesa di una migrazione
+            // — o consegni il link degli argomenti. La libreria non serve: è un file.
+            #[cfg(desktop)]
+            comparsa::dopo_un_aggiornamento(&data_dir);
             registra_la_libreria(&nucleo, data_dir.clone());
             apri_e_avvia(app, data_dir);
         }
@@ -1274,7 +1281,9 @@ pub fn run() {
             // ancora — e passa dalla stessa conferma di quello arrivato col
             // programma già aperto. Vedi `argomenti`.
             #[cfg(desktop)]
-            if let Some(link) = comparsa::avvio().link.as_deref() {
+            if let Some(link) = comparsa::avvio().link.as_deref()
+                && !comparsa::e_un_rilancio()
+            {
                 lontano::link_arrivato(app.handle(), link);
             }
 
@@ -1306,7 +1315,14 @@ pub fn run() {
                 return;
             }
             let mano = finestra.app_handle();
-            match chiusura::alla_richiesta(mano, vassoio::nasconde(mano)) {
+            // La X col vassoio chiede al sistema se l'icona c'è **adesso**: un'icona
+            // che la shell ha rifiutato non è una via di ritorno (S4-1). Sul telefono
+            // il vassoio non c'è.
+            #[cfg(desktop)]
+            let nasconde = vassoio::nasconde_alla_x(mano);
+            #[cfg(mobile)]
+            let nasconde = vassoio::nasconde(mano);
+            match chiusura::alla_richiesta(mano, nasconde) {
                 chiusura::Decisione::Passa => {}
                 // Alt+F4 o la barra delle applicazioni con lo Studio aperto:
                 // la pagina scrive prima, e la chiusura la rifà `chiusura.rs`
@@ -1323,6 +1339,8 @@ pub fn run() {
                     // Il QR del collegamento non resta valido nel vassoio, dove
                     // nessuno lo vede (decisione D-30).
                     lontano::finestra_nascosta(mano);
+                    // Una proposta che non ha avuto risposta vale «Più tardi» (D5).
+                    avvio_con_windows::proposta_ignorata();
                 }
             }
         })
@@ -1350,6 +1368,7 @@ pub fn run() {
             vassoio::secondo_piano,
             vassoio::secondo_piano_attiva,
             vassoio::vassoio_lingua,
+            perso::riproduzione_errore_perso,
             avvio_con_windows::avvio_con_windows_stato,
             avvio_con_windows::avvio_con_windows_imposta,
             avvio_con_windows::proposta_sottofondo_da_fare,
@@ -1578,6 +1597,7 @@ pub fn run() {
             lontano::scarico::lontano_scarico_annulla,
             lontano::scarico::lontano_scarico_stato,
             lontano::lontano_link_in_attesa,
+            lontano::lontano_link_dialogo,
             lontano::lontano_link_esamina,
             lontano::lontano_collega_annulla,
             lontano::lontano_cerca_ora,

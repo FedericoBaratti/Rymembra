@@ -14,7 +14,8 @@
 //! # Cosa si ricorda
 //!
 //! La posizione, la misura e se era ingrandita ([`Geometria`]). **Il rettangolo è
-//! quello normale**, non quello ingrandito: una finestra ingrandita occupa
+//! quello esterno** (`outer_position` e `outer_size`), e **quello normale**, non
+//! quello ingrandito: una finestra ingrandita occupa
 //! l'area di lavoro, e ricordare quello vorrebbe dire che «ripristina» la lascia
 //! grande quanto lo schermo. Per questo si legge dopo ogni spostamento
 //! ([`aggiorna`]) e si tiene in memoria finché la finestra c'è: quando si chiude
@@ -54,6 +55,14 @@ pub struct Area {
 }
 
 /// La posizione e la misura della finestra, come si ricordano nelle impostazioni.
+///
+/// **Il rettangolo è quello esterno**, lo stesso che dicono `outer_position` e
+/// `outer_size` (`GetWindowRect`): posizione e misura vengono dalla stessa
+/// cornice, e si rimettono insieme. Fino al collaudo in Windows Sandbox (D1) la
+/// misura era quella *interna*, e rimessa su una finestra appena nata cresceva di
+/// trenta pixel a ogni ricreazione: vedi [`rimetti_la_misura`]. Le righe scritte
+/// da una build di sviluppo di prima si leggono come esterne, e la finestra
+/// torna più piccola di 16×9 pixel una volta sola, finché non si richiude.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Geometria {
@@ -61,9 +70,9 @@ pub struct Geometria {
     pub x: i32,
     /// Il bordo alto esterno.
     pub y: i32,
-    /// La larghezza interna (`inner_size`): è quella che `set_size` rimette.
+    /// La larghezza **esterna** (`outer_size`).
     pub larghezza: u32,
-    /// L'altezza interna.
+    /// L'altezza **esterna**.
     pub altezza: u32,
     /// Era ingrandita. Il rettangolo sopra è quello di quando non lo era.
     pub ingrandita: bool,
@@ -76,9 +85,9 @@ pub struct Lettura {
     pub x: i32,
     /// Il bordo alto esterno.
     pub y: i32,
-    /// La larghezza interna.
+    /// La larghezza esterna.
     pub larghezza: u32,
-    /// L'altezza interna.
+    /// L'altezza esterna.
     pub altezza: u32,
     /// È ingrandita.
     pub ingrandita: bool,
@@ -86,6 +95,23 @@ pub struct Lettura {
     pub ridotta: bool,
     /// È a schermo intero.
     pub schermo_intero: bool,
+}
+
+/// Una misura in pixel fisici.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Misura {
+    /// La larghezza.
+    pub larghezza: u32,
+    /// L'altezza.
+    pub altezza: u32,
+}
+
+impl Misura {
+    /// Una misura.
+    #[must_use]
+    pub const fn nuova(larghezza: u32, altezza: u32) -> Self {
+        Self { larghezza, altezza }
+    }
 }
 
 /// La posizione che Windows dà a una finestra ridotta a icona.
@@ -143,6 +169,120 @@ pub fn aggiorna(ricordata: Option<Geometria>, adesso: &Lettura) -> Option<Geomet
         larghezza: adesso.larghezza,
         altezza: adesso.altezza,
         ingrandita: adesso.ingrandita,
+    })
+}
+
+// ── la misura, fra finestra e impostazioni ─────────────────────────────────
+
+/// Quel che serve a rimettere la misura di una finestra. La finestra vera
+/// (`comparsa`) e quella finta delle prove ([`prove`]) lo danno allo stesso modo.
+pub trait MisuraDellaFinestra {
+    /// La misura esterna adesso (`outer_size`), se il sistema risponde.
+    fn esterna(&mut self) -> Option<Misura>;
+    /// La misura interna adesso (`inner_size`), se il sistema risponde.
+    fn interna(&mut self) -> Option<Misura>;
+    /// Chiede una misura **interna**: è l'unica che `tao` sa rimettere.
+    ///
+    /// # Errori
+    ///
+    /// Il testo del guasto, se il sistema non l'ha accettata.
+    fn chiedi_interna(&mut self, misura: Misura) -> Result<(), String>;
+}
+
+/// Che misura si ricorda di una finestra: l'**esterna**, la stessa cornice da cui
+/// viene la posizione. Quella interna dipende da com'è la finestra in quel
+/// momento — nascosta o visibile — e rimessa su una finestra nata dopo non
+/// tornava uguale (D1).
+#[must_use]
+pub fn misura_da_ricordare<F: MisuraDellaFinestra>(finestra: &mut F) -> Option<Misura> {
+    finestra.esterna()
+}
+
+/// Quanto la finestra è più grande del suo contenuto, adesso.
+fn cornice(esterna: Misura, interna: Misura) -> Misura {
+    Misura::nuova(
+        esterna.larghezza.saturating_sub(interna.larghezza),
+        esterna.altezza.saturating_sub(interna.altezza),
+    )
+}
+
+/// La misura **interna** da chiedere perché la finestra, con la cornice che ha
+/// adesso, risulti grande `voluta` fuori.
+///
+/// `tao::set_inner_size` somma alla misura chiesta la cornice che legge in quel
+/// momento (`GetWindowRect` meno `GetClientRect`) e dà la somma al sistema: se la
+/// cornice è quella misurata un istante prima, l'esterna che ne esce è
+/// esattamente `voluta`. Una finestra appena costruita e ancora nascosta ha una
+/// cornice alta 39 pixel, una visibile 9: chiedere la misura interna ricordata
+/// la faceva uscire trenta pixel più alta a ogni ricreazione (L-WSB33, D1).
+#[must_use]
+pub fn misura_da_chiedere(voluta: Misura, cornice: Misura) -> Misura {
+    Misura::nuova(
+        voluta.larghezza.saturating_sub(cornice.larghezza).max(1),
+        voluta.altezza.saturating_sub(cornice.altezza).max(1),
+    )
+}
+
+/// Se la finestra ha risposto con un'altra misura esterna, la nuova richiesta:
+/// quella di prima spostata di quanto si è sbagliato. `None` se coincide, o se
+/// non c'è niente da cambiare.
+#[must_use]
+pub fn correzione(voluta: Misura, ottenuta: Misura, chiesta: Misura) -> Option<Misura> {
+    if ottenuta == voluta {
+        return None;
+    }
+    let sposta = |chiesta: u32, voluta: u32, ottenuta: u32| {
+        let nuova = i64::from(chiesta) + i64::from(voluta) - i64::from(ottenuta);
+        u32::try_from(nuova.clamp(1, i64::from(u32::MAX))).unwrap_or(chiesta)
+    };
+    let nuova = Misura::nuova(
+        sposta(chiesta.larghezza, voluta.larghezza, ottenuta.larghezza),
+        sposta(chiesta.altezza, voluta.altezza, ottenuta.altezza),
+    );
+    (nuova != chiesta).then_some(nuova)
+}
+
+/// Com'è andata la rimessa della misura.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EsitoMisura {
+    /// La misura interna chiesta la prima volta.
+    pub chiesta: Misura,
+    /// La misura esterna che la finestra ha alla fine.
+    pub ottenuta: Misura,
+    /// C'è voluta una seconda richiesta.
+    pub corretta: bool,
+}
+
+/// Rimette la misura **esterna** `voluta`: misura la cornice della finestra
+/// adesso, chiede la misura interna che la fa uscire giusta, rilegge quel che la
+/// finestra ha e corregge **una volta** se differisce. Non insegue: se il sistema
+/// non concede la misura — una minima sotto cui non si scende — si ferma lì.
+///
+/// # Errori
+///
+/// Il testo del guasto, se la finestra non risponde o rifiuta la misura.
+pub fn rimetti_la_misura<F: MisuraDellaFinestra>(
+    finestra: &mut F,
+    voluta: Misura,
+) -> Result<EsitoMisura, String> {
+    let non_risponde = || "la finestra non risponde".to_owned();
+    let esterna = finestra.esterna().ok_or_else(non_risponde)?;
+    let interna = finestra.interna().ok_or_else(non_risponde)?;
+    let chiesta = misura_da_chiedere(voluta, cornice(esterna, interna));
+    finestra.chiedi_interna(chiesta)?;
+    let ottenuta = finestra.esterna().ok_or_else(non_risponde)?;
+    let Some(ancora) = correzione(voluta, ottenuta, chiesta) else {
+        return Ok(EsitoMisura {
+            chiesta,
+            ottenuta,
+            corretta: false,
+        });
+    };
+    finestra.chiedi_interna(ancora)?;
+    Ok(EsitoMisura {
+        chiesta,
+        ottenuta: finestra.esterna().ok_or_else(non_risponde)?,
+        corretta: true,
     })
 }
 
@@ -640,6 +780,202 @@ mod prove {
             ..lettura(300, 200)
         };
         assert_eq!(aggiorna(prima, &nulla), prima);
+    }
+
+    // ── la misura: il giro salva-rimetti è un punto fisso (D1) ──────────────
+    //
+    // Collaudo in Windows Sandbox (L-WSB33, D1), finestra senza decorazioni con
+    // l'ombra di `tao`:
+    //
+    // - una finestra **visibile** ha la cornice invisibile (8, 1, 8, 8): la misura
+    //   esterna è quella interna più 16×9 (1296×829 con 1280×820 dentro);
+    // - una finestra **appena nata e ancora nascosta** ha, per `tao`, una cornice
+    //   alta 39 pixel (31 di barra del titolo e 8 di bordo): `set_inner_size` ci
+    //   aggiunge quella, e la finestra esce più alta di trenta pixel quando si
+    //   mostra e la cornice torna a 9.
+    //
+    // Rimettere la misura *interna* ricordata su una finestra nata, quindi,
+    // faceva 829 → 859 → 889 → 910 a ogni riavvio (910 = 871 di area di lavoro più
+    // 39). La finestra finta qui sotto è fatta di quei due numeri, e basta.
+
+    /// L'area di lavoro della Sandbox: schermo 1520×919, barra da 48 pixel.
+    const SANDBOX: Area = Area {
+        x: 0,
+        y: 0,
+        larghezza: 1520,
+        altezza: 871,
+    };
+    const CORNICE_NASCOSTA: Misura = Misura::nuova(16, 39);
+    const CORNICE_VISIBILE: Misura = Misura::nuova(16, 9);
+
+    /// Una finestra come l'hanno misurata le prove dal vivo.
+    struct FinestraFinta {
+        esterna: Misura,
+        cornice: Misura,
+        /// Quel che il sistema aggiunge di suo alla misura chiesta (un'altra
+        /// ipotesi su come `tao` ricompone la cornice: la correzione deve reggere
+        /// anche a questa).
+        in_piu: Misura,
+        /// La misura esterna sotto cui il sistema non scende.
+        minima: Misura,
+        richieste: u32,
+    }
+
+    impl FinestraFinta {
+        /// Nata dalla configurazione (1280×820 interni), ancora nascosta.
+        fn nata() -> Self {
+            Self {
+                esterna: Misura::nuova(1296, 829),
+                cornice: CORNICE_NASCOSTA,
+                in_piu: Misura::nuova(0, 0),
+                minima: Misura::nuova(0, 0),
+                richieste: 0,
+            }
+        }
+
+        fn mostra(&mut self) {
+            self.cornice = CORNICE_VISIBILE;
+        }
+    }
+
+    impl MisuraDellaFinestra for FinestraFinta {
+        fn esterna(&mut self) -> Option<Misura> {
+            Some(self.esterna)
+        }
+
+        fn interna(&mut self) -> Option<Misura> {
+            Some(Misura::nuova(
+                self.esterna.larghezza - self.cornice.larghezza,
+                self.esterna.altezza - self.cornice.altezza,
+            ))
+        }
+
+        fn chiedi_interna(&mut self, misura: Misura) -> Result<(), String> {
+            self.richieste += 1;
+            // Come `tao::set_inner_size` con l'ombra: ci somma la cornice che legge
+            // adesso, e poi chiede quella misura esterna al sistema.
+            self.esterna = Misura::nuova(
+                (misura.larghezza + self.cornice.larghezza + self.in_piu.larghezza)
+                    .max(self.minima.larghezza),
+                (misura.altezza + self.cornice.altezza + self.in_piu.altezza)
+                    .max(self.minima.altezza),
+            );
+            Ok(())
+        }
+    }
+
+    /// Una ricreazione intera: la X (si ricorda quel che si legge), le
+    /// impostazioni (scritte e rilette come JSON), la finestra nuova (la posizione
+    /// e la misura rimesse come fa `comparsa::applica`) e «Mostra».
+    fn ricrea(prima: &mut FinestraFinta, x: i32, y: i32) -> (FinestraFinta, Geometria) {
+        let misura = misura_da_ricordare(prima).expect("la finestra risponde");
+        let letta = Lettura {
+            larghezza: misura.larghezza,
+            altezza: misura.altezza,
+            ..lettura(x, y)
+        };
+        let ricordata = aggiorna(None, &letta).expect("una finestra normale si ricorda");
+        let scritta = serde_json::to_string(&ricordata).expect("si scrive");
+        let riletta: Geometria = serde_json::from_str(&scritta).expect("si rilegge");
+        let messa = rimetti_su_uno_schermo(&riletta, &[SANDBOX]).expect("c'è un monitor");
+        let mut nuova = FinestraFinta::nata();
+        rimetti_la_misura(&mut nuova, Misura::nuova(messa.larghezza, messa.altezza))
+            .expect("la finestra risponde");
+        nuova.mostra();
+        (nuova, messa)
+    }
+
+    /// Una finestra visibile come quella della Sandbox: 1296×829 esterni.
+    fn finestra_visibile() -> FinestraFinta {
+        let mut f = FinestraFinta::nata();
+        f.mostra();
+        f
+    }
+
+    #[test]
+    fn la_cornice_di_una_finestra_visibile_e_di_16_per_9() {
+        // I numeri del collaudo: 1296×829 esterni, 1280×820 dentro.
+        let mut f = finestra_visibile();
+        assert_eq!(f.interna(), Some(Misura::nuova(1280, 820)));
+    }
+
+    #[test]
+    fn il_giro_salva_rimetti_e_un_punto_fisso() {
+        // Dentro l'area di lavoro, così la guardia dello schermo non c'entra.
+        let (x, y) = (156, 20);
+        let mut finestra = finestra_visibile();
+        let partenza = finestra.esterna;
+        for giro in 1..=6 {
+            let (nuova, messa) = ricrea(&mut finestra, x, y);
+            assert_eq!(
+                nuova.esterna, partenza,
+                "al giro {giro} la finestra è cambiata di misura"
+            );
+            assert_eq!((messa.x, messa.y), (x, y), "e di posto, al giro {giro}");
+            finestra = nuova;
+        }
+    }
+
+    #[test]
+    fn un_riavvio_dopo_l_altro_la_finestra_non_cresce() {
+        // 829 → 859 → 889 → 910: il collaudo dal vivo, riavvio per riavvio.
+        let mut finestra = finestra_visibile();
+        let altezze: Vec<u32> = (0..5)
+            .map(|_| {
+                let (nuova, _) = ricrea(&mut finestra, 100, 4);
+                let altezza = nuova.esterna.altezza;
+                finestra = nuova;
+                altezza
+            })
+            .collect();
+        assert_eq!(altezze, vec![829; 5]);
+    }
+
+    #[test]
+    fn una_finestra_sotto_la_barra_sale_la_prima_volta_e_poi_resta() {
+        // La finestra del collaudo stava a y = 90 con 829 di altezza: il bordo
+        // basso a 919, 48 pixel sotto l'area di lavoro (871). La guardia dello
+        // schermo la riporta dentro — 871 − 829 + 16 = 58 — ed è giusto; quel che
+        // non deve succedere è che salga ancora, o che cambi misura.
+        let mut finestra = finestra_visibile();
+        let (prima, messa) = ricrea(&mut finestra, 156, 90);
+        assert_eq!((messa.y, prima.esterna), (58, Misura::nuova(1296, 829)));
+        let mut finestra = prima;
+        for _ in 0..4 {
+            let (nuova, messa) = ricrea(&mut finestra, 156, 58);
+            assert_eq!((messa.x, messa.y), (156, 58));
+            assert_eq!(nuova.esterna, Misura::nuova(1296, 829));
+            finestra = nuova;
+        }
+    }
+
+    #[test]
+    fn una_finestra_che_risponde_con_un_altra_misura_si_corregge_una_volta() {
+        // Un'altra ipotesi su `tao`: il sistema aggiunge trenta pixel di suo.
+        let mut f = FinestraFinta {
+            in_piu: Misura::nuova(0, 30),
+            ..FinestraFinta::nata()
+        };
+        let voluta = Misura::nuova(1296, 829);
+        let esito = rimetti_la_misura(&mut f, voluta).expect("la finestra risponde");
+        assert_eq!(esito.ottenuta, voluta);
+        assert!(esito.corretta);
+        assert_eq!(f.richieste, 2, "una richiesta e una sola correzione");
+    }
+
+    #[test]
+    fn una_misura_che_il_sistema_non_concede_non_si_insegue() {
+        let mut f = FinestraFinta {
+            minima: Misura::nuova(1000, 700),
+            ..FinestraFinta::nata()
+        };
+        let esito = rimetti_la_misura(&mut f, Misura::nuova(900, 600)).expect("risponde");
+        assert_eq!(esito.ottenuta, Misura::nuova(1000, 700));
+        assert!(
+            f.richieste <= 2,
+            "si è insistito: {} richieste",
+            f.richieste
+        );
     }
 
     // ── come sta nelle impostazioni ─────────────────────────────────────────

@@ -165,6 +165,9 @@ pub fn finestra_nascosta(app: &impl ComeNucleo) {
     if let Some(stato) = app.try_state::<StatoLontano>() {
         annulla_il_qr(&stato.comune);
     }
+    // Il dialogo di un link muore con la pagina: non resta un «aperto» che
+    // scarterebbe in silenzio i link che verranno.
+    posto_del_link().nel_dialogo = false;
 }
 
 /// Il QR non vale più, anche quello che sta nascendo in [`lontano_qr_crea`]:
@@ -210,36 +213,108 @@ pub fn cambio_di_rete(app: &impl ComeNucleo) {
     }
 }
 
-/// L'ultimo link `rymembra://collega/…` aperto da fuori, finché la finestra
-/// non lo prende: col QR letto dalla fotocamera del sistema l'app può partire
-/// da chiusa, e l'evento arriverebbe prima della finestra.
-static LINK_IN_ATTESA: Mutex<Option<String>> = Mutex::new(None);
+/// Il posto del link `rymembra://collega/…` aperto da fuori: **uno solo**, e il
+/// primo vince (S4-4).
+///
+/// Col QR letto dalla fotocamera del sistema l'app può partire da chiusa, e
+/// l'evento arriverebbe prima della finestra: il link resta qui finché la pagina
+/// non lo prende. Ma `LINK_IN_ATTESA` — un `Option` — era sovrascritto
+/// dall'ultimo, e la pagina rimpiazzava il dialogo aperto: chi leggeva
+/// «Collegarsi a "PC di casa"?» con l'impronta A se lo vedeva cambiare sotto il
+/// dito nello stesso dialogo con l'impronta B. Un link che arriva mentre un altro
+/// aspetta di essere preso, o mentre il suo dialogo è aperto, si scarta e lo si
+/// scrive nel diario.
+#[derive(Debug, Default)]
+struct PostoDelLink {
+    /// Il link aperto da fuori e non ancora preso dalla pagina.
+    in_attesa: Option<String>,
+    /// La pagina ha un dialogo di collegamento aperto: lo dice lei
+    /// ([`lontano_link_dialogo`]), e si azzera con la pagina e con la finestra.
+    nel_dialogo: bool,
+}
+
+/// Cosa fare di un link che arriva.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arrivo {
+    /// Lo si tiene, e si dice alla finestra.
+    Preso,
+    /// Un altro aspetta o è nel dialogo: il primo vince, questo si scarta.
+    GiaUno,
+    /// Non è un link di collegamento.
+    NonELink,
+}
+
+/// La decisione, senza finestra né sistema.
+fn arrivo_del_link(posto: &PostoDelLink, valido: bool) -> Arrivo {
+    if !valido {
+        Arrivo::NonELink
+    } else if posto.in_attesa.is_some() || posto.nel_dialogo {
+        Arrivo::GiaUno
+    } else {
+        Arrivo::Preso
+    }
+}
+
+static POSTO_DEL_LINK: Mutex<PostoDelLink> = Mutex::new(PostoDelLink {
+    in_attesa: None,
+    nel_dialogo: false,
+});
+
+fn posto_del_link() -> std::sync::MutexGuard<'static, PostoDelLink> {
+    POSTO_DEL_LINK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Un link di collegamento aperto da fuori (Android: l'intento della
 /// fotocamera; Windows: `rymembra://collega/…` cliccato, dalla riga di comando
 /// — vedi `argomenti`). Se ha la forma giusta, lo si tiene e lo si dice alla
 /// finestra, che chiede conferma prima di collegarsi.
-pub fn link_arrivato(app: &impl ComeNucleo, link: &str) {
+///
+/// Torna `true` se il link è stato preso: solo allora chi lo ha portato alza la
+/// finestra (`comparsa::secondo_avvio`). Un link scartato non toglie il fuoco a
+/// nessuno: una pagina web che ne lancia uno a ogni clic non deve poterlo fare.
+pub fn link_arrivato(app: &impl ComeNucleo, link: &str) -> bool {
     let app = &app.come_nucleo();
-    if rymembra_lontano::Invito::da_link(link).is_err() {
-        crate::nota!("[lontano] un link aperto da fuori non è un link di collegamento");
-        return;
+    let valido = rymembra_lontano::Invito::da_link(link).is_ok();
+    let mut posto = posto_del_link();
+    match arrivo_del_link(&posto, valido) {
+        Arrivo::NonELink => {
+            crate::nota!("[lontano] un link aperto da fuori non è un link di collegamento");
+            false
+        }
+        Arrivo::GiaUno => {
+            crate::nota!(
+                "[lontano] un secondo link aperto da fuori mentre il primo aspetta risposta: si scarta, vince il primo"
+            );
+            false
+        }
+        Arrivo::Preso => {
+            posto.in_attesa = Some(link.to_owned());
+            drop(posto);
+            app.emetti("lontano:link", link.to_owned());
+            true
+        }
     }
-    *LINK_IN_ATTESA
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(link.to_owned());
-    app.emetti("lontano:link", link.to_owned());
 }
 
-/// Il link aperto da fuori e non ancora preso: vedi [`LINK_IN_ATTESA`]. Una
+/// Il link aperto da fuori e non ancora preso: vedi [`PostoDelLink`]. Una
 /// volta sola.
 #[tauri::command]
 pub async fn lontano_link_in_attesa() -> Esito<Option<String>> {
-    in_disparte(|| {
-        Ok(LINK_IN_ATTESA
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take())
+    in_disparte(|| Ok(posto_del_link().in_attesa.take())).await
+}
+
+/// La pagina dice se ha un dialogo di collegamento aperto: finché è aperto, un
+/// altro link non lo sostituisce ([`link_arrivato`]).
+///
+/// La pagina lo dice a ogni cambio e una volta al montaggio: una pagina nuova non
+/// ha dialoghi, e un `true` rimasto di quella di prima si azzera da sé.
+#[tauri::command]
+pub async fn lontano_link_dialogo(aperto: bool) -> Esito<()> {
+    in_disparte(move || {
+        posto_del_link().nel_dialogo = aperto;
+        Ok(())
     })
     .await
 }
@@ -806,5 +881,66 @@ mod prove {
             esamina("https://esempio.it").unwrap_err().code().kind(),
             ErrorCodeKind::LontanoLinkNonValido
         );
+    }
+
+    // ── un link alla volta, e il primo vince (S4-4) ─────────────────────────
+
+    /// Una pagina web che lancia `rymembra://collega/…` in sequenza non deve
+    /// sostituire il dialogo di quello che l'utente sta leggendo — nome dichiarato
+    /// uguale, impronta diversa — né portare la finestra davanti per quelli che il
+    /// nucleo scarta.
+    #[test]
+    fn il_primo_link_vince_e_quelli_dopo_si_scartano() {
+        let libero = PostoDelLink::default();
+        assert_eq!(arrivo_del_link(&libero, true), Arrivo::Preso);
+        // Uno aspetta che la pagina lo prenda.
+        let in_attesa = PostoDelLink {
+            in_attesa: Some("rymembra://collega/A".to_owned()),
+            nel_dialogo: false,
+        };
+        assert_eq!(arrivo_del_link(&in_attesa, true), Arrivo::GiaUno);
+        // La pagina l'ha preso e il dialogo è aperto.
+        let nel_dialogo = PostoDelLink {
+            in_attesa: None,
+            nel_dialogo: true,
+        };
+        assert_eq!(arrivo_del_link(&nel_dialogo, true), Arrivo::GiaUno);
+    }
+
+    #[test]
+    fn quel_che_non_e_un_link_non_si_prende_e_non_alza_niente() {
+        for posto in [
+            PostoDelLink::default(),
+            PostoDelLink {
+                in_attesa: Some("x".to_owned()),
+                nel_dialogo: true,
+            },
+        ] {
+            assert_eq!(arrivo_del_link(&posto, false), Arrivo::NonELink);
+        }
+    }
+
+    /// Solo un link preso alza la finestra, e il dialogo si dice al nucleo.
+    #[test]
+    fn solo_un_link_preso_alza_la_finestra_e_il_dialogo_si_azzera_con_la_pagina() {
+        let comparsa = include_str!("../comparsa.rs");
+        let comparsa = comparsa.split("#[cfg(test)]").next().unwrap_or(comparsa);
+        let con_link = comparsa
+            .split("SecondoAvvio::ConLink(link) => {")
+            .nth(1)
+            .and_then(|resto| resto.split("\n        }\n").next())
+            .unwrap_or_default();
+        assert!(
+            con_link.contains("if crate::lontano::link_arrivato(app, &link)"),
+            "un link scartato alza la finestra lo stesso"
+        );
+        let nascosta = include_str!("mod.rs")
+            .split("pub fn finestra_nascosta(")
+            .nth(1)
+            .and_then(|resto| resto.split("\n}\n").next())
+            .unwrap_or_default();
+        assert!(nascosta.contains("nel_dialogo = false"));
+        let lib = include_str!("../lib.rs");
+        assert!(lib.contains("lontano::lontano_link_dialogo,"));
     }
 }
