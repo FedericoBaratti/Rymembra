@@ -208,7 +208,13 @@ rfd = { version = "0.16", default-features = false, features = ["common-controls
 # `.json` con la `Rete` che abbiamo: un updater che non verifica la firma è un
 # canale per cui chiunque sappia rispondere al posto di GitHub installa un
 # eseguibile sul computer di chi ci si fida.
-tauri-plugin-updater = "2.13"
+#
+# Dalla 2.14 `Update::install` ricontrolla la firma sui byte prima di
+# installarli (`Update::verify`, la stessa di `download`): un pacchetto tenuto in
+# memoria «alla chiusura» si verifica due volte, allo scaricamento e all'uscita.
+# E la sua `minisign-verify` è la 0.3, la stessa che chiede più sotto questo file:
+# `Error::Minisign` incapsula quel tipo, e le prove lo costruiscono.
+tauri-plugin-updater = "2.14"
 # Una sola Rymembra per volta, e il perché sta su `main::una_sola_istanza`: due
 # processi sulla stessa cartella dati sono due mutex della libreria che non si
 # vedono, e due icone nel vassoio di cui una non sta suonando.
@@ -299,8 +305,10 @@ rymembra-android = { path = "../rymembra-android" }
 # di Android con la stessa chiave pubblica dell'updater del computer
 # (`rilasci::verifica_la_firma`). Sul computer la verifica la fa
 # `tauri-plugin-updater`, che porta proprio questo crate: nel `Cargo.lock` non
-# entra nessun pacchetto nuovo, solo la riga che lo lega a questo.
-minisign-verify = "0.2.5"
+# entra nessun pacchetto nuovo, solo la riga che lo lega a questo. La stessa
+# versione del plugin (la 0.3 dalla 2.13.3): due copie sarebbero due tipi
+# `Error` diversi, e `aggiornamenti.rs` non compilerebbe le sue prove.
+minisign-verify = "0.3"
 
 [features]
 # L'interruttore di Jamendo, da qui. Inoltra quello di `rymembra-catalogo`, dove
@@ -316,7 +324,7 @@ jamendo = ["rymembra-catalogo/jamendo"]
 tempfile = "3"
 # La verifica della firma dell'APK si prova anche sul computer: vedi la riga
 # di Android qui sopra. Lo stesso crate, la stessa versione.
-minisign-verify = "0.2.5"
+minisign-verify = "0.3"
 
 [lints]
 workspace = true

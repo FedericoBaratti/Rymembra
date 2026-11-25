@@ -128,7 +128,7 @@ drawn from Google's **Material Icons** — `history`, `queue_music`,
 
 ---
 
-## The list: 610 crates
+## The list: 607 crates
 
 Identical texts are collected once only, with the list of the crates that
 carry them underneath. Anyone looking for a specific crate finds it with
@@ -189,7 +189,6 @@ their reader's search: it appears in its license's group.
 | `cc` | 1.5.1 | MIT OR Apache-2.0 | <https://github.com/rust-lang/cc-rs> |
 | `cesu8` | 1.1.0 | Apache-2.0/MIT | <https://github.com/emk/cesu8-rs> |
 | `cfb` | 0.14.0 | MIT | <https://github.com/mdsteele/rust-cfb> |
-| `cfb` | 0.7.3 | MIT | <https://github.com/mdsteele/rust-cfb> |
 | `cfg_aliases` | 0.2.2 | MIT | <https://github.com/katharostech/cfg_aliases> |
 | `cfg-if` | 1.0.5 | MIT OR Apache-2.0 | <https://github.com/rust-lang/cfg-if> |
 | `chacha20` | 0.10.2 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/stream-ciphers> |
@@ -342,7 +341,6 @@ their reader's search: it appears in its license's group.
 | `imgref` | 1.12.3 | CC0-1.0 OR Apache-2.0 | <https://github.com/kornelski/imgref> |
 | `indexmap` | 1.9.3 | Apache-2.0 OR MIT | <https://github.com/bluss/indexmap> |
 | `indexmap` | 2.14.2 | Apache-2.0 OR MIT | <https://github.com/indexmap-rs/indexmap> |
-| `infer` | 0.19.0 | MIT | <https://github.com/bojand/infer> |
 | `infer` | 0.22.0 | MIT | <https://github.com/bojand/infer> |
 | `inotify` | 0.11.5 | ISC | <https://github.com/hannobraun/inotify-rs> |
 | `inotify-sys` | 0.1.8 | ISC | <https://github.com/hannobraun/inotify-sys> |
@@ -396,7 +394,7 @@ their reader's search: it appears in its license's group.
 | `md-5` | 0.10.6 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/hashes> |
 | `memchr` | 2.8.3 | Unlicense OR MIT | <https://github.com/BurntSushi/memchr> |
 | `mime` | 0.3.17 | MIT OR Apache-2.0 | <https://github.com/hyperium/mime> |
-| `minisign-verify` | 0.2.5 | MIT | <https://github.com/jedisct1/rust-minisign-verify> |
+| `minisign-verify` | 0.3.0 | MIT | <https://github.com/jedisct1/rust-minisign-verify> |
 | `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 | <https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide> |
 | `miniz_oxide` | 0.9.1 | MIT OR Zlib OR Apache-2.0 | <https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide> |
 | `mio` | 1.2.3 | MIT | <https://github.com/tokio-rs/mio> |
@@ -611,7 +609,7 @@ their reader's search: it appears in its license's group.
 | `tauri-plugin-fs` | 2.7.1 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
 | `tauri-plugin-opener` | 2.6.0 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
 | `tauri-plugin-single-instance` | 2.5.0 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
-| `tauri-plugin-updater` | 2.13.0 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
+| `tauri-plugin-updater` | 2.14.1 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/plugins-workspace> |
 | `tauri-runtime` | 2.12.4 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/tauri> |
 | `tauri-runtime-wry` | 2.12.5 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/tauri> |
 | `tauri-utils` | 2.10.4 | Apache-2.0 OR MIT | <https://github.com/tauri-apps/tauri> |
@@ -738,7 +736,6 @@ their reader's search: it appears in its license's group.
 | `zerotrie` | 0.2.5 | Unicode-3.0 | <https://github.com/unicode-org/icu4x> |
 | `zerovec` | 0.11.8 | Unicode-3.0 | <https://github.com/unicode-org/icu4x> |
 | `zerovec-derive` | 0.11.6 | Unicode-3.0 | <https://github.com/unicode-org/icu4x> |
-| `zip` | 4.6.1 | MIT | <https://github.com/zip-rs/zip2.git> |
 | `zip` | 9.8.2 | MIT | <https://github.com/zip-rs/zip2> |
 | `zlib-rs` | 0.6.8 | Zlib | <https://github.com/trifectatechfoundation/zlib-rs> |
 | `zmij` | 1.0.23 | MIT | <https://github.com/dtolnay/zmij> |
@@ -2045,7 +2042,7 @@ limitations under the License.
 - `tauri-plugin-fs 2.7.1`
 - `tauri-plugin-opener 2.6.0`
 - `tauri-plugin-single-instance 2.5.0`
-- `tauri-plugin-updater 2.13.0`
+- `tauri-plugin-updater 2.14.1`
 - `tauri-runtime 2.12.4`
 - `tauri-runtime-wry 2.12.5`
 - `tauri-utils 2.10.4`
@@ -3226,7 +3223,7 @@ DEALINGS IN THE SOFTWARE.
 - `tauri-plugin-dialog 2.8.3`
 - `tauri-plugin-fs 2.7.1`
 - `tauri-plugin-opener 2.6.0`
-- `tauri-plugin-updater 2.13.0`
+- `tauri-plugin-updater 2.14.1`
 - `tauri-runtime 2.12.4`
 - `tauri-runtime-wry 2.12.5`
 - `tauri-utils 2.10.4`
@@ -4196,7 +4193,7 @@ SOFTWARE.
 - `tauri-plugin-fs 2.7.1`
 - `tauri-plugin-opener 2.6.0`
 - `tauri-plugin-single-instance 2.5.0`
-- `tauri-plugin-updater 2.13.0`
+- `tauri-plugin-updater 2.14.1`
 - `@tauri-apps/plugin-dialog 2.8.0`
 
 </details>
@@ -6799,39 +6796,6 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### Text `3ce3e2561c6a` — 2 packages
-
-<details><summary>Which packages</summary>
-
-- `cfb 0.14.0`
-- `cfb 0.7.3`
-
-</details>
-
-```
-MIT License
-
-Copyright (c) 2017 Matthew D. Steele
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
 ### Text `1038b7737a0a` — 2 packages
 
 <details><summary>Which packages</summary>
@@ -7667,39 +7631,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-```
-
-### Text `7804ded9273b` — 2 packages
-
-<details><summary>Which packages</summary>
-
-- `infer 0.19.0`
-- `infer 0.22.0`
-
-</details>
-
-```
-MIT License
-
-Copyright (c) 2019 Bojan
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 ```
 
 ### Text `f68878c9ca61` — 2 packages
@@ -12066,6 +11997,38 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+```
+
+### Text `3ce3e2561c6a` — 1 packages
+
+<details><summary>Which packages</summary>
+
+- `cfb 0.14.0`
+
+</details>
+
+```
+MIT License
+
+Copyright (c) 2017 Matthew D. Steele
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### Text `48513346d335` — 1 packages
@@ -17324,6 +17287,38 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### Text `7804ded9273b` — 1 packages
+
+<details><summary>Which packages</summary>
+
+- `infer 0.22.0`
+
+</details>
+
+```
+MIT License
+
+Copyright (c) 2019 Bojan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### Text `71366a4092ad` — 1 packages
 
 <details><summary>Which packages</summary>
@@ -18836,7 +18831,7 @@ THE SOFTWARE.
 
 <details><summary>Which packages</summary>
 
-- `minisign-verify 0.2.5`
+- `minisign-verify 0.3.0`
 
 </details>
 
@@ -25386,41 +25381,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-```
-
-### Text `04dc52136d82` — 1 packages
-
-<details><summary>Which packages</summary>
-
-- `zip 4.6.1`
-
-</details>
-
-```
-The MIT License (MIT)
-
-Copyright (c) 2014 Mathijs van de Nes
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-Some files in the "tests/data" subdirectory of this repository are under other
-licences; see files named LICENSE.*.txt for details.
 ```
 
 ### Text `1a7d409d5142` — 1 packages
