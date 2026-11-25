@@ -124,6 +124,22 @@ export async function comandoDelPannello(
 export const archivioLink = creaArchivio<LinkLontano | null>(null);
 
 /**
+ * Il link che il dialogo deve mostrare: **il primo vince** (S4-4).
+ *
+ * Una pagina web che lancia `rymembra://collega/…` in sequenza non deve poter
+ * cambiare sotto il dito di chi sta leggendo — stesso nome dichiarato, impronta
+ * diversa: chi ha confrontato l'impronta prima di cliccare ha già deciso sulla
+ * prima. Con un dialogo aperto un altro link si scarta; il nucleo lo sa
+ * (`lontanoLinkDialogo`) e non alza nemmeno la finestra.
+ */
+export function linkDaMostrare(
+  nelDialogo: LinkLontano | null,
+  arrivato: LinkLontano | null,
+): LinkLontano | null {
+  return nelDialogo ?? arrivato;
+}
+
+/**
  * Collegarsi, o mostrare un QR, chiede prima un sì per accendere
  * «Raggiungibile da internet»: il nucleo non lo accende da sé
  * (`lontano.spento`). Con l'interruttore acceso basta: sul telefono il nodo

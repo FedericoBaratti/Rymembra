@@ -1582,6 +1582,9 @@ export const ipc = {
   // Il link aperto da fuori (il QR letto con la fotocamera del sistema) e non
   // ancora preso: una volta sola.
   lontanoLinkInAttesa: () => invoke<string | null>("lontano_link_in_attesa"),
+  // La pagina dice al nucleo se ha un dialogo di collegamento aperto: finché lo è,
+  // un altro link aperto da fuori non lo sostituisce e non alza la finestra (S4-4).
+  lontanoLinkDialogo: (aperto: boolean) => invoke<void>("lontano_link_dialogo", { aperto }),
 
   // La libreria unica e «Scarica qui».
   // «Scarica qui» le righe della libreria che stanno su un altro dispositivo: in coda

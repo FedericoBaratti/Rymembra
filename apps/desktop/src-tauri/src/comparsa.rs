@@ -608,8 +608,14 @@ pub fn secondo_avvio(app: &tauri::AppHandle, argomenti: &[String]) {
             // `argomenti` e `lontano::link_arrivato` — e la finestra, se manca,
             // nasce per mostrargliela: la pagina prende il link rimasto in
             // attesa appena si monta.
-            crate::lontano::link_arrivato(app, &link);
-            vassoio::mostra(app);
+            if crate::lontano::link_arrivato(app, &link) {
+                vassoio::mostra(app);
+            } else {
+                // Scartato (non è un link, o un altro aspetta): non si alza
+                // niente — una pagina web non deve poter togliere il fuoco al
+                // browser a ogni clic (S4-4).
+                nota!("[avvio] un link scartato: la finestra resta com'è");
+            }
         }
     }
 }
