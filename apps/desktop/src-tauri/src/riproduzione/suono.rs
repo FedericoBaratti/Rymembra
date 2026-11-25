@@ -391,6 +391,18 @@ pub async fn eq_preset_elenco(app: Nucleo) -> Esito<Vec<VocePreset>> {
 /// la regola sta in `rymembra_app::playback::salva_preset`, con la sua ragione.
 #[tauri::command]
 pub async fn eq_preset_salva(app: Nucleo, nome: String) -> Esito<bool> {
+    // La curva si legge **sulla corsia del lettore**, la stessa di
+    // `equalizzatore`: un cursore trascinato manda una dozzina di comandi al
+    // secondo, e quelli già in coda dietro un lettore tenuto devono essere
+    // applicati prima che «Salva curva» legga `lettore.eq`. Letta dal pool poteva
+    // passare davanti, e si salvava una curva più vecchia di quella sullo schermo
+    // (S7-4). Sulla corsia solo la lettura, che non aspetta niente: la scrittura
+    // nella libreria sta sul pool, perché un lavoro di corsia fermo sulla
+    // libreria terrebbe indietro anche il volume.
+    let guadagni = super::col_lettore_in_fila(app.clone(), "curva da salvare", |_, stato| {
+        con_lettore(&stato, |lettore| Ok(lettore.eq.guadagni.clone())).map_err(errore)
+    })
+    .await?;
     crate::disparte::comanda("curva salvata", move || {
         let stato = crate::disparte::stato_del_nucleo::<Stato>(&app)?;
         let stato_lettore = crate::disparte::stato_del_nucleo::<StatoLettore>(&app)?;
@@ -398,8 +410,6 @@ pub async fn eq_preset_salva(app: Nucleo, nome: String) -> Esito<bool> {
             .preferenze
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let guadagni = con_lettore(&stato_lettore, |lettore| Ok(lettore.eq.guadagni.clone()))
-            .map_err(errore)?;
         con_libreria(&stato, |libreria| {
             playback::salva_preset(&libreria.connection, &nome, &guadagni)
         })

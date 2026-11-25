@@ -49,6 +49,32 @@
 //! gli altri chiamanti — i tasti multimediali, la sessione, il vassoio — chiamano
 //! dai loro fili.
 //!
+//! # Cosa resta fuori dall'ordine
+//!
+//! Una corsia ordina **solo i comandi che passano da lei**. Restano sul pool, e
+//! fra loro e rispetto alle corsie non hanno nessun ordine (S7-4):
+//!
+//! - **le riprese e i gesti che aprono un file** — `riprendi`, `alterna` quando
+//!   riprende, `prossimo`, `precedente`, `suona`, `radio`, `coda_vai`: non possono
+//!   stare in una corsia, perché aprire un brano da un NAS che dorme dura fino a
+//!   quindici secondi, e la `pausa` dietro di loro aspetterebbe lo stesso tempo. Il
+//!   loro ordine rispetto alla pausa lo tiene `Lettore::pausa_chiesta`, un
+//!   contatore che chi apre un brano legge una volta, prima di aspettare, e porta
+//!   fino alla consegna (S7-1);
+//! - **i gesti sulla coda** — `coda_accoda`, `coda_dopo`, `coda_togli`,
+//!   `coda_riordina`: due premuti durante una scansione aspettano la libreria in
+//!   `voci_da_libreria` e si svegliano nell'ordine che sceglie il sistema. Premuti
+//!   a intervalli umani non si scambiano; solo in una sessione, dove un host che
+//!   preme due «Accoda» di fila con la libreria tenuta per secondi può vederli
+//!   scambiati;
+//! - **i setter delle preferenze** (`latenza`, `dissolvenza`, `spettro_bande_scegli`,
+//!   la normalizzazione…): si mettono in fila sul lucchetto `preferenze`, che dà
+//!   l'esclusione ma non l'ordine. Non arrivano a raffica da un cursore;
+//! - **`eq_preset_salva`** leggeva `lettore.eq` dal pool e poteva passare davanti a
+//!   un `equalizzatore` ancora in coda dietro un lettore tenuto: oggi legge la
+//!   curva **sulla corsia del lettore**, dopo quelli già arrivati, e scrive nella
+//!   libreria dal pool (S7-4).
+//!
 //! # Cosa non promette
 //!
 //! L'ordine vale **dal momento in cui il comando comincia a girare**: Tauri

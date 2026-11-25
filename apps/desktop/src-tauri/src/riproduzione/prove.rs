@@ -1252,3 +1252,23 @@ fn l_avvio_non_apre_il_dispositivo_sul_filo_della_finestra() {
     );
     assert!(avvia.contains("ErrorCode::PlaybackEngineOpening"));
 }
+
+/// S7-4: «Salva curva» legge la curva dalla **corsia del lettore**, la stessa
+/// su cui sta `equalizzatore`. Sul pool la lettura poteva passare davanti a un
+/// `equalizzatore` ancora in coda dietro un lettore tenuto, e si salvava una
+/// curva più vecchia di quella che l'utente ha sotto gli occhi.
+#[test]
+fn salvare_una_curva_legge_l_equalizzatore_dalla_corsia_del_lettore() {
+    let corpo = corpo(include_str!("suono.rs"), "eq_preset_salva").expect("eq_preset_salva");
+    assert!(
+        corpo.contains("col_lettore_in_fila("),
+        "eq_preset_salva legge `lettore.eq` fuori dalla corsia dell'equalizzatore"
+    );
+    // Quel che gira sul pool — la scrittura nella libreria — non rilegge il
+    // lettore: la curva è quella letta sulla corsia.
+    let sul_pool = corpo.split("disparte::comanda(").nth(1).unwrap_or_default();
+    assert!(
+        !sul_pool.contains("con_lettore(") && !sul_pool.contains("lettore.eq"),
+        "eq_preset_salva rilegge il lettore dal pool"
+    );
+}
