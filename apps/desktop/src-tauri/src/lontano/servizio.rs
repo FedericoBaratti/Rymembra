@@ -273,6 +273,14 @@ fn la_copertina_di(stato: &Stato, impronta: &str) -> Result<Risposta, AppError> 
 /// la cornice del protocollo è dimensionata su quella.
 const _: () = assert!(condivisa::MASSIMI_BRANI_ALBUM == MASSIMA_PAGINA);
 
+/// Una copertina servita pesa quanto lo store ne accetta da un altro dispositivo:
+/// chi la riceve la legge al più per quanto la domanda ne chiede
+/// (`Domanda::byte_attesi`), e chi la serve non ne manda di più.
+const _: () = assert!(
+    rymembra_lontano::protocollo::MASSIMA_COPERTINA
+        == rymembra_app::covers::MASSIMO_ESTRANEA as u64
+);
+
 /// Quanti byte e da quando, sul disco: la versione di un file aperto.
 fn come_sta(file: &File) -> Result<(u64, i64), AppError> {
     let metadati = file.metadata().map_err(cambiato)?;
@@ -536,12 +544,23 @@ fn conta_l_ascolto(
         return Ok(None);
     }
     let ascoltato = u64::try_from(arrivato.ascoltato_ms).unwrap_or(0);
+    // Un ascolto non comincia dopo adesso: un orologio avanti lo metterebbe nel
+    // futuro, e `record_play` non lascia tornare indietro «ultimo ascolto» e
+    // l'orologio delle statistiche.
+    let inizio = arrivato.quando_ms.min(adesso);
+    // Lo stesso brano con lo stesso inizio è già in cronologia: lo ha contato un
+    // altro invio, con un'altra chiave. Non è un guasto, e **non** si riscrive:
+    // `record_play` fallirebbe sull'indice unico dopo aver mosso `tracks` e i
+    // contatori, e la chiave si toglierebbe — il conto orario resterebbe a uno, e
+    // un dispositivo che ripete lo stesso ascolto con chiavi nuove avrebbe tre
+    // scritture e una transazione annullata a ogni tentativo, sotto il lucchetto
+    // della libreria, senza freno (reperto S1-6). La chiave resta segnata: conta.
+    if playback::gia_in_cronologia(c, arrivato.brano, inizio)? {
+        return Ok(None);
+    }
     let ascolto = Listen {
         track_id: arrivato.brano,
-        // Un ascolto non comincia dopo adesso: un orologio avanti lo
-        // metterebbe nel futuro, e `record_play` non lascia tornare indietro
-        // «ultimo ascolto» e l'orologio delle statistiche.
-        started_at: arrivato.quando_ms.min(adesso),
+        started_at: inizio,
         listened_ms: ascoltato,
         // Conta con la regola e la durata di qui, non sulla parola dell'altro.
         counts: counts_as_play(ascoltato, u64::try_from(brano.duration_ms).unwrap_or(0)),
@@ -672,6 +691,34 @@ mod prove {
                 .expect("contato")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn un_ascolto_con_lo_stesso_inizio_conta_contro_il_tetto_e_non_riscrive() {
+        // Reperto S1-6: un ascolto per lo stesso brano e lo stesso inizio ma con una
+        // chiave nuova superava `ascolto_nuovo`, apriva una transazione, falliva sull'indice
+        // unico della cronologia e la sua chiave si toglieva: il conto
+        // orario restava a uno, e ogni tentativo costava tre scritture e una
+        // transazione annullata, sotto il lucchetto della libreria, senza freno.
+        let mut c = libreria();
+        let inizio = ADESSO - 5000;
+        conta_l_ascolto(&mut c, &da(), &arrivato("k0", inizio), "qui", ADESSO)
+            .expect("contato")
+            .expect("un ascolto");
+        // Gli altri invii dello stesso ascolto non sono un guasto: sono già
+        // contati. E contano ognuno contro il tetto.
+        for n in 1..ASCOLTI_ALL_ORA {
+            let chiave = format!("k{n}");
+            let esito = conta_l_ascolto(&mut c, &da(), &arrivato(&chiave, inizio), "qui", ADESSO);
+            assert!(matches!(esito, Ok(None)), "il duplicato n. {n}: {esito:?}");
+        }
+        assert_eq!(orologi(&c).2, 1, "contato una volta sola");
+        // Al tetto, e senza scrivere niente: né la chiave, né una transazione.
+        let scritture = c.total_changes();
+        let err =
+            conta_l_ascolto(&mut c, &da(), &arrivato("troppi", inizio), "qui", ADESSO).unwrap_err();
+        assert_eq!(err.code().kind(), ErrorCodeKind::LontanoIrraggiungibile);
+        assert_eq!(c.total_changes(), scritture, "oltre il tetto non si scrive");
     }
 
     /// Una riga del catalogo con ogni testo al massimo di quel che chi riceve

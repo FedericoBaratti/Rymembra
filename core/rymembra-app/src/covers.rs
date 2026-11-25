@@ -53,6 +53,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use image::imageops::FilterType;
@@ -121,6 +122,102 @@ pub const LATO_MASSIMO_DECODIFICA: u32 = 8192;
 /// suona.
 pub const MEMORIA_MASSIMA_DECODIFICA: u64 = 192 * 1024 * 1024;
 
+/// Il lato più lungo, in pixel, di una copertina presa da un altro dispositivo:
+/// 1024.
+///
+/// Un dispositivo vero serve la «media» da [`MAX_LATO_MEDIA`] pixel — o, per
+/// «Ascolta insieme», la piena da [`MAX_LATO`] —: nessuna copertina vera ha
+/// bisogno di più. I limiti dei tag ([`LATO_MASSIMO_DECODIFICA`], 8192) sono
+/// pensati per le copertine dei file di chi ascolta; per i byte di un altro
+/// dispositivo, che non si è scelto e che si decodificano a ogni riga che scorre,
+/// erano una porta aperta: una JPEG progressiva 8192×8192 sta in 0,4 MiB e
+/// costava ~580 MiB (reperto S8-2, misurato). Il lato vale anche da solo.
+pub const LATO_MASSIMO_ESTRANEA: u32 = 1024;
+
+/// Quanta memoria può chiedere la decodifica di una copertina di un altro
+/// dispositivo, in byte: 32 MiB. Una 1024×1024 a quattro canali ne vuole 4: il
+/// resto è margine. Il conto dei pixel non vede i buffer interni dei decoder:
+/// per quelli vale il lato.
+const MEMORIA_MASSIMA_ESTRANEA: u64 = 32 * 1024 * 1024;
+
+/// Quante decodifiche di byte altrui possono andare insieme, in tutto il
+/// processo. Una riga che scorre, una scheda del sistema e «Ascolta insieme»
+/// ne chiedevano una ciascuna — tre per dispositivo e sei dalla finestra — tutte
+/// sul pool bloccante; ora si mettono in fila.
+const DECODIFICHE_ESTRANEE_INSIEME: usize = 2;
+
+/// Le decodifiche di byte altrui in corso e il massimo visto: solo per le prove.
+#[cfg(test)]
+static DECODIFICHE_ESTRANEE: (
+    std::sync::atomic::AtomicUsize,
+    std::sync::atomic::AtomicUsize,
+) = (
+    std::sync::atomic::AtomicUsize::new(0),
+    std::sync::atomic::AtomicUsize::new(0),
+);
+
+/// Quante decodifiche di byte altrui sono in corso adesso, e il lucchetto per
+/// aspettare un posto.
+static POSTI_DI_DECODIFICA: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// Un posto fra le [`DECODIFICHE_ESTRANEE_INSIEME`]: lo si tiene finché si lavora
+/// sull'immagine, e si rende da solo — anche se il decoder cade.
+struct PostoDiDecodifica;
+
+impl PostoDiDecodifica {
+    /// Aspetta un posto libero, e lo prende.
+    fn prendi() -> Self {
+        let (in_corso, avviso) = &POSTI_DI_DECODIFICA;
+        let mut conto = in_corso.lock().unwrap_or_else(PoisonError::into_inner);
+        while *conto >= DECODIFICHE_ESTRANEE_INSIEME {
+            conto = avviso.wait(conto).unwrap_or_else(PoisonError::into_inner);
+        }
+        *conto += 1;
+        Self
+    }
+}
+
+impl Drop for PostoDiDecodifica {
+    fn drop(&mut self) {
+        let (in_corso, avviso) = &POSTI_DI_DECODIFICA;
+        let mut conto = in_corso.lock().unwrap_or_else(PoisonError::into_inner);
+        *conto = conto.saturating_sub(1);
+        drop(conto);
+        avviso.notify_one();
+    }
+}
+
+/// Quanto spazio, al più, occupano nello store le copertine prese da altri
+/// dispositivi: 256 MiB.
+///
+/// Una copertina di un altro dispositivo pesa 30–60 KB (la media da 320 pixel,
+/// ricodificata a 640, più la miniatura): 256 MiB sono **qualche migliaio** di
+/// dischi, più di quanti ne scorra chi guarda la libreria di un altro; con
+/// immagini rumorose da 400 KB — il peggio che un catalogo ostile può servire — ne
+/// bastano seicento, ma non di più: prima, con duecentomila righe e
+/// nessun tetto, riempivano il disco man mano che la libreria scorreva, e niente
+/// le toglieva finché la riga esisteva (reperto S8-9). Oltre il tetto le copertine
+/// nuove **non si salvano**: la riga resta senza immagine finché non si fa posto
+/// (si dimentica un dispositivo, che porta via le sue). La media di una copertina
+/// già salvata si aggiunge, circa un decimo.
+pub const SPAZIO_MASSIMO_ESTRANEE: u64 = 256 * 1024 * 1024;
+
+/// Il tipo di un'immagine dai suoi primi byte: JPEG, PNG o WebP, le sole che una
+/// copertina di un altro dispositivo può essere (decisione D-32). `None` per tutto
+/// il resto: `image` apre anche GIF e BMP, due decoder in più sui byte di un altro.
+#[must_use]
+pub fn tipo_immagine(byte: &[u8]) -> Option<&'static str> {
+    if byte.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if byte.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if byte.starts_with(b"RIFF") && byte.get(8..12) == Some(b"WEBP".as_slice()) {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 /// I limiti con cui ogni immagine di questo modulo si decodifica.
 ///
 /// `Limits` è `#[non_exhaustive]`: si parte da quello senza limiti e si
@@ -134,16 +231,36 @@ fn limiti() -> Limits {
     limiti
 }
 
+/// I limiti con cui si decodifica una copertina di un altro dispositivo: i lati e
+/// la memoria stretti di [`LATO_MASSIMO_ESTRANEA`] e [`MEMORIA_MASSIMA_ESTRANEA`].
+fn limiti_estranee() -> Limits {
+    let mut limiti = Limits::no_limits();
+    limiti.max_image_width = Some(LATO_MASSIMO_ESTRANEA);
+    limiti.max_image_height = Some(LATO_MASSIMO_ESTRANEA);
+    limiti.max_alloc = Some(MEMORIA_MASSIMA_ESTRANEA);
+    limiti
+}
+
 /// Decodifica un'immagine dentro i [`limiti`].
 ///
 /// Una funzione sola per i due posti che decodificano — la ricodifica di
 /// [`CoverStore::store`] e la lettura della tinta — perché due letture con due
 /// politiche sono una porta chiusa e una aperta.
 fn decodifica(byte: &[u8], hash: &str) -> Result<image::DynamicImage, AppError> {
+    decodifica_con(byte, hash, limiti())
+}
+
+/// [`decodifica`] con i limiti che si danno: quelli dei tag, o quelli stretti dei
+/// byte di un altro dispositivo ([`limiti_estranee`]).
+fn decodifica_con(
+    byte: &[u8],
+    hash: &str,
+    limiti: Limits,
+) -> Result<image::DynamicImage, AppError> {
     let mut lettore = ImageReader::new(std::io::Cursor::new(byte))
         .with_guessed_format()
         .map_err(|err| decode_error(hash, &err.to_string()))?;
-    lettore.limits(limiti());
+    lettore.limits(limiti);
     lettore.decode().map_err(|err| match err {
         // Un'immagine troppo grande non è un'immagine rotta, e il diario deve
         // poterle distinguere: la prima vuol dire «questo file ha una copertina
@@ -174,9 +291,10 @@ pub const MASSIMO_ESTRANEA: usize = 1024 * 1024;
 ///
 /// Per «Ascolta insieme»: il membro riceve la copertina di una voce dal PC che
 /// la possiede, e quel che arriva alla finestra non devono essere quei byte
-/// così come sono. Passano dalla stessa porta delle copertine nei tag —
-/// [`decodifica`] dentro i [`limiti`], cioè niente bomba di decompressione — e
-/// ne esce una JPEG nostra, ridotta a [`MAX_LATO`] con la qualità della piena:
+/// così come sono. Passano da [`con_immagine_estranea`] — solo JPEG, PNG o WebP,
+/// al più [`LATO_MASSIMO_ESTRANEA`] pixel letti dall'intestazione, due decodifiche
+/// insieme — e ne esce una JPEG nostra, ridotta a [`MAX_LATO`] con la qualità
+/// della piena:
 /// un formato solo, che il visualizzatore della finestra apre senza sorprese,
 /// e senza i metadati dell'originale (EXIF, profili, commenti), che non sono
 /// affari di chi ascolta.
@@ -192,23 +310,110 @@ pub const MASSIMO_ESTRANEA: usize = 1024 * 1024;
 /// # Errori
 ///
 /// Lo stesso codice di ogni copertina illeggibile (`metadata.tagReadFailed`):
-/// per byte che non sono un'immagine, per un'immagine oltre i limiti di
-/// decodifica, e per più di [`MASSIMO_ESTRANEA`] byte in ingresso — rifiutati
-/// prima di guardarli. Il messaggio dice «copertina estranea» e non
-/// un'impronta: un'impronta di byte altrui nel diario non aiuta nessuno.
+/// per byte che non sono un'immagine, per un'immagine che non è JPEG, PNG o
+/// WebP, per un'immagine oltre i limiti di decodifica, e per più di
+/// [`MASSIMO_ESTRANEA`] byte in ingresso — rifiutati prima di guardarli. Il
+/// messaggio dice «copertina estranea» e non un'impronta: un'impronta di byte
+/// altrui nel diario non aiuta nessuno.
 pub fn ricodifica_estranea(byte: &[u8]) -> Result<Vec<u8>, AppError> {
     const ETICHETTA: &str = "estranea";
+    con_immagine_estranea(byte, ETICHETTA, |immagine| {
+        encode_jpeg(&fit(&immagine, MAX_LATO), QUALITA, ETICHETTA)
+    })
+}
+
+/// Lavora su un'immagine presa da un altro dispositivo, **decodificata** con i
+/// limiti stretti e con un posto fra le [`DECODIFICHE_ESTRANEE_INSIEME`].
+///
+/// L'unica porta da cui i byte di un altro dispositivo arrivano a un decoder, per
+/// [`ricodifica_estranea`] e per [`CoverStore::salva_estranea`]. In ordine, dal
+/// più economico: il peso ([`MASSIMO_ESTRANEA`]), il formato ([`tipo_immagine`]:
+/// solo JPEG, PNG o WebP), i lati dall'**intestazione**, senza decodificare
+/// ([`LATO_MASSIMO_ESTRANEA`]); poi un posto, e la decodifica dentro
+/// [`limiti_estranee`]. Il posto si tiene finché dura `lavoro`, che è la
+/// riduzione e la ricodifica: è lì che sta la memoria.
+fn con_immagine_estranea<T>(
+    byte: &[u8],
+    etichetta: &str,
+    lavoro: impl FnOnce(image::DynamicImage) -> Result<T, AppError>,
+) -> Result<T, AppError> {
     if byte.len() > MASSIMO_ESTRANEA {
         return Err(decode_error(
-            ETICHETTA,
+            etichetta,
             &format!(
                 "{} byte in ingresso, il tetto è {MASSIMO_ESTRANEA}",
                 byte.len()
             ),
         ));
     }
-    let immagine = decodifica(byte, ETICHETTA)?;
-    encode_jpeg(&fit(&immagine, MAX_LATO), QUALITA, ETICHETTA)
+    if tipo_immagine(byte).is_none() {
+        return Err(decode_error(
+            etichetta,
+            "una copertina di un altro dispositivo è un'immagine JPEG, PNG o WebP",
+        ));
+    }
+    let lettore = ImageReader::new(std::io::Cursor::new(byte))
+        .with_guessed_format()
+        .map_err(|err| decode_error(etichetta, &err.to_string()))?;
+    let (larghezza, altezza) = lettore
+        .into_dimensions()
+        .map_err(|err| decode_error(etichetta, &err.to_string()))?;
+    if larghezza > LATO_MASSIMO_ESTRANEA || altezza > LATO_MASSIMO_ESTRANEA {
+        return Err(oltre_i_limiti(
+            etichetta,
+            &format!("{larghezza}×{altezza} pixel, il lato massimo è {LATO_MASSIMO_ESTRANEA}"),
+        ));
+    }
+    let _posto = PostoDiDecodifica::prendi();
+    #[cfg(test)]
+    let _conta = ContaDecodifiche::nuova();
+    // Un decoder che cade su un input ostile non porta con sé chi lo chiama: il
+    // filo delle copertine di «Ascolta insieme», per esempio, ne serve una per
+    // voce, e uno solo che cadesse lascerebbe senza copertina tutte le voci dopo
+    // (reperto S8-7). Il panico si dice come ogni altra copertina illeggibile, e il
+    // posto si rende comunque.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let immagine = decodifica_con(byte, etichetta, limiti_estranee())?;
+        lavoro(immagine)
+    }))
+    .unwrap_or_else(|_| {
+        Err(decode_error(
+            etichetta,
+            "il decoder è caduto su questi byte",
+        ))
+    })
+}
+
+/// Un'immagine troppo grande, detta come la dice [`decodifica`]: non è un'immagine
+/// rotta, e il diario deve poterle distinguere.
+fn oltre_i_limiti(hash: &str, causa: &str) -> AppError {
+    AppError::new(ErrorCode::MetadataTagReadFailed { path: None })
+        .with_detail(format!(
+            "copertina {hash} non decodificabile: oltre i limiti di decodifica"
+        ))
+        .with_cause(causa.to_owned())
+}
+
+#[cfg(test)]
+struct ContaDecodifiche;
+
+#[cfg(test)]
+impl ContaDecodifiche {
+    fn nuova() -> Self {
+        use std::sync::atomic::Ordering;
+        let adesso = DECODIFICHE_ESTRANEE.0.fetch_add(1, Ordering::SeqCst) + 1;
+        DECODIFICHE_ESTRANEE.1.fetch_max(adesso, Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for ContaDecodifiche {
+    fn drop(&mut self) {
+        DECODIFICHE_ESTRANEE
+            .0
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Un'impronta è esadecimale **minuscola**, da 2 a 128 cifre, e nient'altro.
@@ -291,6 +496,10 @@ pub struct StoredCover {
 #[derive(Debug, Clone)]
 pub struct CoverStore {
     root: PathBuf,
+    /// Quanti byte occupano le copertine prese da altri dispositivi; `None`
+    /// finché non si è guardato il disco. Condiviso fra le copie dello store: è
+    /// una sola cosa.
+    estranee: Arc<Mutex<Option<u64>>>,
 }
 
 impl CoverStore {
@@ -299,7 +508,10 @@ impl CoverStore {
         let root = root.into();
         std::fs::create_dir_all(&root)
             .map_err(|err| io_error(&root.display().to_string(), &err))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            estranee: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// La cartella dello store.
@@ -486,6 +698,13 @@ impl CoverStore {
             });
         }
 
+        // Se questa «piena» era quella di un altro dispositivo, ne esce dal conto
+        // delle estranee: i suoi file (e la media di prima) sono ormai di qui.
+        let della_estranea = if segno.exists() {
+            self.byte_dei_file_di(&hash)
+        } else {
+            0
+        };
         let decoded = decodifica(original, &hash)?;
 
         let piena = fit(&decoded, MAX_LATO);
@@ -517,7 +736,9 @@ impl CoverStore {
         scrivi_atomico(&full, &bytes_piena)?;
         // Per ultimo: se si cade prima, il segno resta e la prossima volta si
         // rifà.
-        let _ = std::fs::remove_file(&segno);
+        if std::fs::remove_file(&segno).is_ok() {
+            self.aggiorna_le_estranee(|usato| usato.saturating_sub(della_estranea));
+        }
 
         Ok(StoredCover {
             hash,
@@ -544,8 +765,10 @@ impl CoverStore {
     ///
     /// # Cosa si fida
     ///
-    /// Niente dei byte: passano da [`decodifica`] dentro i [`limiti`], con il
-    /// tetto di [`MASSIMO_ESTRANEA`], e si ricodificano come JPEG nostra. Se
+    /// Niente dei byte: passano da [`con_immagine_estranea`] — il tetto di
+    /// [`MASSIMO_ESTRANEA`], solo JPEG, PNG o WebP, al più
+    /// [`LATO_MASSIMO_ESTRANEA`] pixel dall'intestazione, due decodifiche insieme —
+    /// e si ricodificano come JPEG nostra. Se
     /// qui c'è già una copertina con quell'impronta — locale, o presa prima —
     /// non si tocca: un dispositivo collegato non decide cosa c'è sullo store
     /// di chi l'ha collegato.
@@ -586,26 +809,30 @@ impl CoverStore {
                 already_present: true,
             });
         }
-        if byte.len() > MASSIMO_ESTRANEA {
+        // Lo spazio prima di decodificare: una copertina che non si può tenere
+        // non vale una decodifica.
+        if !self.ha_spazio_per_estranee(u64::try_from(byte.len()).unwrap_or(u64::MAX)) {
             return Err(decode_error(
                 ETICHETTA,
-                &format!(
-                    "{} byte in ingresso, il tetto è {MASSIMO_ESTRANEA}",
-                    byte.len()
-                ),
+                "lo spazio per le copertine degli altri dispositivi è finito",
             ));
         }
-        let immagine = decodifica(byte, ETICHETTA)?;
-        let grande = fit(&immagine, MAX_LATO);
-        let miniatura = fit(&grande, MAX_LATO_MINIATURA);
-        let bytes_piena = encode_jpeg(&grande, QUALITA, ETICHETTA)?;
-        let bytes_miniatura = encode_jpeg(&miniatura, QUALITA_MINIATURA, ETICHETTA)?;
+        let (grande, bytes_piena, bytes_miniatura) =
+            con_immagine_estranea(byte, ETICHETTA, |immagine| {
+                let grande = fit(&immagine, MAX_LATO);
+                let miniatura = fit(&grande, MAX_LATO_MINIATURA);
+                let bytes_piena = encode_jpeg(&grande, QUALITA, ETICHETTA)?;
+                let bytes_miniatura = encode_jpeg(&miniatura, QUALITA_MINIATURA, ETICHETTA)?;
+                Ok((grande, bytes_piena, bytes_miniatura))
+            })?;
         // Il segno prima, la miniatura poi, la piena per ultima: la stessa
         // regola di `store` («piena ⇒ miniatura»), con il segno davanti a
         // tutto, perché una piena senza segno sembrerebbe quella vera.
         scrivi_atomico(&self.percorso_segno(hash), b"")?;
         scrivi_atomico(&self.thumbnail_path_for(hash), &bytes_miniatura)?;
         scrivi_atomico(&piena, &bytes_piena)?;
+        let scritti = u64::try_from(bytes_piena.len() + bytes_miniatura.len()).unwrap_or(u64::MAX);
+        self.aggiorna_le_estranee(|usato| usato.saturating_add(scritti));
         Ok(StoredCover {
             hash: hash.to_owned(),
             width: grande.width(),
@@ -614,6 +841,72 @@ impl CoverStore {
             mime_type: "image/jpeg",
             already_present: false,
         })
+    }
+
+    /// C'è posto, sotto [`SPAZIO_MASSIMO_ESTRANEE`], per altri `byte` di copertine
+    /// prese da altri dispositivi?
+    ///
+    /// La prima volta si guarda il disco — i segni (`<impronta>.lontano`) dicono
+    /// quali copertine vengono da fuori, e se ne sommano i file —; poi il conto
+    /// lo tengono [`CoverStore::salva_estranea`], [`CoverStore::togli_tutte`] e
+    /// [`CoverStore::store`]. Chi vuole chiedere una copertina a un altro
+    /// dispositivo lo chiede prima: è inutile scaricare quel che non si può tenere.
+    #[must_use]
+    pub fn ha_spazio_per_estranee(&self, byte: u64) -> bool {
+        let mut conto = self.estranee.lock().unwrap_or_else(PoisonError::into_inner);
+        let usato = *conto.get_or_insert_with(|| self.byte_delle_estranee_sul_disco());
+        usato.saturating_add(byte) <= SPAZIO_MASSIMO_ESTRANEE
+    }
+
+    /// Cambia il conto delle estranee, se si è già guardato il disco: altrimenti
+    /// la prima volta lo vedrà com'è.
+    fn aggiorna_le_estranee(&self, cambia: impl FnOnce(u64) -> u64) {
+        let mut conto = self.estranee.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(usato) = conto.as_mut() {
+            *usato = cambia(*usato);
+        }
+    }
+
+    /// Quanto pesano sul disco la piena, la media e la miniatura di `hash`.
+    fn byte_dei_file_di(&self, hash: &str) -> u64 {
+        [
+            self.path_for(hash),
+            self.percorso_media(hash),
+            self.thumbnail_path_for(hash),
+        ]
+        .iter()
+        .filter_map(|percorso| std::fs::metadata(percorso).ok())
+        .fold(0, |somma, dati| somma.saturating_add(dati.len()))
+    }
+
+    /// Quanto pesano sul disco le copertine che hanno il segno di quelle prese da
+    /// un altro dispositivo: piena, miniatura e media.
+    fn byte_delle_estranee_sul_disco(&self) -> u64 {
+        let file = self.file_dello_store();
+        let estranee: HashSet<&str> = file
+            .iter()
+            .filter_map(|(percorso, _)| {
+                percorso
+                    .file_name()?
+                    .to_str()?
+                    .strip_suffix(".lontano")
+                    .filter(|hash| e_un_impronta(hash))
+            })
+            .collect();
+        file.iter()
+            .filter(|(percorso, _)| {
+                percorso
+                    .file_name()
+                    .and_then(|nome| nome.to_str())
+                    .and_then(|nome| {
+                        nome.strip_suffix(".t.jpg")
+                            .or_else(|| nome.strip_suffix(".m.jpg"))
+                            .or_else(|| nome.strip_suffix(".jpg"))
+                    })
+                    .is_some_and(|hash| estranee.contains(hash))
+            })
+            .map(|(_, dati)| dati.len())
+            .fold(0, u64::saturating_add)
     }
 
     /// Quanto occupa lo store sul disco: file e byte, miniature comprese.
@@ -669,12 +962,17 @@ impl CoverStore {
                 continue;
             }
             liberato.aggiungi(tolta);
+            let mut tolti = tolta.unwrap_or(0);
             for percorso in [self.percorso_media(hash), self.thumbnail_path_for(hash)] {
-                liberato.aggiungi(togli_file(&percorso));
+                let tolto = togli_file(&percorso);
+                tolti = tolti.saturating_add(tolto.unwrap_or(0));
+                liberato.aggiungi(tolto);
             }
             // Il segno di una copertina presa da fuori non ha peso e non si
-            // conta, ma non deve restare.
-            let _ = std::fs::remove_file(self.percorso_segno(hash));
+            // conta, ma non deve restare; e il suo spazio torna a chi ne ha.
+            if std::fs::remove_file(self.percorso_segno(hash)).is_ok() {
+                self.aggiorna_le_estranee(|usato| usato.saturating_sub(tolti));
+            }
         }
         liberato
     }
@@ -1118,6 +1416,8 @@ fn encode_jpeg(image: &image::DynamicImage, quality: u8, hash: &str) -> Result<V
 )]
 mod tests {
     use super::*;
+
+    mod prove_estranee;
 
     /// Un PNG vero, generato al volo: provare la ricodifica richiede
     /// un'immagine vera, non byte a caso.
@@ -1928,7 +2228,9 @@ mod tests {
     #[test]
     fn una_jpeg_estranea_torna_jpeg_nostra_e_ridotta() {
         let mut jpeg = Vec::new();
-        image::load_from_memory(&png(2000, 1000))
+        // Sotto il lato massimo di una copertina estranea (1024): una più grande
+        // non si decodifica nemmeno, ed è un'altra prova.
+        image::load_from_memory(&png(1000, 500))
             .expect("png di prova")
             .write_to(
                 &mut std::io::Cursor::new(&mut jpeg),

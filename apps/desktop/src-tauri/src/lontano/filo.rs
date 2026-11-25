@@ -44,7 +44,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
@@ -183,6 +183,35 @@ pub(super) enum Posta {
     Ferma(Sender<()>),
 }
 
+impl Posta {
+    /// Si può perdere, a cassetta piena? Sì per quel che il filo rifà da sé: il
+    /// pannello (`Pubblica`, e ogni evento che lo ripubblica), una rilettura che
+    /// nessuno aspetta (a ogni giro il filo rilegge), gli ascolti da mandare (se
+    /// ne accorge `da_riprovare`), la rete che cambia (la prossima prova lo
+    /// ritrova). No per quel che una persona o il nodo non ripeterebbero:
+    /// l'uscita, chi aspetta una rilettura, un dispositivo che non risponde più,
+    /// un QR che non vale più.
+    fn si_puo_perdere(&self) -> bool {
+        match self {
+            Self::Pubblica | Self::CambioDiRete | Self::Ascolti => true,
+            Self::Rileggi { risposta, .. } => risposta.is_none(),
+            Self::Evento(evento) => matches!(evento, Evento::Presente { .. } | Evento::Diario(_)),
+            Self::Ferma(_) => false,
+        }
+    }
+}
+
+/// Quanti messaggi, al più, aspettano nella cassetta del filo: dieci volte quel
+/// che il filo smaltisce in un giro di lavoro vero. Oltre, i messaggi che si
+/// possono rifare si perdono (e si contano), e quelli che non si possono rifare
+/// aspettano il loro posto: vedi [`Comune::sveglia`].
+pub(super) const CAPACITA_CASSETTA: usize = 512;
+
+/// La cassetta del filo, con il suo limite.
+pub(super) fn nuova_cassetta() -> (SyncSender<Posta>, Receiver<Posta>) {
+    std::sync::mpsc::sync_channel(CAPACITA_CASSETTA)
+}
+
 /// Quel che il filo condivide con i comandi e con l'ospite.
 pub(super) struct Comune {
     /// Il nodo, quando è acceso. In un `Arc` perché un comando lo usa senza
@@ -236,11 +265,14 @@ pub(super) struct Comune {
     /// recente vince). Solo il telefono lo alza.
     pub spegnere: AtomicBool,
     /// La cassetta del filo.
-    pub posta: Sender<Posta>,
+    pub posta: SyncSender<Posta>,
+    /// Quanti messaggi si sono persi, a cassetta piena, dall'ultima volta che il
+    /// filo l'ha detto.
+    scartate: AtomicU64,
 }
 
 impl Comune {
-    pub(super) fn nuovo(posta: Sender<Posta>) -> Self {
+    pub(super) fn nuovo(posta: SyncSender<Posta>) -> Self {
         Self {
             nodo: Mutex::new(None),
             associati: RwLock::new(HashSet::new()),
@@ -260,6 +292,7 @@ impl Comune {
             scrittore: AtomicBool::new(false),
             spegnere: AtomicBool::new(false),
             posta,
+            scartate: AtomicU64::new(0),
         }
     }
 
@@ -375,8 +408,33 @@ impl Comune {
         self.in_volo.load(Ordering::Relaxed) > 0
     }
 
+    /// Mette `posta` nella cassetta del filo, e **non aspetta mai**: chi chiama è
+    /// spesso un filo della rete (`Ospite::evento`), o il filo stesso
+    /// (`scrivi_il_registro`), e uno che aspettasse una cassetta piena si
+    /// bloccherebbe da solo.
+    ///
+    /// A cassetta piena — il filo non smaltisce, perché un pari insiste o perché è
+    /// occupato — quel che si può rifare si perde e si conta
+    /// ([`Posta::si_puo_perdere`]: il filo lo dice nel diario); quel che non si può
+    /// rifare — «Fermati», chi aspetta una rilettura, un dispositivo che non
+    /// risponde più — lo mette un filo a parte, che aspetta il suo posto
+    /// (reperto S1-5).
     pub(super) fn sveglia(&self, posta: Posta) {
-        let _ = self.posta.send(posta);
+        match self.posta.try_send(posta) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+            Err(TrySendError::Full(posta)) => {
+                if posta.si_puo_perdere() {
+                    self.scartate.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                let cassetta = self.posta.clone();
+                let _ = std::thread::Builder::new()
+                    .name("lontano-posta".to_owned())
+                    .spawn(move || {
+                        let _ = cassetta.send(posta);
+                    });
+            }
+        }
     }
 }
 
@@ -967,6 +1025,10 @@ impl Filo {
                 .copied()
                 .fold(prossimo_giro, Instant::min);
             let posta = cassetta.recv_timeout(scadenza.saturating_duration_since(Instant::now()));
+            let perse = self.comune.scartate.swap(0, Ordering::Relaxed);
+            if perse > 0 {
+                nota!("[lontano] la cassetta del filo era piena: {perse} messaggi persi");
+            }
             self.finisce_la_grazia();
             // Anche con la posta che arriva fitta il giro non salta.
             if Instant::now() >= prossimo_giro {
@@ -1655,7 +1717,7 @@ mod prove {
         let c = &db.connection;
         let perso = chiave_finta('a');
         collega(c, &perso);
-        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let (posta, _cassetta) = nuova_cassetta();
         let comune = Comune::nuovo(posta);
         let mut letto = None;
         assert!(tieni_la_lettura(&comune, &mut letto, leggi(c), 0));
@@ -1764,7 +1826,7 @@ mod prove {
         let c = &db.connection;
         let perso = chiave_finta('a');
         collega(c, &perso);
-        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let (posta, _cassetta) = nuova_cassetta();
         let comune = Comune::nuovo(posta);
         let mut letto = None;
         assert!(tieni_la_lettura(
@@ -1829,7 +1891,7 @@ mod prove {
         let c = &db.connection;
         let altro = chiave_finta('d');
         collega(c, &altro);
-        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let (posta, _cassetta) = nuova_cassetta();
         let comune = Comune::nuovo(posta);
         let mut letto = None;
         assert!(tieni_la_lettura(&comune, &mut letto, leggi(c), 0));
@@ -1885,7 +1947,7 @@ mod prove {
         let c = &db.connection;
         let chiave = chiave_finta('f');
         collega(c, &chiave);
-        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let (posta, _cassetta) = nuova_cassetta();
         let comune = Comune::nuovo(posta);
         comune.registra(&chiave, Modifica::Revoca);
         let in_scrittura = comune.da_scrivere();
@@ -2039,5 +2101,77 @@ mod prove {
             rymembra_domain::errors::ErrorCodeKind::LontanoSpento,
             "chi lo tiene ancora lo trova spento"
         );
+    }
+
+    #[test]
+    fn la_cassetta_del_filo_ha_un_limite_e_chi_scrive_non_aspetta() {
+        // Reperto S1-5: la cassetta era un `channel()` senza limite, e un pari che
+        // faceva dire al nodo mille cose in un secondo la faceva crescere finché il
+        // filo non smaltiva. Chi scrive sta su un filo della rete: non aspetta mai.
+        let (posta, cassetta) = nuova_cassetta();
+        let comune = Comune::nuovo(posta);
+        let inizio = Instant::now();
+        for n in 0..(CAPACITA_CASSETTA * 10) {
+            comune.sveglia(Posta::Evento(Evento::Diario(format!("riga {n}"))));
+        }
+        assert!(
+            inizio.elapsed() < Duration::from_secs(5),
+            "chi scrive aspetta il filo: {:?}",
+            inizio.elapsed()
+        );
+        let arrivati = cassetta.try_iter().count();
+        assert!(
+            arrivati <= CAPACITA_CASSETTA,
+            "{arrivati} messaggi in una cassetta da {CAPACITA_CASSETTA}"
+        );
+        // Quel che non è entrato si è contato, e il filo lo dice.
+        assert_eq!(
+            comune.scartate.load(Ordering::Relaxed),
+            u64::try_from(CAPACITA_CASSETTA * 10 - arrivati).unwrap()
+        );
+    }
+
+    #[test]
+    fn una_posta_che_non_si_puo_rifare_arriva_anche_con_la_cassetta_piena() {
+        // «Fermati», e chi aspetta una rilettura, non si perdono: chi scrive non
+        // aspetta (un filo a parte aspetta il suo posto), e il filo li trova.
+        let (posta, cassetta) = nuova_cassetta();
+        let comune = Comune::nuovo(posta);
+        for _ in 0..(CAPACITA_CASSETTA * 2) {
+            comune.sveglia(Posta::Pubblica);
+        }
+        let (fermato, _) = std::sync::mpsc::channel::<()>();
+        let (riletto, _) = std::sync::mpsc::channel::<()>();
+        let inizio = Instant::now();
+        comune.sveglia(Posta::Ferma(fermato));
+        comune.sveglia(Posta::Rileggi {
+            risposta: Some(riletto),
+            subito: true,
+        });
+        assert!(inizio.elapsed() < Duration::from_secs(2), "non aspetta");
+        let (mut ferma, mut rilegge) = (false, false);
+        let fine = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < fine && !(ferma && rilegge) {
+            match cassetta.recv_timeout(Duration::from_millis(200)) {
+                Ok(Posta::Ferma(_)) => ferma = true,
+                Ok(Posta::Rileggi {
+                    risposta: Some(_), ..
+                }) => rilegge = true,
+                _ => {}
+            }
+        }
+        assert!(ferma, "il «Fermati» non è arrivato");
+        assert!(rilegge, "la rilettura di chi aspetta non è arrivata");
+    }
+
+    #[test]
+    fn una_cassetta_senza_filo_non_blocca_e_non_cade() {
+        // Il filo è uscito: chi scrive trova la cassetta chiusa, e va avanti.
+        let (posta, cassetta) = nuova_cassetta();
+        let comune = Comune::nuovo(posta);
+        drop(cassetta);
+        for _ in 0..(CAPACITA_CASSETTA * 3) {
+            comune.sveglia(Posta::Pubblica);
+        }
     }
 }

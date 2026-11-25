@@ -86,8 +86,8 @@ use crate::errori::{chiave, da_testo, dal_rifiuto, errore, inatteso, irraggiungi
 use crate::flusso::Flusso;
 use crate::protocollo::{
     ALPN_ASSOCIA, ALPN_INSIEME, ALPN_LONTANO, Associa, Domanda, MASSIMA_ASSOCIA, MASSIMA_DOMANDA,
-    MASSIMA_TESTA, MASSIMO_PEZZO, Presentazione, Presenza, Risposta, SCRITTURE_AL_MINUTO, Testa,
-    cornice, lunghezza_entro, valore_entro,
+    MASSIMA_TESTA, Presentazione, Presenza, Risposta, SCRITTURE_AL_MINUTO, Testa, cornice,
+    lunghezza_entro, testa_entro, valore_entro,
 };
 
 /// Quanto vale un QR.
@@ -119,6 +119,33 @@ pub const ATTESA_CONNESSIONE: Duration = Duration::from_secs(15);
 /// Domande servite insieme per ogni dispositivo.
 pub const DOMANDE_INSIEME: usize = 8;
 
+/// Annunci di presenza serviti al minuto per ogni dispositivo.
+///
+/// Un dispositivo vero ne manda uno a ogni connessione e uno a ogni cambio di
+/// quel che dice di sé (la sessione di «Ascolta insieme» che comincia o finisce):
+/// qualche volta al giorno. Ogni annuncio che passa è un evento per il filo del
+/// collegamento, che ricompone il pannello e lo manda alla finestra, e uno che
+/// ne manda a migliaia lo teneva occupato (reperto S1-5). Oltre il tetto chi
+/// manda sente `lontano.irraggiungibile`, e al filo non arriva niente: la
+/// connessione resta com'è.
+pub const ANNUNCI_AL_MINUTO: usize = 30;
+
+/// Domande sbagliate — che non si leggono, o che non arrivano — tollerate al
+/// minuto da ogni dispositivo.
+///
+/// Oltre, il dispositivo si **ignora** finché il suo conto del minuto non scende:
+/// i suoi flussi nuovi si chiudono senza leggerli e senza prendere un posto. Non
+/// si scollega: un dispositivo vero con un guasto, o una versione che sbaglia, si
+/// rimette a posto da sé quando passa il minuto, e chi ha il cancello non perde la
+/// connessione per un periodo storto.
+pub const SBAGLIATE_AL_MINUTO: usize = 30;
+
+/// Righe di diario che il nodo concede in un minuto, in tutto: oltre, si conta e
+/// si dice quante se ne sono omesse alla prossima. Il diario ruota a sei
+/// mebibyte (3 file da 2): senza un tetto, domande che cadono a migliaia ne
+/// cancellavano tutta la storia in pochi secondi (reperto S1-5).
+pub const RIGHE_DI_DIARIO_AL_MINUTO: usize = 20;
+
 /// Connessioni vive tenute per ogni dispositivo, in entrata e in uscita, della
 /// libreria e di «Ascolta insieme»: oltre, la più vecchia si chiude.
 ///
@@ -136,8 +163,33 @@ pub const PRIMA_PAUSA: Duration = Duration::from_secs(5);
 /// l'accensione, senza tenere sveglio il telefono a vuoto.
 pub const ULTIMA_PAUSA: Duration = Duration::from_secs(5 * 60);
 
-/// Quanto può pesare una risposta di byte: un pezzo, o una copertina grande.
-const MASSIMI_BYTE: u64 = 4 * MASSIMO_PEZZO;
+/// Quanto si aspetta che l'altro lasci scrivere un pezzo di risposta (e di
+/// qualunque cornice): la scadenza è di **ogni** pezzo da [`PEZZO_DI_SCRITTURA`]
+/// byte, non della risposta intera, perché una risposta lunga a un dispositivo
+/// lento non è un dispositivo che non legge. Un pezzo che non passa in tanto
+/// tempo vuol dire che l'altro non sta leggendo — la finestra di flusso è piena
+/// — e il posto che serve la risposta non si tiene più (reperto S1-7).
+#[cfg(not(test))]
+const ATTESA_SCRITTURA: Duration = Duration::from_secs(30);
+
+/// Nelle prove, due secondi: il suite non cresce di minuti.
+#[cfg(test)]
+const ATTESA_SCRITTURA: Duration = Duration::from_secs(2);
+
+/// Quanti byte si danno al flusso per volta, ognuno con la sua
+/// [`ATTESA_SCRITTURA`].
+const PEZZO_DI_SCRITTURA: usize = 64 * 1024;
+
+/// Quanto si aspetta che chi bussa a `rymembra/associa/1` apra il flusso della
+/// sua domanda, dopo la stretta di mano: come la lettura della domanda, che ha
+/// lo stesso tetto. Senza, ogni connessione senza un flusso teneva un compito
+/// per i duecento secondi dell'associazione intera (reperto S1-11).
+#[cfg(not(test))]
+const ATTESA_FLUSSO_ASSOCIA: Duration = Duration::from_secs(10);
+
+/// Nelle prove, un secondo.
+#[cfg(test)]
+const ATTESA_FLUSSO_ASSOCIA: Duration = Duration::from_secs(1);
 
 /// Il motivo con cui si chiude chi non è associato.
 const CHIUSA_NON_ASSOCIATO: &[u8] = b"lontano.nonAssociato";
@@ -365,6 +417,15 @@ struct Condiviso {
     /// Le scritture servite nell'ultimo minuto, per chi le ha fatte: vedi
     /// [`SCRITTURE_AL_MINUTO`].
     scritture: Mutex<HashMap<EndpointId, VecDeque<Instant>>>,
+    /// Gli annunci di presenza serviti nell'ultimo minuto, per chi li ha fatti:
+    /// vedi [`ANNUNCI_AL_MINUTO`].
+    annunci: Mutex<HashMap<EndpointId, VecDeque<Instant>>>,
+    /// Le domande sbagliate dell'ultimo minuto, per chi le ha fatte: vedi
+    /// [`SBAGLIATE_AL_MINUTO`].
+    sbagliate: Mutex<HashMap<EndpointId, VecDeque<Instant>>>,
+    /// Le righe di diario date nell'ultimo minuto, e quante se ne sono omesse
+    /// dall'ultima volta: vedi [`RIGHE_DI_DIARIO_AL_MINUTO`].
+    righe_di_diario: Mutex<(VecDeque<Instant>, usize)>,
     /// Sveglia i compiti della presenza: un cambio di rete, un dispositivo
     /// che si è collegato da sé.
     sveglia: Notify,
@@ -466,6 +527,8 @@ impl Condiviso {
         chiave(&self.posti).remove(&pari);
         chiave(&self.capacita).remove(&pari);
         chiave(&self.scritture).remove(&pari);
+        chiave(&self.annunci).remove(&pari);
+        chiave(&self.sbagliate).remove(&pari);
         for conn in sue {
             conn.close(VarInt::from_u32(1), CHIUSA_NON_ASSOCIATO);
         }
@@ -505,21 +568,57 @@ impl Condiviso {
     /// Una scrittura in più da `da`: `false` oltre il suo tetto
     /// ([`SCRITTURE_AL_MINUTO`]). Gli altri non ne risentono.
     fn scrittura_ammessa(&self, da: EndpointId) -> bool {
-        let mut scritture = chiave(&self.scritture);
+        ammessa_al_minuto(&self.scritture, da, SCRITTURE_AL_MINUTO)
+    }
+
+    /// Un annuncio in più da `da`: `false` oltre il suo tetto
+    /// ([`ANNUNCI_AL_MINUTO`]). Gli altri non ne risentono.
+    fn annuncio_ammesso(&self, da: EndpointId) -> bool {
+        ammessa_al_minuto(&self.annunci, da, ANNUNCI_AL_MINUTO)
+    }
+
+    /// `da` ha fatto una domanda sbagliata: se ne prende nota, e dopo
+    /// [`SBAGLIATE_AL_MINUTO`] si ignora per un po' ([`Condiviso::in_castigo`]).
+    fn sbagliata(&self, da: EndpointId) {
+        let mut sbagliate = chiave(&self.sbagliate);
         let adesso = Instant::now();
-        let minuto = Duration::from_secs(60);
-        let sue = scritture.entry(da).or_default();
-        while sue
-            .front()
-            .is_some_and(|quando| adesso.duration_since(*quando) > minuto)
-        {
-            sue.pop_front();
-        }
-        if sue.len() >= SCRITTURE_AL_MINUTO {
-            return false;
-        }
+        let sue = sbagliate.entry(da).or_default();
+        pota(sue, adesso);
         sue.push_back(adesso);
-        true
+    }
+
+    /// `da` sbaglia troppe domande: finché il suo conto del minuto non scende,
+    /// non si ascolta. Non si scollega.
+    fn in_castigo(&self, da: EndpointId) -> bool {
+        let mut sbagliate = chiave(&self.sbagliate);
+        let Some(sue) = sbagliate.get_mut(&da) else {
+            return false;
+        };
+        pota(sue, Instant::now());
+        sue.len() >= SBAGLIATE_AL_MINUTO
+    }
+
+    /// Una riga di diario, se il tetto del minuto lo concede
+    /// ([`RIGHE_DI_DIARIO_AL_MINUTO`]); altrimenti si conta, e la prossima che
+    /// passa dice quante se ne sono perse.
+    fn diario(&self, testo: String) {
+        let omesse = {
+            let (date, omesse) = &mut *chiave(&self.righe_di_diario);
+            let adesso = Instant::now();
+            pota(date, adesso);
+            if date.len() >= RIGHE_DI_DIARIO_AL_MINUTO {
+                *omesse = omesse.saturating_add(1);
+                return;
+            }
+            date.push_back(adesso);
+            std::mem::take(omesse)
+        };
+        if omesse > 0 {
+            self.evento(Evento::Diario(format!(
+                "[lontano] altre {omesse} righe di diario omesse: troppe in un minuto"
+            )));
+        }
+        self.evento(Evento::Diario(testo));
     }
 
     fn indirizzo_di(&self, pari: EndpointId) -> EndpointAddr {
@@ -602,6 +701,35 @@ impl Condiviso {
     }
 }
 
+/// Toglie da `date` gli istanti di più di un minuto fa.
+fn pota(date: &mut VecDeque<Instant>, adesso: Instant) {
+    let minuto = Duration::from_secs(60);
+    while date
+        .front()
+        .is_some_and(|quando| adesso.duration_since(*quando) > minuto)
+    {
+        date.pop_front();
+    }
+}
+
+/// Una cosa in più da `da` nell'ultimo minuto: `false` oltre `tetto`, e allora
+/// non si conta — un rifiuto non allunga l'attesa.
+fn ammessa_al_minuto(
+    registro: &Mutex<HashMap<EndpointId, VecDeque<Instant>>>,
+    da: EndpointId,
+    tetto: usize,
+) -> bool {
+    let mut registro = chiave(registro);
+    let adesso = Instant::now();
+    let sue = registro.entry(da).or_default();
+    pota(sue, adesso);
+    if sue.len() >= tetto {
+        return false;
+    }
+    sue.push_back(adesso);
+    true
+}
+
 /// Il nodo. Vedi il `//!`.
 pub struct Nodo {
     runtime: Option<tokio::runtime::Runtime>,
@@ -648,6 +776,9 @@ impl Nodo {
             noti: Mutex::new(HashMap::new()),
             capacita: Mutex::new(HashMap::new()),
             scritture: Mutex::new(HashMap::new()),
+            annunci: Mutex::new(HashMap::new()),
+            sbagliate: Mutex::new(HashMap::new()),
+            righe_di_diario: Mutex::new((VecDeque::new(), 0)),
             sveglia: Notify::new(),
             annullo: Notify::new(),
             vivo: Arc::new(AtomicBool::new(true)),
@@ -1318,7 +1449,15 @@ async fn connessione(
 async fn servi(condiviso: &Arc<Condiviso>, conn: &Connection) {
     let da = conn.remote_id();
     let posti = condiviso.posti_di(da);
-    while let Ok((invio, ricevi)) = conn.accept_bi().await {
+    while let Ok((mut invio, mut ricevi)) = conn.accept_bi().await {
+        // Chi insiste con domande sbagliate non si ascolta per un po': il flusso
+        // si chiude senza leggerlo e senza prendere un posto. Non si scollega
+        // (reperto S1-5).
+        if condiviso.in_castigo(da) {
+            let _ = invio.reset(VarInt::from_u32(0));
+            let _ = ricevi.stop(VarInt::from_u32(0));
+            continue;
+        }
         let Ok(posto) = Arc::clone(&posti).acquire_owned().await else {
             break;
         };
@@ -1328,10 +1467,10 @@ async fn servi(condiviso: &Arc<Condiviso>, conn: &Connection) {
             if let Err(guasto) = rispondi_a(&condiviso, da, invio, ricevi).await {
                 // Il codice e basta: né la chiave dell'altro né la causa, che
                 // per un guasto di rete può portare un indirizzo.
-                condiviso.evento(Evento::Diario(format!(
+                condiviso.diario(format!(
                     "[lontano] una domanda non ha avuto risposta codice={}",
                     guasto.code().kind().code()
-                )));
+                ));
             }
         });
     }
@@ -1345,9 +1484,24 @@ async fn rispondi_a(
     mut ricevi: RecvStream,
 ) -> Result<(), AppError> {
     let domanda: Domanda =
-        tokio::time::timeout(Duration::from_secs(30), leggi(&mut ricevi, MASSIMA_DOMANDA))
+        match tokio::time::timeout(Duration::from_secs(30), leggi(&mut ricevi, MASSIMA_DOMANDA))
             .await
-            .map_err(|_| protocollo("la domanda non arriva"))??;
+        {
+            Ok(Ok(domanda)) => domanda,
+            // Una domanda che non si legge — troppo lunga, non JSON, di un tipo
+            // sbagliato — o che non arriva è una domanda sbagliata; un flusso
+            // che l'altro annulla (la pagina che si chiude) no.
+            Ok(Err(guasto)) => {
+                if guasto.code().kind() == ErrorCodeKind::LontanoProtocollo {
+                    condiviso.sbagliata(da);
+                }
+                return Err(guasto);
+            }
+            Err(_) => {
+                condiviso.sbagliata(da);
+                return Err(protocollo("la domanda non arriva"));
+            }
+        };
     // Il cancello a ogni domanda, non solo quando la connessione si apre: un
     // dispositivo dimenticato non legge più niente nemmeno sulle connessioni
     // che aveva già, e chi esce le perde tutte. Anche la presenza: chi non è
@@ -1365,6 +1519,14 @@ async fn rispondi_a(
     // sente `lontano.irraggiungibile`, tiene la scrittura in coda e riprova.
     if domanda.e_una_scrittura() && !condiviso.scrittura_ammessa(da) {
         let esito = Err(irraggiungibile("troppe scritture da questo dispositivo"));
+        scrivi_risposta(&mut invio, esito).await?;
+        return Ok(());
+    }
+    // E gli annunci: ognuno che passa è un evento per il filo del collegamento
+    // (reperto S1-5). Chi sente il rifiuto non riprova da sé: manda un annuncio
+    // quando cambia, non a raffica.
+    if matches!(domanda, Domanda::Annuncio(_)) && !condiviso.annuncio_ammesso(da) {
+        let esito = Err(irraggiungibile("troppi annunci da questo dispositivo"));
         scrivi_risposta(&mut invio, esito).await?;
         return Ok(());
     }
@@ -1397,10 +1559,10 @@ async fn rispondi_a(
     };
     let esito = esito.inspect_err(|guasto| {
         if guasto.code().kind().domain() != Domain::Lontano {
-            condiviso.evento(Evento::Diario(format!(
+            condiviso.diario(format!(
                 "[lontano] una domanda è caduta codice={}",
                 guasto.code().kind().code()
-            )));
+            ));
         }
     });
     scrivi_risposta(&mut invio, esito).await?;
@@ -1434,7 +1596,7 @@ async fn scrivi_risposta(
                 MASSIMA_TESTA,
             )
             .await?;
-            invio.write_all(&byte).await.map_err(irraggiungibile)?;
+            scrivi_grezzo(invio, &byte).await?;
         }
         Ok(Risposta::Presenza(presenza)) => {
             scrivi(invio, &Testa::Presenza(presenza), MASSIMA_TESTA).await?;
@@ -1466,19 +1628,22 @@ async fn scrivi_risposta(
 /// Una domanda su una connessione già aperta.
 async fn chiedi_su(conn: &Connection, domanda: Domanda) -> Result<Risposta, AppError> {
     let (mut invio, mut ricevi) = conn.open_bi().await.map_err(|e| perso(conn, e))?;
+    // Quanti byte può avere la risposta: quelli che si chiedono, e non di più.
+    let byte_attesi = domanda.byte_attesi();
     // Il tetto di chi la leggerà: oltre, qui si sa subito perché.
     scrivi(&mut invio, &domanda, MASSIMA_DOMANDA)
         .await
         .map_err(|err| chiusa_perche(conn).unwrap_or(err))?;
     let _ = invio.finish();
-    leggi_risposta(&mut ricevi)
+    leggi_risposta(&mut ricevi, byte_attesi)
         .await
         .map_err(|err| chiusa_perche(conn).unwrap_or(err))
 }
 
-/// Legge la risposta: la testa, e per dei byte i byte.
-async fn leggi_risposta(ricevi: &mut RecvStream) -> Result<Risposta, AppError> {
-    match leggi::<Testa>(ricevi, MASSIMA_TESTA).await? {
+/// Legge la risposta: la testa, e per dei byte i byte — al più `byte_attesi`, che
+/// è quanto la domanda ne chiedeva ([`Domanda::byte_attesi`]).
+async fn leggi_risposta(ricevi: &mut RecvStream, byte_attesi: u64) -> Result<Risposta, AppError> {
+    match leggi_testa(ricevi, MASSIMA_TESTA).await? {
         // Come l'annuncio (`Domanda::nei_tetti`): quel che l'altro dice di sé
         // arriva al pannello solo nei tetti.
         Testa::Presenza(presenza) => Ok(Risposta::Presenza(presenza.nei_tetti())),
@@ -1489,8 +1654,12 @@ async fn leggi_risposta(ricevi: &mut RecvStream) -> Result<Risposta, AppError> {
             totale,
             versione,
         } => {
-            if lunghezza > MASSIMI_BYTE {
-                return Err(protocollo(format!("{lunghezza} byte in una risposta")));
+            // Prima di allocare e di leggere: un pari che ne dice di più di quanti
+            // se ne sono chiesti non li fa scaricare (reperto S8-8).
+            if lunghezza > byte_attesi {
+                return Err(protocollo(format!(
+                    "{lunghezza} byte in una risposta che ne aspettava al più {byte_attesi}"
+                )));
             }
             let mut byte = vec![0_u8; usize::try_from(lunghezza).map_err(protocollo)?];
             ricevi
@@ -1515,13 +1684,47 @@ async fn scrivi(
     tetto: usize,
 ) -> Result<(), AppError> {
     let byte = cornice(valore, tetto)?;
-    invio.write_all(&byte).await.map_err(irraggiungibile)
+    scrivi_grezzo(invio, &byte).await
+}
+
+/// Dà `byte` al flusso a pezzi di [`PEZZO_DI_SCRITTURA`], ognuno con la sua
+/// [`ATTESA_SCRITTURA`]: se l'altro non legge e la finestra del flusso si
+/// riempie, il pezzo non passa, e il flusso si abbandona invece di tenere per
+/// sempre chi lo serve (reperto S1-7).
+async fn scrivi_grezzo(invio: &mut SendStream, byte: &[u8]) -> Result<(), AppError> {
+    for pezzo in byte.chunks(PEZZO_DI_SCRITTURA) {
+        match tokio::time::timeout(ATTESA_SCRITTURA, invio.write_all(pezzo)).await {
+            Ok(scritto) => scritto.map_err(irraggiungibile)?,
+            Err(_) => {
+                let _ = invio.reset(VarInt::from_u32(0));
+                return Err(irraggiungibile("l'altro dispositivo non legge la risposta"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Legge una cornice da un flusso: al più `tetto` byte di JSON aperto, che
 /// chi legge sceglie secondo cosa si aspetta e da chi (vedi
 /// `protocollo::MASSIMA_ASSOCIA`).
 async fn leggi<T: DeserializeOwned>(ricevi: &mut RecvStream, tetto: usize) -> Result<T, AppError> {
+    let (corpo, compressa) = leggi_il_corpo(ricevi, tetto).await?;
+    valore_entro(&corpo, compressa, tetto)
+}
+
+/// Come [`leggi`], per la testa di una risposta: ha la sua porta, con i suoi
+/// tetti (vedi [`testa_entro`]).
+async fn leggi_testa(ricevi: &mut RecvStream, tetto: usize) -> Result<Testa, AppError> {
+    let (corpo, compressa) = leggi_il_corpo(ricevi, tetto).await?;
+    testa_entro(&corpo, compressa, tetto)
+}
+
+/// Il corpo di una cornice, com'è sul filo, e se è compresso. La lunghezza si
+/// guarda sulla testa **prima** di allocare il corpo.
+async fn leggi_il_corpo(
+    ricevi: &mut RecvStream,
+    tetto: usize,
+) -> Result<(Vec<u8>, bool), AppError> {
     let mut testa = [0_u8; 4];
     ricevi
         .read_exact(&mut testa)
@@ -1533,7 +1736,7 @@ async fn leggi<T: DeserializeOwned>(ricevi: &mut RecvStream, tetto: usize) -> Re
         .read_exact(&mut corpo)
         .await
         .map_err(irraggiungibile)?;
-    valore_entro(&corpo, compressa, tetto)
+    Ok((corpo, compressa))
 }
 
 /// Il guasto di un flusso, detto col motivo della chiusura se l'altro ha
@@ -1594,10 +1797,16 @@ impl ProtocolHandler for Associazione {
         )
         .await;
         if let Ok(Err(guasto)) = esito {
-            condiviso.evento(Evento::Diario(format!(
+            // Un'associazione che non è andata si chiude: non resta in piedi una
+            // connessione che nessuno serve più.
+            conn.close(
+                VarInt::from_u32(1),
+                ErrorCodeKind::LontanoProtocollo.code().as_bytes(),
+            );
+            condiviso.diario(format!(
                 "[lontano] un'associazione non è andata codice={}",
                 guasto.code().kind().code()
-            )));
+            ));
         }
         Ok(())
     }
@@ -1608,7 +1817,12 @@ async fn associa(
     conn: &Connection,
     da: EndpointId,
 ) -> Result<(), AppError> {
-    let (mut invio, mut ricevi) = conn.accept_bi().await.map_err(irraggiungibile)?;
+    // Chi bussa apre il flusso della sua domanda subito: uno che non lo apre non
+    // tiene un compito per tutta l'associazione (reperto S1-11).
+    let (mut invio, mut ricevi) = tokio::time::timeout(ATTESA_FLUSSO_ASSOCIA, conn.accept_bi())
+        .await
+        .map_err(|_| protocollo("la connessione di associazione non apre un flusso"))?
+        .map_err(irraggiungibile)?;
     // Prima del gettone, da uno che non si conosce: il tetto
     // dell'associazione, non quello di tutte le cornici (reperto R15-1).
     let domanda: Associa =
@@ -1844,10 +2058,12 @@ mod prove {
             let Some(apre) = codice[dopo..].find('(') else {
                 continue;
             };
-            // `leggi(` o `leggi::<T>(`: non `leggi_risposta`, non la definizione.
+            // `leggi(`, `leggi::<T>(` o `leggi_testa(` (la testa di una
+            // risposta, con la sua porta): non `leggi_risposta`, non la definizione.
             let tipo = &codice[dopo..dopo + apre];
-            let chiamata_di_leggi =
-                tipo.is_empty() || (tipo.starts_with("::<") && tipo.ends_with('>'));
+            let chiamata_di_leggi = tipo.is_empty()
+                || tipo == "_testa"
+                || (tipo.starts_with("::<") && tipo.ends_with('>'));
             if !chiamata_di_leggi || codice[..dove].ends_with("fn ") {
                 continue;
             }
@@ -1860,6 +2076,11 @@ mod prove {
             if tipo.contains("Associa") {
                 assert_eq!(tetto, "MASSIMA_ASSOCIA", "leggi{tipo}{chiamata}");
             }
+            // Una testa di risposta si legge col tetto delle risposte, e nessun'altra
+            // cornice passa da `leggi_testa`.
+            if tipo == "_testa" {
+                assert_eq!(tetto, "MASSIMA_TESTA", "leggi{tipo}{chiamata}");
+            }
         }
         assert!(letture >= 4, "{letture} letture: la prova non le trova più");
         // La domanda di chi bussa col QR prende il tipo dalla variabile, non
@@ -1871,6 +2092,32 @@ mod prove {
             argomenti(prima + "leggi".len()).contains("MASSIMA_ASSOCIA"),
             "associa legge la domanda con un altro tetto"
         );
+    }
+
+    #[test]
+    fn il_conto_del_minuto_scende_e_chi_insiste_si_ascolta_di_nuovo() {
+        // Reperto S1-5: «ignorato per un po'», non per sempre. Gli istanti sono
+        // finti: il minuto non si aspetta.
+        let inizio = Instant::now();
+        let mut date: VecDeque<Instant> = (0..SBAGLIATE_AL_MINUTO)
+            .map(|n| inizio + Duration::from_secs(u64::try_from(n).unwrap()))
+            .collect();
+        // Appena passato il primo minuto di tutti, ne restano (quasi) tutti.
+        pota(&mut date, inizio + Duration::from_secs(30));
+        assert_eq!(date.len(), SBAGLIATE_AL_MINUTO, "tutti nell'ultimo minuto");
+        // Oltre il minuto del primo, il conto scende: non è più al tetto.
+        pota(&mut date, inizio + Duration::from_secs(61));
+        assert!(
+            date.len() < SBAGLIATE_AL_MINUTO,
+            "{} ancora dentro",
+            date.len()
+        );
+        // E un minuto dopo l'ultimo, nessuno.
+        pota(
+            &mut date,
+            inizio + Duration::from_secs(u64::try_from(SBAGLIATE_AL_MINUTO).unwrap() + 61),
+        );
+        assert!(date.is_empty());
     }
 
     #[test]

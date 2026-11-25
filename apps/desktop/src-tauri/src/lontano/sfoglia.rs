@@ -748,7 +748,7 @@ mod prove {
         // Reperto R01-5: dopo «Dimentica» il brano di quel dispositivo che
         // stava suonando gli chiedeva ancora i pezzi, e `connessione()` gliene
         // riapriva una.
-        let (posta, _cassetta) = std::sync::mpsc::channel();
+        let (posta, _cassetta) = super::super::filo::nuova_cassetta();
         let comune = Arc::new(Comune::nuovo(posta));
         let chiave = "c".repeat(64);
         comune.ammetti(&chiave, false);

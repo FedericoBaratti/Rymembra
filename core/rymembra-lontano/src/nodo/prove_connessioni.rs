@@ -18,6 +18,12 @@ struct Finta {
     massimo: AtomicUsize,
     /// `rispondi` aspetta finché è vero (al più qualche secondo).
     ferma: AtomicBool,
+    /// Gli eventi che il nodo ha dato all'app, per genere.
+    presenti: AtomicUsize,
+    diari: AtomicUsize,
+    /// `rispondi` risponde a `Leggi` con una risposta più grande di qualunque
+    /// finestra di flusso: chi non legge la lascia a metà.
+    risposte_enormi: AtomicBool,
 }
 
 impl Ospite for Finta {
@@ -33,7 +39,7 @@ impl Ospite for Finta {
 
     fn nuovo_pari(&self, _chiave: &str, _chi: &Presentazione, _indirizzi: &[SocketAddr]) {}
 
-    fn rispondi(&self, _da: &str, _domanda: Domanda) -> Result<Risposta, AppError> {
+    fn rispondi(&self, _da: &str, domanda: Domanda) -> Result<Risposta, AppError> {
         let adesso = self.in_corso.fetch_add(1, Ordering::SeqCst) + 1;
         self.massimo.fetch_max(adesso, Ordering::SeqCst);
         let fine = Instant::now() + Duration::from_secs(10);
@@ -41,6 +47,13 @@ impl Ospite for Finta {
             std::thread::sleep(Duration::from_millis(5));
         }
         self.in_corso.fetch_sub(1, Ordering::SeqCst);
+        if self.risposte_enormi.load(Ordering::SeqCst) && matches!(domanda, Domanda::Leggi { .. }) {
+            return Ok(Risposta::Byte {
+                byte: vec![0; 12 * 1024 * 1024],
+                totale: 12 * 1024 * 1024,
+                versione: "v1".to_owned(),
+            });
+        }
         Ok(Risposta::Fatto)
     }
 
@@ -52,7 +65,13 @@ impl Ospite for Finta {
         }
     }
 
-    fn evento(&self, _evento: Evento) {}
+    fn evento(&self, evento: Evento) {
+        match evento {
+            Evento::Presente { .. } => self.presenti.fetch_add(1, Ordering::SeqCst),
+            Evento::Diario(_) => self.diari.fetch_add(1, Ordering::SeqCst),
+            _ => 0,
+        };
+    }
 }
 
 impl Finta {
@@ -412,4 +431,178 @@ fn le_domande_servite_insieme_si_contano_per_dispositivo_non_per_connessione() {
         massimo, DOMANDE_INSIEME,
         "al più {DOMANDE_INSIEME} per dispositivo, su quante connessioni voglia"
     );
+}
+
+#[test]
+fn un_pari_non_sveglia_il_filo_a_raffica() {
+    // Reperto S1-5: ogni annuncio era un evento per il filo del collegamento, che
+    // ricompone il pannello e lo manda alla finestra. Un dispositivo associato
+    // ne mandava a migliaia, ognuno con un nome diverso.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    del_pc.ammetti(&telefono.chiave(), true);
+    let conn = connessione_grezza(&telefono, &pc, ALPN_LONTANO);
+    let mut rifiutati = 0;
+    for n in 0..300 {
+        let annuncio = Domanda::Annuncio(Presenza {
+            nome: format!("PC {n}"),
+            ..Presenza::default()
+        });
+        if let Err(err) = chiedi_sulla(&telefono, &conn, annuncio) {
+            assert_eq!(err.code().kind(), ErrorCodeKind::LontanoIrraggiungibile);
+            rifiutati += 1;
+        }
+    }
+    let arrivati = del_pc.presenti.load(Ordering::SeqCst);
+    assert!(
+        arrivati <= ANNUNCI_AL_MINUTO,
+        "{arrivati} eventi al filo per 300 annunci in pochi secondi"
+    );
+    assert_eq!(
+        arrivati + rifiutati,
+        300,
+        "gli altri lo sanno: errore detto"
+    );
+    // La connessione resta, e le altre domande si servono.
+    assert_eq!(
+        chiedi_sulla(&telefono, &conn, una_domanda()).expect("risponde ancora"),
+        Risposta::Fatto
+    );
+}
+
+/// Una domanda che non si legge: la lunghezza dice cinque byte e i cinque byte
+/// non sono JSON. Aspetta che il nodo l'abbia lasciata.
+fn una_domanda_sbagliata(da: &Nodo, conn: &Connection) {
+    let conn = conn.clone();
+    da.runtime().expect("acceso").block_on(async move {
+        let (mut invio, mut ricevi) = conn.open_bi().await.expect("un flusso");
+        let _ = invio
+            .write_all(&[0, 0, 0, 5, b'x', b'x', b'x', b'x', b'x'])
+            .await;
+        let _ = invio.finish();
+        let _ = tokio::time::timeout(Duration::from_secs(5), ricevi.read_to_end(1024)).await;
+    });
+}
+
+#[test]
+fn un_pari_che_sbaglia_le_domande_non_riempie_il_diario_e_si_ignora_per_un_po() {
+    // Reperto S1-5: ogni domanda che cadeva era una riga di diario, e ventimila
+    // righe fanno ruotare il file: la storia di tutta la sessione, sparita.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    del_pc.ammetti(&telefono.chiave(), true);
+    let conn = connessione_grezza(&telefono, &pc, ALPN_LONTANO);
+    for _ in 0..200 {
+        una_domanda_sbagliata(&telefono, &conn);
+    }
+    let righe = del_pc.diari.load(Ordering::SeqCst);
+    assert!(
+        righe <= RIGHE_DI_DIARIO_AL_MINUTO,
+        "{righe} righe di diario per 200 domande sbagliate"
+    );
+    // Non è scollegato: la connessione è in piedi...
+    assert!(conn.close_reason().is_none(), "il nodo non lo scollega");
+    // ...ma per un po' non si ascolta: nemmeno una domanda giusta ha risposta,
+    // e non perché sia lenta.
+    let esito = chiedi_sulla(&telefono, &conn, una_domanda());
+    assert!(
+        esito.is_err(),
+        "una domanda dopo troppe sbagliate non si serve: {esito:?}"
+    );
+    assert!(conn.close_reason().is_none(), "e la connessione resta");
+}
+
+#[test]
+fn le_domande_che_l_altro_annulla_non_sono_domande_sbagliate() {
+    // Chi cambia pagina annulla le domande in volo: un dispositivo onesto ne fa
+    // decine al minuto, e non per questo si ignora.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    del_pc.ammetti(&telefono.chiave(), true);
+    let conn = connessione_grezza(&telefono, &pc, ALPN_LONTANO);
+    let runtime = telefono.runtime().expect("acceso");
+    for _ in 0..(SBAGLIATE_AL_MINUTO * 3) {
+        let conn = conn.clone();
+        runtime.block_on(async move {
+            let (mut invio, mut ricevi) = conn.open_bi().await.expect("un flusso");
+            let _ = invio.write_all(&[0, 0, 0, 5]).await;
+            // Annullata a metà, come la pagina che si chiude.
+            let _ = invio.reset(VarInt::from_u32(0));
+            let _ = ricevi.stop(VarInt::from_u32(0));
+        });
+    }
+    assert_eq!(
+        chiedi_sulla(&telefono, &conn, una_domanda()).expect("risponde"),
+        Risposta::Fatto
+    );
+}
+
+#[test]
+fn una_risposta_che_l_altro_non_legge_libera_il_posto() {
+    // Reperto S1-7: `scrivi_risposta` non aveva una scadenza. Un dispositivo che
+    // chiede otto risposte più grandi di qualunque finestra di flusso e non le
+    // legge teneva fermi tutti i suoi posti, e nessun'altra domanda — nemmeno
+    // `Presenza` — aveva risposta.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    del_pc.ammetti(&telefono.chiave(), true);
+    del_pc.risposte_enormi.store(true, Ordering::SeqCst);
+    let conn = connessione_grezza(&telefono, &pc, ALPN_LONTANO);
+    // Gli otto flussi di risposta restano in mano a chi li ha aperti, senza leggerli.
+    let non_letti = {
+        let conn = conn.clone();
+        telefono.runtime().expect("acceso").block_on(async move {
+            let mut tenuti = Vec::new();
+            for _ in 0..DOMANDE_INSIEME {
+                let (mut invio, ricevi) = conn.open_bi().await.expect("un flusso");
+                let leggi = cornice(
+                    &Domanda::Leggi {
+                        brano: 1,
+                        da: 0,
+                        quanti: 1,
+                    },
+                    MASSIMA_DOMANDA,
+                )
+                .expect("si scrive");
+                invio.write_all(&leggi).await.expect("scritta");
+                let _ = invio.finish();
+                tenuti.push(ricevi);
+            }
+            tenuti
+        })
+    };
+    // La nona domanda ha risposta: i posti si liberano quando la scrittura
+    // scade (due secondi nelle prove, trenta nell'applicazione).
+    let fine = Instant::now() + Duration::from_secs(9);
+    let esito = loop {
+        let esito = chiedi_sulla(&telefono, &conn, Domanda::Presenza);
+        if esito.is_ok() || Instant::now() > fine {
+            break esito;
+        }
+    };
+    assert!(
+        matches!(esito, Ok(Risposta::Presenza(_))),
+        "la nona domanda non ha risposta: {esito:?}"
+    );
+    drop(non_letti);
+}
+
+#[test]
+fn una_connessione_all_associazione_che_non_apre_un_flusso_si_chiude() {
+    // Reperto S1-11: con un QR a schermo, ogni connessione su `rymembra/associa/1`
+    // che non apriva un flusso teneva un compito per duecento secondi, e il tetto
+    // di tentativi è per chiave: chi ne cambia a ogni giro non lo sente.
+    let (pc, _) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    pc.invita().expect("un QR");
+    let conn = connessione_grezza(&telefono, &pc, ALPN_ASSOCIA);
+    let chiusa = {
+        let conn = conn.clone();
+        telefono.runtime().expect("acceso").block_on(async move {
+            tokio::time::timeout(Duration::from_secs(8), conn.closed())
+                .await
+                .is_ok()
+        })
+    };
+    assert!(chiusa, "la connessione senza una domanda resta aperta");
 }

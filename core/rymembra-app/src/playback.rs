@@ -183,6 +183,31 @@ pub fn record_play(
     Ok(true)
 }
 
+/// Un ascolto dello stesso brano con lo stesso inizio è già in cronologia?
+///
+/// La cronologia non ne vuole due: l'indice unico `(track_id, played_at)` fa
+/// fallire il secondo di [`record_play`], dopo che ha già mosso `tracks` e i
+/// contatori dentro la sua transazione. Chi riceve ascolti da un altro
+/// dispositivo lo guarda **prima**, e un ascolto già contato non lo riconta
+/// (reperto S1-6).
+///
+/// # Errori
+///
+/// `db.*` dalla lettura.
+pub fn gia_in_cronologia(
+    connection: &Connection,
+    track_id: i64,
+    started_at: i64,
+) -> Result<bool, AppError> {
+    connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM play_history WHERE track_id = ?1 AND played_at = ?2)",
+            rusqlite::params![track_id, started_at],
+            |riga| riga.get::<_, bool>(0),
+        )
+        .map_err(|err| db_error("ascolto già in cronologia", &err))
+}
+
 /// Un ascolto di una riga della libreria unica — un brano di un altro
 /// dispositivo — fatto qui: va in cronologia, per la Home, e **basta**.
 ///
