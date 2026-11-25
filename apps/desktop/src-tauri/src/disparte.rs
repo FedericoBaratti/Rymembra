@@ -852,6 +852,95 @@ mod prove {
         );
     }
 
+    /// Quel che un comando `async` non può fare **dopo il suo ultimo `.await`**:
+    /// da lì in poi il corpo gira sul *worker* del runtime — uno per processore,
+    /// prestati a tutti i comandi —, e un lucchetto che non si apre o un disco
+    /// che non risponde lo fermano con lui (S7-2). Fra gli aghi non c'è
+    /// `in_disparte`: se il corpo ne chiama un altro dopo l'ultimo `.await`, è
+    /// quello che manca.
+    const DOPO_L_AWAIT: &[&str] = &[
+        "con_libreria",
+        "con_lettore",
+        "leggi_o_aspetta",
+        "leggi_la_libreria",
+        "leggi_a_parte",
+        ".lock(",
+        ".recv(",
+        "recv_timeout",
+        "sleep(",
+        ".join(",
+        "block_on",
+        "std::fs",
+        // Le funzioni che prendono la libreria per conto del chiamante.
+        "emetti_conti(",
+        "conti_ipc(",
+        "cartelle_sorvegliate(",
+    ];
+
+    /// Un `async fn` che fa il lavoro in disparte e poi, tornato dall'`.await`,
+    /// prende un lucchetto, aspetta il disco o la rete **sul worker**: la prova
+    /// di `nessun_comando_sincrono_puo_aspettare` guarda solo la firma, e un
+    /// comando `async` passa qualunque cosa faccia dopo. Qui si guarda il testo
+    /// che segue l'ultimo `.await` di ogni comando.
+    #[test]
+    fn le_async_fn_non_bloccano_dopo_l_await() {
+        let tutti = sorgenti();
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut visti = 0_usize;
+        let mut bloccanti: Vec<String> = Vec::new();
+        for (file, testo) in &tutti {
+            let relativo = file
+                .strip_prefix(&src)
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            for (dove, _) in testo.match_indices(concat!("\n#[tauri::", "command")) {
+                let resto = &testo[dove + 1..];
+                let dopo = resto[concat!("#[tauri::", "command").len()..]
+                    .chars()
+                    .next();
+                if !matches!(dopo, Some(']' | '(')) {
+                    continue;
+                }
+                let firma = &resto[..resto.find('{').unwrap_or(resto.len())];
+                if !firma.contains("async fn ") {
+                    continue;
+                }
+                visti += 1;
+                let nome: String = firma
+                    .find("fn ")
+                    .map(|i| &firma[i + 3..])
+                    .unwrap_or_default()
+                    .chars()
+                    .take_while(|c| *c == '_' || c.is_alphanumeric())
+                    .collect();
+                let corpo = &resto[..resto.find("\n}\n").unwrap_or(resto.len())];
+                let Some(ultimo) = corpo.rfind(".await") else {
+                    continue;
+                };
+                let coda = &corpo[ultimo..];
+                for ago in DOPO_L_AWAIT {
+                    if coda.contains(ago) {
+                        bloccanti.push(format!(
+                            "{relativo}: {nome} contiene `{ago}` dopo l'ultimo `.await`"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            visti >= 250,
+            "i comandi async non si sono trovati ({visti})"
+        );
+        bloccanti.sort();
+        assert!(
+            bloccanti.is_empty(),
+            "comandi `async` che aspettano sul worker dopo l'`.await`: il lavoro va dentro la \
+             chiusura di `in_disparte` ({}): {bloccanti:#?}",
+            bloccanti.len()
+        );
+    }
+
     /// Nessun comando di `lontano/` è sincrono (collaudo del 18/11: la WebView
     /// ferma, tre volte).
     ///
