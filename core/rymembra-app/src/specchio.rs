@@ -45,6 +45,7 @@ mod rev3;
 #[cfg(test)]
 #[path = "specchio/prove_revisione.rs"]
 mod revisione;
+pub mod righe_scelte;
 pub mod scarico;
 pub mod scelta;
 pub mod valutazioni;

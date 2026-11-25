@@ -513,8 +513,9 @@ fn lettere<T>(elenco: &[T], nome: impl Fn(&T) -> &str) -> Vec<(String, usize)> {
 /// Le righe di una playlist che l'auto può suonare adesso.
 ///
 /// Una playlist nomina le righe una per una, e una riga di un dispositivo che
-/// non risponde — il PC spento — non parte: nell'auto sarebbe un brano che
-/// si salta al volante. Lo stesso per una riga che il proprietario non manda
+/// non risponde — il PC spento — o che i dati mobili non consentono (S11-3: in
+/// macchina nessuno può rispondere a «Usare i dati mobili?») non parte: nell'auto
+/// sarebbe un brano che si salta al volante. Lo stesso per una riga che il proprietario non manda
 /// più e che resta in libreria per la grazia, nascosta: la sua voce sta ancora
 /// nella playlist, ma non si suona. Con le altre origini la lista resta com'è.
 fn raggiungibili(

@@ -177,7 +177,7 @@ pub(super) enum Posta {
     Evento(Evento),
     /// La rete del sistema è cambiata.
     CambioDiRete,
-    /// C'è un ascolto nuovo da mandare: vedi `sfoglia::ascoltato_qui`.
+    /// C'è un ascolto nuovo da mandare: vedi `sfoglia::ascolto_in_fila`.
     Ascolti,
     /// Si esce.
     Ferma(Sender<()>),
@@ -752,7 +752,18 @@ pub(super) fn scrivi_il_registro(app: &Nucleo, comune: &Arc<Comune>) {
     let suo = Arc::clone(comune);
     let partito = std::thread::Builder::new()
         .name("rymembra-lontano-registro".to_owned())
-        .spawn(move || scrivi_finche_ce_n_e(&app, &suo));
+        .spawn(move || {
+            // Alla fine normale la bandiera l'ha già abbassata, o passata a un altro
+            // scrittore, `scrivi_finche_ce_n_e`: la guardia la tocca solo se il
+            // filo cade in un panico (un guasto di SQLite, una modifica che il
+            // parser non si aspettava). Altrimenti restava alzata, e un «Dimentica»
+            // non arrivava più alla libreria fino al riavvio (S7-3).
+            let della_bandiera = Arc::clone(&suo);
+            let _bandiera = crate::disparte::AllaFine::solo_se_cade(move || {
+                della_bandiera.scrittore.store(false, Ordering::Release);
+            });
+            scrivi_finche_ce_n_e(&app, &suo);
+        });
     if let Err(err) = partito {
         comune.scrittore.store(false, Ordering::Release);
         nota!("[lontano] lo scrittore dei dispositivi non parte: {err}");
@@ -2173,5 +2184,27 @@ mod prove {
         for _ in 0..(CAPACITA_CASSETTA * 3) {
             comune.sveglia(Posta::Pubblica);
         }
+    }
+
+    /// S7-3: lo scrittore del registro libera la sua bandiera se cade in un
+    /// panico. Alla fine normale la bandiera l'ha già passata (o abbassata) lui, e
+    /// la guardia non deve toccarla; ma un panico nel mezzo la lasciava alzata, e
+    /// un «Dimentica» non arrivava più alla libreria fino al riavvio.
+    #[test]
+    fn lo_scrittore_del_registro_libera_la_bandiera_in_un_panico() {
+        let sorgente = include_str!("filo.rs");
+        let sorgente = sorgente
+            .split("\n#[cfg(test)]\nmod prove")
+            .next()
+            .unwrap_or(sorgente);
+        let inizio = sorgente
+            .find("pub(super) fn scrivi_il_registro(")
+            .expect("scrivi_il_registro");
+        let resto = &sorgente[inizio..];
+        let corpo = &resto[..resto.find("\n}\n").expect("fine")];
+        assert!(
+            corpo.contains("AllaFine::solo_se_cade("),
+            "lo scrittore del registro non libera `scrittore` in un panico"
+        );
     }
 }

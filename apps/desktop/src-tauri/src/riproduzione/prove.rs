@@ -440,10 +440,11 @@ const GESTI: [&str; 20] = [
 /// I comandi che **non** sono gesti della sessione, ognuno col suo perché.
 /// Un comando nuovo che non sta né qui né in [`GESTI`] fa fallire la prova:
 /// è il modo di obbligare chi lo scrive a decidere.
-const NON_GESTI: [&str; 24] = [
+const NON_GESTI: [&str; 25] = [
     // Domande, o preferenze di questo PC: volume, equalizzatore, uscita e
     // latenza sono di ciascuno, e restano locali sempre.
     "riproduzione_stato",
+    "riproduzione_coda",
     "dissolvenza",
     "latenza",
     "volume",
@@ -548,10 +549,17 @@ fn ogni_comando_di_trasporto_e_di_coda_chiede_la_strada_per_primo() {
         // Il nucleo, se il comando ne ha uno: il comando `async` lo passa
         // al pool bloccante e basta, ed è il nucleo che chiede la strada.
         // Vedi `col_lettore_in_disparte`.
+        // `riprendi` e `alterna` hanno anche la forma `_ora_con`, che dice quando il
+        // gesto si è contato (S7-1): è lì che sta il lavoro, e `_ora` la chiama.
+        let con_conteggio = format!("{nome}_ora_con");
         let nucleo = format!("{nome}_ora");
         let trovati: Vec<&str> = SORGENTI
             .iter()
-            .filter_map(|(_, testo)| corpo(testo, &nucleo).or_else(|| corpo(testo, nome)))
+            .filter_map(|(_, testo)| {
+                corpo(testo, &con_conteggio)
+                    .or_else(|| corpo(testo, &nucleo))
+                    .or_else(|| corpo(testo, nome))
+            })
             .collect();
         assert_eq!(trovati.len(), 1, "«{nome}»: un corpo solo, e dev'esserci");
         let corpo = trovati[0];
@@ -798,10 +806,11 @@ fn fino_alla_parentesi(inizio: &str) -> &str {
 /// la libreria senza limite (`completa(.., None)`), il filo della sessione
 /// (i venti di `ATTESA_COMANDO`), la scheda di un item dell'Archive, il
 /// gestore file su una share, un database scelto dall'utente.
-const ATTESE_LUNGHE: [&str; 14] = [
+const ATTESE_LUNGHE: [&str; 15] = [
     "gesto_di_coda(",
     "avvia_corrente(",
     "riprendi_ora(",
+    "riprendi_ora_con(",
     "riapri_su(",
     "brano_di(",
     "completa(",
@@ -1088,7 +1097,7 @@ fn riprova_continua_l_ascolto_del_brano_interrotto() {
         riprova.contains("continua_l_ascolto("),
         "«Riprova» apre un ascolto nuovo"
     );
-    let riprendi = corpo(include_str!("mod.rs"), "riprendi_ora").expect("riprendi_ora c'è");
+    let riprendi = corpo(include_str!("mod.rs"), "riprendi_ora_con").expect("riprendi_ora_con c'è");
     assert!(
         riprendi.contains("continua_l_ascolto("),
         "play dal punto della rete caduta apre un ascolto nuovo"
@@ -1251,4 +1260,395 @@ fn l_avvio_non_apre_il_dispositivo_sul_filo_della_finestra() {
         "StatoLettore::avvia apre il dispositivo sul filo della finestra"
     );
     assert!(avvia.contains("ErrorCode::PlaybackEngineOpening"));
+}
+
+/// S11-3: a fine brano, se il successivo esiste solo su un altro dispositivo e i
+/// dati mobili non lo consentono — o il dispositivo non risponde — non si apre
+/// per colpa **sua**, e il brano dopo ha buone probabilità di essere di qui:
+/// si salta, entro i `SALTI_DI_FILA`, invece di fermare la musica.
+#[test]
+fn si_salta_un_brano_che_i_dati_mobili_non_consentono() {
+    for codice in [
+        ErrorCode::LontanoReteAConsumo,
+        ErrorCode::LontanoIrraggiungibile,
+    ] {
+        let err = AppError::new(codice);
+        assert!(
+            si_salta(&err),
+            "{} ferma la musica invece di passare oltre",
+            err.code().kind().code()
+        );
+    }
+    // Resta vero che a mancare la sorgente intera non si salta.
+    assert!(!si_salta(&AppError::new(ErrorCode::LontanoNonAssociato)));
+}
+
+/// I nomi dei comandi (`pub async fn nome(`) che nel loro corpo chiamano `ago`.
+fn comandi_che_chiamano(testo: &str, ago: &str) -> Vec<String> {
+    let testo = senza_prove(testo);
+    let mut nomi = Vec::new();
+    for (dove, _) in testo.match_indices(ago) {
+        let prima = &testo[..dove];
+        let Some(firma) = prima.rfind("pub async fn ") else {
+            continue;
+        };
+        // Solo se fra la firma e la chiamata non comincia un'altra funzione.
+        if prima[firma + 1..].contains("\nfn ") || prima[firma + 1..].contains("\npub fn ") {
+            continue;
+        }
+        let nome: String = prima[firma + "pub async fn ".len()..]
+            .chars()
+            .take_while(|c| *c == '_' || c.is_alphanumeric())
+            .collect();
+        nomi.push(nome);
+    }
+    nomi.sort();
+    nomi.dedup();
+    nomi
+}
+
+/// S11-3: «Chiedi» vale «No» dove nessuno può rispondere, e può rispondere solo
+/// la finestra, **dai comandi che `ipc.ts` fa passare da `conIlSiDeiDatiMobili`**.
+/// L'etichetta sul filo ([`crate::lontano::ConLaPagina`]) la mette
+/// `col_lettore_chiedendo`: i due elenchi devono essere lo stesso, altrimenti un
+/// comando che la finestra sa chiedere finisce con un errore e basta, o uno che
+/// non lo sa chiedere ottiene una domanda senza nessuno che risponda.
+#[test]
+fn i_comandi_che_la_pagina_sa_chiedere_sono_quelli_che_il_nucleo_marca() {
+    let ipc = include_str!("../../../src/ipc.ts");
+    let mut dalla_pagina: Vec<String> = Vec::new();
+    for (dove, _) in ipc.match_indices("conIlSiDeiDatiMobili(") {
+        let resto = &ipc[dove..];
+        let Some(invoke) = resto.find("invoke<void>(\"") else {
+            continue;
+        };
+        let nome: String = resto[invoke + "invoke<void>(\"".len()..]
+            .chars()
+            .take_while(|c| *c == '_' || c.is_alphanumeric())
+            .collect();
+        dalla_pagina.push(nome);
+    }
+    dalla_pagina.sort();
+    dalla_pagina.dedup();
+    assert!(
+        dalla_pagina.len() >= 7,
+        "ipc.ts non ha più i comandi con la domanda: {dalla_pagina:?}"
+    );
+
+    let mut dal_nucleo: Vec<String> = Vec::new();
+    for (_, testo) in SORGENTI {
+        dal_nucleo.extend(comandi_che_chiamano(testo, "col_lettore_chiedendo("));
+    }
+    dal_nucleo.sort();
+    dal_nucleo.dedup();
+    assert_eq!(
+        dal_nucleo, dalla_pagina,
+        "i comandi che il nucleo marca come «la finestra può rispondere» non sono quelli che \
+         `ipc.ts` fa passare da `conIlSiDeiDatiMobili`"
+    );
+}
+
+/// S11-6: un brano di un altro dispositivo che si interrompe a metà arriva dalla
+/// rete, come uno del cloud: la frase parla del dispositivo, non di una cartella
+/// di rete («il server può essere spento, la VPN caduta»).
+#[test]
+fn un_brano_di_un_altro_dispositivo_interrotto_non_parla_di_cartelle() {
+    let scheda = |percorso: &str| playback::SchedaSorgente {
+        track_id: 1,
+        collocazione: playback::Collocazione::File(percorso.to_owned()),
+        durata_ms: 0,
+        replaygain_db: None,
+        picco: None,
+    };
+    let chiave = "ab".repeat(32);
+    assert!(
+        arriva_dalla_rete(&scheda(&rymembra_app::specchio::percorso(&chiave, 7))),
+        "una riga di un altro dispositivo è rete"
+    );
+    // E tutto il resto com'era.
+    assert!(!arriva_dalla_rete(&scheda(r"\\nas\musica\brano.flac")));
+    assert!(!arriva_dalla_rete(&scheda(r"C:\Musica\brano.flac")));
+}
+
+/// S11-5: chi apre una riga della libreria unica dichiara i byte remoti, chi
+/// apre una voce di sessione no: in sessione il salto deve finire sul fotogramma
+/// dell'host.
+#[test]
+fn una_riga_lontana_si_apre_con_un_flusso_remoto_e_una_voce_di_sessione_no() {
+    let riga =
+        corpo_privato(include_str!("mod.rs"), "fn apri_riga_lontana(").expect("apri_riga_lontana");
+    assert!(
+        riga.contains("remoto: true"),
+        "una riga lontana si apre con un salto accurato, che rilegge l'MP3 dall'inizio"
+    );
+    let sessione = senza_prove(include_str!("ospiti.rs"));
+    assert!(
+        sessione.contains("remoto: false"),
+        "una voce di sessione deve saltare al fotogramma esatto"
+    );
+}
+
+/// Il corpo di una funzione privata, dalla firma alla graffa che la chiude a
+/// inizio riga.
+fn corpo_privato<'a>(testo: &'a str, firma: &str) -> Option<&'a str> {
+    let testo = senza_prove(testo);
+    let resto = &testo[testo.find(firma)?..];
+    Some(&resto[..resto.find("\n}\n")?])
+}
+
+/// S11-2: l'ascolto di una riga di un altro dispositivo si scrive in **una presa
+/// sola**: la cronologia e la fila del proprietario insieme. Con due prese la
+/// seconda aveva due secondi di pazienza, e un lotto lungo della libreria
+/// faceva perdere l'ascolto — che il proprietario non contava e non scrobblava.
+#[test]
+fn l_ascolto_di_una_riga_lontana_si_scrive_in_una_presa_sola() {
+    let corpo =
+        corpo_privato(include_str!("mod.rs"), "fn scrivi_ascolto(").expect("scrivi_ascolto");
+    assert!(
+        corpo.contains("record_play_specchio_e_in_fila("),
+        "la cronologia e la fila non sono scritte insieme"
+    );
+    assert!(
+        !corpo.contains("record_play_specchio(") && !corpo.contains("ascoltato_qui"),
+        "la fila del proprietario è una seconda presa"
+    );
+    assert_eq!(
+        corpo.matches("con_libreria(").count(),
+        1,
+        "l'ascolto di una riga lontana prende la libreria più di una volta"
+    );
+}
+
+/// S7-4: «Salva curva» legge la curva dalla **corsia del lettore**, la stessa
+/// su cui sta `equalizzatore`. Sul pool la lettura poteva passare davanti a un
+/// `equalizzatore` ancora in coda dietro un lettore tenuto, e si salvava una
+/// curva più vecchia di quella che l'utente ha sotto gli occhi.
+#[test]
+fn salvare_una_curva_legge_l_equalizzatore_dalla_corsia_del_lettore() {
+    let corpo = corpo(include_str!("suono.rs"), "eq_preset_salva").expect("eq_preset_salva");
+    assert!(
+        corpo.contains("col_lettore_in_fila("),
+        "eq_preset_salva legge `lettore.eq` fuori dalla corsia dell'equalizzatore"
+    );
+    // Quel che gira sul pool — la scrittura nella libreria — non rilegge il
+    // lettore: la curva è quella letta sulla corsia.
+    let sul_pool = corpo.split("disparte::comanda(").nth(1).unwrap_or_default();
+    assert!(
+        !sul_pool.contains("con_lettore(") && !sul_pool.contains("lettore.eq"),
+        "eq_preset_salva rilegge il lettore dal pool"
+    );
+}
+
+/// S7-1: chi apre un brano **fissa il numero dei gesti prima di qualunque
+/// attesa** e lo porta fino alla consegna. `tenta_l_avvio` lo rileggeva dopo
+/// che `riprendi_ora` aveva contato il suo gesto e preso la libreria senza
+/// limite per il segno di ripresa: una pausa premuta in quell'attesa alzava il
+/// numero, la rilettura la trovava già dentro, e alla consegna il confronto
+/// risultava uguale — il brano suonava nonostante la pausa premuta dopo il
+/// play.
+#[test]
+fn chi_apre_un_brano_porta_il_numero_dei_gesti_letto_prima_di_ogni_attesa() {
+    let mod_rs = include_str!("mod.rs");
+    let tenta = corpo_privato(mod_rs, "fn tenta_l_avvio(").expect("tenta_l_avvio");
+    assert!(
+        !tenta.contains("pausa_chiesta"),
+        "tenta_l_avvio rilegge il numero dei gesti dopo l'attesa di chi la chiama"
+    );
+    for firma in ["fn avvia_corrente(", "fn tenta_l_avvio("] {
+        let dichiarazione = &senza_prove(mod_rs)[senza_prove(mod_rs).find(firma).expect(firma)..];
+        let dichiarazione = &dichiarazione[..dichiarazione.find("{\n").expect("corpo")];
+        assert!(
+            dichiarazione.contains("gesti_prima: u64"),
+            "{firma} non riceve il numero dei gesti da chi ha deciso"
+        );
+    }
+}
+
+/// Uno stato di riproduzione di prova, con la coda data: per misurare quanto pesa
+/// l'evento, non per provare un comportamento.
+fn stato_di_prova(coda: Vec<i64>) -> StatoRiproduzione {
+    StatoRiproduzione {
+        brano: None,
+        in_pausa: false,
+        posizione_ms: 61_000,
+        durata_ms: 183_000,
+        shuffle: false,
+        ripeti: nome_ripetizione(RepeatMode::Off).to_owned(),
+        volume: Volume::default().volume,
+        muto: false,
+        coda: std::sync::Arc::new(coda),
+        coda_in_pagina: None,
+        versione_coda: 1,
+        posizione_coda: Some(0),
+        eq_attivo: false,
+        eq_guadagni: vec![0.0; 10],
+        replaygain: nome_normalizzazione(Normalizzazione::default()).to_owned(),
+        spegnimento_ms: None,
+        autoplay: false,
+        dissolvenza_s: 0,
+        latenza_ms: 0,
+        anticipo_ms: rymembra_domain::testo::ANTICIPO_MS,
+        motivo_prossimo: None,
+        audio: None,
+        uscita: None,
+        formato: None,
+        insieme: None,
+    }
+}
+
+/// S7-5, la misura: quanto costa **ogni stato** della riproduzione con una coda da
+/// cinquantamila brani.
+///
+/// Non è una prova di comportamento: scrive i numeri (`println!`), ed è
+/// `#[ignore]`. Si lancia a mano, con `--test-threads=1`:
+///
+/// ```text
+/// cargo test -p rymembra-desktop --locked --lib misura_della_coda_nello_stato -- --ignored --nocapture --test-threads=1
+/// ```
+///
+/// I numeri del «prima» e del «dopo» stanno nel report della revisione. Quel che si
+/// guarda: i byte dell'evento `riproduzione:stato` (serializzato come lo fa Tauri,
+/// con `serde_json`), il tempo per comporlo, e quello per fotografare la coda sotto
+/// il lucchetto del lettore (`in_play_order`).
+#[test]
+#[ignore = "costruisce una coda da 50.000 brani: si lancia a mano"]
+fn misura_della_coda_nello_stato() {
+    use std::time::Instant;
+    const BRANI: i64 = 50_000;
+    const GIRI: u32 = 30;
+    let mut coda = Queue::new();
+    coda.play_tracks((1..=BRANI).collect(), 0, 7);
+
+    // 1. La fotografia sotto il lucchetto del lettore: una copia degli id.
+    let inizio = Instant::now();
+    for _ in 0..GIRI {
+        std::hint::black_box(coda.in_play_order());
+    }
+    let fotografia = inizio.elapsed().as_secs_f64() * 1000.0 / f64::from(GIRI);
+
+    // 2. L'evento, com'è spedito alla finestra. Con la coda cambiata, e — il caso
+    // di ogni pausa e di ogni `vai_a` — con la coda uguale all'ultima spedita.
+    let mut stato = stato_di_prova(coda.in_play_order());
+    let misura_evento = |stato: &StatoRiproduzione| {
+        let inizio = Instant::now();
+        let mut byte = 0;
+        for _ in 0..GIRI {
+            byte = serde_json::to_string(std::hint::black_box(stato))
+                .map(|json| json.len())
+                .unwrap_or(0);
+        }
+        (
+            byte,
+            inizio.elapsed().as_secs_f64() * 1000.0 / f64::from(GIRI),
+        )
+    };
+    stato.coda_in_pagina = Some(std::sync::Arc::clone(&stato.coda));
+    let (byte_con, ms_con) = misura_evento(&stato);
+    println!(
+        "[misura S7-5] {BRANI} brani in coda, coda CAMBIATA: fotografia {fotografia:.2} ms, evento {byte_con} byte, composto in {ms_con:.2} ms (media di {GIRI} giri)"
+    );
+    // Il confronto con l'ultima spedita, che decide se la coda va: sta sul filo del
+    // seguito, fuori dal lucchetto del lettore.
+    let mut pubblicata = CodaPubblicata::nuova(1);
+    let mut prima = std::sync::Arc::new(coda.in_play_order());
+    pubblicata.registra(&mut prima);
+    let inizio = Instant::now();
+    for _ in 0..GIRI {
+        let mut uguale = std::sync::Arc::new(coda.in_play_order());
+        std::hint::black_box(pubblicata.registra(&mut uguale));
+    }
+    let confronto = inizio.elapsed().as_secs_f64() * 1000.0 / f64::from(GIRI);
+    stato.coda_in_pagina = None;
+    let (byte, serializzazione) = misura_evento(&stato);
+    println!(
+        "[misura S7-5] {BRANI} brani in coda, coda UGUALE: evento {byte} byte, composto in {serializzazione:.2} ms; confronto con l'ultima spedita (fuori dal lettore, con la fotografia) {confronto:.2} ms"
+    );
+    println!(
+        "[misura S7-5] a 30 `vai_a` al secondo (freccia tenuta premuta): {:.1} ms/s di fotografia, {:.1} ms/s di serializzazione, {:.1} MB/s verso la finestra",
+        fotografia * 30.0,
+        serializzazione * 30.0,
+        byte as f64 * 30.0 / 1_048_576.0
+    );
+}
+
+/// S7-5: la coda va alla finestra solo quando cambia. Il registro dell'ultima
+/// pubblicata numera ogni cambiamento, e una coda uguale non ne fa una copia: lo
+/// stato la condivide con quella già in mano.
+#[test]
+fn la_coda_va_alla_finestra_solo_se_cambia() {
+    use std::sync::Arc;
+    let mut registro = CodaPubblicata::nuova(100);
+    let mut prima = Arc::new(vec![1, 2, 3]);
+    assert!(registro.registra(&mut prima), "la prima coda va");
+    assert_eq!(registro.versione, 101);
+
+    // Gli stessi id, un'altra allocazione: niente da mandare, stessa versione, e lo
+    // stato adotta la memoria di quella già pubblicata.
+    let mut uguale = Arc::new(vec![1, 2, 3]);
+    assert!(
+        !registro.registra(&mut uguale),
+        "una coda uguale non si rimanda"
+    );
+    assert_eq!(registro.versione, 101);
+    assert!(Arc::ptr_eq(&uguale, &prima), "e non se ne tiene una copia");
+
+    // Un brano in più, o un altro ordine: cambia, e la versione sale di uno.
+    let mut piu = Arc::new(vec![1, 2, 3, 4]);
+    assert!(registro.registra(&mut piu));
+    assert_eq!(registro.versione, 102);
+    let mut sparso = Arc::new(vec![4, 2, 3, 1]);
+    assert!(
+        registro.registra(&mut sparso),
+        "l'ordine è parte della coda"
+    );
+    assert_eq!(registro.versione, 103);
+
+    // La coda vuota di partenza non si rimanda: la finestra ce l'ha già.
+    let mut vuota = CodaPubblicata::nuova(7);
+    let mut niente = Arc::new(Vec::new());
+    assert!(!vuota.registra(&mut niente));
+    assert_eq!(vuota.versione, 7);
+}
+
+/// S7-5: sull'evento la coda c'è solo se è cambiata, e la sua versione c'è sempre.
+/// Dentro il nucleo (`coda`) resta intera per chi la legge — scheda di Windows,
+/// vassoio, Android Auto — ma non viaggia.
+#[test]
+fn l_evento_senza_la_coda_non_la_porta_e_dice_la_versione() {
+    let mut stato = stato_di_prova(vec![5, 6, 7]);
+    stato.versione_coda = 42;
+    let senza = serde_json::to_value(&stato).expect("json");
+    assert!(
+        senza.get("coda").is_none(),
+        "la coda non cambiata non viaggia: {senza}"
+    );
+    assert_eq!(senza["versioneCoda"], 42);
+    assert_eq!(stato.coda.len(), 3, "dentro il nucleo c'è ancora");
+
+    stato.coda_in_pagina = Some(std::sync::Arc::clone(&stato.coda));
+    let con = serde_json::to_value(&stato).expect("json");
+    assert_eq!(con["coda"], serde_json::json!([5, 6, 7]));
+    assert_eq!(con["versioneCoda"], 42);
+}
+
+/// S7-5: la decisione sta dopo il controllo di `superato`. Una fotografia scartata
+/// non è mai arrivata a nessuno: se avesse registrato la sua coda, la prossima si
+/// crederebbe «uguale a quella spedita» e la finestra resterebbe con la vecchia.
+#[test]
+fn la_coda_si_registra_solo_per_lo_stato_che_parte_davvero() {
+    let seguito = senza_prove(include_str!("seguito.rs"));
+    let pubblica = &seguito[seguito.find("pub(super) fn pubblica(").expect("pubblica")..];
+    let pubblica = &pubblica[..pubblica.find("\n}\n").expect("fine")];
+    let scartata = pubblica.find("superato(").expect("controlla superato");
+    let registra = pubblica
+        .find("registra_la_coda(app, &mut stato, false)")
+        .expect("registra la coda");
+    assert!(
+        scartata < registra,
+        "la coda si registra prima di sapere se parte"
+    );
+    assert!(
+        pubblica.find("app.emetti(\"riproduzione:stato\"") > Some(registra),
+        "l'evento parte con la coda già decisa"
+    );
 }

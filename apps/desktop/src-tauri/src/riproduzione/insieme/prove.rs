@@ -696,33 +696,61 @@ fn nella_coda_di_sessione_entra_solo_quel_che_sta_sotto_il_tetto() {
     assert_eq!(quante_entrano(true, 0, aggiunta), aggiunta);
 }
 
-#[test]
-fn una_riga_della_libreria_unica_non_entra_in_una_sessione() {
-    // §4.7: oggi le voci remote sono rifiutate durante una sessione perché le
-    // maniglie hanno id negativi. Una riga specchio ha un id positivo, e quel
-    // cancello non la vedrebbe: il rifiuto sta sullo schema del percorso.
-    use super::brani::rifiuta_le_righe_lontane;
+/// Una libreria di prova: due righe di qui (1, 2), una riga specchio senza copia
+/// di qui (3) e un disco che c'è due volte, con la riga del PC come
+/// rappresentante (10) e la copia di qui dietro di lei (11).
+fn libreria_con_righe_di_un_altro_dispositivo() -> rusqlite::Connection {
     let libreria = rymembra_app::db::open_in_memory()
         .expect("database")
         .connection;
     let chiave = "ab".repeat(32);
-    for (id, percorso) in [
-        (1, "C:/Musica/a.flac".to_owned()),
-        (2, "nuvola://onedrive-abcdefgh/Musica/b.flac".to_owned()),
-        (3, format!("lontano://{chiave}/77")),
+    for (id, percorso, copia_di) in [
+        (1, "C:/Musica/a.flac".to_owned(), None),
+        (
+            2,
+            "nuvola://onedrive-abcdefgh/Musica/b.flac".to_owned(),
+            None,
+        ),
+        (3, format!("lontano://{chiave}/77"), None),
+        (10, format!("lontano://{chiave}/80"), None),
+        (11, "C:/Musica/disco/uno.mp3".to_owned(), Some(10)),
     ] {
         libreria
             .execute(
                 "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
-                                     date_added, date_modified)
-                 VALUES (?1, ?2, ?3, 'T', 'A', 'B', 1, 1, 1)",
-                rusqlite::params![id, percorso, format!("k{id}")],
+                                     date_added, date_modified, copia_di)
+                 VALUES (?1, ?2, ?3, 'T', 'A', 'B', 1, 1, 1, ?4)",
+                rusqlite::params![id, percorso, format!("k{id}"), copia_di],
             )
             .expect("brano");
     }
-    rifiuta_le_righe_lontane(&libreria, &[1, 2]).expect("le righe di qui passano");
-    for ids in [&[3][..], &[1, 3][..], &[2, 1, 3][..]] {
-        let errore = rifiuta_le_righe_lontane(&libreria, ids).expect_err("una riga lontana");
+    for (id, remoto) in [(3, 77), (10, 80)] {
+        libreria
+            .execute(
+                "INSERT INTO lontano_brani (track_id, dispositivo, id_remoto, estensione, versione)
+                 VALUES (?1, ?2, ?3, 'flac', 'v1')",
+                rusqlite::params![id, chiave, remoto],
+            )
+            .expect("riga specchio");
+    }
+    libreria
+}
+
+#[test]
+fn una_riga_della_libreria_unica_senza_copia_di_qui_non_entra_in_una_sessione() {
+    // §4.7: oggi le voci remote sono rifiutate durante una sessione perché le
+    // maniglie hanno id negativi. Una riga specchio ha un id positivo, e quel
+    // cancello non la vedrebbe: il rifiuto sta sullo schema del percorso. Solo
+    // se non c'è una copia di qui (S11-7).
+    use super::brani::le_righe_di_qui;
+    let libreria = libreria_con_righe_di_un_altro_dispositivo();
+    assert!(
+        le_righe_di_qui(&libreria, &[1, 2])
+            .expect("le righe di qui passano")
+            .is_empty()
+    );
+    for ids in [&[3][..], &[1, 3][..], &[2, 1, 3][..], &[10, 3][..]] {
+        let errore = le_righe_di_qui(&libreria, ids).expect_err("una riga lontana");
         assert_eq!(
             errore.code().kind(),
             rymembra_domain::errors::ErrorCodeKind::InsiemeBraniAltrui,
@@ -730,5 +758,27 @@ fn una_riga_della_libreria_unica_non_entra_in_una_sessione() {
         );
     }
     // Un id che non c'è non è una riga lontana.
-    rifiuta_le_righe_lontane(&libreria, &[99]).expect("un brano che non c'è");
+    assert!(
+        le_righe_di_qui(&libreria, &[99])
+            .expect("un brano che non c'è")
+            .is_empty()
+    );
+}
+
+/// S11-7: la libreria unica mostra un disco che c'è anche qui come **una** voce,
+/// e il suo rappresentante può essere la riga del PC. Ospitare con quella riga
+/// in coda non è «ascoltare un brano di un altro dispositivo»: la sessione usa
+/// la copia di qui. Prima rifiutava tutta la coda, e la frase diceva di
+/// scaricare quel che c'era già.
+#[test]
+fn ospitare_con_un_rappresentante_remoto_usa_la_copia_di_qui() {
+    use super::brani::le_righe_di_qui;
+    let libreria = libreria_con_righe_di_un_altro_dispositivo();
+    let di_qui = le_righe_di_qui(&libreria, &[1, 10, 2]).expect("la copia di qui c'è");
+    assert_eq!(
+        di_qui.get(&10),
+        Some(&11),
+        "il rappresentante remoto non è stato sostituito dalla copia di qui"
+    );
+    assert_eq!(di_qui.len(), 1, "le righe di qui restano com'erano");
 }

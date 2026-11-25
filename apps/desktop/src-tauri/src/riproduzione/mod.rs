@@ -300,6 +300,55 @@ impl BandeIpc {
     }
 }
 
+/// Gli id di una coda condivisa come una sequenza JSON, senza clonarli.
+fn serializza_la_coda<S: serde::Serializer>(
+    coda: &Option<std::sync::Arc<Vec<i64>>>,
+    serializzatore: S,
+) -> Result<S::Ok, S::Error> {
+    match coda {
+        Some(coda) => serializzatore.collect_seq(coda.iter()),
+        None => serializzatore.serialize_none(),
+    }
+}
+
+/// L'ultima coda che la finestra ha avuto, e la versione con cui il nucleo l'ha
+/// numerata (S7-5).
+///
+/// Sta fuori dal lettore, in un lucchetto suo e **foglia**: la scrive il filo del
+/// seguito (`pubblica`) e la legge il comando che dà la coda a una finestra che ne
+/// ha perso l'evento. La versione parte dal tempo di avvio e non da zero: un nucleo
+/// riavviato sotto una finestra viva non deve ripartire da un numero che la
+/// finestra ha già visto, o terrebbe una coda vecchia per sempre.
+#[derive(Debug)]
+pub(crate) struct CodaPubblicata {
+    versione: u64,
+    coda: std::sync::Arc<Vec<i64>>,
+}
+
+impl CodaPubblicata {
+    /// La coda vuota, con questa versione.
+    pub(crate) fn nuova(versione: u64) -> Self {
+        Self {
+            versione,
+            coda: std::sync::Arc::new(Vec::new()),
+        }
+    }
+
+    /// Registra la coda di uno stato che sta per partire. `true` se è diversa
+    /// dall'ultima: la versione sale e la coda va mandata. Se è uguale, `coda`
+    /// diventa quella già in mano — la stessa memoria, non una copia — e non c'è
+    /// niente da mandare.
+    fn registra(&mut self, coda: &mut std::sync::Arc<Vec<i64>>) -> bool {
+        if *self.coda == **coda {
+            *coda = std::sync::Arc::clone(&self.coda);
+            return false;
+        }
+        self.versione = self.versione.wrapping_add(1);
+        self.coda = std::sync::Arc::clone(coda);
+        true
+    }
+}
+
 /// Lo stato della riproduzione, come lo vede la finestra.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -326,7 +375,27 @@ pub struct StatoRiproduzione {
     /// cambio di brano vorrebbe dire spedire qualche megabyte per aggiornare un
     /// titolo. Chi apre il pannello della coda chiede le righe con
     /// [`brani_per_id`].
-    pub coda: Vec<i64>,
+    ///
+    /// Dentro il nucleo la leggono la scheda di Windows, il vassoio, Android Auto:
+    /// è condivisa (`Arc`) con l'ultima pubblicata, e non viaggia sull'evento —
+    /// vedi `coda_in_pagina`.
+    #[serde(skip)]
+    pub coda: std::sync::Arc<Vec<i64>>,
+    /// La coda per la finestra, **solo se è cambiata** dall'ultimo stato spedito
+    /// (S7-5): con cinquantamila brani in coda erano ~290 KB di JSON a ogni cambio
+    /// di brano, a ogni pausa e — con la freccia della barra tenuta premuta —
+    /// trenta volte al secondo. Sull'evento si chiama `coda`; chi non la trova con
+    /// la `versione_coda` che ha, la chiede con `riproduzione_coda`. Lo stato
+    /// chiesto dalla finestra la porta sempre.
+    #[serde(
+        rename = "coda",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serializza_la_coda"
+    )]
+    pub coda_in_pagina: Option<std::sync::Arc<Vec<i64>>>,
+    /// Il numero della coda: cresce a ogni cambiamento, e con la stessa versione
+    /// la coda è la stessa. Parte dal tempo di avvio (`CodaPubblicata`).
+    pub versione_coda: u64,
     /// Dove siamo dentro la coda.
     pub posizione_coda: Option<usize>,
     /// L'equalizzatore è acceso.
@@ -1098,6 +1167,10 @@ pub struct CorpoLettore {
     /// altri due. Così non entra nell'ordine «prima il lettore, poi la
     /// libreria», e non può chiudere un cerchio con nessuno.
     preferenze: Mutex<()>,
+    /// L'ultima coda mandata alla finestra, e la sua versione: vedi
+    /// [`CodaPubblicata`]. Un lucchetto **foglia**: chi lo tiene non chiede
+    /// nient'altro.
+    coda_pubblicata: Mutex<CodaPubblicata>,
     /// Le voci della sessione d'«Ascolta insieme»: maniglia → voce.
     ///
     /// Un lucchetto suo e **foglia**: si può prendere col lettore in mano, per
@@ -1346,6 +1419,9 @@ impl StatoLettore {
                 sfumando_fino: std::sync::atomic::AtomicI64::new(0),
                 aprendo: std::sync::atomic::AtomicI64::new(NESSUN_BRANO),
                 preferenze: Mutex::new(()),
+                coda_pubblicata: Mutex::new(CodaPubblicata::nuova(
+                    u64::try_from(adesso_ms()).unwrap_or(0),
+                )),
                 ospiti: ospiti::registro_nuovo(),
             }),
             orecchio,
@@ -1658,9 +1734,9 @@ fn chiudi_ascolto(app: &Nucleo, lettore: &mut Lettore) {
 enum Scritto {
     /// Una riga di questo computer: `true` se il conteggio è cresciuto.
     Contato(bool),
-    /// Una riga della libreria unica: l'ascolto è di quel dispositivo, col
-    /// suo id.
-    AlProprietario((String, i64)),
+    /// Una riga della libreria unica: l'ascolto è di quel dispositivo, ed è già
+    /// in fila per lui.
+    AlProprietario,
 }
 
 /// Scrive un ascolto finito, e avvisa chi ne deve sapere. Gira sul filo delle
@@ -1673,13 +1749,21 @@ fn scrivi_ascolto(app: &Nucleo, ascolto: &Listen) {
             // — non si conta qui: l'ascolto va in cronologia (per la Home) e in
             // posta, e lo conta il proprietario, che ne fa anche lo scrobble.
             // `play_count` non cresce, e niente va nei contatori della
-            // sincronia: sono suoi.
-            if let Some(proprietario) = rymembra_app::specchio::scelta::proprietario_di(
+            // sincronia: sono suoi. La cronologia e la fila del proprietario si
+            // scrivono **insieme**, in questa presa: con una seconda presa a
+            // due secondi, un lotto lungo della libreria faceva perdere
+            // l'ascolto (S11-2).
+            if let Some((proprietario, brano)) = rymembra_app::specchio::scelta::proprietario_di(
                 &libreria.connection,
                 ascolto.track_id,
             )? {
-                playback::record_play_specchio(&libreria.connection, ascolto)?;
-                return Ok(Scritto::AlProprietario(proprietario));
+                playback::record_play_specchio_e_in_fila(
+                    &mut libreria.connection,
+                    ascolto,
+                    &proprietario,
+                    brano,
+                )?;
+                return Ok(Scritto::AlProprietario);
             }
             // L'ascolto si intesta a questo computer. Non è contabilità: il
             // conteggio è la somma dei contatori di tutti i dispositivi, e un
@@ -1690,10 +1774,10 @@ fn scrivi_ascolto(app: &Nucleo, ascolto: &Listen) {
         })
     });
     match scritto {
-        Ok(Scritto::AlProprietario((dispositivo, brano))) => {
+        Ok(Scritto::AlProprietario) => {
             // Non è un ascolto da contare qui, e non va allo scrobble: lo
             // manda il filo del collegamento quando quel dispositivo risponde.
-            crate::lontano::ascoltato_qui(app, &dispositivo, brano, ascolto);
+            crate::lontano::ascolto_in_fila(app);
         }
         // `true` vuol dire che il conteggio è cresciuto davvero. Segnalarlo
         // anche quando l'ascolto non contava riempirebbe il canale del backup
@@ -2095,6 +2179,12 @@ fn apri_riga_lontana(
             replaygain_db: scheda.replaygain_db.map(a_f32),
             picco: scheda.picco.map(a_f32),
             segmento,
+            // Una riga della libreria unica non deve seguire il fotogramma di un
+            // host, come una voce di sessione: un salto «a grandi linee» è quel che
+            // si vuole, e quello accurato rileggerebbe un MP3 dall'inizio attraverso
+            // la rete — il relay, o i dati mobili — a ogni cursore portato avanti,
+            // «Riprova» o ripresa dal segno (S11-5).
+            remoto: true,
         },
         formato,
     )
@@ -2731,7 +2821,8 @@ fn e_un_flusso(app: &Nucleo, track_id: i64) -> bool {
     .is_ok_and(|scheda| arriva_dalla_rete(&scheda))
 }
 
-/// I byte di questa scheda arrivano dalla rete: un catalogo, o il cloud.
+/// I byte di questa scheda arrivano dalla rete: un catalogo, il cloud o un altro
+/// dispositivo (una riga della libreria unica, S11-6).
 ///
 /// Lo stesso criterio con cui [`brano_di_libreria`] sceglie la scadenza e la
 /// frase di un'apertura mancata. Qui c'era il solo catalogo, e un brano di
@@ -2739,10 +2830,10 @@ fn e_un_flusso(app: &Nucleo, track_id: i64) -> bool {
 /// risponde: il server può essere spento, la VPN caduta» (R23-5).
 fn arriva_dalla_rete(scheda: &playback::SchedaSorgente) -> bool {
     riferimento_di(scheda).is_some()
-        || scheda
-            .collocazione
-            .file_audio()
-            .is_some_and(rymembra_domain::nuvola::e_nuvola)
+        || scheda.collocazione.file_audio().is_some_and(|percorso| {
+            rymembra_domain::nuvola::e_nuvola(percorso)
+                || rymembra_app::specchio::e_specchio(percorso)
+        })
 }
 
 /// Il guasto di rete di un brano che arriva da un catalogo, con la sua frase.
@@ -3445,6 +3536,30 @@ async fn col_lettore_in_fila<T: Send + 'static>(
         .await
 }
 
+/// [`col_lettore_in_disparte`], per un comando che **parte dalla finestra** e
+/// che la finestra sa far diventare una domanda: `suona`, `radio`, `riprendi`,
+/// `alterna`, `prossimo`, `precedente`, `coda_vai` — gli stessi che `ipc.ts`
+/// fa passare da `conIlSiDeiDatiMobili`.
+///
+/// Sui dati mobili con «Chiedi» un brano che esiste solo su un altro dispositivo
+/// risponde `lontano.reteAConsumo`, e la finestra chiede «Usare i dati mobili?».
+/// Ma chiede solo dai gesti che parte lei: il filo che esegue questo comando
+/// porta l'etichetta [`ConLaPagina`](crate::lontano::ConLaPagina), e ogni altro
+/// — un tasto multimediale, la notifica, Android Auto, il brano dopo, il filo
+/// che a fine brano riprova — no, e lì «Chiedi» vale «No» (S11-3). L'elenco dei
+/// comandi che la usano lo confronta con `ipc.ts` una prova.
+async fn col_lettore_chiedendo<T: Send + 'static>(
+    app: Nucleo,
+    nome: &'static str,
+    nucleo: impl FnOnce(Nucleo, StatoLettore) -> Esito<T> + Send + 'static,
+) -> Esito<T> {
+    crate::disparte::comanda(nome, move || {
+        let _chiede_la_pagina = crate::lontano::ConLaPagina::nuova();
+        col_lettore(app, nome, nucleo)
+    })
+    .await
+}
+
 /// Il nucleo di un comando del lettore, con lo stato preso dal registro.
 ///
 /// Sincrona: la chiamano la chiusura sul pool ([`col_lettore_in_disparte`]) e
@@ -3472,7 +3587,7 @@ fn col_lettore<T>(
 /// [`suona_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn suona(app: Nucleo, brani: Vec<i64>, indice: usize) -> Esito<()> {
-    col_lettore_in_disparte(app, "suona", move |app, stato| {
+    col_lettore_chiedendo(app, "suona", move |app, stato| {
         suona_ora(app, stato, brani, indice)
     })
     .await
@@ -3526,7 +3641,7 @@ pub fn suona_ora(app: Nucleo, stato: StatoLettore, brani: Vec<i64>, indice: usiz
 /// [`radio_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn radio(app: Nucleo, brano: i64) -> Esito<()> {
-    col_lettore_in_disparte(app, "radio", move |app, stato| radio_ora(app, stato, brano)).await
+    col_lettore_chiedendo(app, "radio", move |app, stato| radio_ora(app, stato, brano)).await
 }
 
 /// Fa partire una radio seminata da un brano.
@@ -3610,13 +3725,22 @@ pub fn radio_ora(app: Nucleo, stato: StatoLettore, brano: i64) -> Esito<()> {
 /// `in_pausa` fa partire il brano fermo: serve a chi toglie dalla coda il brano
 /// in pausa, che non ha chiesto di sentire il successivo. `da_ms` è il punto da
 /// cui parte, zero quasi sempre: vedi [`riprendi`].
+///
+/// `gesti_prima` è il numero di [`Lettore::pausa_chiesta`] **fissato da chi ha
+/// deciso di far partire il brano**, nella stessa presa del lettore in cui l'ha
+/// deciso e prima di qualunque attesa — la libreria per il segno di ripresa,
+/// l'apertura del file. Una pausa o una ripresa chiesta da lì alla partenza lo
+/// alza, e [`consegna`] la fa vincere. Letto qui, dopo le attese di chi chiama,
+/// la pausa premuta nell'attesa risultava già dentro il numero, e il brano
+/// suonava nonostante la pausa (S7-1).
 fn avvia_corrente(
     app: &Nucleo,
     stato: &StatoLettore,
     in_pausa: bool,
     da_ms: u64,
+    gesti_prima: u64,
 ) -> Result<(), AppError> {
-    match tenta_l_avvio(app, stato, in_pausa, da_ms)? {
+    match tenta_l_avvio(app, stato, in_pausa, da_ms, gesti_prima)? {
         None => Ok(()),
         Some((id, err)) => avvio_fallito(app, stato, id, da_ms, err),
     }
@@ -3630,6 +3754,7 @@ fn tenta_l_avvio(
     stato: &StatoLettore,
     in_pausa: bool,
     da_ms: u64,
+    gesti_prima: u64,
 ) -> Result<Option<(i64, AppError)>, AppError> {
     // ── 0. un brano che parte ──
     //
@@ -3646,12 +3771,9 @@ fn tenta_l_avvio(
     // formato di un motore morto e consegnarglielo vorrebbe dire un play che non
     // suona. Soltanto il dispositivo — il brano lo apre questa funzione, e
     // rimettere al suo posto quello di prima lo farebbe ripartire per un attimo.
-    // Il numero dell'ultima pausa o ripresa chiesta, adesso: una chiesta da
-    // qui alla partenza vince sul `in_pausa` di chi ha chiamato. Vedi
-    // [`Lettore::pausa_chiesta`].
-    let (perso, gesti_prima) = con_lettore(stato, |lettore| {
-        Ok((lettore.motore.dispositivo_perso(), lettore.pausa_chiesta.0))
-    })?;
+    // Il numero dei gesti non si legge qui: lo porta chi ha deciso (`gesti_prima`),
+    // fissato prima delle sue attese. Vedi [`avvia_corrente`].
+    let perso = con_lettore(stato, |lettore| Ok(lettore.motore.dispositivo_perso()))?;
     if perso
         && riapertura::riapri_su(app, stato, None, riapertura::Modo::SoloDispositivo)?
             == riapertura::Riaperta::Saltata
@@ -3744,6 +3866,12 @@ const SALTI_DI_FILA: u32 = 3;
 /// cartella: se manca anche lei — una lettera staccata, una condivisione che
 /// non si raggiunge — è la sorgente a mancare, e non si salta. Senza percorso
 /// è la riga a non esserci più, o la voce di una sessione: si salta.
+///
+/// Si salta anche un brano che esiste solo su un altro dispositivo e che adesso
+/// non si può aprire — `lontano.reteAConsumo` (i dati mobili non lo consentono:
+/// «No», o «Chiedi», che senza nessuno che risponda vale «No») e
+/// `lontano.irraggiungibile` (il dispositivo non risponde) —: non manca la
+/// sorgente intera, ma quella di **quel** brano, e quelli di qui si suonano.
 fn si_salta(err: &AppError) -> bool {
     let cartella_c_e = |percorso: &str| {
         std::path::Path::new(percorso)
@@ -3763,6 +3891,13 @@ fn si_salta(err: &AppError) -> bool {
                 | ErrorCodeKind::LibraryTrackNotFound
                 | ErrorCodeKind::FsPermissionDenied
                 | ErrorCodeKind::FsPathInvalid
+                // Un brano che esiste solo su un altro dispositivo, e i dati mobili non
+                // lo consentono o il dispositivo non risponde: il brano dopo ha buone
+                // probabilità di essere di qui. Vale per chi non può rispondere a una
+                // domanda — a fine brano nessuno ha premuto niente —, e i
+                // `SALTI_DI_FILA` impediscono che la coda scorra via (S11-3).
+                | ErrorCodeKind::LontanoReteAConsumo
+                | ErrorCodeKind::LontanoIrraggiungibile
         ),
     }
 }
@@ -3828,7 +3963,12 @@ fn riprova_o_salta(app: &Nucleo) {
     };
     let mut saltati = 0;
     loop {
-        let (id, err) = match tenta_l_avvio(app, &stato, false, 0) {
+        // Il numero dei gesti di adesso: a fine brano chi decide è questo filo,
+        // e ad ogni brano saltato si decide di nuovo.
+        let Ok(gesti) = con_lettore(&stato, |lettore| Ok(lettore.pausa_chiesta.0)) else {
+            return;
+        };
+        let (id, err) = match tenta_l_avvio(app, &stato, false, 0, gesti) {
             Ok(None) => return,
             Ok(Some(fallito)) => fallito,
             Err(err) => {
@@ -4130,6 +4270,22 @@ pub fn c_e_un_brano(stato: &StatoLettore) -> bool {
 }
 
 pub fn riprendi_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
+    riprendi_ora_con(app, stato, || {})
+}
+
+/// [`riprendi_ora`], che dice **quando il gesto si è contato**.
+///
+/// I tasti multimediali eseguono pause e riprese una alla volta, sotto un turno
+/// (`media::Turno`): una pausa arrivata prima del conteggio della ripresa non
+/// deve passarle davanti, perché il conteggio la cancellerebbe. Ma il turno non
+/// deve durare quanto l'apertura del file, cinque secondi da un NAS che dorme e
+/// quindici da un flusso: da quando la ripresa ha alzato il numero dei gesti
+/// del lettore (`Lettore::pausa_chiesta`) una pausa che arriva lo alza a sua
+/// volta, e il brano che si sta aprendo la trova alla consegna (S7-1). Per
+/// questo `contato` parte **appena il gesto è contato** — o, se il gesto finisce
+/// prima (la strada lo ha preso un altro, un errore), alla fine; mai due volte.
+pub fn riprendi_ora_con(app: Nucleo, stato: StatoLettore, contato: impl FnOnce()) -> Esito<()> {
+    let mut al_conto = crate::disparte::AllaFine::sempre(contato);
     if let Strada::Fatto = strada(&app, &Gesto::Riprendi).map_err(errore)? {
         return Ok(());
     }
@@ -4167,8 +4323,11 @@ pub fn riprendi_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     // Fuori `None` vuol dire «il motore suonava già, fatto»; dentro è il brano
     // da aprire, che può mancare anche lui — una coda vuota, che
     // `avvia_corrente` sa fermare.
-    let da_aprire = con_lettore(&stato, |lettore| {
+    let (da_aprire, gesti) = con_lettore(&stato, |lettore| {
         lettore.pausa_chiesta = (lettore.pausa_chiesta.0.wrapping_add(1), false);
+        // Il numero si fissa qui, nella stessa presa che conta il gesto: chi apre
+        // il brano lo porta fino alla consegna (S7-1).
+        let gesti = lettore.pausa_chiesta.0;
         if lettore.motore.posizione().track_id.is_none() {
             let corrente = lettore.coda.current();
             // Un salto chiesto a motore vuoto vince sul segno: è più recente, e
@@ -4200,16 +4359,18 @@ pub fn riprendi_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
                 riapertura::continua_l_ascolto(id);
             }
             let chiesto = a_vuoto.or(dalla_ripresa.map(|(_, ms)| ms));
-            return Ok(Some((corrente, chiesto)));
+            return Ok((Some((corrente, chiesto)), gesti));
         }
         insieme::riprendi(lettore);
         if let Some(a) = lettore.ascolto.as_mut() {
             a.resume(adesso_ms());
         }
         manda_stato(&app, lettore);
-        Ok(None)
+        Ok((None, gesti))
     })
     .map_err(errore)?;
+    // Contato: da qui una pausa conta dopo di noi, e non aspetta l'apertura.
+    al_conto.scatta();
     let Some((corrente, chiesto)) = da_aprire else {
         return Ok(());
     };
@@ -4226,7 +4387,7 @@ pub fn riprendi_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
             .unwrap_or(0),
         (None, None) => 0,
     };
-    avvia_corrente(&app, &stato, false, da_ms).map_err(errore)
+    avvia_corrente(&app, &stato, false, da_ms, gesti).map_err(errore)
 }
 
 /// Alterna fra pausa e ripresa.
@@ -4249,6 +4410,14 @@ pub(crate) fn suona_adesso(stato: &StatoLettore) -> bool {
 }
 
 pub fn alterna_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
+    alterna_ora_con(app, stato, || {})
+}
+
+/// [`alterna_ora`], che dice **quando il gesto si è contato**: vedi
+/// [`riprendi_ora_con`]. Una pausa si conta subito, e `contato` parte alla sua
+/// fine.
+pub fn alterna_ora_con(app: Nucleo, stato: StatoLettore, contato: impl FnOnce()) -> Esito<()> {
+    let mut al_conto = crate::disparte::AllaFine::sempre(contato);
     if let Strada::Fatto = strada(&app, &Gesto::Alterna).map_err(errore)? {
         return Ok(());
     }
@@ -4257,7 +4426,7 @@ pub fn alterna_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     })
     .map_err(errore)?;
     if in_pausa {
-        riprendi_ora(app, stato)
+        riprendi_ora_con(app, stato, move || al_conto.scatta())
     } else {
         pausa_ora(app, stato)
     }
@@ -4266,25 +4435,25 @@ pub fn alterna_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
 /// [`riprendi_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn riprendi(app: Nucleo) -> Esito<()> {
-    col_lettore_in_disparte(app, "riprendi", riprendi_ora).await
+    col_lettore_chiedendo(app, "riprendi", riprendi_ora).await
 }
 
 /// [`alterna_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn alterna(app: Nucleo) -> Esito<()> {
-    col_lettore_in_disparte(app, "alterna", alterna_ora).await
+    col_lettore_chiedendo(app, "alterna", alterna_ora).await
 }
 
 /// [`prossimo_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn prossimo(app: Nucleo) -> Esito<()> {
-    col_lettore_in_disparte(app, "prossimo", prossimo_ora).await
+    col_lettore_chiedendo(app, "prossimo", prossimo_ora).await
 }
 
 /// [`precedente_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn precedente(app: Nucleo) -> Esito<()> {
-    col_lettore_in_disparte(app, "precedente", precedente_ora).await
+    col_lettore_chiedendo(app, "precedente", precedente_ora).await
 }
 
 /// Passa al brano dopo.
@@ -4503,6 +4672,40 @@ pub async fn riproduzione_stato(app: Nucleo) -> Esito<StatoRiproduzione> {
     col_lettore_in_disparte(app, "stato del lettore", riproduzione_stato_ora).await
 }
 
+/// La coda del lettore, con la versione con cui il nucleo l'ha numerata.
+///
+/// Per una finestra che ha perso l'evento `riproduzione:stato` che la portava:
+/// l'evento non porta la coda se non è cambiata dall'ultimo spedito (S7-5), e una
+/// finestra che apre il suo ascolto in ritardo, o che si ricarica, si trova con una
+/// versione che non ha. È **l'ultima pubblicata**, la stessa che gli eventi
+/// nominano, e non la coda di questo istante: così la versione e la coda vanno
+/// d'accordo, e un gesto che l'ha già cambiata arriva col suo evento.
+#[tauri::command]
+pub async fn riproduzione_coda(app: Nucleo) -> Esito<CodaDelLettore> {
+    crate::disparte::comanda("coda del lettore", move || {
+        let stato = crate::disparte::stato_del_nucleo::<StatoLettore>(&app)?;
+        let pubblicata = stato
+            .coda_pubblicata
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(CodaDelLettore {
+            versione: pubblicata.versione,
+            coda: pubblicata.coda.to_vec(),
+        })
+    })
+    .await
+}
+
+/// La coda e la sua versione: la risposta di [`riproduzione_coda`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodaDelLettore {
+    /// Il numero della coda: lo stesso di `StatoRiproduzione::versione_coda`.
+    pub versione: u64,
+    /// Gli identificativi, nell'ordine in cui suoneranno.
+    pub coda: Vec<i64>,
+}
+
 /// Il lavoro di [`riproduzione_stato`], sincrono.
 fn riproduzione_stato_ora(app: Nucleo, stato: StatoLettore) -> Esito<StatoRiproduzione> {
     let fotografia = {
@@ -4513,7 +4716,13 @@ fn riproduzione_stato_ora(app: Nucleo, stato: StatoLettore) -> Esito<StatoRiprod
         }
     };
     match fotografia {
-        Ok(abbozzo) => Ok(completa(&app, abbozzo, None)),
+        Ok(abbozzo) => {
+            let mut stato = completa(&app, abbozzo, None);
+            // La finestra che chiede lo stato non ha niente: la coda le arriva intera,
+            // con la versione che il nucleo le ha dato.
+            seguito::registra_la_coda(&app, &mut stato, true);
+            Ok(stato)
+        }
         Err(err) => Ok(StatoRiproduzione {
             brano: None,
             in_pausa: true,
@@ -4523,7 +4732,9 @@ fn riproduzione_stato_ora(app: Nucleo, stato: StatoLettore) -> Esito<StatoRiprod
             ripeti: nome_ripetizione(RepeatMode::Off).to_owned(),
             volume: Volume::default().volume,
             muto: false,
-            coda: Vec::new(),
+            coda: std::sync::Arc::new(Vec::new()),
+            coda_in_pagina: Some(std::sync::Arc::new(Vec::new())),
+            versione_coda: 0,
             posizione_coda: None,
             eq_attivo: false,
             eq_guadagni: Vec::new(),

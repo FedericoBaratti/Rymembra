@@ -19,16 +19,22 @@
 //!
 //! # Gli ascolti
 //!
-//! Misurati qui, contati là: [`ascoltato_qui`] li mette in fila nella
-//! libreria, e [`manda_gli_ascolti`] li manda quando l'altro risponde. La
-//! chiave di ogni ascolto rende innocuo un invio ripetuto.
+//! Misurati qui, contati là: `playback::record_play_specchio_e_in_fila` li
+//! mette in fila nella libreria — insieme alla cronologia, in una presa sola
+//! ([`ascolto_in_fila`] sveglia il filo) — e [`manda_gli_ascolti`] li manda
+//! quando l'altro risponde. La chiave di ogni ascolto rende innocuo un invio
+//! ripetuto.
 //!
 //! # «Solo Wi-Fi»
 //!
 //! Su una rete a consumo — i dati mobili del telefono — un brano dell'altro
 //! si apre solo con «Usa i dati mobili» acceso. Con «Chiedi», il comando
 //! risponde `lontano.reteAConsumo` e la finestra chiede; la risposta diventa
-//! l'impostazione. Gli elenchi e le copertine passano sempre: pesano poco, e
+//! l'impostazione. Ma la finestra chiede solo ai gesti che parte da lei
+//! ([`ConLaPagina`]): dove nessuno può rispondere — un tasto, la notifica,
+//! Android Auto, il brano dopo, l'autoplay — «Chiedi» vale «No»: le righe solo
+//! remote si saltano, e la musica non si ferma (S11-3). Gli elenchi e le
+//! copertine passano sempre: pesano poco, e
 //! senza non si saprebbe cosa scegliere (le copertine si chiedono in
 //! `specchio::copertina_di_una_riga`). Su Windows la rete non è mai a
 //! consumo. La stessa regola vale per «Ascolta insieme» via internet
@@ -41,9 +47,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::nucleo::{ComeNucleo, Nucleo};
-use rymembra_app::dispositivi::{self, AscoltoLontano, DatiMobili};
+use rymembra_app::dispositivi::{self, DatiMobili};
 use rymembra_domain::errors::{AppError, ErrorCode};
-use rymembra_domain::listen::Listen;
 use rymembra_lontano::protocollo::MASSIMO_PEZZO;
 use rymembra_lontano::{Domanda, Risposta};
 use rymembra_net::flusso::Sorgente;
@@ -274,13 +279,88 @@ pub(super) fn dati_permessi(comune: &Comune) -> Result<(), AppError> {
 
 /// La rete di adesso, per scegliere quale copia di un brano si suona: vedi
 /// `rymembra_app::specchio::scelta::scegli_con_la_rete`.
+///
+/// «Chiedi» è una domanda, e una domanda vuole qualcuno che risponda: vedi
+/// [`ConLaPagina`]. Dove non c'è nessuno vale «No».
 pub(super) fn rete_di_adesso(comune: &Comune) -> rymembra_app::specchio::scelta::Rete {
+    rete_per(
+        rete_a_consumo(),
+        prendi(&comune.vetrina).dati_mobili,
+        la_pagina_puo_chiedere(),
+    )
+}
+
+/// La rete di adesso per chi **sceglie da solo** — l'autoplay, la radio, le
+/// playlist intelligenti, Android Auto —: lì una domanda non ha mai nessuno
+/// che risponda, qualunque sia il gesto che l'ha fatto partire.
+pub(super) fn rete_per_chi_sceglie_da_solo(
+    comune: &Comune,
+) -> rymembra_app::specchio::scelta::Rete {
+    rete_per(rete_a_consumo(), prendi(&comune.vetrina).dati_mobili, false)
+}
+
+/// La regola di [`rete_di_adesso`], senza il posto da cui vengono i tre dati.
+///
+/// Con «Chiedi» sui dati mobili la finestra mostra «Usare i dati mobili?» e la
+/// risposta diventa l'impostazione — ma solo da un gesto che parte dalla
+/// finestra. Un tasto, la notifica, Android Auto, il brano che segue, l'autoplay
+/// non hanno nessuno a cui chiedere: lì «Chiedi» vale «No», e le copie in rete
+/// si saltano invece di fermare la musica (S11-3).
+pub(super) fn rete_per(
+    a_consumo: bool,
+    scelta: DatiMobili,
+    puo_chiedere: bool,
+) -> rymembra_app::specchio::scelta::Rete {
     use rymembra_app::specchio::scelta::Rete;
-    if rete_a_consumo() {
-        Rete::AConsumo(prendi(&comune.vetrina).dati_mobili)
-    } else {
-        Rete::Libera
+    if !a_consumo {
+        return Rete::Libera;
     }
+    if matches!(scelta, DatiMobili::Chiedi) && !puo_chiedere {
+        return Rete::AConsumo(DatiMobili::No);
+    }
+    Rete::AConsumo(scelta)
+}
+
+thread_local! {
+    /// Chi sta eseguendo un gesto che parte dalla finestra: vedi [`ConLaPagina`].
+    static DALLA_PAGINA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Il filo di chi la tiene sta eseguendo un comando che **la finestra** ha
+/// chiesto, e che la finestra sa far diventare una domanda («Usare i dati
+/// mobili?»): `suona`, `radio`, `riprendi`, `alterna`, `prossimo`, `precedente`,
+/// `coda_vai`, cioè quelli che passano da `conIlSiDeiDatiMobili` in `ipc.ts`.
+///
+/// È un'etichetta sul filo e non un parametro, perché fra il comando e la scelta
+/// della copia di un brano ci sono sei funzioni — il gesto sulla coda, la
+/// partenza, l'apertura — che non hanno altra ragione di sapere da dove si è
+/// partiti. La apre il comando e la chiude la sua fine, anche con un panico;
+/// ogni altro filo — tasti, notifica, Android Auto, il preparatore del brano
+/// dopo, il filo che riprova a fine brano — non la porta, e per loro «Chiedi»
+/// vale «No».
+#[derive(Debug)]
+pub(crate) struct ConLaPagina {
+    prima: bool,
+}
+
+impl ConLaPagina {
+    /// Da qui, su questo filo, la finestra può rispondere a una domanda.
+    pub(crate) fn nuova() -> Self {
+        Self {
+            prima: DALLA_PAGINA.with(|dentro| dentro.replace(true)),
+        }
+    }
+}
+
+impl Drop for ConLaPagina {
+    fn drop(&mut self) {
+        DALLA_PAGINA.with(|dentro| dentro.set(self.prima));
+    }
+}
+
+/// Su questo filo la finestra può rispondere a «Usare i dati mobili?».
+pub(crate) fn la_pagina_puo_chiedere() -> bool {
+    DALLA_PAGINA.with(std::cell::Cell::get)
 }
 
 /// L'estensione di un brano dell'altro, se ha la forma di un'estensione.
@@ -330,35 +410,24 @@ pub(super) fn apri_in_rete(comune: &Arc<Comune>, dispositivo: &str, brano: i64) 
 
 // ── gli ascolti ─────────────────────────────────────────────────────────────
 
-/// Un ascolto fatto qui di un brano dell'altro: in fila, da mandargli.
-/// Gira sul filo delle scritture del lettore.
-pub fn ascoltato_qui(app: &Nucleo, dispositivo: &str, brano: i64, ascolto: &Listen) {
-    let lontano = AscoltoLontano {
-        brano,
-        quando_ms: ascolto.started_at,
-        ascoltato_ms: i64::try_from(ascolto.listened_ms).unwrap_or(i64::MAX),
-        // Un brano non comincia due volte nello stesso millisecondo: l'inizio
-        // e il brano bastano a distinguere ogni ascolto di qui, e chi lo riceve
-        // ci mette davanti la chiave di questo dispositivo.
-        chiave: format!("{}-{brano}", ascolto.started_at),
-    };
-    match in_libreria(app, ATTESA_LIBRERIA, |c| {
-        dispositivi::ricorda_ascolto(c, dispositivo, &lontano)
-    }) {
-        Ok(()) => {
-            if let Ok(comune) = comune(app) {
-                comune.sveglia(Posta::Ascolti);
-            }
-        }
-        Err(err) => nota!(
-            "[lontano] un ascolto di un brano di un altro dispositivo non si ricorda codice={}",
-            err.code().kind().code()
-        ),
+/// C'è un ascolto nuovo, fatto qui, di un brano dell'altro: il filo lo manda
+/// appena l'altro risponde.
+///
+/// L'ascolto è già in fila: l'ha scritto `playback::record_play_specchio_e_in_fila`,
+/// nella stessa presa e nella stessa transazione della cronologia. Prima era una
+/// seconda presa con due secondi di pazienza, e un lotto lungo della libreria
+/// faceva perdere l'ascolto (S11-2). Qui resta solo da svegliare il filo.
+pub fn ascolto_in_fila(app: &Nucleo) {
+    if let Ok(comune) = comune(app) {
+        comune.sveglia(Posta::Ascolti);
     }
 }
 
 /// C'è un giro di invii in corso.
 static POSTINO: AtomicBool = AtomicBool::new(false);
+
+/// Il nome del filo degli ascolti, nel diario dei panici e nella salute dei fili.
+const FILO_ASCOLTI: &str = "rymembra-lontano-ascolti";
 
 /// Un invio non è riuscito, o un giro non è partito: il filo riprova al
 /// prossimo giro.
@@ -389,14 +458,23 @@ pub(super) fn manda_gli_ascolti(app: &Nucleo, comune: &Arc<Comune>, solo: Option
     let app = app.clone();
     let comune = Arc::clone(comune);
     let partito = std::thread::Builder::new()
-        .name("rymembra-lontano-ascolti".to_owned())
+        .name(FILO_ASCOLTI.to_owned())
         .spawn(move || {
+            // La bandiera si abbassa quando il filo finisce comunque finisca: con un
+            // panico dentro `manda_a` (un ascolto che il parser o SQLite non si
+            // aspettavano) restava alzata, e gli ascolti in coda non partivano più
+            // verso nessun pari fino al riavvio (S7-3).
+            let _posto =
+                crate::disparte::AllaFine::sempre(|| POSTINO.store(false, Ordering::Release));
             for chiave in presenti {
-                if !manda_a(&app, &comune, &chiave) {
+                // Un dispositivo che fa cadere il giro non ferma quelli dopo di lui; e
+                // un giro caduto è un invio da riprovare.
+                let riuscito =
+                    crate::stato::sorvegliato(FILO_ASCOLTI, || manda_a(&app, &comune, &chiave));
+                if riuscito != Some(true) {
                     DA_RIPROVARE.store(true, Ordering::Release);
                 }
             }
-            POSTINO.store(false, Ordering::Release);
         });
     if let Err(err) = partito {
         nota!("[lontano] il filo degli ascolti non parte: {err}");
@@ -911,5 +989,99 @@ mod prove {
         assert!(si_ripulisce(false, &fatta), "la prima volta sì");
         assert!(!si_ripulisce(false, &fatta), "poi più");
         assert!(!si_ripulisce(true, &fatta));
+    }
+
+    /// S11-3: «Chiedi» è una domanda, e senza nessuno che risponda vale «No».
+    /// Con «Sì» e con «No» niente cambia, e su una rete libera non c'è niente
+    /// da chiedere.
+    #[test]
+    fn chiedi_senza_nessuno_che_risponda_vale_no() {
+        use rymembra_app::specchio::scelta::Rete;
+        assert_eq!(
+            rete_per(true, DatiMobili::Chiedi, false),
+            Rete::AConsumo(DatiMobili::No),
+            "un tasto, la notifica o Android Auto non possono rispondere"
+        );
+        assert_eq!(
+            rete_per(true, DatiMobili::Chiedi, true),
+            Rete::AConsumo(DatiMobili::Chiedi),
+            "dalla finestra la domanda si può fare"
+        );
+        for puo_chiedere in [false, true] {
+            assert_eq!(
+                rete_per(true, DatiMobili::No, puo_chiedere),
+                Rete::AConsumo(DatiMobili::No)
+            );
+            assert_eq!(
+                rete_per(true, DatiMobili::Si, puo_chiedere),
+                Rete::AConsumo(DatiMobili::Si)
+            );
+            assert_eq!(
+                rete_per(false, DatiMobili::Chiedi, puo_chiedere),
+                Rete::Libera,
+                "su una rete libera non si chiede niente"
+            );
+        }
+    }
+
+    /// L'etichetta «lo sta chiedendo la finestra» sta sul filo di chi la apre, si
+    /// richiude anche con un panico, e un'etichetta dentro un'altra non
+    /// spegne quella di fuori.
+    #[test]
+    fn l_etichetta_della_pagina_sta_sul_filo_e_si_richiude() {
+        assert!(!la_pagina_puo_chiedere(), "di serie nessuno risponde");
+        {
+            let _fuori = ConLaPagina::nuova();
+            assert!(la_pagina_puo_chiedere());
+            {
+                let _dentro = ConLaPagina::nuova();
+                assert!(la_pagina_puo_chiedere());
+            }
+            assert!(
+                la_pagina_puo_chiedere(),
+                "chiudere quella di dentro ha spento quella di fuori"
+            );
+            // Un altro filo non la eredita.
+            let altrove = std::thread::spawn(la_pagina_puo_chiedere)
+                .join()
+                .expect("il filo finisce");
+            assert!(!altrove, "l'etichetta è del filo, non del processo");
+        }
+        assert!(!la_pagina_puo_chiedere());
+        // Con un panico si richiude lo stesso.
+        let caduto = std::thread::spawn(|| {
+            let _pagina = ConLaPagina::nuova();
+            std::panic::resume_unwind(Box::new("caduta di prova"));
+        })
+        .join();
+        assert!(caduto.is_err());
+        assert!(!la_pagina_puo_chiedere());
+    }
+
+    /// S7-3: il filo degli ascolti libera il suo «posto» — la bandiera `POSTINO` —
+    /// anche se cade in un panico (un ascolto che il parser o SQLite non si
+    /// aspettavano), e un giro che cade non ferma i dispositivi dopo di lui.
+    /// Senza, la bandiera restava alzata: gli ascolti in coda non partivano più
+    /// verso nessun pari fino al riavvio.
+    #[test]
+    fn il_filo_degli_ascolti_libera_il_posto_anche_in_un_panico() {
+        let sorgente = include_str!("sfoglia.rs");
+        let sorgente = sorgente
+            .split("\n#[cfg(test)]\nmod prove")
+            .next()
+            .unwrap_or(sorgente);
+        let inizio = sorgente
+            .find("pub(super) fn manda_gli_ascolti(")
+            .expect("manda_gli_ascolti");
+        let resto = &sorgente[inizio..];
+        let corpo = &resto[..resto.find("\n}\n").expect("fine")];
+        assert!(
+            corpo.contains("AllaFine::sempre("),
+            "il filo degli ascolti non ha una guardia che libera `POSTINO` in un panico"
+        );
+        assert!(
+            corpo.contains("sorvegliato("),
+            "un giro che cade ferma i dispositivi dopo di lui"
+        );
     }
 }

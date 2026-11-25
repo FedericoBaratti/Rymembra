@@ -106,13 +106,25 @@ test("«Scarica qui» chiede prima di accodare, e dopo aver tolto i dispositivi 
     assert.ok(inizio > 0, `App non ha più ${nome}`);
     return APP.slice(inizio, APP.indexOf("\n  );\n", inizio));
   };
-  // Il lavoro sta in `preparaLoScarico`; `scaricaQui` lo mette dietro la guardia
-  // «una alla volta» (S9-9).
-  const corpo = corpoDi("preparaLoScarico");
-  const filtro = corpo.indexOf("avvisaNonRaggiungibile(primoSpento(lontani, pannello))");
+  // Il lavoro sta in due pezzi: `preparaLoScarico` toglie i dispositivi spenti dalle righe
+  // intere e `preparaLoScaricoDaId` li ha già tolti il nucleo (S9-8, S9-9); poi tutti e due
+  // passano da `confermaEAccoda`. `scaricaQui` lo mette dietro la guardia «una alla volta».
+  const prepara = corpoDi("preparaLoScarico");
+  assert.ok(
+    prepara.includes("avvisaNonRaggiungibile(primoSpento(lontani, pannello))"),
+    "le righe intere si filtrano dai dispositivi spenti prima di chiedere",
+  );
+  assert.ok(prepara.indexOf("confermaEAccoda(accesi.map") > prepara.indexOf("primoSpento"));
+  const daId = corpoDi("preparaLoScaricoDaId");
+  assert.ok(daId.includes("await confermaEAccoda(scelte.ids)"), "gli id del nucleo passano dalla stessa domanda");
+  assert.ok(
+    daId.indexOf("avvisaDellaRigaSpenta(scelte.primaSpenta)") < daId.indexOf("confermaEAccoda("),
+    "i dispositivi spenti si dicono prima della domanda",
+  );
+  const corpo = corpoDi("confermaEAccoda");
   const chiede = corpo.indexOf("ipc.lontanoScaricaAnteprima(");
   const accoda = corpo.indexOf("await accodaRighe(ids)");
-  assert.ok(filtro > 0 && chiede > filtro, "la domanda viene dopo il filtro dei dispositivi spenti");
+  assert.ok(chiede > 0, "la domanda ha il conto del nucleo");
   assert.ok(accoda > chiede, "e l'accodamento dopo la domanda");
   assert.ok(corpo.includes("chiedeConfermaPerLoScarico("), "la soglia sta in `lontano.ts`, non qui");
   assert.ok(

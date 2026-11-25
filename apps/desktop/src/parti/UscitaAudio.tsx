@@ -33,7 +33,7 @@ import {
   LATENZA_MASSIMA_MS,
   ipc,
   type DispositivoAudio,
-  type StatoRiproduzione,
+  type StatoRiproduzioneEvento,
 } from "../ipc";
 import { t } from "../lingue";
 import { useAscolto } from "../pagine";
@@ -295,7 +295,7 @@ export function CursoreLatenza({
   // chiesto. Serve anche quando il cursore non l'ha mosso nessuno — una
   // riapertura del dispositivo rimanda lo stato — e per questo non basta la
   // risposta del comando.
-  useAscolto<StatoRiproduzione>("riproduzione:stato", (stato) =>
+  useAscolto<StatoRiproduzioneEvento>("riproduzione:stato", (stato) =>
     setScritta(stato.latenzaMs),
   );
 

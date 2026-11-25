@@ -853,6 +853,44 @@ export interface ContoPartecipazioni {
 }
 
 /**
+ * La pagina di un artista, dal nucleo: la sua riga e i conti di «Compare anche
+ * in», in un viaggio solo (S9-3).
+ *
+ * `artista` è `null` quando col filtro di adesso non ha brani suoi: la pagina
+ * resta aperta con zero, e le partecipazioni si vedono lo stesso.
+ */
+export interface ArtistaAperto {
+  artista: Artista | null;
+  partecipazioni: ContoPartecipazioni;
+}
+
+/** A che cosa servono le righe che si chiedono al nucleo: vedi `RigheScelte`. */
+export type UsoDelleRighe = "suona" | "scarica";
+
+/**
+ * Gli identificativi di un elenco, con le righe che non servono già scartate dal
+ * nucleo (S9-8, S9-9).
+ *
+ * «Riproduci», «Casuale» e «Scarica qui» su un artista o su una selezione grande
+ * leggevano le righe intere, a pagine, solo per saltare quelle di un dispositivo
+ * spento: il nucleo conosce già chi risponde, e dà gli id nello stesso ordine.
+ *
+ * - `ids`: quelle che si possono usare, nell'ordine chiesto. Per `suona`: di qui,
+ *   di un dispositivo che risponde, o con una copia di qui. Per `scarica`: di qui
+ *   e di un dispositivo che risponde (il nucleo ignora poi quelle di qui);
+ * - `lontane`: quante di `ids` stanno su un altro dispositivo;
+ * - `spente`: quante ne ha scartate, perché il dispositivo non risponde o
+ *   perché il proprietario non le manda più;
+ * - `primaSpenta`: la prima di quelle, per dire «<PC> non raggiungibile».
+ */
+export interface RigheScelte {
+  ids: number[];
+  lontane: number;
+  spente: number;
+  primaSpenta: number | null;
+}
+
+/**
  * Quale elenco di brani si sta guardando, detto al nucleo.
  *
  * Le stesse domande delle pagine — `brani`, `preferiti`, `cerca` — senza la
@@ -1051,7 +1089,18 @@ export interface StatoRiproduzione {
   ripeti: Ripetizione;
   volume: number;
   muto: boolean;
+  /**
+   * La coda, nell'ordine in cui suonerà. L'evento `riproduzione:stato` non la porta
+   * se non è cambiata (`StatoRiproduzioneEvento`): la finestra la tiene in mano
+   * (`codaTenuta.ts`), e questo campo è sempre quella.
+   */
   coda: number[];
+  /**
+   * La versione della coda, che il nucleo numera a ogni cambiamento: con la stessa
+   * versione la coda è la stessa. Parte dal tempo di avvio, perché un nucleo
+   * riavviato non riparta da un numero che la finestra ha già visto.
+   */
+  versioneCoda: number;
   posizioneCoda: number | null;
   eqAttivo: boolean;
   eqGuadagni: number[];
@@ -1138,6 +1187,19 @@ export interface StatoRiproduzione {
    * `Tempo.inAttesa`), e `useRiproduzione` lo aggiunge qui. Assente vale no.
    */
   inAttesa?: boolean;
+}
+
+/**
+ * `riproduzione:stato`, com'è sul filo: la coda c'è solo se è cambiata dall'ultimo
+ * evento spedito (S7-5). `codaTenuta.ts` la rimette al suo posto prima che
+ * qualcuno disegni lo stato.
+ */
+export type StatoRiproduzioneEvento = Omit<StatoRiproduzione, "coda"> & { coda?: number[] };
+
+/** La coda del lettore con la sua versione, per chi l'ha persa: `riproduzione_coda`. */
+export interface CodaDelLettore {
+  versione: number;
+  coda: number[];
 }
 
 /**

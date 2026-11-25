@@ -23,8 +23,10 @@ import {
   type GuastoAudio,
   type StatoEq,
   type StatoRiproduzione,
+  type StatoRiproduzioneEvento,
   type Tempo,
 } from "./ipc";
+import { CODA_VUOTA, laCodaChiesta, laCodaDelloStato, statoConLaCoda } from "./codaTenuta";
 import { ETA, FINESTRA, SALTO, creaOrologio } from "./orologio";
 import { useAscolto } from "./pagine";
 import { apreAncora } from "./apertura";
@@ -58,6 +60,7 @@ const FERMO: StatoRiproduzione = {
   volume: 1,
   muto: false,
   coda: [],
+  versioneCoda: 0,
   posizioneCoda: null,
   eqAttivo: false,
   eqGuadagni: [],
@@ -494,14 +497,48 @@ export function useRiproduzione(): Riproduzione {
       vivo.current = false;
     };
   }, []);
+  // La coda in mano, e la versione con cui il nucleo l'ha numerata (S7-5): l'evento
+  // non la porta se non è cambiata, e questo è l'unico posto che la rimette nello
+  // stato. Vedi `codaTenuta.ts`.
+  const coda = useRef(CODA_VUOTA);
+  const codaChiesta = useRef<number | null>(null);
+  const conLaCoda = (carico: StatoRiproduzioneEvento): StatoRiproduzione => {
+    const esito = laCodaDelloStato(coda.current, carico);
+    coda.current = esito.tenuta;
+    // Una versione che non si ha, e nell'evento niente: quello che la portava non è
+    // arrivato. Una richiesta per versione, non una per evento.
+    if (esito.manca && codaChiesta.current !== carico.versioneCoda) {
+      codaChiesta.current = carico.versioneCoda;
+      ipc
+        .codaDelLettore()
+        .then((risposta) => {
+          if (!vivo.current) return;
+          const nuova = laCodaChiesta(coda.current, risposta);
+          if (nuova === null) return;
+          coda.current = nuova;
+          setStato((prima) => ({ ...prima, coda: nuova.coda, versioneCoda: nuova.versione }));
+        })
+        .catch((e: unknown) => {
+          if (!vivo.current) return;
+          // Lo stesso discorso della prima lettura: un motore che si sta aprendo non è
+          // un guasto, e lo stato arriva da sé.
+          if (!apreAncora(e)) setErrore(e);
+        })
+        .finally(() => {
+          codaChiesta.current = null;
+        });
+    }
+    return statoConLaCoda(carico, esito.coda);
+  };
   const fotografia = () => {
     const valida = conto.chiedi();
     ipc
       .riproduzioneStato()
       .then((iniziale) => {
         if (!vivo.current || !valida()) return;
-        setStato(iniziale);
-        accogli(iniziale);
+        const stato = conLaCoda(iniziale);
+        setStato(stato);
+        accogli(stato);
       })
       .catch((e: unknown) => {
         if (!vivo.current) return;
@@ -512,7 +549,7 @@ export function useRiproduzione(): Riproduzione {
       });
   };
 
-  useAscolto<StatoRiproduzione>(
+  useAscolto<StatoRiproduzioneEvento>(
     "riproduzione:stato",
     (carico) => {
       conto.evento();
@@ -520,8 +557,9 @@ export function useRiproduzione(): Riproduzione {
       // c'era, e che il nucleo ha aperto dopo — il dispositivo audio si apre
       // fuori dal `setup`, e una scheda attaccata più tardi pure.
       setDisponibile(true);
-      setStato(carico);
-      accogli(carico);
+      const stato = conLaCoda(carico);
+      setStato(stato);
+      accogli(stato);
     },
     true,
     fotografia,

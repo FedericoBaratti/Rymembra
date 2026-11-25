@@ -250,9 +250,14 @@ pub(super) fn pubblica(app: &Nucleo, abbozzo: Abbozzo) {
         aspetta_le_scritture(&stato_lettore, abbozzo.scritture, fine);
     }
     let resta = fine.saturating_duration_since(std::time::Instant::now());
-    let stato = completa(app, abbozzo, Some(resta));
+    let mut stato = completa(app, abbozzo, Some(resta));
+    // La coda va alla finestra solo se è cambiata dall'ultimo stato spedito: qui,
+    // dopo il controllo di `superato`, perché la coda di una fotografia scartata
+    // non è mai arrivata a nessuno (S7-5).
+    registra_la_coda(app, &mut stato, false);
     // Prima la finestra, che è chi l'utente sta guardando; poi Windows e il
-    // vassoio, che per aggiornarsi possono dover aspettare il sistema.
+    // vassoio, che per aggiornarsi possono dover aspettare il sistema. La copia
+    // condivide la coda (`Arc`): non ne fa un'altra.
     let copia = stato.clone();
     app.emetti("riproduzione:stato", stato);
     // Uscendo, né l'una né l'altro: la scheda e l'icona stanno per essere
@@ -306,6 +311,29 @@ pub(super) struct Abbozzo {
 /// intera: quella dopo dice tutto quel che diceva questa.
 pub(super) const fn superato(generazione: u64, ultima: u64) -> bool {
     generazione < ultima
+}
+
+/// Mette nello stato la versione della coda, e la coda stessa se la finestra non
+/// ce l'ha ancora (S7-5).
+///
+/// `sempre`: la coda va comunque, per chi la chiede intera
+/// (`riproduzione_stato`). Senza il registro — l'applicazione si chiude — va
+/// sempre: meglio una coda in più che una finestra con quella di prima.
+pub(super) fn registra_la_coda(app: &Nucleo, stato: &mut StatoRiproduzione, sempre: bool) {
+    let Some(lettore) = app.try_state::<StatoLettore>() else {
+        stato.coda_in_pagina = Some(std::sync::Arc::clone(&stato.coda));
+        return;
+    };
+    let cambiata = {
+        let mut pubblicata = lettore
+            .coda_pubblicata
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cambiata = pubblicata.registra(&mut stato.coda);
+        stato.versione_coda = pubblicata.versione;
+        cambiata
+    };
+    stato.coda_in_pagina = (cambiata || sempre).then(|| std::sync::Arc::clone(&stato.coda));
 }
 
 /// Spedisce una fotografia a [`pubblica`], col suo numero.
@@ -427,7 +455,10 @@ pub(super) fn abbozzo(app: &Nucleo, lettore: &Lettore) -> Abbozzo {
             ripeti: nome_ripetizione(lettore.coda.repeat()).to_owned(),
             volume: lettore.volume.volume,
             muto: lettore.volume.muto,
-            coda: lettore.coda.in_play_order(),
+            coda: std::sync::Arc::new(lettore.coda.in_play_order()),
+            // Lo dicono `pubblica` e `riproduzione_stato`, che sanno cosa la finestra ha.
+            coda_in_pagina: None,
+            versione_coda: 0,
             posizione_coda: lettore.coda.position(),
             eq_attivo: lettore.eq.attivo,
             eq_guadagni: lettore.eq.guadagni.clone(),

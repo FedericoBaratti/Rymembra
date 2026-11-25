@@ -309,6 +309,15 @@ impl Coda {
         }
     }
 
+    /// Il filo di `dispositivo` è caduto in un panico: il suo posto si libera, e il
+    /// brano che aveva in mano non è più in corso. La coda che aspettava resta: il
+    /// prossimo «Scarica qui» per quel dispositivo fa partire un filo nuovo, che la
+    /// trova.
+    fn filo_caduto(&mut self, dispositivo: &str) {
+        self.fili.remove(dispositivo);
+        self.finito(dispositivo);
+    }
+
     /// Un brano è stato scritto.
     fn scritto(&mut self, _dispositivo: &str) {
         self.stato.fatti = self.stato.fatti.saturating_add(1);
@@ -329,6 +338,9 @@ impl Coda {
 }
 
 static CODA: Mutex<Coda> = Mutex::new(Coda::nuova());
+
+/// Il nome del filo di un dispositivo, nel diario dei panici e nella salute dei fili.
+const FILO_SCARICO: &str = "rymembra-lontano-scarico";
 
 /// Com'è finito un brano.
 #[derive(Debug, PartialEq, Eq)]
@@ -776,6 +788,14 @@ const fn notifica(_: bool, _: u32, _: u32, _: &str) {}
 /// Il filo di un dispositivo: svuota la sua coda. L'ultimo che finisce
 /// scansiona quel che è arrivato.
 fn gira(app: &Nucleo, dispositivo: &str) {
+    // Alla fine normale il filo è già uscito da `fili` nello stesso passo in cui ha
+    // visto la sua coda vuota (`Coda::prendi`), e un filo nuovo può averne preso il
+    // posto: la guardia agisce solo se questo cade in un panico. Altrimenti il
+    // dispositivo restava in `fili`, «Scarica qui» accodava e non scaricava mai, e
+    // la barra restava ferma fino al riavvio (S7-3).
+    let _posto = crate::disparte::AllaFine::solo_se_cade(|| {
+        prendi(&CODA).filo_caduto(dispositivo);
+    });
     let (ultimo, scritti) = loop {
         let (lavoro, giro, numero, di) = match prendi(&CODA).prendi(dispositivo) {
             Prossimo::Finito { ultimo, scritti } => break (ultimo, scritti),
@@ -788,7 +808,14 @@ fn gira(app: &Nucleo, dispositivo: &str) {
         };
         notifica(true, numero, di, &lavoro.brano.title);
         annuncia(app);
-        let esito = scarica_uno(app, &lavoro, giro);
+        // Un brano che fa cadere `scarica_uno` è un brano fallito, e il filo
+        // continua: `finito` lo conta comunque e gli altri brani scendono.
+        let esito = crate::stato::sorvegliato(FILO_SCARICO, || scarica_uno(app, &lavoro, giro))
+            .unwrap_or_else(|| {
+                Err(AppError::new(ErrorCode::InternalUnexpected {
+                    detail: Some("lo scaricamento di un brano è caduto".to_owned()),
+                }))
+            });
         let mut coda = prendi(&CODA);
         coda.finito(dispositivo);
         match esito {
@@ -854,7 +881,7 @@ fn accoda(
         let per_il_filo = app.clone();
         let del_dispositivo = chiave.to_owned();
         let partito = std::thread::Builder::new()
-            .name("rymembra-lontano-scarico".to_owned())
+            .name(FILO_SCARICO.to_owned())
             .spawn(move || gira(&per_il_filo, &del_dispositivo));
         if let Err(err) = partito {
             // Il filo non c'è: la sua coda non ha chi la svuoti.
@@ -1694,5 +1721,55 @@ mod prove {
         });
         assert!(!coda.aggiungi("a", vec![cd]));
         assert_eq!(coda.stato.saltati, 1);
+    }
+
+    /// S7-3: un filo caduto non lascia la coda del suo dispositivo senza chi la
+    /// svuoti: dopo `filo_caduto` un brano nuovo fa ripartire un filo, e i brani che
+    /// aspettavano ci sono ancora.
+    #[test]
+    fn un_filo_caduto_lascia_ripartire_la_coda_del_dispositivo() {
+        let mut coda = Coda::nuova();
+        assert!(
+            coda.aggiungi("d", vec![brano("a")]),
+            "il primo brano fa partire il filo"
+        );
+        assert!(
+            !coda.aggiungi("d", vec![brano("b")]),
+            "con un filo vivo ne basta uno"
+        );
+        coda.filo_caduto("d");
+        assert!(
+            coda.aggiungi("d", vec![brano("c")]),
+            "dopo la caduta il dispositivo non ha più un filo, e un brano nuovo ne fa partire uno"
+        );
+        assert_eq!(
+            coda.in_attesa(),
+            3,
+            "i brani che aspettavano ci sono ancora"
+        );
+    }
+
+    /// S7-3: il filo di un dispositivo libera il suo posto in `fili` se cade in
+    /// un panico, e un brano che cade non lo porta via: `finito` conta comunque
+    /// quel brano. Senza, «Scarica qui» accodava e non scaricava mai, e la barra
+    /// restava ferma fino al riavvio.
+    #[test]
+    fn il_filo_dello_scarico_libera_il_posto_anche_in_un_panico() {
+        let sorgente = include_str!("scarico.rs");
+        let sorgente = sorgente
+            .split("\n#[cfg(test)]\nmod prove")
+            .next()
+            .unwrap_or(sorgente);
+        let inizio = sorgente.find("fn gira(").expect("gira");
+        let resto = &sorgente[inizio..];
+        let corpo = &resto[..resto.find("\n}\n").expect("fine")];
+        assert!(
+            corpo.contains("AllaFine::solo_se_cade("),
+            "il filo dello scarico non libera `fili` in un panico"
+        );
+        assert!(
+            corpo.contains("sorvegliato("),
+            "un brano che cade porta via il filo e la sua coda"
+        );
     }
 }

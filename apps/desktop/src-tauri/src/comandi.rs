@@ -1685,6 +1685,90 @@ pub async fn partecipazioni(
     .map_err(errore)
 }
 
+/// L'artista aperto: la sua riga e i conti di «Compare anche in», in un viaggio
+/// solo (S9-3).
+///
+/// La pagina di un artista leggeva l'elenco intero degli artisti — migliaia di
+/// righe, megabyte di JSON — per due numeri, e lo rifaceva a ogni rilettura della
+/// libreria: ogni 3 s durante la lettura di un catalogo. Qui sta quel che le
+/// serve: `artista` è `null` se col filtro di adesso non ha brani suoi (la pagina
+/// resta aperta con zero), e i conti ci sono lo stesso. Senza il lucchetto della
+/// libreria, come `artisti` e `partecipazioni_conta` (`leggi_a_parte`).
+#[tauri::command]
+pub async fn artista(
+    app: tauri::AppHandle,
+    nome: String,
+    origine: Option<Origine>,
+) -> Esito<ArtistaAperto> {
+    let origine = origine.unwrap_or_default();
+    leggi_a_parte(app, "artista aperto", move |c| {
+        Ok(ArtistaAperto {
+            artista: rymembra_app::library::artista_solo(c, &origine, &nome)?,
+            partecipazioni: rymembra_app::library::partecipazioni_conta(c, &origine, &nome)?,
+        })
+    })
+    .await
+    .map_err(errore)
+}
+
+/// La risposta di [`artista`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistaAperto {
+    /// La sua riga della griglia; `None` se col filtro di adesso non ha brani.
+    pub artista: Option<ArtistSummary>,
+    /// Quanti brani ha in «Compare anche in», per specie.
+    pub partecipazioni: rymembra_app::library::ContoPartecipazioni,
+}
+
+/// Gli identificativi dei brani di un artista, nell'ordine della sua pagina, già
+/// senza le righe che non servono a `uso` (S9-8).
+///
+/// «Riproduci», «Casuale» e «Scarica qui» sull'artista leggevano le righe intere,
+/// duecento per volta e in fila, solo per saltare quelle di un dispositivo spento.
+/// Il nucleo sa già chi risponde (`lontano::raggiungibili_adesso`, la stessa lista
+/// di Android Auto) e quali righe il proprietario non manda più: dà gli id e conta
+/// quelle che ha scartato. Vedi `rymembra_app::specchio::righe_scelte`.
+#[tauri::command]
+pub async fn artista_righe(
+    app: tauri::AppHandle,
+    nome: String,
+    ordine: String,
+    uso: rymembra_app::specchio::righe_scelte::Uso,
+    origine: Option<Origine>,
+) -> Esito<rymembra_app::specchio::righe_scelte::RigheScelte> {
+    let origine = origine.unwrap_or_default();
+    let ordine = crate::viste::ordine_artista_da(&ordine);
+    // Le presenze si leggono dentro il lavoro in disparte, non sul worker che
+    // aspetta: prendono un lucchetto, e dopo un `.await` non va fatto (S7-2).
+    let per_le_presenze = app.clone();
+    leggi_a_parte(app, "righe di un artista", move |c| {
+        let raggiungibili = crate::lontano::raggiungibili_adesso(&per_le_presenze);
+        let ids = rymembra_app::library::id_dei_brani_artista(c, &origine, &nome, ordine)?;
+        rymembra_app::specchio::righe_scelte::scegli_le_righe(c, &ids, &raggiungibili, uso)
+    })
+    .await
+    .map_err(errore)
+}
+
+/// Lo stesso di [`artista_righe`] per una selezione: «Scarica qui» dal menù di
+/// cinquantamila brani selezionati portava in pagina tutte le righe intere (decine
+/// di megabyte) solo perché la finestra scartasse quelle di qui e le spente (S9-9).
+#[tauri::command]
+pub async fn righe_scelte(
+    app: tauri::AppHandle,
+    ids: Vec<i64>,
+    uso: rymembra_app::specchio::righe_scelte::Uso,
+) -> Esito<rymembra_app::specchio::righe_scelte::RigheScelte> {
+    let per_le_presenze = app.clone();
+    leggi_a_parte(app, "righe scelte", move |c| {
+        let raggiungibili = crate::lontano::raggiungibili_adesso(&per_le_presenze);
+        rymembra_app::specchio::righe_scelte::scegli_le_righe(c, &ids, &raggiungibili, uso)
+    })
+    .await
+    .map_err(errore)
+}
+
 /// Quante partecipazioni ha un artista, per specie: la lunghezza dei due elenchi
 /// di «Compare anche in».
 #[tauri::command]

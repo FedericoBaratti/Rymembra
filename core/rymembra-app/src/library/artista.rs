@@ -38,7 +38,7 @@
 use rusqlite::Connection;
 use rymembra_domain::errors::AppError;
 
-use super::interrogazioni::{COLONNE_BRANO, TrackSummary, dove, track_from_row};
+use super::interrogazioni::{ArtistSummary, COLONNE_BRANO, TrackSummary, dove, track_from_row};
 use super::{ARTISTA_EFFETTIVO, db_error};
 use crate::specchio::Origine;
 
@@ -408,6 +408,72 @@ pub fn partecipazioni_conta(
         )?,
     };
     Ok(ContoPartecipazioni { esatte, euristiche })
+}
+
+/// L'artista con questo nome, da solo: la stessa riga che [`super::list_artists`]
+/// darebbe per lui, senza leggere gli altri.
+///
+/// La pagina di un artista leggeva l'elenco intero degli artisti — migliaia, con
+/// duecentocinquantamila righe di libreria — per due numeri, e lo rifaceva a ogni
+/// rilettura della libreria (S9-3). Qui lo stesso conto per un artista solo, dallo
+/// stesso indice dell'artista effettivo che usa [`brani_artista`]. `None` se col
+/// filtro di adesso non ha brani suoi: un nome vuoto non è un artista, come per la
+/// griglia.
+///
+/// Le copertine sono le stesse quattro che la griglia sceglie — dalla più vecchia
+/// alla più recente, una per disco —, così il mosaico non cambia aprendo la pagina.
+///
+/// # Errori
+///
+/// Come [`brani_artista`].
+pub fn artista_solo(
+    connection: &Connection,
+    origine: &Origine,
+    nome: &str,
+) -> Result<Option<ArtistSummary>, AppError> {
+    let cosa = "artista aperto";
+    if nome.is_empty() {
+        return Ok(None);
+    }
+    let dove_t = dove(connection, origine, "t.")?;
+    let (albums, tracks): (i64, i64) = connection
+        .prepare_cached(&format!(
+            "SELECT COUNT(DISTINCT t.album_key), COUNT(*) FROM tracks t
+              WHERE {ARTISTA_EFFETTIVO} = ?1 AND {dove_t}"
+        ))
+        .and_then(|mut statement| {
+            statement.query_row([nome], |riga| Ok((riga.get(0)?, riga.get(1)?)))
+        })
+        .map_err(|err| db_error(cosa, &err))?;
+    if tracks == 0 {
+        return Ok(None);
+    }
+    let mut statement = connection
+        .prepare_cached(&format!(
+            "SELECT MIN(t.cover_art_hash) AS hash, MIN(t.year) AS anno FROM tracks t
+              WHERE {ARTISTA_EFFETTIVO} = ?1 AND t.cover_art_hash IS NOT NULL AND {dove_t}
+              GROUP BY t.album_key
+              ORDER BY anno"
+        ))
+        .map_err(|err| db_error(cosa, &err))?;
+    let righe = statement
+        .query_map([nome], |riga| riga.get::<_, String>(0))
+        .map_err(|err| db_error(cosa, &err))?;
+    let mut covers: Vec<String> = Vec::new();
+    for hash in righe {
+        let hash = hash.map_err(|err| db_error(cosa, &err))?;
+        // Quattro, e le stesse quattro a ogni chiamata, come nella griglia.
+        if covers.len() < 4 && !covers.contains(&hash) {
+            covers.push(hash);
+        }
+    }
+    Ok(Some(ArtistSummary {
+        sort_name: rymembra_domain::keys::sort_name(nome),
+        name: nome.to_owned(),
+        albums,
+        tracks,
+        covers,
+    }))
 }
 
 #[cfg(test)]
