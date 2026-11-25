@@ -407,6 +407,62 @@ fn gli_elenchi_non_ordinano_la_tabella_a_ogni_pagina() {
 }
 
 #[test]
+fn la_pagina_dei_recenti_legge_dall_indice_delle_date_e_non_ordina_la_libreria() {
+    // R33-prestazioni. «Recenti» ordina per istante d'ingresso e, a parità, per
+    // l'ordine del disco (R18-2): l'indice delle date serve il primo termine, e
+    // SQLite deve ordinare da sé soltanto i brani dello stesso istante — una
+    // scansione ne scrive cinquecento insieme. Senza una guida il pianificatore
+    // sceglieva la scansione della tabella e l'ordinamento di tutta, a ogni
+    // pagina da duecento righe: 70 ms su ventinovemila brani contro 0,4 prima
+    // di R18-2 (le misure sono in `misure_prestazioni.rs`). Come per gli altri
+    // ordini la prova guarda il piano, ma su una libreria con le date
+    // raggruppate come le scrive una scansione, e con le statistiche fatte.
+    let lib = Libreria::nuova();
+    lib.connection
+        .execute(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+             INSERT INTO tracks
+                 (id, path, track_key, title, artist, album_artist, album, album_key,
+                  track_number, year, duration_ms, file_size, play_count,
+                  date_added, date_modified)
+             SELECT i, '/m/' || i || '.mp3', 'k' || i, 'Titolo ' || i,
+                    'Artista ' || (i % 50), NULL, 'Disco ' || (i % 400),
+                    'ak' || (i % 400), i % 12 + 1, 1970 + i % 50, 200000, 5000000,
+                    i % 5, i / 500, 0
+               FROM n",
+            [5_000],
+        )
+        .expect("righe di prova");
+    lib.connection
+        .execute_batch("ANALYZE")
+        .expect("statistiche");
+    let sql = super::interrogazioni::sql_della_pagina(
+        &lib.connection,
+        &crate::specchio::Origine::Tutti,
+        TrackOrder::RecentlyAdded,
+    )
+    .expect("la domanda");
+    let mut statement = lib
+        .connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .expect("piano");
+    let piano = statement
+        .query_map(rusqlite::params![200_i64, 0_i64], |r| r.get::<_, String>(3))
+        .expect("righe del piano")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("piano letto")
+        .join(" | ");
+    assert!(
+        piano.contains("idx_tracks_added"),
+        "la pagina dei Recenti non legge dall'indice delle date: {piano}"
+    );
+    assert!(
+        !piano.contains("FOR ORDER BY"),
+        "la pagina dei Recenti ordina la libreria intera a ogni pagina: {piano}"
+    );
+}
+
+#[test]
 fn la_correzione_torna_con_il_file() {
     // Il file sparisce — la cartella tolta, il disco scollegato — e la
     // scansione cancella la riga. Il file torna, e la riga nuova deve
