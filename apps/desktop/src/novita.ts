@@ -49,32 +49,33 @@ export interface PassoNovita {
 /**
  * Le novità, per versione.
  *
- * Quattro passi per questa: la libreria unica, il sottofondo con l'avvio con
- * Windows, Android Auto, gli aggiornamenti. **Ogni frase dice quel che c'è nel
- * codice** — e chi rilascia la rilegge contro quel che è stato unito davvero
- * prima di pubblicare.
+ * Quattro passi per questa, scritti per chi arriva dalla 3.2.0 (la 3.2.1 non è
+ * mai uscita): i dispositivi collegati e la libreria unica, il sottofondo con
+ * l'avvio con Windows e la X nel vassoio, Android con Android Auto, gli
+ * aggiornamenti. **Ogni frase dice quel che c'è nel codice** — e chi rilascia
+ * la rilegge contro quel che è stato unito davvero prima di pubblicare.
  */
 export const NOVITA: Readonly<Record<string, readonly PassoNovita[]>> = {
-  "3.2.1": [
+  "3.3.0": [
     {
       illustrazione: "libreria",
-      titoloKey: "whatsNew.3.2.1.1.title",
-      testoKey: "whatsNew.3.2.1.1.text",
+      titoloKey: "whatsNew.3.3.0.1.title",
+      testoKey: "whatsNew.3.3.0.1.text",
     },
     {
       illustrazione: "sottofondo",
-      titoloKey: "whatsNew.3.2.1.2.title",
-      testoKey: "whatsNew.3.2.1.2.text",
+      titoloKey: "whatsNew.3.3.0.2.title",
+      testoKey: "whatsNew.3.3.0.2.text",
     },
     {
       illustrazione: "auto",
-      titoloKey: "whatsNew.3.2.1.3.title",
-      testoKey: "whatsNew.3.2.1.3.text",
+      titoloKey: "whatsNew.3.3.0.3.title",
+      testoKey: "whatsNew.3.3.0.3.text",
     },
     {
       illustrazione: "aggiornamenti",
-      titoloKey: "whatsNew.3.2.1.4.title",
-      testoKey: "whatsNew.3.2.1.4.text",
+      titoloKey: "whatsNew.3.3.0.4.title",
+      testoKey: "whatsNew.3.3.0.4.text",
     },
   ],
 };
