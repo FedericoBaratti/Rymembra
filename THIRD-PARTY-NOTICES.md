@@ -163,7 +163,7 @@ their reader's search: it appears in its license's group.
 | `const-oid` | 0.10.2 | Apache-2.0 OR MIT | <https://github.com/RustCrypto/formats> |
 | `constant_time_eq` | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 | <https://github.com/cesarb/constant_time_eq> |
 | `convert_case` | 0.10.0 | MIT | <https://github.com/rutrum/convert-case> |
-| `cookie` | 0.18.2 | MIT OR Apache-2.0 | <https://github.com/SergioBenitez/cookie-rs> |
+| `cookie` | 0.18.3 | MIT OR Apache-2.0 | <https://github.com/SergioBenitez/cookie-rs> |
 | `cordyceps` | 0.3.5 | MIT | <https://github.com/hawkw/mycelium> |
 | `core_detect` | 1.0.0 | MIT/Apache-2.0 | <https://github.com/thomcc/core_detect> |
 | `cpal` | 0.18.2 | Apache-2.0 | <https://github.com/RustAudio/cpal> |
@@ -12532,7 +12532,7 @@ SOFTWARE.
 
 <details><summary>Which packages</summary>
 
-- `cookie 0.18.2`
+- `cookie 0.18.3`
 
 </details>
 
@@ -12745,7 +12745,7 @@ limitations under the License.
 
 <details><summary>Which packages</summary>
 
-- `cookie 0.18.2`
+- `cookie 0.18.3`
 
 </details>
 
