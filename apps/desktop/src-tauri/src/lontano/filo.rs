@@ -177,7 +177,7 @@ pub(super) enum Posta {
     Evento(Evento),
     /// La rete del sistema è cambiata.
     CambioDiRete,
-    /// C'è un ascolto nuovo da mandare: vedi `sfoglia::ascoltato_qui`.
+    /// C'è un ascolto nuovo da mandare: vedi `sfoglia::ascolto_in_fila`.
     Ascolti,
     /// Si esce.
     Ferma(Sender<()>),

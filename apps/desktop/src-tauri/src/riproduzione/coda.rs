@@ -724,7 +724,7 @@ pub fn coda_dopo_ora(app: Nucleo, stato: StatoLettore, brani: Vec<i64>) -> Esito
 /// [`al_suo_posto`].
 #[tauri::command]
 pub async fn coda_vai(app: Nucleo, indice: usize, brano: i64) -> Esito<()> {
-    super::col_lettore_in_disparte(app, "salto nella coda", move |app, stato| {
+    super::col_lettore_chiedendo(app, "salto nella coda", move |app, stato| {
         coda_vai_ora(app, stato, indice, Some(brano))
     })
     .await

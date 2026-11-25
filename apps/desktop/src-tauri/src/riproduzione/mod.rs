@@ -1658,9 +1658,9 @@ fn chiudi_ascolto(app: &Nucleo, lettore: &mut Lettore) {
 enum Scritto {
     /// Una riga di questo computer: `true` se il conteggio è cresciuto.
     Contato(bool),
-    /// Una riga della libreria unica: l'ascolto è di quel dispositivo, col
-    /// suo id.
-    AlProprietario((String, i64)),
+    /// Una riga della libreria unica: l'ascolto è di quel dispositivo, ed è già
+    /// in fila per lui.
+    AlProprietario,
 }
 
 /// Scrive un ascolto finito, e avvisa chi ne deve sapere. Gira sul filo delle
@@ -1673,13 +1673,21 @@ fn scrivi_ascolto(app: &Nucleo, ascolto: &Listen) {
             // — non si conta qui: l'ascolto va in cronologia (per la Home) e in
             // posta, e lo conta il proprietario, che ne fa anche lo scrobble.
             // `play_count` non cresce, e niente va nei contatori della
-            // sincronia: sono suoi.
-            if let Some(proprietario) = rymembra_app::specchio::scelta::proprietario_di(
+            // sincronia: sono suoi. La cronologia e la fila del proprietario si
+            // scrivono **insieme**, in questa presa: con una seconda presa a
+            // due secondi, un lotto lungo della libreria faceva perdere
+            // l'ascolto (S11-2).
+            if let Some((proprietario, brano)) = rymembra_app::specchio::scelta::proprietario_di(
                 &libreria.connection,
                 ascolto.track_id,
             )? {
-                playback::record_play_specchio(&libreria.connection, ascolto)?;
-                return Ok(Scritto::AlProprietario(proprietario));
+                playback::record_play_specchio_e_in_fila(
+                    &mut libreria.connection,
+                    ascolto,
+                    &proprietario,
+                    brano,
+                )?;
+                return Ok(Scritto::AlProprietario);
             }
             // L'ascolto si intesta a questo computer. Non è contabilità: il
             // conteggio è la somma dei contatori di tutti i dispositivi, e un
@@ -1690,10 +1698,10 @@ fn scrivi_ascolto(app: &Nucleo, ascolto: &Listen) {
         })
     });
     match scritto {
-        Ok(Scritto::AlProprietario((dispositivo, brano))) => {
+        Ok(Scritto::AlProprietario) => {
             // Non è un ascolto da contare qui, e non va allo scrobble: lo
             // manda il filo del collegamento quando quel dispositivo risponde.
-            crate::lontano::ascoltato_qui(app, &dispositivo, brano, ascolto);
+            crate::lontano::ascolto_in_fila(app);
         }
         // `true` vuol dire che il conteggio è cresciuto davvero. Segnalarlo
         // anche quando l'ascolto non contava riempirebbe il canale del backup
@@ -3452,6 +3460,30 @@ async fn col_lettore_in_fila<T: Send + 'static>(
         .await
 }
 
+/// [`col_lettore_in_disparte`], per un comando che **parte dalla finestra** e
+/// che la finestra sa far diventare una domanda: `suona`, `radio`, `riprendi`,
+/// `alterna`, `prossimo`, `precedente`, `coda_vai` — gli stessi che `ipc.ts`
+/// fa passare da `conIlSiDeiDatiMobili`.
+///
+/// Sui dati mobili con «Chiedi» un brano che esiste solo su un altro dispositivo
+/// risponde `lontano.reteAConsumo`, e la finestra chiede «Usare i dati mobili?».
+/// Ma chiede solo dai gesti che parte lei: il filo che esegue questo comando
+/// porta l'etichetta [`ConLaPagina`](crate::lontano::ConLaPagina), e ogni altro
+/// — un tasto multimediale, la notifica, Android Auto, il brano dopo, il filo
+/// che a fine brano riprova — no, e lì «Chiedi» vale «No» (S11-3). L'elenco dei
+/// comandi che la usano lo confronta con `ipc.ts` una prova.
+async fn col_lettore_chiedendo<T: Send + 'static>(
+    app: Nucleo,
+    nome: &'static str,
+    nucleo: impl FnOnce(Nucleo, StatoLettore) -> Esito<T> + Send + 'static,
+) -> Esito<T> {
+    crate::disparte::comanda(nome, move || {
+        let _chiede_la_pagina = crate::lontano::ConLaPagina::nuova();
+        col_lettore(app, nome, nucleo)
+    })
+    .await
+}
+
 /// Il nucleo di un comando del lettore, con lo stato preso dal registro.
 ///
 /// Sincrona: la chiamano la chiusura sul pool ([`col_lettore_in_disparte`]) e
@@ -3479,7 +3511,7 @@ fn col_lettore<T>(
 /// [`suona_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn suona(app: Nucleo, brani: Vec<i64>, indice: usize) -> Esito<()> {
-    col_lettore_in_disparte(app, "suona", move |app, stato| {
+    col_lettore_chiedendo(app, "suona", move |app, stato| {
         suona_ora(app, stato, brani, indice)
     })
     .await
@@ -3533,7 +3565,7 @@ pub fn suona_ora(app: Nucleo, stato: StatoLettore, brani: Vec<i64>, indice: usiz
 /// [`radio_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn radio(app: Nucleo, brano: i64) -> Esito<()> {
-    col_lettore_in_disparte(app, "radio", move |app, stato| radio_ora(app, stato, brano)).await
+    col_lettore_chiedendo(app, "radio", move |app, stato| radio_ora(app, stato, brano)).await
 }
 
 /// Fa partire una radio seminata da un brano.
@@ -3751,6 +3783,12 @@ const SALTI_DI_FILA: u32 = 3;
 /// cartella: se manca anche lei — una lettera staccata, una condivisione che
 /// non si raggiunge — è la sorgente a mancare, e non si salta. Senza percorso
 /// è la riga a non esserci più, o la voce di una sessione: si salta.
+///
+/// Si salta anche un brano che esiste solo su un altro dispositivo e che adesso
+/// non si può aprire — `lontano.reteAConsumo` (i dati mobili non lo consentono:
+/// «No», o «Chiedi», che senza nessuno che risponda vale «No») e
+/// `lontano.irraggiungibile` (il dispositivo non risponde) —: non manca la
+/// sorgente intera, ma quella di **quel** brano, e quelli di qui si suonano.
 fn si_salta(err: &AppError) -> bool {
     let cartella_c_e = |percorso: &str| {
         std::path::Path::new(percorso)
@@ -3770,6 +3808,13 @@ fn si_salta(err: &AppError) -> bool {
                 | ErrorCodeKind::LibraryTrackNotFound
                 | ErrorCodeKind::FsPermissionDenied
                 | ErrorCodeKind::FsPathInvalid
+                // Un brano che esiste solo su un altro dispositivo, e i dati mobili non
+                // lo consentono o il dispositivo non risponde: il brano dopo ha buone
+                // probabilità di essere di qui. Vale per chi non può rispondere a una
+                // domanda — a fine brano nessuno ha premuto niente —, e i
+                // `SALTI_DI_FILA` impediscono che la coda scorra via (S11-3).
+                | ErrorCodeKind::LontanoReteAConsumo
+                | ErrorCodeKind::LontanoIrraggiungibile
         ),
     }
 }
@@ -4273,25 +4318,25 @@ pub fn alterna_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
 /// [`riprendi_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn riprendi(app: Nucleo) -> Esito<()> {
-    col_lettore_in_disparte(app, "riprendi", riprendi_ora).await
+    col_lettore_chiedendo(app, "riprendi", riprendi_ora).await
 }
 
 /// [`alterna_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn alterna(app: Nucleo) -> Esito<()> {
-    col_lettore_in_disparte(app, "alterna", alterna_ora).await
+    col_lettore_chiedendo(app, "alterna", alterna_ora).await
 }
 
 /// [`prossimo_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn prossimo(app: Nucleo) -> Esito<()> {
-    col_lettore_in_disparte(app, "prossimo", prossimo_ora).await
+    col_lettore_chiedendo(app, "prossimo", prossimo_ora).await
 }
 
 /// [`precedente_ora`], sul pool bloccante: vedi [`col_lettore_in_disparte`].
 #[tauri::command]
 pub async fn precedente(app: Nucleo) -> Esito<()> {
-    col_lettore_in_disparte(app, "precedente", precedente_ora).await
+    col_lettore_chiedendo(app, "precedente", precedente_ora).await
 }
 
 /// Passa al brano dopo.

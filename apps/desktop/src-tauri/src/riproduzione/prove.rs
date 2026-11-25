@@ -1253,6 +1253,91 @@ fn l_avvio_non_apre_il_dispositivo_sul_filo_della_finestra() {
     assert!(avvia.contains("ErrorCode::PlaybackEngineOpening"));
 }
 
+/// S11-3: a fine brano, se il successivo esiste solo su un altro dispositivo e i
+/// dati mobili non lo consentono — o il dispositivo non risponde — non si apre
+/// per colpa **sua**, e il brano dopo ha buone probabilità di essere di qui:
+/// si salta, entro i `SALTI_DI_FILA`, invece di fermare la musica.
+#[test]
+fn si_salta_un_brano_che_i_dati_mobili_non_consentono() {
+    for codice in [
+        ErrorCode::LontanoReteAConsumo,
+        ErrorCode::LontanoIrraggiungibile,
+    ] {
+        let err = AppError::new(codice);
+        assert!(
+            si_salta(&err),
+            "{} ferma la musica invece di passare oltre",
+            err.code().kind().code()
+        );
+    }
+    // Resta vero che a mancare la sorgente intera non si salta.
+    assert!(!si_salta(&AppError::new(ErrorCode::LontanoNonAssociato)));
+}
+
+/// I nomi dei comandi (`pub async fn nome(`) che nel loro corpo chiamano `ago`.
+fn comandi_che_chiamano(testo: &str, ago: &str) -> Vec<String> {
+    let testo = senza_prove(testo);
+    let mut nomi = Vec::new();
+    for (dove, _) in testo.match_indices(ago) {
+        let prima = &testo[..dove];
+        let Some(firma) = prima.rfind("pub async fn ") else {
+            continue;
+        };
+        // Solo se fra la firma e la chiamata non comincia un'altra funzione.
+        if prima[firma + 1..].contains("\nfn ") || prima[firma + 1..].contains("\npub fn ") {
+            continue;
+        }
+        let nome: String = prima[firma + "pub async fn ".len()..]
+            .chars()
+            .take_while(|c| *c == '_' || c.is_alphanumeric())
+            .collect();
+        nomi.push(nome);
+    }
+    nomi.sort();
+    nomi.dedup();
+    nomi
+}
+
+/// S11-3: «Chiedi» vale «No» dove nessuno può rispondere, e può rispondere solo
+/// la finestra, **dai comandi che `ipc.ts` fa passare da `conIlSiDeiDatiMobili`**.
+/// L'etichetta sul filo ([`crate::lontano::ConLaPagina`]) la mette
+/// `col_lettore_chiedendo`: i due elenchi devono essere lo stesso, altrimenti un
+/// comando che la finestra sa chiedere finisce con un errore e basta, o uno che
+/// non lo sa chiedere ottiene una domanda senza nessuno che risponda.
+#[test]
+fn i_comandi_che_la_pagina_sa_chiedere_sono_quelli_che_il_nucleo_marca() {
+    let ipc = include_str!("../../../src/ipc.ts");
+    let mut dalla_pagina: Vec<String> = Vec::new();
+    for (dove, _) in ipc.match_indices("conIlSiDeiDatiMobili(") {
+        let resto = &ipc[dove..];
+        let Some(invoke) = resto.find("invoke<void>(\"") else {
+            continue;
+        };
+        let nome: String = resto[invoke + "invoke<void>(\"".len()..]
+            .chars()
+            .take_while(|c| *c == '_' || c.is_alphanumeric())
+            .collect();
+        dalla_pagina.push(nome);
+    }
+    dalla_pagina.sort();
+    dalla_pagina.dedup();
+    assert!(
+        dalla_pagina.len() >= 7,
+        "ipc.ts non ha più i comandi con la domanda: {dalla_pagina:?}"
+    );
+
+    let mut dal_nucleo: Vec<String> = Vec::new();
+    for (_, testo) in SORGENTI {
+        dal_nucleo.extend(comandi_che_chiamano(testo, "col_lettore_chiedendo("));
+    }
+    dal_nucleo.sort();
+    dal_nucleo.dedup();
+    assert_eq!(
+        dal_nucleo, dalla_pagina,
+        "i comandi che il nucleo marca come «la finestra può rispondere» non sono quelli che \
+         `ipc.ts` fa passare da `conIlSiDeiDatiMobili`"
+    );
+}
 
 /// S11-6: un brano di un altro dispositivo che si interrompe a metà arriva dalla
 /// rete, come uno del cloud: la frase parla del dispositivo, non di una cartella
@@ -1301,6 +1386,30 @@ fn corpo_privato<'a>(testo: &'a str, firma: &str) -> Option<&'a str> {
     let resto = &testo[testo.find(firma)?..];
     Some(&resto[..resto.find("\n}\n")?])
 }
+
+/// S11-2: l'ascolto di una riga di un altro dispositivo si scrive in **una presa
+/// sola**: la cronologia e la fila del proprietario insieme. Con due prese la
+/// seconda aveva due secondi di pazienza, e un lotto lungo della libreria
+/// faceva perdere l'ascolto — che il proprietario non contava e non scrobblava.
+#[test]
+fn l_ascolto_di_una_riga_lontana_si_scrive_in_una_presa_sola() {
+    let corpo =
+        corpo_privato(include_str!("mod.rs"), "fn scrivi_ascolto(").expect("scrivi_ascolto");
+    assert!(
+        corpo.contains("record_play_specchio_e_in_fila("),
+        "la cronologia e la fila non sono scritte insieme"
+    );
+    assert!(
+        !corpo.contains("record_play_specchio(") && !corpo.contains("ascoltato_qui"),
+        "la fila del proprietario è una seconda presa"
+    );
+    assert_eq!(
+        corpo.matches("con_libreria(").count(),
+        1,
+        "l'ascolto di una riga lontana prende la libreria più di una volta"
+    );
+}
+
 /// S7-4: «Salva curva» legge la curva dalla **corsia del lettore**, la stessa
 /// su cui sta `equalizzatore`. Sul pool la lettura poteva passare davanti a un
 /// `equalizzatore` ancora in coda dietro un lettore tenuto, e si salvava una

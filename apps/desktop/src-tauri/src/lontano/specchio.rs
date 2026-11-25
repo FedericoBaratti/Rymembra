@@ -1037,7 +1037,8 @@ pub(crate) fn dispositivi_raggiungibili(app: &Nucleo) -> Vec<String> {
 
 /// Da dove sceglie chi suona da solo — l'autoplay, la radio, una playlist
 /// intelligente — e chi non può mostrare una riga grigia, come Android Auto:
-/// «Tutti», meno i dispositivi che adesso non rispondono (§4.6).
+/// «Tutti», meno i dispositivi che adesso non rispondono (§4.6) e meno quelli
+/// che i dati mobili non consentono (S11-3).
 ///
 /// Senza nessun dispositivo — nemmeno uno revocato, che può avere ancora le sue
 /// righe — non c'è niente da saltare, ed è «Tutti»: `Raggiungibili` aggiunge a
@@ -1047,12 +1048,39 @@ pub(crate) fn dispositivi_raggiungibili(app: &Nucleo) -> Vec<String> {
 pub(crate) fn origine_che_suona(app: &impl ComeNucleo) -> rymembra_app::specchio::Origine {
     let app = &app.come_nucleo();
     use rymembra_app::specchio::Origine;
-    let ne_ha = comune(app)
-        .is_ok_and(|comune| !super::filo::prendi(&comune.vetrina).dispositivi.is_empty());
+    let Ok(comune) = comune(app) else {
+        return Origine::Tutti;
+    };
+    let ne_ha = !super::filo::prendi(&comune.vetrina).dispositivi.is_empty();
     if !ne_ha {
         return Origine::Tutti;
     }
-    Origine::Raggiungibili(dispositivi_raggiungibili(app))
+    origine_con_la_rete(
+        || dispositivi_raggiungibili(app),
+        super::sfoglia::rete_per_chi_sceglie_da_solo(&comune),
+    )
+}
+
+/// La regola di [`origine_che_suona`], senza i posti da cui vengono i
+/// dispositivi e la rete: una funzione sola perché si possa provare.
+///
+/// Sui dati mobili senza il sì — «No», e «Chiedi», che qui vale «No» perché chi
+/// sceglie da solo non ha a chi chiedere — nessun dispositivo è raggiungibile:
+/// niente righe solo remote, e la copia di qui che «Tutti» nascondeva dietro una
+/// migliore in rete torna visibile. Prima l'autoplay accodava un brano che
+/// esiste solo sul PC, alla sua fine il lettore ne otteneva `lontano.reteAConsumo`
+/// e la musica si fermava.
+fn origine_con_la_rete(
+    raggiungibili: impl FnOnce() -> Vec<String>,
+    rete: rymembra_app::specchio::scelta::Rete,
+) -> rymembra_app::specchio::Origine {
+    use rymembra_app::dispositivi::DatiMobili;
+    use rymembra_app::specchio::Origine;
+    use rymembra_app::specchio::scelta::Rete;
+    match rete {
+        Rete::AConsumo(DatiMobili::No | DatiMobili::Chiedi) => Origine::Raggiungibili(Vec::new()),
+        Rete::AConsumo(DatiMobili::Si) | Rete::Libera => Origine::Raggiungibili(raggiungibili()),
+    }
 }
 
 /// I byte di una riga specchio: la sorgente a blocchi sul nodo del suo
@@ -2606,6 +2634,77 @@ mod prove {
             "si ferma alla prima: le altre non partirebbero nemmeno"
         );
         assert_eq!(in_posta_ancora(&dati, &pc).len(), 3, "nessuna si butta");
+    }
+
+    /// S11-3: sui dati mobili senza il sì, chi sceglie da solo — l'autoplay, la
+    /// radio, Android Auto — non ha nessun dispositivo raggiungibile. Prima
+    /// accodava un brano che esiste solo sul PC, e alla sua fine la musica si
+    /// fermava con `lontano.reteAConsumo`. Con «Sì» o su una rete libera
+    /// nessuno cambia.
+    #[test]
+    fn sui_dati_mobili_senza_il_si_l_origine_che_suona_non_ha_dispositivi() {
+        use rymembra_app::dispositivi::DatiMobili;
+        use rymembra_app::specchio::Origine;
+        let pc = "a".repeat(64);
+        let raggiungibili = || vec![pc.clone()];
+        for scelta in [DatiMobili::No, DatiMobili::Chiedi] {
+            assert_eq!(
+                origine_con_la_rete(raggiungibili, ReteProva::AConsumo(scelta)),
+                Origine::Raggiungibili(Vec::new()),
+                "{scelta:?}: il PC è presente, ma i dati mobili non lo consentono"
+            );
+        }
+        assert_eq!(
+            origine_con_la_rete(raggiungibili, ReteProva::AConsumo(DatiMobili::Si)),
+            Origine::Raggiungibili(vec![pc.clone()])
+        );
+        assert_eq!(
+            origine_con_la_rete(raggiungibili, ReteProva::Libera),
+            Origine::Raggiungibili(vec![pc.clone()])
+        );
+    }
+
+    /// S11-3: con la copia di qui nel gruppo, «Chiedi» senza nessuno che
+    /// risponda suona la copia di qui invece di fermarsi sul PC — che sarebbe
+    /// la copia migliore — con `lontano.reteAConsumo`.
+    #[test]
+    fn chiedi_senza_nessuno_che_risponda_suona_la_copia_di_qui() {
+        use super::super::sfoglia::rete_per;
+        use rymembra_app::dispositivi::DatiMobili;
+        let db = rymembra_app::db::open_in_memory()
+            .expect("database")
+            .connection;
+        let pc = "a".repeat(64);
+        // 10: la riga del PC (la migliore, il rappresentante); 11: la copia di qui.
+        db.execute_batch(&format!(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, codec, sample_rate,
+                                 bitrate, file_size, duration_ms, date_added, date_modified)
+               VALUES (10, 'lontano://{pc}/77', 'k10', 'T', 'A', 'B', 'flac', 44100, 900, 90000000,
+                       180000, 1, 1);
+             INSERT INTO tracks (id, path, track_key, title, artist, album, codec, sample_rate,
+                                 bitrate, file_size, duration_ms, date_added, date_modified, copia_di)
+               VALUES (11, 'C:/Musica/a.mp3', 'k11', 'T', 'A', 'B', 'mp3', 44100, 128, 4000000,
+                       180000, 1, 1, 10);
+             INSERT INTO lontano_brani (track_id, dispositivo, id_remoto, estensione, versione)
+               VALUES (10, '{pc}', 77, 'flac', 'v1');"
+        ))
+        .expect("gruppo con la copia di qui");
+        let presenti: HashSet<String> = HashSet::from([pc]);
+        // Chi può rispondere: la domanda si fa.
+        let con_la_pagina = rete_per(true, DatiMobili::Chiedi, true);
+        assert_eq!(
+            scegli_con_la_rete(&db, 10, &presenti, con_la_pagina)
+                .expect_err("la domanda")
+                .code()
+                .kind(),
+            rymembra_domain::errors::ErrorCodeKind::LontanoReteAConsumo
+        );
+        // Nessuno: «No», e si suona la copia di qui.
+        let senza = rete_per(true, DatiMobili::Chiedi, false);
+        assert_eq!(
+            scegli_con_la_rete(&db, 10, &presenti, senza).expect("la copia di qui"),
+            11
+        );
     }
 
     /// S7-3: un giro che cade in un panico libera il posto del suo dispositivo.
