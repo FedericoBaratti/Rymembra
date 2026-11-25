@@ -853,6 +853,44 @@ export interface ContoPartecipazioni {
 }
 
 /**
+ * La pagina di un artista, dal nucleo: la sua riga e i conti di «Compare anche
+ * in», in un viaggio solo (S9-3).
+ *
+ * `artista` è `null` quando col filtro di adesso non ha brani suoi: la pagina
+ * resta aperta con zero, e le partecipazioni si vedono lo stesso.
+ */
+export interface ArtistaAperto {
+  artista: Artista | null;
+  partecipazioni: ContoPartecipazioni;
+}
+
+/** A che cosa servono le righe che si chiedono al nucleo: vedi `RigheScelte`. */
+export type UsoDelleRighe = "suona" | "scarica";
+
+/**
+ * Gli identificativi di un elenco, con le righe che non servono già scartate dal
+ * nucleo (S9-8, S9-9).
+ *
+ * «Riproduci», «Casuale» e «Scarica qui» su un artista o su una selezione grande
+ * leggevano le righe intere, a pagine, solo per saltare quelle di un dispositivo
+ * spento: il nucleo conosce già chi risponde, e dà gli id nello stesso ordine.
+ *
+ * - `ids`: quelle che si possono usare, nell'ordine chiesto. Per `suona`: di qui,
+ *   di un dispositivo che risponde, o con una copia di qui. Per `scarica`: di qui
+ *   e di un dispositivo che risponde (il nucleo ignora poi quelle di qui);
+ * - `lontane`: quante di `ids` stanno su un altro dispositivo;
+ * - `spente`: quante ne ha scartate, perché il dispositivo non risponde o
+ *   perché il proprietario non le manda più;
+ * - `primaSpenta`: la prima di quelle, per dire «<PC> non raggiungibile».
+ */
+export interface RigheScelte {
+  ids: number[];
+  lontane: number;
+  spente: number;
+  primaSpenta: number | null;
+}
+
+/**
  * Quale elenco di brani si sta guardando, detto al nucleo.
  *
  * Le stesse domande delle pagine — `brani`, `preferiti`, `cerca` — senza la

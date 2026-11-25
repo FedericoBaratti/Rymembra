@@ -1035,6 +1035,15 @@ pub(crate) fn dispositivi_raggiungibili(app: &Nucleo) -> Vec<String> {
     chiavi
 }
 
+/// I dispositivi che rispondono adesso, come insieme: per chi deve scegliere fra
+/// righe già lette — «Riproduci» su un artista, «Scarica qui» su una selezione —
+/// quali non servono perché il loro dispositivo tace.
+pub(crate) fn raggiungibili_adesso(app: &impl ComeNucleo) -> HashSet<String> {
+    dispositivi_raggiungibili(&app.come_nucleo())
+        .into_iter()
+        .collect()
+}
+
 /// Da dove sceglie chi suona da solo — l'autoplay, la radio, una playlist
 /// intelligente — e chi non può mostrare una riga grigia, come Android Auto:
 /// «Tutti», meno i dispositivi che adesso non rispondono (§4.6) e meno quelli

@@ -471,7 +471,7 @@ mod prove {
     /// accorgerebbe: il risultato è lo stesso, cambia chi aspetta.
     #[test]
     fn le_liste_della_finestra_passano_dalla_connessione_a_parte() {
-        const DA_PARTE: [&str; 12] = [
+        const DA_PARTE: [&str; 15] = [
             "cerca",
             "cerca_conteggio",
             "preferiti",
@@ -479,6 +479,9 @@ mod prove {
             "brani_artista",
             "partecipazioni",
             "partecipazioni_conta",
+            "artista",
+            "artista_righe",
+            "righe_scelte",
             "brani",
             "album",
             "artisti",

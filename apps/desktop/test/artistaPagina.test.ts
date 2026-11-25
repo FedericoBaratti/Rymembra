@@ -102,17 +102,17 @@ test("Indietro torna a «In riproduzione»: il tasto, Escape e la freccia del te
 });
 
 test("«Riproduci» e «Casuale» suonano i brani dell'artista, non gli album delle raccolte", () => {
-  const suona = brano(app, "const suonaArtista = useCallback(", "[suonaDa, segnalaErrore, braniDellArtista]");
-  assert.match(suona, /braniDellArtista\(nome\)/);
+  const suona = brano(app, "const suonaArtista = useCallback(", "[ordineArtista, origineIpc, avvisaDellaRigaSpenta, segnalaErrore]");
+  // Gli id li dà il nucleo in un viaggio solo, nell'ordine che la pagina mostra e
+  // col filtro di adesso, già senza le righe di un dispositivo spento (S9-8).
+  assert.match(suona, /ipc\.artistaRighe\(nome, ordineArtista, "suona", origineIpc\)/);
   // Il vecchio cammino prendeva i dischi e i brani di ciascuno: la raccolta
-  // entrava intera, con i brani di chiunque.
-  assert.doesNotMatch(suona, /albumArtista|braniAlbum/);
-  const prese = brano(app, "const braniDellArtista = useCallback(", "[ordineArtista, origineIpc]");
-  assert.match(prese, /ipc\.braniArtista\(nome, ordineArtista, offset, limite, origineIpc\)/);
-  assert.match(prese, /tutteLePagine\(/);
-  // Con il filtro di adesso e nell'ordine che la pagina mostra: le stesse dipendenze.
-  // E «Scarica qui» prende gli stessi brani.
-  assert.match(app, /scaricaQui\(await braniDellArtista\(nome\)\)/);
+  // entrava intera, con i brani di chiunque. E poi le righe intere a pagine,
+  // venticinque viaggi per cinquemila brani.
+  assert.doesNotMatch(suona, /albumArtista|braniAlbum|tutteLePagine|ipc\.braniArtista\(/);
+  assert.doesNotMatch(app, /const braniDellArtista = useCallback\(/);
+  // E «Scarica qui» prende gli stessi brani, con le righe che servono a lui.
+  assert.match(app, /ipc\.artistaRighe\(nome, ordineArtista, "scarica", origineIpc\)/);
 });
 
 test("la pagina dell'artista sul computer ha Riproduci, Casuale e Scarica qui, e il filtro", () => {
@@ -142,7 +142,7 @@ test("il filtro per dispositivo vale per tutti gli elenchi della pagina dell'art
   assert.match(app, /const chiaveArtista = `\$\{nomeAperto\}:\$\{chiaveOrigine\}`;/);
   // E i numeri dell'artista si rileggono con il filtro nuovo: sono la lunghezza
   // delle liste, e un conto vecchio le lascerebbe corte o piene di scheletri.
-  const rilegge = brano(app, "ipc\n      .artisti(origineIpc)", "return () => {");
+  const rilegge = brano(app, "ipc\n      .artista(nomeAperto, origineIpc)", "return () => {");
   assert.match(rilegge, /albums: 0, tracks: 0/, "un artista senza niente col filtro nuovo resta aperto con zero");
   assert.match(app, /\[nomeAperto, chiaveArtista, giroArtista\]/);
   // La selezione dei brani dell'artista porta il filtro e l'ordinamento.
@@ -220,15 +220,20 @@ test("un brano di un altro dispositivo, dal nome o dal menù, apre l'artista con
 
 // ── S9-3: la pagina dell'artista non rilegge gli artisti a ogni giro da 3 s ──
 
-test("S9-3: i conti delle partecipazioni non aspettano l'elenco intero degli artisti", () => {
-  // Il difetto: `Promise.all([ipc.artisti(), ipc.partecipazioniConta()])`. Se la
-  // lettura degli artisti falliva (il database occupato dallo specchio) le
-  // sezioni «Compare anche in» non comparivano, e se era lenta aspettavano lei.
+test("S9-3: la pagina dell'artista legge l'artista solo, non l'elenco intero degli artisti", () => {
+  // Il difetto: l'effetto leggeva `ipc.artisti()` — migliaia di artisti, megabyte
+  // di JSON — per due numeri, e lo rifaceva a ogni rilettura della libreria. Ora
+  // `ipc.artista` dà la sua riga e i due conti delle partecipazioni in un viaggio.
   assert.doesNotMatch(app, /Promise\.all\(\[\s*ipc\.artisti\(/);
   const effetto = brano(app, "const [giroArtista, setGiroArtista]", "const { artisti, artistiInArrivo");
-  const conta = brano(effetto, "ipc\n      .partecipazioniConta(", ".catch(");
-  assert.match(conta, /setConteggioPartecipazioni\(\{ chiave: chiaveArtista, conto \}\)/);
-  assert.doesNotMatch(conta, /ipc\.artisti\(/);
+  const legge = brano(effetto, "ipc\n      .artista(nomeAperto, origineIpc)", "return () => {");
+  assert.match(legge, /setConteggioPartecipazioni\(\{ chiave: chiaveArtista, conto \}\)/);
+  assert.doesNotMatch(effetto, /ipc\.artisti\(|ipc\.partecipazioniConta\(/);
+  // Aprire la pagina dal nome in «In riproduzione» chiede l'artista col suo nome, col
+  // filtro di arrivo: l'elenco intero solo se il nome dei tag non è quello esatto.
+  const apre = brano(app, "const apriArtistaDelBrano = useStabile(", "const daInRiproduzione = grande;");
+  assert.match(apre, /ipc\.artista\(nome, perIlNucleo\(nuova\)\)/);
+  assert.match(apre, /esatto \?\?\s*trovaArtista\(/);
 });
 
 test("S9-3: una lettura di un dispositivo che il filtro non vede non rilegge l'artista aperto", () => {

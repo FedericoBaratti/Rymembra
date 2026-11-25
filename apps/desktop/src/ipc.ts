@@ -412,6 +412,22 @@ export const ipc = {
   ) => invoke<Brano[]>("partecipazioni", { nome, tipo: specie, offset, limite, origine }),
   partecipazioniConta: (nome: string, origine?: OrigineLibreria) =>
     invoke<ContoPartecipazioni>("partecipazioni_conta", { nome, origine }),
+  // L'artista aperto e i suoi due conti in un viaggio solo: la pagina non rilegge più
+  // l'elenco intero degli artisti per due numeri (S9-3).
+  artista: (nome: string, origine?: OrigineLibreria) =>
+    invoke<ArtistaAperto>("artista", { nome, origine }),
+  // Gli id dei brani di un artista, nell'ordine della pagina e già senza le righe che
+  // non servono (S9-8). `uso` dice se per suonare o per scaricare.
+  artistaRighe: (
+    nome: string,
+    ordine: OrdineArtista,
+    uso: UsoDelleRighe,
+    origine?: OrigineLibreria,
+  ) => invoke<RigheScelte>("artista_righe", { nome, ordine, uso, origine }),
+  // Lo stesso per una selezione: il nucleo scarta le righe che non servono e le
+  // conta, senza portare in pagina le righe intere (S9-9).
+  righeScelte: (ids: number[], uso: UsoDelleRighe) =>
+    invoke<RigheScelte>("righe_scelte", { ids, uso }),
   // Senza offset né limite: gli artisti sono pochi e la vista li mostra tutti
   // con un indice alfabetico invece che a pagine.
   artisti: (origine?: OrigineLibreria) =>
