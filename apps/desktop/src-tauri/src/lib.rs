@@ -793,6 +793,11 @@ fn avvia_da_capo(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
     // resto dell'avvio parte subito, com'era.
     match esito {
         Ok(data_dir) => {
+            // Il rilancio dopo «Installa ora» (S5-6): prima di qualunque cosa che
+            // mostri la finestra — la rete di sicurezza, l'attesa di una migrazione
+            // — o consegni il link degli argomenti. La libreria non serve: è un file.
+            #[cfg(desktop)]
+            comparsa::dopo_un_aggiornamento(&data_dir);
             registra_la_libreria(&nucleo, data_dir.clone());
             apri_e_avvia(app, data_dir);
         }
@@ -1274,7 +1279,9 @@ pub fn run() {
             // ancora — e passa dalla stessa conferma di quello arrivato col
             // programma già aperto. Vedi `argomenti`.
             #[cfg(desktop)]
-            if let Some(link) = comparsa::avvio().link.as_deref() {
+            if let Some(link) = comparsa::avvio().link.as_deref()
+                && !comparsa::e_un_rilancio()
+            {
                 lontano::link_arrivato(app.handle(), link);
             }
 
