@@ -110,3 +110,15 @@ test("i comandi ci sono", () => {
     assert.ok(LIB.includes(`manutenzione::${comando},`), `lib.rs non registra ${comando}`);
   }
 });
+
+test("il percorso della cartella va a capo dentro la finestrella, e non la allarga", () => {
+  // La spiegazione porta la cartella intera (`{cartella}`), e un percorso di
+  // Windows è una parola sola: nel collaudo in Windows Sandbox usciva a destra
+  // della finestrella, tagliato, con una barra di scorrimento sotto (D-2 di C1).
+  // La regola è quella di tutte le spiegazioni, non di questa sola: un percorso
+  // o un indirizzo lungo può stare in qualunque finestrella.
+  const regola = FINESTRELLE.match(/\n\.finestrella p \{([^}]*)\}/);
+  assert.ok(regola, "manca la regola delle spiegazioni delle finestrelle");
+  assert.match(regola[1] ?? "", /overflow-wrap:\s*anywhere;/);
+  assert.match(PROPOSTA, /descrizione=\{t\("store\.previous\.what", \{ cartella: libreria\.cartella \}\)\}/);
+});
