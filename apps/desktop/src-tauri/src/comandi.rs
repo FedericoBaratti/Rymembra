@@ -93,7 +93,8 @@ fn leggi_cartelle(connection: &rusqlite::Connection) -> Result<Vec<String>, AppE
 /// [`crate::disparte`].
 #[tauri::command]
 pub async fn avvio(app: tauri::AppHandle) -> Esito<Avvio> {
-    leggi_la_libreria(app, "avvio", |libreria| {
+    crate::tempi_avvio::fase("la pagina chiede avvio (numeri, lingua, cartelle)");
+    let esito = leggi_la_libreria(app, "avvio", |libreria| {
         Ok(Avvio {
             data_dir: libreria.data_dir.display().to_string(),
             migrazioni: libreria.migrazioni,
@@ -113,8 +114,9 @@ pub async fn avvio(app: tauri::AppHandle) -> Esito<Avvio> {
             scorciatoie: rymembra_app::preferenze::scorciatoie(&libreria.connection)?,
         })
     })
-    .await
-    .map_err(errore)
+    .await;
+    crate::tempi_avvio::fase("avvio risposto alla pagina");
+    esito.map_err(errore)
 }
 
 /// Cambia le cartelle sorvegliate, e dice cosa ne ha fatto.

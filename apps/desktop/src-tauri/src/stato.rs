@@ -1108,6 +1108,7 @@ struct Apertura {
 /// Le fasi successive arrivano con l'evento `libreria:stato`.
 #[tauri::command]
 pub fn libreria_fase(stato: tauri::State<'_, Stato>) -> FaseLibreria {
+    crate::tempi_avvio::fase("la pagina chiede la fase della libreria (è la prima domanda)");
     stato.fase()
 }
 
