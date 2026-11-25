@@ -115,11 +115,11 @@ static AVVIO: OnceLock<Argomenti> = OnceLock::new();
 /// `dal_login_store` è la risposta dell'attivazione del pacchetto: il Store non
 /// passa argomenti, e l'avvio al login si riconosce da lì
 /// (`rymembra_barra::avviata_dal_login_store`).
+///
+/// Qui niente diario: è ancora chiuso, lo apre `setup`. La riga dell'avvio con
+/// Windows la scrive [`mostra`].
 pub fn registra_l_avvio(argomenti: Argomenti, dal_login_store: bool) {
     COMPARSA.imposta(argomenti.automatico || dal_login_store);
-    if argomenti.automatico || dal_login_store {
-        nota!("[avvio] partito con Windows: la finestra compare ridotta a icona");
-    }
     let _ = AVVIO.set(argomenti);
 }
 
@@ -212,6 +212,7 @@ pub fn mostra(finestra: &tauri::WebviewWindow) {
         let _ = finestra.show();
         return;
     }
+    nota!("[avvio] partito con Windows: la finestra compare ridotta a icona");
     let _ = finestra.minimize();
     let _ = finestra.show();
     if !finestra.is_visible().unwrap_or(true) {
@@ -803,6 +804,31 @@ mod prove {
         ] {
             assert!(corpo.contains(chiamata), "manca {chiamata}");
         }
+    }
+
+    /// La riga «partito con Windows» va scritta quando la finestra compare
+    /// ridotta, non in `registra_l_avvio`: quello gira in cima a `run`, prima che
+    /// `setup` apra il diario, e `nota!` a diario chiuso non scrive niente.
+    /// Collaudo C2 del 25/11: la finestra era ridotta, la riga mai nel diario.
+    #[test]
+    fn la_riga_dell_avvio_con_windows_si_scrive_a_diario_aperto() {
+        let sorgente = include_str!("comparsa.rs");
+        let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
+        let corpo_di = |inizio: &str| {
+            sorgente
+                .split(inizio)
+                .nth(1)
+                .and_then(|resto| resto.split("\n}\n").next())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let registra = corpo_di("pub fn registra_l_avvio(");
+        let mostra = corpo_di("pub fn mostra(");
+        assert!(
+            !registra.contains("nota!"),
+            "a diario chiuso la riga si perde"
+        );
+        assert!(mostra.contains("partito con Windows"));
     }
 
     /// Il secondo avvio con link e quello senza finestra passano per la stessa
