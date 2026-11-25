@@ -1582,20 +1582,22 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_non_scende_sotto_la_3_53_2() {
+    fn sqlite_non_scende_sotto_la_3_54() {
         // CVE-2026-11824: un traboccamento di memoria dentro FTS5, chiuso nella
-        // 3.53.2. Rymembra apre database che non ha scritto lui — quello della
-        // versione rilasciata, in `import_legacy` — e FTS5 lo usa per la
-        // ricerca: una `rusqlite` tornata indietro per sbaglio riaprirebbe il
-        // buco senza che nessun'altra prova se ne accorga. Si chiede a SQLite e
-        // non al manifesto, perché conta quello che è finito nel binario.
+        // 3.53.2; RUSTSEC-2026-0459: memoria non inizializzata aprendo un
+        // database con un `-wal` costruito da altri, chiuso nella 3.54.
+        // Rymembra apre database che non ha scritto lui — quello della versione
+        // rilasciata, in `import_legacy` — e FTS5 lo usa per la ricerca: una
+        // `rusqlite` tornata indietro per sbaglio riaprirebbe il buco senza che
+        // nessun'altra prova se ne accorga. Si chiede a SQLite e non al
+        // manifesto, perché conta quello che è finito nel binario.
         let connessione = Connection::open_in_memory().expect("apertura");
         let dichiarata: String = connessione
             .query_row("SELECT sqlite_version()", [], |riga| riga.get(0))
             .expect("versione");
         assert!(
-            rusqlite::version_number() >= 3_053_002,
-            "SQLite {dichiarata} è sotto la 3.53.2"
+            rusqlite::version_number() >= 3_054_000,
+            "SQLite {dichiarata} è sotto la 3.54"
         );
     }
 

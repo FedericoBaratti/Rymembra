@@ -328,7 +328,18 @@ fn voce(
     // Il nome **base**: gli archivi di Spotify hanno una cartella in cima che si
     // chiama in modi diversi a seconda di quale dei due è, e le voci di cartella
     // finiscono con una barra.
-    let intero = dentro.name().to_owned();
+    //
+    // Dalla `zip` 9 il nome può non essere testo: la voce si segnala come
+    // illeggibile, come ogni altra che l'archivio non lascia aprire.
+    let intero = match dentro.name() {
+        Ok(nome) => nome.into_owned(),
+        Err(err) => {
+            return Letta::Illeggibile(Illeggibile {
+                nome: format!("voce {indice}"),
+                perche: err.to_string(),
+            });
+        }
+    };
     if intero.ends_with('/') {
         return Letta::Voce(intero, None);
     }
@@ -487,7 +498,7 @@ mod prove {
         let percorso = dir.join(nome);
         let file = std::fs::File::create(&percorso).expect("creazione");
         let mut zip = zip::ZipWriter::new(file);
-        let opzioni: zip::write::FileOptions<'_, ()> =
+        let opzioni: zip::write::FileOptions<'_, '_, ()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for (nome, contenuto) in voci {
             zip.start_file(*nome, opzioni).expect("voce");

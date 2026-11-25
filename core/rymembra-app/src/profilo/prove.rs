@@ -558,7 +558,7 @@ fn i_pc_associati_e_le_chiavi_di_insieme_restano_qui() {
     let mut zip = zip::ZipArchive::new(file).expect("zip");
     for posto in 0..zip.len() {
         let mut voce = zip.by_index(posto).expect("voce");
-        let nome = voce.name().to_owned();
+        let nome = voce.name().expect("nome").into_owned();
         let mut byte = Vec::new();
         std::io::Read::read_to_end(&mut voce, &mut byte).expect("scompattata");
         non_contiene(&nome, &String::from_utf8_lossy(&byte), &segreti);
@@ -579,7 +579,7 @@ fn lo_specchio_del_cloud_resta_qui() {
     let mut zip = zip::ZipArchive::new(file).expect("zip");
     for posto in 0..zip.len() {
         let mut voce = zip.by_index(posto).expect("voce");
-        let nome = voce.name().to_owned();
+        let nome = voce.name().expect("nome").into_owned();
         let mut byte = Vec::new();
         std::io::Read::read_to_end(&mut voce, &mut byte).expect("scompattata");
         // Il documento di sincronia viaggia compresso: si guarda decodificato.
@@ -2005,7 +2005,7 @@ fn come_lo_scriveva_la_versione_di_prima(nuovo: &Path, vecchio: &Path) {
         zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     for indice in 0..zip.len() {
         let mut voce = zip.by_index(indice).expect("voce");
-        let nome = voce.name().to_owned();
+        let nome = voce.name().expect("nome").into_owned();
         let mut byte = Vec::new();
         voce.read_to_end(&mut byte).expect("lettura");
 
@@ -2040,7 +2040,9 @@ fn come_lo_scriveva_la_versione_di_prima(nuovo: &Path, vecchio: &Path) {
 fn nomi_nell_archivio(percorso: &Path) -> Vec<String> {
     let zip =
         zip::ZipArchive::new(std::fs::File::open(percorso).expect("apertura")).expect("archivio");
-    zip.file_names().map(str::to_owned).collect()
+    zip.file_names()
+        .map(|nome| nome.expect("nome").into_owned())
+        .collect()
 }
 
 /// Le sorgenti dei desiderati, per data di inserimento.

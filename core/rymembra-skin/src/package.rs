@@ -446,7 +446,12 @@ fn preflight(archivio: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<Ammessa>, A
         let voce_zip = archivio
             .by_index_raw(indice)
             .map_err(|err| corrotto(&format!("voce {indice} illeggibile: {err}")))?;
-        let nome = voce_zip.name().to_owned();
+        // Dalla `zip` 9 il nome può non essere testo: il pacchetto non si legge,
+        // e si dice, invece di usare un nome ripulito alla meglio.
+        let nome = voce_zip
+            .name()
+            .map_err(|err| corrotto(&format!("voce {indice}: il nome non si legge: {err}")))?
+            .into_owned();
         let dichiarata = voce_zip.size();
         let compressa = voce_zip.compressed_size();
         drop(voce_zip);
@@ -1504,9 +1509,18 @@ mod tests {
         );
         indice_bugiardo(&mut dati, 100);
 
+        // Dalla `zip` 9.0.1 la libreria rifiuta da sé una voce che si decomprime
+        // oltre la dimensione dichiarata, e lo fa alla prima che incontra: il
+        // pacchetto non arriva più a sfondare il totale, si ferma prima, come
+        // corrotto. L'importante è che non venga accettato, qualunque delle due
+        // guardie lo fermi.
         let err = read_skin_package(&dati).expect_err("accettato");
         let messaggio = format!("{:?}", err.code());
-        assert!(messaggio.contains("limite totale"), "{messaggio}");
+        assert!(
+            messaggio.contains("limite totale")
+                || messaggio.contains("larger than its declared uncompressed size"),
+            "{messaggio}"
+        );
     }
 
     /// Un archivio che non è un archivio, chiuso da un record di coda che

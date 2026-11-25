@@ -39,11 +39,17 @@ lofty = "0.25.4"
 # cambia da versione a versione, e FTS5 non è garantito: è il motivo per cui il
 # vecchio porting doveva ripiegare su `LIKE` per la ricerca.
 #
-# La versione conta quanto l'opzione: la 0.40 porta dentro SQLite 3.53.2, che
-# chiude CVE-2026-11824, un traboccamento di memoria dentro FTS5. Non è una
-# teoria per Rymembra: `import_legacy` apre un database che non ha scritto lui —
-# quello della versione rilasciata, scelto dall'utente — e un file preparato
-# apposta arriverebbe lì.
+# La versione conta quanto l'opzione: la 0.40 portava dentro SQLite 3.53.2, che
+# chiude CVE-2026-11824, un traboccamento di memoria dentro FTS5; la 0.41 porta
+# la 3.54.1, che chiude anche RUSTSEC-2026-0459 (memoria non inizializzata se si
+# apre un database con un `-wal` costruito da altri). Non è una teoria per
+# Rymembra: `import_legacy` apre un database che non ha scritto lui — quello
+# della versione rilasciata, scelto dall'utente — e un file preparato apposta
+# arriverebbe lì.
+#
+# Il file è la libreria degli utenti: a ogni salto di SQLite si lancia a mano
+# `tests/rusqlite_su_database_038.rs`, che apre una copia di un database della
+# 3.2.0, lo migra, lo controlla e lo riporta com'era.
 #
 # `cache` scritta per esteso anche se è fra quelle di serie: dalla 0.38 la
 # cache delle istruzioni è facoltativa, e `prepare_cached` — una cinquantina di
@@ -61,7 +67,7 @@ lofty = "0.25.4"
 # file che altre connessioni tengono aperti e senza accoppiare la copia al
 # `-wal` del database nuovo. È un modulo di `rusqlite` e basta: nessuna cassa in
 # più, e le funzioni di SQLite che usa sono già nel `bundled`.
-rusqlite = { version = "0.40", default-features = false, features = [
+rusqlite = { version = "0.41", default-features = false, features = [
     "backup",
     "bundled",
     "cache",

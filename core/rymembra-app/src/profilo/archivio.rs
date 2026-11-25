@@ -880,7 +880,12 @@ fn indice(zip: &mut ZipArchive<BufReader<std::fs::File>>) -> Result<Vec<Ammessa>
         let voce_zip = zip
             .by_index_raw(indice)
             .map_err(|err| rifiutato(format!("voce {indice} illeggibile: {err}")))?;
-        let nome = voce_zip.name().to_owned();
+        // Dalla `zip` 9 il nome può non essere testo: l'archivio non si legge, e
+        // si dice, invece di usare un nome ripulito alla meglio.
+        let nome = voce_zip
+            .name()
+            .map_err(|err| rifiutato(format!("voce {indice}: il nome non si legge: {err}")))?
+            .into_owned();
         let dichiarata = voce_zip.size();
         let compressa = voce_zip.compressed_size();
         drop(voce_zip);

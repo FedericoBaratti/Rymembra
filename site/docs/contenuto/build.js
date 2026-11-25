@@ -42,7 +42,7 @@
             "**Golden parity** (`core/rymembra-domain/tests/parita_*.rs`): text folding and keys, whole scan plans and album grouping compared with outputs recorded from the previous TypeScript implementation (`tests/golden/*.json`). Changing one of these behaviors means a deliberate, documented divergence.",
             "**Skins**: `fedelta.rs` (plain vs the old stylesheet), `migrazione.rs` (format 1 goldens in `tests/oro/`), `attivazione.rs` (flash rule, budgets, install exam).",
             "**Sync convergence** (`rymembra-sync/tests/convergenza.rs`): seeded random histories merged in every order must converge.",
-            "**Database**: migrations from version 0 on in-memory databases, schema checks, SQLite version floor (3.53.2), error translation built from synthetic SQLite codes.",
+            "**Database**: migrations from version 0 on in-memory databases, schema checks, SQLite version floor (3.54.0), error translation built from synthetic SQLite codes.",
             "**Audio**: decoding real fixture files (FLAC, Opus, …), gapless seams across sample rates, crossfade power conservation — as pure functions or with the engine on test streams.",
             "**Web** (`apps/desktop/test`, 111 files): `node --test` over `.ts` files with a resolve hook (`risolvi.mjs`); they test the DOM-free modules (selection, sparse lists, modal rules, tour rules, Studio patch/history/prompt, …).",
           ],

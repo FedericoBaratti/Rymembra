@@ -108,7 +108,12 @@ keyring = { version = "3", features = ["windows-native"] }
 # pacchetti `.ryskin`, `rymembra-archivio` per i dati che Spotify manda — e sta
 # qui perché due versioni diverse dello stesso decompressore nello stesso
 # binario sono megabyte duplicati.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+#
+# La 9 e non la 8: dalla 9.0.5 chiude gli otto avvisi di `zip` che `deny.toml`
+# portava (la 0548, `ZipStreamReader`, solo da lì). Dalla 9 il nome di una voce
+# non è più testo per forza — `ZipFile::name()` restituisce un `Result` — e chi
+# lo legge lo dice, invece di usarne una versione ripulita alla meglio.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 # Il dominio non ha bisogno di unsafe. Vietato, non scoraggiato: se un giorno
