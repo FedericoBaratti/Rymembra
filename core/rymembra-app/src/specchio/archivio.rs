@@ -484,9 +484,94 @@ fn inserisci(
     Ok(id)
 }
 
+/// La riga di `track_id` come la manda adesso il proprietario decide una scelta di
+/// doppioni o un disco **diversi** da quelli di prima?
+///
+/// Quel che [`ricalcola_doppioni_in`] e [`riallinea_le_chiavi_d_album`] leggono
+/// di una riga specchio: la chiave del brano e quella di contenuto, la qualità
+/// (codec, campionamento, bitrate, dimensione, durata), titolo e artista del
+/// disco e la sua impronta d'album; e se la riga era sparita e adesso torna. Gli
+/// ascolti, i voti, i mi piace, la copertina, l'anno non decidono niente di
+/// questo: un PC che suona musica cambia il suo catalogo a ogni ascolto, e
+/// rifare per ognuno doppioni e dischi su tutta la libreria era la maggior parte
+/// del lucchetto di una chiusura (S2-5).
+///
+/// Una riga che non c'è vale «cambia»: nel dubbio si rifà.
+fn cambia_doppioni_o_disco(
+    tx: &Connection,
+    track_id: i64,
+    riga: &BranoCatalogo,
+) -> Result<bool, AppError> {
+    let cosa = "aggiornamento di una riga specchio";
+    type Prima = (
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        i64,
+        i64,
+        Option<String>,
+        bool,
+    );
+    let prima: Option<Prima> = tx
+        .query_row(
+            "SELECT t.track_key, l.content_key, t.album, t.album_artist, t.artist, t.codec,
+                    t.sample_rate, t.bitrate, t.file_size, t.duration_ms, l.album_impronta,
+                    l.sparito_ms IS NOT NULL
+               FROM tracks t JOIN lontano_brani l ON l.track_id = t.id
+              WHERE t.id = ?1",
+            [track_id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                    r.get(11)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|err| db_error(cosa, &err))?;
+    let Some(prima) = prima else {
+        return Ok(true);
+    };
+    let uguale = prima.0 == riga.track_key
+        && prima.1 == riga.content_key
+        && prima.2 == riga.album
+        && prima.3 == riga.album_artist
+        && prima.4 == riga.artist
+        && prima.5 == riga.codec
+        && prima.6 == riga.sample_rate
+        && prima.7 == riga.bitrate
+        && prima.8 == riga.dimensione
+        && prima.9 == riga.duration_ms
+        && prima.10 == riga.album_key
+        && !prima.11;
+    Ok(!uguale)
+}
+
 /// Riscrive una riga specchio che già c'è. `tieni_il_mio_voto`: c'è una
 /// valutazione in posta per questo brano, e quel che si è deciso qui vale più
 /// di quel che l'altro aveva prima.
+///
+/// Dice se la riga ha cambiato quel che decide doppioni e disco
+/// ([`cambia_doppioni_o_disco`]). Se no, **tiene la sua chiave d'album**: quella
+/// di qui che [`riallinea_le_chiavi_d_album`] le ha dato, e che riscriverla con
+/// quella del proprietario lascerebbe il disco diviso in due finché il
+/// riallineamento — che per una riga con soli ascolti nuovi non gira — non
+/// ricomincia.
 fn aggiorna(
     tx: &Connection,
     track_id: i64,
@@ -495,8 +580,9 @@ fn aggiorna(
     dispositivo: &str,
     tieni_il_mio_voto: bool,
     adesso_ms: i64,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let cosa = "aggiornamento di una riga specchio";
+    let cambia = cambia_doppioni_o_disco(tx, track_id, riga)?;
     // Il proprietario ha corretto un tag e la chiave del brano è cambiata. Le voci
     // di playlist di questa riga portavano la chiave vecchia, e se la chiave
     // vecchia c'è ancora su un'altra riga — il file di qui, il caso comune —
@@ -514,7 +600,7 @@ fn aggiorna(
     tx.execute(
         "UPDATE tracks SET
            track_key = ?2, title = ?3, artist = ?4, album = ?5, album_artist = ?6,
-           album_key = ?7, year = ?8, track_number = ?9, disc_number = ?10, genre = ?11,
+           album_key = CASE WHEN ?33 THEN album_key ELSE ?7 END, year = ?8, track_number = ?9, disc_number = ?10, genre = ?11,
            duration_ms = ?12, cover_art_hash = ?13, bitrate = ?14, sample_rate = ?15,
            channels = ?16, codec = ?17, file_size = ?18, date_added = ?19, date_modified = ?20,
            play_count = ?21, last_played_at = ?22,
@@ -558,6 +644,7 @@ fn aggiorna(
             riga.mb_release_id,
             impronta,
             tieni_il_mio_voto,
+            !cambia,
         ],
     )
     .map_err(|err| db_error(cosa, &err))?;
@@ -582,7 +669,7 @@ fn aggiorna(
         ],
     )
     .map_err(|err| db_error(cosa, &err))?;
-    Ok(())
+    Ok(cambia)
 }
 
 /// Quel che un giro ha fatto, finora.
@@ -686,6 +773,8 @@ impl Giro {
         let mut nuove = Vec::new();
         let mut conti = Conti::default();
         let mut righe_adesso = self.righe_adesso;
+        // Qualcosa di quel che scrive decide doppioni o dischi?
+        let mut da_rifare = false;
         for riga in righe {
             visti.insert(riga.id);
             let impronta = impronta_della_riga(&riga);
@@ -709,7 +798,7 @@ impl Giro {
                 Some(e) if e.impronta == impronta && !e.sparito => conti.invariate += 1,
                 Some(e) => {
                     let mio = in_posta.contains(&riga.id);
-                    aggiorna(
+                    da_rifare |= aggiorna(
                         &tx,
                         e.track_id,
                         &riga,
@@ -732,6 +821,13 @@ impl Giro {
                 .map_err(|err| db_error("riga specchio sparita", &err))?;
                 conti.segnate_sparite += 1;
             }
+        }
+        // Una riga nuova o sparita cambia chi partecipa; una riscritta, solo se è
+        // cambiato quel che decide ([`cambia_doppioni_o_disco`]). Il segno sta in
+        // `settings`, nella stessa transazione: un arresto prima della chiusura
+        // non lo perde, e la chiusura che viene dopo rifà quel che manca.
+        if da_rifare || conti.inserite > 0 || conti.segnate_sparite > 0 {
+            segna_da_rifare(&tx)?;
         }
         self.toccati.segna_brani(&tx, &toccate)?;
         tx.execute(
@@ -784,6 +880,9 @@ impl Giro {
         for (da_id, a_id) in da_svuotare {
             let ids = segna_sparite_in(&tx, &self.dispositivo, *da_id, *a_id, adesso_ms)?;
             chiusura.segnate_sparite += ids;
+            if ids > 0 {
+                segna_da_rifare(&tx)?;
+            }
             tx.execute(
                 "DELETE FROM lontano_secchi WHERE dispositivo = ?1 AND da_id = ?2",
                 params![self.dispositivo, da_id],
@@ -792,6 +891,9 @@ impl Giro {
         }
         if completo {
             chiusura.riabbinate = self.riabbina(&tx, adesso_ms)?;
+            if chiusura.riabbinate > 0 {
+                segna_da_rifare(&tx)?;
+            }
             // Un blocco solo: gli altri, se ce ne sono, li chiede chi chiama
             // (`togli_un_blocco`), ognuno nella sua presa del lucchetto.
             let blocco = togli_un_blocco_in(
@@ -801,6 +903,9 @@ impl Giro {
                 &mut self.toccati,
                 BLOCCO_RIMOZIONI,
             )?;
+            if blocco.doppioni_da_rifare {
+                segna_da_rifare(&tx)?;
+            }
             chiusura.tolte = blocco.tolte;
             chiusura.ids_tolti = blocco.ids_tolti;
             chiusura.in_attesa = blocco.in_attesa;
@@ -817,7 +922,16 @@ impl Giro {
         let nascoste = nascondi_le_sparite(&tx, &self.dispositivo, BLOCCO_RIMOZIONI)?;
         chiusura.spostate = nascoste.spostate;
         chiusura.da_nascondere = nascoste.restano;
-        chiusura.copie_cambiate = rifai_doppioni_e_album(&tx, &mut self.toccati)?;
+        if nascoste.nascoste > 0 || nascoste.spostate > 0 {
+            segna_da_rifare(&tx)?;
+        }
+        // Doppioni e dischi si rifanno **se serve**, e non a ogni chiusura (S2-5):
+        // un PC che suona musica cambia il suo catalogo a ogni ascolto, e rifarli
+        // su tutta la libreria per ognuno era 9 secondi di lucchetto con
+        // 250.000 righe (misura, profilo di sviluppo).
+        if e_da_rifare(&tx)? {
+            chiusura.copie_cambiate = rifai_doppioni_e_album(&tx, &mut self.toccati)?;
+        }
         ricostruisci_aggregati(&tx, &self.toccati)?;
         tx.execute(
             "INSERT INTO lontano_cataloghi (dispositivo, generazione, completo, ultimo_ms)
@@ -1099,8 +1213,8 @@ struct Ricerca<'a> {
 /// una voce che in grazia seguiva la chiave di contenuto e alla scadenza no
 /// (S2-1) è proprio una regola detta due volte.
 ///
-/// Si cerca per **`track_key`**, come la sincronia, il riaggancio e
-/// `remove_tracks`; e solo per chi così non trova niente, e se `Ricerca::
+/// Si cerca per **`track_key`**, come la sincronia e il riaggancio;
+/// e solo per chi così non trova niente, e se `Ricerca::
 /// anche_per_contenuto`, per **chiave di contenuto**: quella del proprietario
 /// quando ha corretto un tag e le due chiavi divergono (`lontano_brani.
 /// content_key`; per le righe di qui, `tracks.content_key`). L'altra riga è, nell'
@@ -1235,7 +1349,7 @@ fn altre_copie(
 /// sincronia la voce che manca non è un brano assente ma un brano **tolto
 /// dalla playlist**, e la lapide partirebbe verso il dispositivo che il brano
 /// ce l'ha. Il caso comune: lo stesso brano su due dispositivi, e quello che si
-/// ritira. È lo stesso gesto che `remove_tracks` fa nel verso opposto, per la
+/// ritira. `remove_tracks` lo fa nel verso opposto, con questa stessa funzione, per la
 /// copia di qui che se ne va.
 ///
 /// `per_contenuto`: se per `track_key` non c'è niente si prova con la chiave di
@@ -1842,6 +1956,81 @@ pub fn ricalcola_doppioni(connection: &Connection) -> Result<usize, AppError> {
     Ok(cambiate)
 }
 
+/// [`ricalcola_doppioni`] **se serve**: per la fine di una scansione, che li
+/// rifaceva a ogni passata anche senza una riga nuova, cambiata o tolta — sul
+/// telefono con un PC da duecentomila righe, secondi di lucchetto per ogni
+/// avvio, sveglia e raffica di eventi di una cartella (S2-5).
+///
+/// `cambiato`: la passata ha toccato righe di qui. Si segna **prima** di rifare, e
+/// il rifacimento toglie il segno: un arresto in mezzo lascia il lavoro da fare per
+/// la chiusura di un giro o per la scansione dopo. Con un segno già lì — lasciato
+/// da un giro che ha scritto senza poter chiudere — si rifà lo stesso.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub fn ricalcola_doppioni_se_serve(
+    connection: &Connection,
+    cambiato: bool,
+) -> Result<usize, AppError> {
+    if !servono_i_doppioni(connection)? {
+        return Ok(0);
+    }
+    if cambiato {
+        segna_da_rifare(connection)?;
+    } else if !e_da_rifare(connection)? {
+        return Ok(0);
+    }
+    ricalcola_doppioni(connection)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Quante volte, in questo filo, si sono rifatti i doppioni e le chiavi
+    /// d'album su tutta la libreria: lo guardano le prove (S2-5), che vogliono
+    /// sapere se una chiusura o una scansione senza novità lo rifà.
+    pub(crate) static PASSATE_DI_DOPPIONI: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// La chiave di `settings` che dice: doppioni e chiavi d'album sono **da
+/// rifare**. Chi scrive qualcosa che li decide — una riga specchio nuova, sparita
+/// o con un'altra chiave o qualità, una riga di qui entrata o uscita — la mette
+/// nella sua transazione; chi li rifà la toglie nella sua. Così un arresto fra le
+/// due cose non perde il lavoro, e non si rifà quando non c'è niente da rifare
+/// (S2-5).
+const DA_RIFARE: &str = "specchio.doppioni.da_rifare";
+
+/// Segna che doppioni e chiavi d'album sono da rifare: vedi [`DA_RIFARE`].
+fn segna_da_rifare(tx: &Connection) -> Result<(), AppError> {
+    crate::settings::write(tx, DA_RIFARE, "1")
+}
+
+/// Chi riscrive **di qui**, fuori da una scansione e da un giro, quel che decide
+/// doppioni e dischi di una riga — l'arricchimento che dà un album a un brano
+/// senza, una correzione a mano dei tag, il ritorno ai tag del file — lo dice
+/// qui, nella sua transazione. Senza, una chiusura che porta solo ascolti non
+/// rifà niente (S2-5), e il disco di qui e quello del PC restano due finché non
+/// arriva una novità vera.
+///
+/// Senza dispositivi collegati né copie nascoste non c'è niente da scegliere, e
+/// il segno non si scrive: chi non ha un altro dispositivo non paga niente.
+///
+/// # Errori
+///
+/// Quelli del database.
+pub(crate) fn doppioni_da_rifare(tx: &Connection) -> Result<(), AppError> {
+    if servono_i_doppioni(tx)? {
+        segna_da_rifare(tx)
+    } else {
+        Ok(())
+    }
+}
+
+/// Doppioni e chiavi d'album sono da rifare?
+fn e_da_rifare(tx: &Connection) -> Result<bool, AppError> {
+    Ok(crate::settings::read(tx, DA_RIFARE)?.is_some())
+}
+
 /// La scelta dei doppioni e, subito dopo, la chiave d'album delle righe specchio
 /// allineata a quella delle righe di qui. Chi chiama poi ricostruisce gli
 /// aggregati con `toccati`. Quante righe hanno cambiato `copia_di`.
@@ -1853,8 +2042,12 @@ pub(crate) fn rifai_doppioni_e_album(
     tx: &Connection,
     toccati: &mut Toccati,
 ) -> Result<usize, AppError> {
+    #[cfg(test)]
+    PASSATE_DI_DOPPIONI.with(|n| n.set(n.get().saturating_add(1)));
     let cambiate = ricalcola_doppioni_in(tx)?;
     riallinea_le_chiavi_d_album(tx, toccati)?;
+    // Fatto tutto quel che c'era da fare: il segno non serve più.
+    crate::settings::forget(tx, DA_RIFARE)?;
     Ok(cambiate)
 }
 
@@ -2359,6 +2552,23 @@ fn comincia_in(
             .collect::<Result<_, _>>()
             .map_err(|err| db_error(cosa, &err))?
     };
+    // Qualcosa sta dietro una riga del dispositivo? Dalle righe **di fuori** dal
+    // dispositivo, prima di nasconderle: i brani di qui che la copia migliore
+    // del PC nascondeva, e quelli di un altro dispositivo. Se non c'è niente, non
+    // c'è niente da riportare in vista — le righe del dispositivo non partecipano
+    // più, e le altre restano come sono — e rifare doppioni e dischi su tutta la
+    // libreria sono secondi di lucchetto per niente (S2-5).
+    let c_e_chi_sta_dietro: bool = tx
+        .query_row(
+            "SELECT EXISTS (
+               SELECT 1 FROM tracks h
+                WHERE h.copia_di IS NOT NULL AND h.copia_di <> h.id
+                  AND h.copia_di IN (SELECT track_id FROM lontano_brani WHERE dispositivo = ?1)
+                  AND h.id NOT IN (SELECT track_id FROM lontano_brani WHERE dispositivo = ?1))",
+            [dispositivo],
+            |r| r.get(0),
+        )
+        .map_err(|err| db_error(cosa, &err))?;
     let spostate = sposta_le_voci(tx, &con_voci, true)?;
     tx.execute(
         "UPDATE tracks SET copia_di = id
@@ -2369,7 +2579,9 @@ fn comincia_in(
     .map_err(|err| db_error(cosa, &err))?;
     // I brani di qui che stavano dietro una riga del dispositivo tornano a
     // vedersi: senza, per tutta la cancellazione sarebbero invisibili.
-    rifai_doppioni_e_album(tx, toccati)?;
+    if c_e_chi_sta_dietro || e_da_rifare(tx)? {
+        rifai_doppioni_e_album(tx, toccati)?;
+    }
     Ok(spostate)
 }
 

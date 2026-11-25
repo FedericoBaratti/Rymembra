@@ -2177,9 +2177,11 @@ impl Scan<'_> {
         // Le righe di questa macchina entrate o uscite in questa passata — un
         // brano scaricato da un altro dispositivo, un file tolto — cambiano la
         // scelta dei doppioni con le righe degli altri dispositivi. Chi non ne
-        // ha collegati paga una sola `EXISTS`.
+        // ha collegati paga una sola `EXISTS`. E solo se la passata ha cambiato
+        // qualcosa (S2-5): una che non porta niente non rifà niente.
         deposito.con_connessione(|connection| {
-            crate::specchio::archivio::ricalcola_doppioni(connection).map(|_| ())
+            let cambiato = report.inserted + report.updated + report.moved + report.removed > 0;
+            crate::specchio::archivio::ricalcola_doppioni_se_serve(connection, cambiato).map(|_| ())
         })?;
 
         report.tempi = tempi;

@@ -2,11 +2,22 @@
 //!
 //! # Come
 //!
-//! Un filo solo, un file alla volta, a finestre da [`MASSIMO_PEZZO`] (2 MiB):
-//! quel che l'altro concede per domanda. Il file si scrive accanto a dove
-//! starà, come `<nome>.<ext>.part`, e si rinomina solo intero e scritto su
-//! disco: la scansione non vede mai un brano a metà, perché `.part` non è
-//! un'estensione che legge.
+//! Un filo solo per dispositivo, un file alla volta, a finestre da
+//! [`MASSIMO_PEZZO`] (2 MiB): quel che l'altro concede per domanda. Il file si
+//! scrive accanto a dove starà, come `<nome>.<ext>.<dispositivo>.part` — il
+//! marchio è di chi lo manda, perché due code non scrivano sullo stesso file —,
+//! e si rinomina solo intero e scritto su disco: la scansione non vede mai un
+//! brano a metà, perché `.part` non è un'estensione che legge. Il nome finale si
+//! prende alla fine con una creazione esclusiva, e un file che c'è già non si
+//! sostituisce ([`consegna`]); le parti che un arresto lascia si tolgono quando
+//! il filo di quel dispositivo torna in quella cartella.
+//!
+//! # Quel che l'altro dichiara non si crede sulla parola
+//!
+//! La dimensione della prima risposta deve stare vicina a quella del catalogo, non
+//! superare il tetto per file, e non essere zero ([`dimensione_ammessa`]); lo
+//! spazio si riserva a quella lunghezza prima del primo byte, e un file che finisce
+//! prima del totale non conta come scritto (S2-4).
 //!
 //! # Dove
 //!
@@ -37,7 +48,7 @@
 //! il nodo del telefono non va a dormire (`InVolo`).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs::{self, File};
+use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -62,6 +73,20 @@ const MASSIMI_PER_VOLTA: usize = 5000;
 
 /// Quante varianti ` (2)`, ` (3)`… si provano prima di arrendersi.
 const MASSIME_VARIANTI: u32 = 20;
+
+/// Il tetto di un file: otto gibibyte.
+///
+/// Un brano che li supera — un'ora di DSD256 ne pesa cinque — non è quel che un
+/// «Scarica qui» porta, e senza un tetto è l'altro a dire quanto scrivere: un
+/// totale a quaranta bit non avrebbe mai fine (S2-4). Vale anche quando il
+/// catalogo non sa la dimensione, ed è il limite che nessuna tolleranza sposta.
+const TETTO_PER_FILE: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Di quanto la dimensione dichiarata può superare quella del catalogo,
+/// anche per un brano piccolo: un file ritaggato con una copertina nuova cresce di
+/// qualche mebibyte. Sopra, conta metà della dimensione del catalogo
+/// ([`dimensione_ammessa`]).
+const MARGINE_MINIMO: u64 = 16 * 1024 * 1024;
 
 /// A che punto è «Scarica qui», per la finestra (`lontano:scarico`).
 #[derive(Debug, Clone, Serialize)]
@@ -425,20 +450,79 @@ fn interrotto() -> AppError {
     })
 }
 
+/// La dimensione che l'altro dichiara nella prima risposta, contro quella del
+/// suo catalogo: si può credere?
+///
+/// L'altro è un dispositivo collegato, non per questo uno di cui fidarsi sulla
+/// parola: un totale inventato — mille volte l'elenco, o zero — faceva scrivere
+/// finestre da 2 MiB finché il disco era pieno, o rinominare un file vuoto come
+/// se fosse un brano (S2-4).
+///
+/// - **Vuoto** non è un brano: `lontano.fileCambiato`, come per un file che non
+///   è più quello.
+/// - **Oltre [`TETTO_PER_FILE`]**: `lontano.protocollo`, anche quando il catalogo
+///   non sa la dimensione (zero) e non c'è niente con cui confrontarla.
+/// - **Lontano da quella del catalogo**: `lontano.fileCambiato`. In più, di oltre
+///   metà e comunque di oltre [`MARGINE_MINIMO`]; in meno, di oltre metà. Il
+///   margine in più è per un file ritaggato dopo l'ultimo giro del catalogo, che
+///   cambia di qualche mebibyte, e per un elenco indietro rispetto al disco (vedi
+///   `sfoglia::DaLontano::versione`): per questo la dimensione che conta resta
+///   quella della prima risposta, e il catalogo serve a escludere l'assurdo, non
+///   a imporre l'uguaglianza. In meno non c'è margine fisso: un brano da pochi
+///   mebibyte che ne dichiara mille byte è un file tagliato, non ritaggato.
+fn dimensione_ammessa(dichiarata: u64, catalogo: i64) -> Result<(), AppError> {
+    if dichiarata == 0 {
+        return Err(AppError::new(ErrorCode::LontanoFileCambiato)
+            .with_cause("l'altro dispositivo dichiara un file vuoto"));
+    }
+    if dichiarata > TETTO_PER_FILE {
+        return Err(AppError::new(ErrorCode::LontanoProtocollo)
+            .with_cause("la dimensione dichiarata supera il tetto per file"));
+    }
+    if let Ok(atteso) = u64::try_from(catalogo)
+        && atteso > 0
+        && (dichiarata < atteso.div_euclid(2)
+            || dichiarata > atteso.saturating_add(atteso.div_euclid(2).max(MARGINE_MINIMO)))
+    {
+        return Err(AppError::new(ErrorCode::LontanoFileCambiato)
+            .with_cause("la dimensione dichiarata non è quella del catalogo"));
+    }
+    Ok(())
+}
+
 /// Copia i byte di un brano in `parte`, a finestre, e lo scrive su disco.
-/// `avanza` riceve i byte scritti e il totale.
+/// `avanza` riceve i byte scritti e il totale. Restituisce quanti ne ha scritti.
 ///
 /// La dimensione e la versione sono quelle della prima risposta, non quelle
 /// dell'elenco: il database dell'altro può essere indietro rispetto al disco
-/// (vedi `sfoglia::DaLontano::versione`). Da lì in poi non devono cambiare.
+/// (vedi `sfoglia::DaLontano::versione`). Da lì in poi non devono cambiare. La
+/// prima risposta, però, deve avere un senso ([`dimensione_ammessa`]) **prima** di
+/// scrivere un byte.
+///
+/// # Lo spazio si riserva, non si chiede
+///
+/// Subito dopo la dimensione ammessa il file si porta a quella lunghezza
+/// (`set_len`). Su NTFS questo riserva davvero i cluster: un disco senza posto
+/// risponde `fs.diskFull` **prima** di cominciare, e non a metà di un brano. Su
+/// Android — ext4 e f2fs, dove `ftruncate` crea un file rado — la riserva non
+/// c'è e un disco pieno si scopre alla scrittura, che dice lo stesso errore e
+/// toglie la parte. Chiedere lo spazio libero al sistema vorrebbe un `unsafe`
+/// (`GetDiskFreeSpaceExW`) o un ponte verso Kotlin (`StatFs`).
+///
+/// La parte si crea **nuova** (`create_new`): se c'è già, è di un'altra coda o di
+/// un arresto di prima, e riaprirla troncandola la guasterebbe.
 fn copia(
     pezzi: &impl Pezzi,
     brano: &BranoRemoto,
     parte: &Path,
     giro: u64,
     avanza: &mut dyn FnMut(u64, u64),
-) -> Result<(), AppError> {
-    let mut file = File::create(parte).map_err(|err| guasto_io(parte, &err))?;
+) -> Result<u64, AppError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(parte)
+        .map_err(|err| guasto_io(parte, &err))?;
     let mut fissati: Option<(u64, String)> = None;
     let mut da = 0_u64;
     loop {
@@ -460,16 +544,21 @@ fn copia(
                 return Err(AppError::new(ErrorCode::LontanoFileCambiato));
             }
             Some(_) => {}
-            None => fissati = Some((dimensione, versione)),
-        }
-        if da >= dimensione {
-            break;
+            None => {
+                dimensione_ammessa(dimensione, brano.dimensione)?;
+                file.set_len(dimensione)
+                    .map_err(|err| guasto_io(parte, &err))?;
+                fissati = Some((dimensione, versione));
+            }
         }
         if byte.is_empty() {
             return Err(AppError::new(ErrorCode::LontanoProtocollo)
                 .with_cause("una lettura prima della fine non ha portato byte"));
         }
-        let quanti = usize::try_from(quanti)
+        // Mai oltre quel che l'altro ha dichiarato: una risposta più lunga del
+        // totale non fa crescere il file.
+        let restano = dimensione.saturating_sub(da);
+        let quanti = usize::try_from(quanti.min(restano))
             .unwrap_or(usize::MAX)
             .min(byte.len());
         let utili = byte.get(..quanti).unwrap_or(&byte);
@@ -478,7 +567,136 @@ fn copia(
         da = da.saturating_add(u64::try_from(utili.len()).unwrap_or(0));
         avanza(da, dimensione);
     }
-    file.sync_all().map_err(|err| guasto_io(parte, &err))
+    // Un file che finisce senza byte, o prima del totale, non è un brano.
+    if da == 0 || fissati.as_ref().is_some_and(|(totale, _)| da != *totale) {
+        return Err(AppError::new(ErrorCode::LontanoProtocollo)
+            .with_cause("la copia è finita prima del totale dichiarato"));
+    }
+    file.sync_all().map_err(|err| guasto_io(parte, &err))?;
+    Ok(da)
+}
+
+/// Il nome della parte di un brano: `<finale>.<dispositivo>.part`.
+///
+/// Con otto cifre della chiave di chi lo manda: due code che scaricano lo
+/// stesso brano — stesso artista, album, titolo ed estensione, da due
+/// dispositivi — non scrivono più sullo stesso file (S2-10). `.part` in fondo,
+/// perché è l'unica estensione che la scansione e la sorveglianza non leggono.
+fn nome_della_parte(finale: &Path, dispositivo: &str) -> PathBuf {
+    let mut parte = finale.to_path_buf().into_os_string();
+    parte.push(format!(".{}.part", marchio(dispositivo)));
+    PathBuf::from(parte)
+}
+
+/// Le otto cifre della chiave di un dispositivo che finiscono nel nome di una
+/// parte: solo caratteri da nome di file, mai vuoto.
+fn marchio(dispositivo: &str) -> String {
+    let cifre: String = dispositivo
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect();
+    if cifre.is_empty() {
+        "0".to_owned()
+    } else {
+        cifre
+    }
+}
+
+/// Toglie da `cartella` le parti rimaste di **questo dispositivo**: un arresto a
+/// metà brano le lascia, e nessuno le rinomina più. Quante ne ha tolte.
+///
+/// Solo i file col nome di una parte nostra ([`nome_della_parte`]): quella di un
+/// altro dispositivo può essere in corso adesso, e un `.part` che non ha il
+/// nostro marchio — un programma di torrent, un browser — non è affar nostro. Una
+/// cartella che non c'è non è un guasto. Il filo di un dispositivo è uno solo
+/// (`Coda::fili`), quindi fra un brano e l'altro nessuna parte sua sta
+/// scendendo: quelle che ci sono sono orfane.
+fn togli_le_parti_orfane(cartella: &Path, dispositivo: &str) -> usize {
+    let Ok(voci) = fs::read_dir(cartella) else {
+        return 0;
+    };
+    let coda = format!(".{}.part", marchio(dispositivo));
+    let mut tolte = 0;
+    for voce in voci.filter_map(Result::ok) {
+        let nome = voce.file_name();
+        let nome = nome.to_string_lossy();
+        // Più lungo del solo marchio: il nome base di un brano ci deve essere.
+        if nome.len() <= coda.len() || !nome.ends_with(&coda) {
+            continue;
+        }
+        if !voce.file_type().is_ok_and(|tipo| tipo.is_file()) {
+            continue;
+        }
+        match fs::remove_file(voce.path()) {
+            Ok(()) => tolte += 1,
+            Err(err) => nota!(
+                "[lontano] una parte rimasta di un arresto non si toglie: {:?}",
+                err.kind()
+            ),
+        }
+    }
+    tolte
+}
+
+/// Mette la parte al suo posto: il nome finale lo prende chi arriva prima, e un
+/// file che c'è già non si sostituisce mai.
+///
+/// Fra la scelta del nome, all'inizio, e la fine dello scaricamento passano
+/// minuti: l'utente può aver messo lì un file con quel nome, o un'altra coda lo
+/// stesso brano. Il nome si sceglie **di nuovo** adesso ([`posto_libero`]):
+///
+/// - se c'è lo stesso brano — stessa dimensione — la parte si butta e l'esito è
+///   [`Fatto::Uguale`]: la seconda coda non lascia un doppione;
+/// - altrimenti il primo nome libero, che si **prende** con una creazione
+///   esclusiva (`create_new`) prima di rinominarci sopra: `rename` da solo,
+///   su Windows come su Unix, sostituisce un file che c'è. Se qualcuno lo
+///   prende in quell'istante si riprova col nome dopo.
+///
+/// `dimensione` sono i byte scritti, non quelli dell'elenco.
+fn consegna(
+    parte: &Path,
+    cartella: &Path,
+    base: &str,
+    estensione: &str,
+    dimensione: u64,
+) -> Result<Fatto, AppError> {
+    for _ in 0..MASSIME_VARIANTI {
+        let finale = match posto_libero(cartella, base, estensione, dimensione) {
+            Posto::Uguale => {
+                let _ = fs::remove_file(parte);
+                return Ok(Fatto::Uguale);
+            }
+            Posto::Libero(percorso) => percorso,
+        };
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&finale)
+        {
+            Ok(segnaposto) => {
+                // Chiuso prima di rinominare: Windows non sostituisce un file aperto.
+                drop(segnaposto);
+                if let Err(err) = fs::rename(parte, &finale) {
+                    let _ = fs::remove_file(&finale);
+                    let _ = fs::remove_file(parte);
+                    return Err(guasto_io(&finale, &err));
+                }
+                return Ok(Fatto::Scritto(finale));
+            }
+            // L'ha preso qualcuno un attimo fa: si guarda di nuovo.
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+            Err(err) => {
+                let _ = fs::remove_file(parte);
+                return Err(guasto_io(&finale, &err));
+            }
+        }
+    }
+    let _ = fs::remove_file(parte);
+    Err(AppError::new(ErrorCode::FsWriteFailed {
+        path: cartella.to_string_lossy().into_owned(),
+        detail: Some("nessun nome libero per il brano".to_owned()),
+    }))
 }
 
 /// Scarica un brano: dal posto libero al file rinominato.
@@ -509,9 +727,14 @@ fn scarica_uno(app: &Nucleo, lavoro: &Lavoro, giro: u64) -> Result<Fatto, AppErr
         Posto::Libero(percorso) => percorso,
     };
     fs::create_dir_all(&cartella).map_err(|err| guasto_io(&cartella, &err))?;
-    let mut parte = finale.clone().into_os_string();
-    parte.push(".part");
-    let parte = PathBuf::from(parte);
+    // Le parti di un arresto di prima, di questo dispositivo, in questa cartella:
+    // il filo di un dispositivo è uno solo, e fra un brano e l'altro nessuna sua
+    // parte sta scendendo.
+    let tolte = togli_le_parti_orfane(&cartella, &lavoro.dispositivo);
+    if tolte > 0 {
+        nota!("[lontano] {tolte} parti rimaste di uno scaricamento interrotto, tolte");
+    }
+    let parte = nome_della_parte(&finale, &lavoro.dispositivo);
 
     let _in_volo = InVolo::nuovo(Arc::clone(&comune));
     let pezzi = ViaNodo {
@@ -527,15 +750,14 @@ fn scarica_uno(app: &Nucleo, lavoro: &Lavoro, giro: u64) -> Result<Fatto, AppErr
             annuncia(app);
         }
     };
-    if let Err(err) = copia(&pezzi, brano, &parte, giro, &mut avanza) {
-        let _ = fs::remove_file(&parte);
-        return Err(err);
-    }
-    if let Err(err) = fs::rename(&parte, &finale) {
-        let _ = fs::remove_file(&parte);
-        return Err(guasto_io(&finale, &err));
-    }
-    Ok(Fatto::Scritto(finale))
+    let scritti = match copia(&pezzi, brano, &parte, giro, &mut avanza) {
+        Ok(scritti) => scritti,
+        Err(err) => {
+            let _ = fs::remove_file(&parte);
+            return Err(err);
+        }
+    };
+    consegna(&parte, &cartella, &base, &estensione, scritti)
 }
 
 /// Sul telefono, la notifica del servizio in primo piano che tiene vivo il
@@ -986,7 +1208,7 @@ mod prove {
         let parte = cartella.path().join("x.flac.part");
         let byte: Vec<u8> = (0..=255).cycle().take(5 * 1024 * 1024 + 3).collect();
         // L'elenco è vecchio — un'altra dimensione, un'altra versione — e
-        // conta il disco.
+        // conta il disco, finché sta dentro la tolleranza ([`dimensione_ammessa`]).
         let b = brano("X");
         let pezzi = InMemoria {
             byte: byte.clone(),
@@ -1026,6 +1248,330 @@ mod prove {
         assert_eq!(err.code().kind().code(), "lontano.fileCambiato");
         assert_eq!(pezzi.domande.load(Ordering::Relaxed), 2);
     }
+
+    // ── S2-4: quel che l'altro dichiara non si crede sulla parola ───────────
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// Un altro che **dichiara** `totale` byte, vero o no, e ne manda quanti gliene
+    /// si chiedono (`generoso`: anche oltre quel che ha dichiarato). Dopo
+    /// `al_massimo` domande smette con un errore suo: una copia che non lo ferma
+    /// da sé non scrive gigabyte per dimostrarlo.
+    #[derive(Debug)]
+    struct Dichiara {
+        totale: u64,
+        generoso: bool,
+        al_massimo: usize,
+        domande: AtomicUsize,
+    }
+
+    impl Dichiara {
+        fn nuovo(totale: u64) -> Self {
+            Self {
+                totale,
+                generoso: false,
+                al_massimo: 3,
+                domande: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl Pezzi for Dichiara {
+        fn pezzo(
+            &self,
+            _brano: i64,
+            da: u64,
+            quanti: u64,
+        ) -> Result<(Vec<u8>, u64, String), AppError> {
+            if self.domande.fetch_add(1, Ordering::Relaxed) >= self.al_massimo {
+                return Err(AppError::new(ErrorCode::InternalAborted {
+                    what: Some("la prova ha visto abbastanza".to_owned()),
+                }));
+            }
+            let quanti = if self.generoso {
+                quanti
+            } else {
+                quanti.min(self.totale.saturating_sub(da))
+            };
+            Ok((
+                vec![7; usize::try_from(quanti).unwrap()],
+                self.totale,
+                "v1".to_owned(),
+            ))
+        }
+    }
+
+    /// Un brano di cui il catalogo dice `dimensione` byte.
+    fn con_dimensione(dimensione: i64) -> BranoRemoto {
+        BranoRemoto {
+            dimensione,
+            ..brano("X")
+        }
+    }
+
+    fn copia_di_prova(
+        pezzi: &impl Pezzi,
+        brano: &BranoRemoto,
+        parte: &Path,
+    ) -> Result<u64, AppError> {
+        let giro = prendi(&CODA).giro;
+        copia(pezzi, brano, parte, giro, &mut |_, _| {})
+    }
+
+    /// L'altro dice, nella prima risposta, un totale che con quello del suo
+    /// catalogo non c'entra: mille volte tanto. Prima la copia scriveva finestre
+    /// da 2 MiB finché il disco non era pieno, o l'utente premeva «Annulla».
+    #[test]
+    fn una_dimensione_che_non_e_quella_del_catalogo_ferma_la_copia() {
+        let cartella = tempfile::tempdir().unwrap();
+        for dichiarato in [8_000_000_u64 * 1000, 1000] {
+            let parte = cartella.path().join(format!("{dichiarato}.flac.part"));
+            let pezzi = Dichiara::nuovo(dichiarato);
+            let err = copia_di_prova(&pezzi, &con_dimensione(8_000_000), &parte).unwrap_err();
+            assert_eq!(
+                err.code().kind().code(),
+                "lontano.fileCambiato",
+                "dichiarati {dichiarato} byte contro 8000000 del catalogo"
+            );
+            assert_eq!(
+                pezzi.domande.load(Ordering::Relaxed),
+                1,
+                "si ferma alla prima risposta"
+            );
+            assert_eq!(
+                fs::metadata(&parte).unwrap().len(),
+                0,
+                "né un byte né spazio riservato: {dichiarato}"
+            );
+        }
+    }
+
+    /// Un totale pari a zero non è un brano: il file `.part` vuoto veniva
+    /// rinominato e contato come «scritto», e la scansione lo prendeva per un
+    /// `.mp3` illeggibile.
+    #[test]
+    fn un_file_dichiarato_vuoto_non_e_riuscito() {
+        let cartella = tempfile::tempdir().unwrap();
+        for catalogo in [8_000_000, 0] {
+            let parte = cartella.path().join(format!("{catalogo}.flac.part"));
+            let err =
+                copia_di_prova(&Dichiara::nuovo(0), &con_dimensione(catalogo), &parte).unwrap_err();
+            assert_eq!(
+                err.code().kind().code(),
+                "lontano.fileCambiato",
+                "catalogo {catalogo}"
+            );
+        }
+    }
+
+    /// Un catalogo che non sa la dimensione (zero) non lascia l'altro libero di
+    /// dire quel che vuole: c'è un tetto per file.
+    #[test]
+    fn un_file_oltre_il_tetto_non_si_scrive_nemmeno_senza_una_dimensione_nel_catalogo() {
+        let cartella = tempfile::tempdir().unwrap();
+        let parte = cartella.path().join("x.flac.part");
+        let enorme = TETTO_PER_FILE + MIB;
+        let err = copia_di_prova(&Dichiara::nuovo(enorme), &con_dimensione(0), &parte).unwrap_err();
+        assert_eq!(err.code().kind().code(), "lontano.protocollo");
+        assert_eq!(fs::metadata(&parte).unwrap().len(), 0);
+
+        // E lo stesso quando è il catalogo a dire l'enorme e l'altro è d'accordo.
+        let parte = cartella.path().join("y.flac.part");
+        let pezzi = Dichiara::nuovo(enorme);
+        let err = copia_di_prova(
+            &pezzi,
+            &con_dimensione(i64::try_from(enorme).unwrap()),
+            &parte,
+        )
+        .unwrap_err();
+        assert_eq!(err.code().kind().code(), "lontano.protocollo");
+        assert_eq!(pezzi.domande.load(Ordering::Relaxed), 1);
+    }
+
+    /// La tolleranza è larga — un file ritaggato dopo l'ultimo giro del catalogo
+    /// cambia di qualche mebibyte — e il controllo di prova: una copia che sta
+    /// nel margine passa, e i byte sono quelli del disco, non quelli dell'elenco.
+    #[test]
+    fn una_dimensione_poco_diversa_dal_catalogo_passa() {
+        let cartella = tempfile::tempdir().unwrap();
+        let parte = cartella.path().join("x.flac.part");
+        let vera = 8_100_000_u64;
+        let scritti = copia_di_prova(
+            &Dichiara {
+                al_massimo: 50,
+                ..Dichiara::nuovo(vera)
+            },
+            &con_dimensione(8_000_000),
+            &parte,
+        )
+        .unwrap();
+        assert_eq!(scritti, vera);
+        assert_eq!(fs::metadata(&parte).unwrap().len(), vera);
+    }
+
+    /// Un altro che manda più byte di quanti ne ha dichiarati non fa crescere il
+    /// file oltre il totale: si scrive fino a lì, e non un byte di più.
+    #[test]
+    fn una_risposta_piu_lunga_del_dichiarato_non_scrive_oltre() {
+        let cartella = tempfile::tempdir().unwrap();
+        let parte = cartella.path().join("x.flac.part");
+        let pezzi = Dichiara {
+            generoso: true,
+            ..Dichiara::nuovo(1000)
+        };
+        let scritti = copia_di_prova(&pezzi, &con_dimensione(1000), &parte).unwrap();
+        assert_eq!(scritti, 1000);
+        assert_eq!(fs::metadata(&parte).unwrap().len(), 1000);
+    }
+
+    /// Un altro che si ferma prima della fine — tre byte e poi niente — non è un
+    /// brano scritto: la copia dice che non è riuscita.
+    #[test]
+    fn un_file_che_si_ferma_prima_della_fine_non_riesce() {
+        #[derive(Debug)]
+        struct SiFerma(AtomicUsize);
+        impl Pezzi for SiFerma {
+            fn pezzo(
+                &self,
+                _brano: i64,
+                _da: u64,
+                _quanti: u64,
+            ) -> Result<(Vec<u8>, u64, String), AppError> {
+                let prima = self.0.fetch_add(1, Ordering::Relaxed) == 0;
+                Ok((
+                    if prima { vec![1, 2, 3] } else { Vec::new() },
+                    10_000,
+                    "v1".to_owned(),
+                ))
+            }
+        }
+        let cartella = tempfile::tempdir().unwrap();
+        let parte = cartella.path().join("x.flac.part");
+        let err = copia_di_prova(
+            &SiFerma(AtomicUsize::new(0)),
+            &con_dimensione(10_000),
+            &parte,
+        )
+        .unwrap_err();
+        assert_eq!(err.code().kind().code(), "lontano.protocollo");
+    }
+
+    // ── S2-10: il `.part` è di una coda, e il nome finale non si sovrascrive ─
+
+    fn chiave(c: char) -> String {
+        c.to_string().repeat(64)
+    }
+
+    /// Due dispositivi che scaricano lo stesso brano — stesso artista, album,
+    /// titolo ed estensione — sceglievano lo stesso `.part` e lo scrivevano
+    /// insieme: un file fatto di due.
+    #[test]
+    fn le_parti_di_due_dispositivi_hanno_nomi_diversi() {
+        let finale = Path::new("musica").join("x.flac");
+        let del_pc = nome_della_parte(&finale, &chiave('a'));
+        let del_tablet = nome_della_parte(&finale, &chiave('b'));
+        assert_ne!(del_pc, del_tablet);
+        for parte in [&del_pc, &del_tablet] {
+            let nome = parte.file_name().unwrap().to_string_lossy();
+            assert!(nome.starts_with("x.flac."), "{nome}");
+            assert!(nome.ends_with(".part"), "la scansione non lo legge: {nome}");
+        }
+        assert_eq!(del_pc, nome_della_parte(&finale, &chiave('a')), "è stabile");
+    }
+
+    /// Una parte che c'è già non si riapre troncandola: la sua è un'altra coda,
+    /// o un arresto di prima che nessuno ha ripulito.
+    #[test]
+    fn la_parte_non_si_apre_sopra_una_parte_che_c_e() {
+        let cartella = tempfile::tempdir().unwrap();
+        let parte = cartella.path().join("x.flac.aaaaaaaa.part");
+        fs::write(&parte, b"di un altro").unwrap();
+        let err = copia_di_prova(&Dichiara::nuovo(10), &con_dimensione(10), &parte).unwrap_err();
+        assert_eq!(err.code().kind().code(), "fs.writeFailed");
+        assert_eq!(fs::read(&parte).unwrap(), b"di un altro");
+    }
+
+    /// Il nome finale lo prende chi arriva prima: un file che è comparso durante
+    /// lo scaricamento — fatto dall'utente, o dall'altra coda — non si
+    /// sostituisce, e il brano nuovo prende ` (2)`.
+    #[test]
+    fn la_consegna_non_sovrascrive_un_file_che_c_e() {
+        let cartella = tempfile::tempdir().unwrap();
+        fs::write(cartella.path().join("x.flac"), b"quello mio").unwrap();
+        let parte = cartella.path().join("x.flac.aaaaaaaa.part");
+        fs::write(&parte, b"nove byte").unwrap();
+        let esito = consegna(&parte, cartella.path(), "x", "flac", 9).unwrap();
+        assert_eq!(
+            esito,
+            Fatto::Scritto(cartella.path().join("x (2).flac")),
+            "il brano nuovo prende la variante"
+        );
+        assert_eq!(
+            fs::read(cartella.path().join("x.flac")).unwrap(),
+            b"quello mio"
+        );
+        assert_eq!(
+            fs::read(cartella.path().join("x (2).flac")).unwrap(),
+            b"nove byte"
+        );
+        assert!(!parte.exists());
+    }
+
+    /// Se invece il file che c'è è lo stesso brano — la stessa dimensione —, la
+    /// consegna lo dice e toglie la sua parte: la seconda coda non lascia un
+    /// doppione.
+    #[test]
+    fn la_consegna_di_un_brano_che_c_e_gia_lo_dice_e_toglie_la_parte() {
+        let cartella = tempfile::tempdir().unwrap();
+        fs::write(cartella.path().join("x.flac"), b"nove byte").unwrap();
+        let parte = cartella.path().join("x.flac.bbbbbbbb.part");
+        fs::write(&parte, b"nove byte").unwrap();
+        let esito = consegna(&parte, cartella.path(), "x", "flac", 9).unwrap();
+        assert_eq!(esito, Fatto::Uguale);
+        assert!(!parte.exists(), "la parte non resta");
+        assert!(!cartella.path().join("x (2).flac").exists());
+    }
+
+    /// Un arresto a metà lascia una `.part` che nessuno rinominerà mai. All'avvio
+    /// della coda si tolgono **quelle del dispositivo** — e solo quelle: un
+    /// `.part` di un altro dispositivo può essere in corso, e uno che non è nostro
+    /// (un programma di torrent, un browser) non si tocca.
+    #[test]
+    fn le_parti_orfane_di_un_dispositivo_si_tolgono_e_solo_quelle() {
+        let cartella = tempfile::tempdir().unwrap();
+        let dir = cartella.path();
+        for nome in [
+            "a.flac.aaaaaaaa.part",
+            "b.mp3.aaaaaaaa.part",
+            "a.flac.bbbbbbbb.part",
+            "scarico.part",
+            "a.flac",
+        ] {
+            fs::write(dir.join(nome), b"x").unwrap();
+        }
+        // Una cartella col nome di una parte non è un file nostro.
+        fs::create_dir(dir.join("Album.aaaaaaaa.part")).unwrap();
+
+        assert_eq!(togli_le_parti_orfane(dir, &chiave('a')), 2);
+
+        let mut resta: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|voce| voce.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        resta.sort();
+        assert_eq!(
+            resta,
+            [
+                "Album.aaaaaaaa.part",
+                "a.flac",
+                "a.flac.bbbbbbbb.part",
+                "scarico.part"
+            ]
+        );
+        // Una cartella che non c'è non è un guasto.
+        assert_eq!(togli_le_parti_orfane(&dir.join("non-c-e"), &chiave('a')), 0);
+    }
+
     // ── una coda per dispositivo ────────────────────────────────────────────
 
     /// Il titolo del lavoro preso, o `None` se il filo è finito.

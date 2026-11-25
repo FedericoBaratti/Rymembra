@@ -29,3 +29,16 @@ export function faseLettura(s: {
   if (s.leggendo) return "leggo";
   return s.illeggibile ? "illeggibile" : "niente";
 }
+
+/**
+ * Il testo che si ha è uno che «Non è questo» e «Altri testi» possono sostituire?
+ *
+ * Quello del catalogo (`lrclib`), che l'ha scelto il programma, e la copia del
+ * testo del proprietario del brano (`proprietario`): per chi ascolta qui è una
+ * copia, e un rifiuto — o una voce scelta al suo posto — vale finché lui manda
+ * lo stesso testo (`testi::catalogo::rifiuta`). Il testo di chi ascolta (`mano`),
+ * di un sidecar o di un tag non si sostituisce da qui: vincerebbe comunque.
+ */
+export function sostituibileDaQui(fonte: string): boolean {
+  return fonte === "lrclib" || fonte === "proprietario";
+}

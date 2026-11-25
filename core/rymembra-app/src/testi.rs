@@ -442,11 +442,21 @@ pub(crate) fn componi_con(
     // decide solo se vale (`vale_il_proprietario`) e lo si ricorda in tabella,
     // così resta anche col dispositivo spento e per la copia di qui dello
     // stesso brano.
-    if let Some(dal) = disco
-        .proprietario
-        .as_ref()
-        .filter(|dal| vale_il_proprietario(dal, riga.as_ref()))
-    {
+    //
+    // Non se chi ascolta qui l'ha scartato — «Non è questo», o una voce scelta al
+    // suo posto — e lui lo manda ancora **uguale**: vale finché non lo rifà
+    // (`catalogo::copia_scartata`, T-1). Senza, il rifiuto durava fino alla
+    // prossima apertura del pannello.
+    if let Some(dal) = disco.proprietario.as_ref().filter(|dal| {
+        vale_il_proprietario(dal, riga.as_ref())
+            && !connection.is_some_and(|connection| {
+                catalogo::copia_scartata(
+                    connection,
+                    &brano.track_key,
+                    catalogo::impronta_di_quel_che_manda(&dal.grezzo, dal.testo.strumentale),
+                )
+            })
+    }) {
         if let Some(connection) = connection {
             ricorda_dal_proprietario(connection, brano, dal);
         }

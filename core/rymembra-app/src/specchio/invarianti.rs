@@ -9,7 +9,7 @@
 //!
 //! | Dove | Decisione | Prova |
 //! |---|---|---|
-//! | `library/condivisa.rs` (`CONDIVISO`) | mai ricondivise: un terzo dispositivo non vede i brani del primo attraverso il secondo | `library::prove_catalogo` |
+//! | `library/condivisa.rs` (`CONDIVISO`) | mai ricondivise: un terzo dispositivo non vede i brani del primo attraverso il secondo; e solo i brani che stanno **adesso** sotto una cartella sorvegliata (una cartella tolta esce subito, anche dalle cose ricordate) | `library::prove_catalogo` |
 //! | `sincronia.rs`, ascolti e statistiche | le statistiche di una riga specchio sono una copia di quelle del proprietario: non entrano nei contatori, non si sommano, non partono, non si riscrivono da fuori | `le_statistiche_di_una_riga_specchio_non_entrano_nella_sincronia`, `quel_che_arriva_dalla_sincronia_non_scrive_sulle_righe_specchio` |
 //! | `sincronia.rs`, playlist (FSYNC) | due regole: **per agganciare** una riga specchio conta come presente (una voce viva entra in `playlist_tracks` anche su una riga del PC); **per seppellire** una chiave presente qui solo attraverso righe specchio conta come assente (invisibile, non tolta). Una riga che nasce, cambia chiave o sparisce non è mai un gesto: la lapide la scrive solo il gesto dell'utente, esplicita | gli scenari `fsync_*` (l'ultimo in `library::tests`), `specchio::gesti` e `specchio::revisione` |
 //! | `backup.rs`, `profilo/biblioteca.rs` | né brani né cronologia né copertine né cartelle: sono fatti di questa macchina, come `nuvola_voci` | `backup_e_profilo_non_portano_le_righe_specchio` |
@@ -20,6 +20,7 @@
 //! | `cartelle.rs`, `profilo/radici.rs` | non compaiono nell'albero e non diventano mai una radice | `le_cartelle_non_vedono_le_righe_specchio`, `profilo::radici::prove` |
 //! | `import_playlist.rs` | fuori da un file di playlist, come i brani del cloud | `una_riga_specchio_non_e_un_file` |
 //! | `enrich.rs`, `intensita.rs`, `sonora.rs`, `nuvola.rs` | mai candidate: arricchimento, volume, impronta leggono il file | `le_passate_sui_file_non_le_prendono` |
+//! | `enrich.rs`, il gruppo d'album | mai nel gruppo: il disco candidato si rilegge per `album_key`, e le righe specchio hanno la chiave di qui; non si interrogano, non si riscrivono, non si annotano | `il_gruppo_d_arricchimento_non_porta_le_righe_specchio`, `l_arricchimento_non_riscrive_una_riga_specchio`, `dimentica_l_arricchimento_non_conta_le_righe_specchio` |
 //! | `scrobble.rs` | mai scrobblate da qui: lo scrobble lo fa il proprietario | `una_riga_specchio_non_si_scrobbla_da_qui` |
 //! | `cancellazione.rs`, trasloco, sorveglianza, analisi | agiscono su file veri e percorsi veri: la guardia sta sotto (`LocalFiles`, `sola_lettura`, `known_tracks`) | le prove di sopra |
 //! | Ascolta insieme | il cancello di oggi resta, controllato sullo schema del percorso | `riproduzione::insieme::prove::una_riga_della_libreria_unica_non_entra_in_una_sessione` |
@@ -31,6 +32,7 @@ mod prove {
     use std::path::Path;
 
     use rusqlite::{Connection, params};
+    use rymembra_domain::enrich::{Fields, Verdetto};
     use rymembra_domain::errors::ErrorCodeKind;
     use rymembra_domain::paths::PathRules;
 
@@ -565,6 +567,158 @@ mod prove {
 
         giro(&c, &chiave(PC), &[riga(2), riga(3), riga(4)], ADESSO);
         assert_eq!(conta(&c), prima, "tre righe specchio non cambiano niente");
+    }
+
+    /// S12-1. Non basta che una riga specchio non sia **candidata**: il disco
+    /// candidato si rilegge per `album_key`, e `riallinea_le_chiavi_d_album` dà
+    /// alle righe specchio proprio la chiave d'album di qui. Senza un filtro nel
+    /// gruppo, titolo e artista di un altro dispositivo andavano a MusicBrainz
+    /// (e a iTunes e Deezer, se accesi) e la riga veniva riscritta.
+    ///
+    /// Il brano di qui ha una `album_key` **esplicita e non vuota**: senza,
+    /// né `candidati` né il riallineamento (che chiedono `album_key IS NOT NULL
+    /// AND <> ''`) farebbero niente, e la prova passerebbe per la ragione sbagliata.
+    #[test]
+    fn il_gruppo_d_arricchimento_non_porta_le_righe_specchio() {
+        let c = libreria();
+        brano_di_qui(&c, 1, 1);
+        c.execute(
+            "UPDATE tracks SET album_key = 'storage/musica|album' WHERE id = 1",
+            [],
+        )
+        .expect("chiave d'album di qui");
+
+        giro(&c, &chiave(PC), &[riga(2), riga(3)], ADESSO);
+        let remoto = id_specchio(&c, 2);
+        // Il controllo: le righe specchio hanno preso la chiave d'album di qui,
+        // cioè stanno nello stesso gruppo. Senza questo la prova non dice niente.
+        let chiavi: Vec<String> = c
+            .prepare("SELECT album_key FROM tracks ORDER BY id")
+            .expect("chiavi")
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("chiavi")
+            .map(|r| r.expect("chiave"))
+            .collect();
+        assert_eq!(
+            chiavi,
+            vec!["storage/musica|album"; 3],
+            "le righe specchio prendono la chiave d'album di qui"
+        );
+
+        let gruppi = crate::enrich::candidati(&c, ADESSO, 10).expect("candidati");
+        assert_eq!(gruppi.len(), 1, "il disco di qui è candidato");
+        let porta: Vec<i64> = gruppi[0].brani.iter().map(|b| b.brano.id).collect();
+        assert_eq!(
+            porta,
+            vec![1],
+            "il gruppo ha solo la riga di qui, non {remoto}"
+        );
+        assert!(
+            gruppi[0]
+                .brani
+                .iter()
+                .all(|b| !crate::specchio::e_specchio(&b.path)),
+            "nessun percorso lontano:// nel gruppo"
+        );
+        // E la lettura diretta del gruppo, la strada di «Dimentica l'arricchimento»
+        // e di chi rilegge un disco, dice lo stesso.
+        let letto = crate::enrich::leggi_gruppo(&c, "storage/musica|album")
+            .expect("gruppo")
+            .expect("c'è");
+        assert_eq!(letto.brani.len(), 1);
+    }
+
+    /// S12-1, «Dimentica l'arricchimento»: una riga specchio che una build di
+    /// prima ha annotato non finisce fra i brani d'immagine (che
+    /// `registra_dimenticati` non aggiorna e conta fra i «falliti» per sempre).
+    #[test]
+    fn dimentica_l_arricchimento_non_conta_le_righe_specchio() {
+        let mut c = libreria();
+        giro(&c, &chiave(PC), &[riga(2)], ADESSO);
+        let remoto = id_specchio(&c, 2);
+        c.execute(
+            "INSERT INTO track_meta_arricchita (track_id, campi, fonte, confidenza, set_at)
+             VALUES (?1, '{}', 'mb-release', 0.9, 1)",
+            [remoto],
+        )
+        .expect("annotazione di una build di prima");
+
+        let da_fare = crate::enrich::da_dimenticare(&c).expect("da dimenticare");
+        let riletti = crate::enrich::rileggi_i_file(da_fare);
+        let conto = crate::enrich::registra_dimenticati(&mut c, riletti).expect("ritorno");
+        assert_eq!(
+            (conto.riportati, conto.falliti),
+            (0, 0),
+            "la riga specchio non è un brano da riportare, né uno che non si riporta"
+        );
+    }
+
+    /// S12-1, il lato della scrittura: anche se una scrittura per una riga
+    /// specchio arrivasse a `registra` (un gruppo letto prima del giro che ha
+    /// riallineato le chiavi), la riga non si riscrive né si annota. Il
+    /// riconciliatore non la rimetterebbe a posto: confronta l'impronta in arrivo
+    /// con quella memorizzata, che non è cambiata.
+    #[test]
+    fn l_arricchimento_non_riscrive_una_riga_specchio() {
+        let mut c = libreria();
+        brano_di_qui(&c, 1, 1);
+        giro(&c, &chiave(PC), &[riga(2)], ADESSO);
+        let remoto = id_specchio(&c, 2);
+        let prima: (String, String, String, Option<String>) = c
+            .query_row(
+                "SELECT title, track_key, album_key, enrich_status FROM tracks WHERE id = ?1",
+                [remoto],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("riga specchio");
+
+        let scrittura = crate::enrich::Scrittura {
+            track_id: remoto,
+            path: crate::specchio::percorso(&chiave(PC), 2),
+            campi: Fields {
+                title: Some("Titolo di MusicBrainz".to_owned()),
+                mb_recording_id: Some("rec-1".to_owned()),
+                ..Fields::default()
+            },
+            copertina: None,
+            fonte: "mb-release",
+            confidenza: 0.95,
+            originali: crate::enrich::TagOriginali::default(),
+        };
+        let decisione = crate::enrich::Decisione {
+            album_key: prima.2.clone(),
+            astensioni: vec![(remoto, Verdetto::DaRivedere)],
+            ..crate::enrich::Decisione::default()
+        };
+        let esiti = [crate::enrich::EsitoFile {
+            track_id: remoto,
+            copertina: None,
+            copertina_da: None,
+            applicato: true,
+        }];
+        let tx = c.transaction().expect("transazione");
+        let conto = crate::enrich::registra(&tx, &decisione, &[scrittura], &esiti, ADESSO)
+            .expect("registrazione");
+        tx.commit().expect("commit");
+
+        assert_eq!(conto.applicati, 0, "nessuna riga specchio riscritta");
+        assert_eq!(conto.astenuti, 0, "né segnata come «da rivedere»");
+        let dopo: (String, String, String, Option<String>) = c
+            .query_row(
+                "SELECT title, track_key, album_key, enrich_status FROM tracks WHERE id = ?1",
+                [remoto],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("riga specchio");
+        assert_eq!(
+            dopo, prima,
+            "la riga specchio resta la copia del proprietario"
+        );
+        assert_eq!(
+            n(&c, "SELECT COUNT(*) FROM track_meta_arricchita"),
+            0,
+            "e non c'è un'annotazione che «Dimentica» conterebbe fra i falliti"
+        );
     }
 
     #[test]

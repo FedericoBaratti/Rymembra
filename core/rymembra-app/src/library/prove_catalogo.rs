@@ -10,8 +10,18 @@ use rusqlite::Connection;
 use super::condivisa::{self, ID_PER_SECCHIO, Ricordate};
 use crate::specchio::comuni::{ADESSO, chiave};
 
+/// Una libreria vuota che sorveglia `C:/M`: i brani di prova stanno lì sotto.
+/// Senza una cartella sorvegliata niente si condivide (S1-8).
 fn libreria() -> Connection {
-    crate::db::open_in_memory().expect("database").connection
+    let c = crate::db::open_in_memory().expect("database").connection;
+    radici(&c, &["C:/M"]);
+    c
+}
+
+/// Le cartelle sorvegliate di adesso, come le scrive `imposta_cartelle`.
+fn radici(c: &Connection, elenco: &[&str]) {
+    crate::settings::write_json(c, crate::settings::CHIAVE_CARTELLE, &elenco.to_vec())
+        .expect("cartelle sorvegliate");
 }
 
 fn brano(c: &Connection, id: i64, path: &str) {
@@ -437,4 +447,412 @@ fn una_chiave_troppo_lunga_non_si_taglia_nel_catalogo() {
     // quella che la pagina non manda, chi legge i secchi non si fermerebbe.
     let riassunto = condivisa::riassunto_catalogo(&c).unwrap();
     assert_eq!(riassunto.secchi.iter().map(|s| s.righe).sum::<i64>(), 2);
+}
+
+// ── S1-8: il catalogo guarda le cartelle sorvegliate di adesso ───────────────
+
+/// Quel che un'altra macchina vede di una libreria, domanda per domanda: gli id
+/// che ogni risposta nomina. Solo quel che dipende da `CONDIVISO`.
+fn cosa_si_vede(c: &Connection) -> Vec<(&'static str, Vec<i64>)> {
+    let id = |v: Vec<condivisa::BranoRemoto>| v.iter().map(|b| b.id).collect::<Vec<_>>();
+    let riassunto = condivisa::riassunto_catalogo(c).unwrap();
+    let pagina = condivisa::pagina_catalogo(c, 0, ID_PER_SECCHIO - 1).unwrap();
+    vec![
+        (
+            "brani",
+            id(condivisa::brani(c, super::TrackOrder::Title, 0, 50).unwrap()),
+        ),
+        (
+            "brani_diretti",
+            id(condivisa::brani_diretti(c, super::TrackOrder::Shelf, 0, 50).unwrap()),
+        ),
+        (
+            "brani_album",
+            id(condivisa::brani_album(c, &condivisa::impronta_album("al")).unwrap()),
+        ),
+        ("cerca", id(condivisa::cerca(c, "T", 0, 50).unwrap())),
+        (
+            "cerca_conteggio",
+            vec![condivisa::cerca_conteggio(c, "T").unwrap()],
+        ),
+        (
+            "riassunto",
+            vec![riassunto.secchi.iter().map(|s| s.righe).sum()],
+        ),
+        (
+            "pagina_catalogo",
+            pagina.brani.iter().map(|b| b.id).collect(),
+        ),
+        (
+            "album",
+            vec![
+                condivisa::album(c, 0, 50)
+                    .unwrap()
+                    .iter()
+                    .map(|a| a.total_tracks)
+                    .sum(),
+            ],
+        ),
+        (
+            "artisti",
+            vec![
+                condivisa::artisti(c, 0, 50)
+                    .unwrap()
+                    .iter()
+                    .map(|a| a.tracks)
+                    .sum(),
+            ],
+        ),
+    ]
+}
+
+/// Una libreria con questi brani — `(id, percorso)` — e gli aggregati rifatti.
+fn con_brani(brani: &[(i64, &str)]) -> Connection {
+    let mut c = libreria();
+    for (id, percorso) in brani {
+        brano(&c, *id, percorso);
+    }
+    let tx = c.transaction().unwrap();
+    super::rebuild_aggregates(&tx).unwrap();
+    tx.commit().unwrap();
+    c
+}
+
+#[test]
+fn una_cartella_tolta_dalle_sorvegliate_esce_subito_dal_catalogo_condiviso() {
+    // S1-8. Le righe di una cartella tolta restano in libreria: una scansione le
+    // considera fuori competenza, non sparite. Il catalogo condiviso le
+    // elencava, le lasciava valutare e ne serviva il testo, contro la promessa
+    // «finché sta ancora sotto una cartella sorvegliata».
+    //
+    // Il controllo: sotto la radice, scritta com'è o in un'altra grafia, i brani si
+    // vedono. Il confine di separatore conta: `C:/Musica` non sta sotto `C:/M`.
+    let sotto = [(1, "C:/M/a.flac"), (2, r"c:\m\Sotto\b.flac")];
+    let fuori = [(3, "D:/Vecchia/c.flac"), (4, "C:/Musica/d.flac")];
+    let c = con_brani(&[sotto[0], sotto[1], fuori[0], fuori[1]]);
+    let solo_sotto = con_brani(&sotto);
+    assert_eq!(
+        cosa_si_vede(&c),
+        cosa_si_vede(&solo_sotto),
+        "si vede solo quel che sta sotto `C:/M`: il 3 e il 4 no"
+    );
+    assert!(
+        cosa_si_vede(&c)
+            .iter()
+            .all(|(_, v)| v.iter().any(|n| *n > 0)),
+        "il controllo: qualcosa si vede, in ogni domanda"
+    );
+    // File e valutazioni: lo stesso.
+    for visibile in [1, 2] {
+        assert!(condivisa::brano(&c, visibile).unwrap().is_some());
+        assert!(condivisa::file_del_brano(&c, visibile).unwrap().is_some());
+    }
+    for escluso in [3, 4] {
+        assert!(
+            condivisa::brano(&c, escluso).unwrap().is_none(),
+            "{escluso}"
+        );
+        assert!(condivisa::file_del_brano(&c, escluso).unwrap().is_none());
+        let err = condivisa::valuta(&c, escluso, Some(true), None, ADESSO - 5, ADESSO).unwrap_err();
+        assert_eq!(
+            err.code().kind(),
+            rymembra_domain::errors::ErrorCodeKind::LontanoFileCambiato,
+            "{escluso}"
+        );
+    }
+    let cuore: i64 = c
+        .query_row("SELECT liked FROM tracks WHERE id = 3", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        cuore, 0,
+        "il voto non è entrato in una riga che non si condivide"
+    );
+
+    // Il momento che conta: la cartella `C:/M` viene tolta, **senza** che una
+    // scansione tocchi le righe. Da quel momento di quella cartella non si vede più niente.
+    radici(&c, &["D:/Altra"]);
+    assert_eq!(
+        cosa_si_vede(&c),
+        cosa_si_vede(&con_brani(&[])),
+        "tolta la cartella, la libreria condivisa è vuota"
+    );
+    assert!(condivisa::brano(&c, 1).unwrap().is_none());
+    assert!(condivisa::file_del_brano(&c, 1).unwrap().is_none());
+    // E una che torna, torna con le sue righe.
+    radici(&c, &["C:/M", "D:/Vecchia"]);
+    assert_eq!(
+        cosa_si_vede(&c)
+            .iter()
+            .find(|(d, _)| *d == "brani")
+            .unwrap()
+            .1,
+        vec![1, 2, 3]
+    );
+}
+
+#[test]
+fn senza_cartelle_sorvegliate_niente_si_condivide() {
+    let c = libreria();
+    locali(&c, [1, 2]);
+    assert_eq!(
+        condivisa::brani(&c, super::TrackOrder::Title, 0, 50)
+            .unwrap()
+            .len(),
+        2,
+        "il controllo"
+    );
+    crate::settings::forget(&c, crate::settings::CHIAVE_CARTELLE).unwrap();
+    assert!(
+        condivisa::brani(&c, super::TrackOrder::Title, 0, 50)
+            .unwrap()
+            .is_empty()
+    );
+    // Un elenco che non si legge vale come nessuna cartella: non apre niente.
+    crate::settings::write(&c, crate::settings::CHIAVE_CARTELLE, "{non json").unwrap();
+    assert!(
+        condivisa::brani(&c, super::TrackOrder::Title, 0, 50)
+            .unwrap()
+            .is_empty()
+    );
+    // E una cartella del cloud nell'elenco non rende condiviso un file di qui.
+    radici(&c, &["nuvola://onedrive-abcdefgh/Musica"]);
+    assert!(
+        condivisa::brani(&c, super::TrackOrder::Title, 0, 50)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn le_cose_ricordate_non_sopravvivono_a_una_cartella_tolta() {
+    // Le cache (l'elenco degli id, gli artisti, il riassunto del catalogo) sono
+    // per generazione della libreria, e togliere una cartella non scrive su
+    // `tracks`: senza le cartelle nella chiave, restavano a servire le righe
+    // di quella cartella finché qualcosa non cambiava.
+    let c = libreria();
+    locali(&c, [1, 2, 3]);
+    let cache = Mutex::new(Ricordate::default());
+    let prima = super::generazione(&c).unwrap();
+    let ids = |c: &Connection, cache: &Mutex<Ricordate>| {
+        condivisa::brani_con_scarto(c, cache, super::TrackOrder::Title, 0, 50, 0)
+            .unwrap()
+            .iter()
+            .map(|b| b.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&c, &cache), vec![1, 2, 3]);
+    let riassunto = condivisa::riassunto_con(&c, &cache).unwrap();
+    assert_eq!(riassunto.secchi.iter().map(|s| s.righe).sum::<i64>(), 3);
+    let artisti = condivisa::artisti_con(&c, &cache, 0, 50).unwrap();
+    assert_eq!(artisti.iter().map(|a| a.tracks).sum::<i64>(), 3);
+
+    radici(&c, &["D:/Altra"]);
+    assert_eq!(
+        super::generazione(&c).unwrap(),
+        prima,
+        "tracks non è stata toccata"
+    );
+    assert_eq!(ids(&c, &cache), Vec::<i64>::new(), "l'elenco ricordato");
+    let riassunto = condivisa::riassunto_con(&c, &cache).unwrap();
+    assert_eq!(riassunto.secchi.len(), 0, "il riassunto ricordato");
+    let artisti = condivisa::artisti_con(&c, &cache, 0, 50).unwrap();
+    assert_eq!(artisti.len(), 0, "gli artisti ricordati");
+}
+
+#[test]
+#[ignore = "misura"]
+fn misura_il_costo_delle_cartelle_sorvegliate_sul_catalogo_condiviso() {
+    // S1-8: la funzione SQL che guarda le cartelle sorvegliate di adesso gira per
+    // ogni riga che passa le condizioni economiche. 50.000 brani di qui sotto
+    // tre cartelle (una scritta con un'altra grafia) e 200.000 righe specchio, che
+    // le condizioni economiche tolgono prima.
+    use std::time::Instant;
+    let c = libreria();
+    radici(&c, &["C:/M", "D:/Altra", "//nas/musica"]);
+    c.execute(
+        r"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50000)
+         INSERT INTO tracks (id, path, track_key, title, artist, album, album_key, duration_ms,
+                             file_size, date_added, date_modified)
+         SELECT i,
+                CASE i % 3 WHEN 0 THEN 'C:/M/Artista ' || (i % 900) || '/Album ' || (i / 12) || '/' || i || '.flac'
+                           WHEN 1 THEN 'D:\Altra\Artista ' || (i % 900) || '\' || i || '.flac'
+                           ELSE '\\nas\musica\' || i || '.flac' END,
+                'k' || i, 'T' || i, 'Artista ' || (i % 900), 'Album ' || (i / 12), 'al' || (i / 12),
+                180000, 1000, 1, 1
+           FROM n",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200000)
+         INSERT INTO tracks (id, path, track_key, title, artist, album, album_key, duration_ms,
+                             file_size, date_added, date_modified, source)
+         SELECT 100000 + i, 'lontano://' || ?1 || '/' || i, 'pc' || i, 'P' || i, 'Artista',
+                'Album', 'lontano:/x', 180000, 1000, 1, 1, 'lontano'
+           FROM n",
+        [chiave('a')],
+    )
+    .unwrap();
+    condivisa::assicura_le_radici(&c).unwrap();
+    let senza = condivisa::CONDIVISO
+        .split(" AND rym_sotto_le_radici")
+        .next()
+        .unwrap();
+    for (nome, condizione) in [
+        ("senza le cartelle", senza),
+        ("con le cartelle", condivisa::CONDIVISO),
+    ] {
+        let t = Instant::now();
+        let quanti: i64 = c
+            .query_row(
+                &format!("SELECT COUNT(*) FROM tracks t WHERE {condizione}"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        eprintln!(
+            "MISURA COUNT(*) dei brani condivisi {nome}: {quanti} righe in {} ms",
+            t.elapsed().as_millis()
+        );
+    }
+    let t = Instant::now();
+    let riassunto = condivisa::riassunto_catalogo(&c).unwrap();
+    eprintln!(
+        "MISURA riassunto_catalogo (50.000 brani condivisi, 200.000 righe specchio): {} secchi in {} ms",
+        riassunto.secchi.len(),
+        t.elapsed().as_millis()
+    );
+}
+
+// ── S1-9: le copertine che si servono ────────────────────────────────────────
+
+/// Un'impronta di copertina fatta di `c` ripetuta: sono 64 cifre esadecimali.
+fn impronta(c: char) -> String {
+    c.to_string().repeat(64)
+}
+
+fn con_copertina(c: &Connection, id: i64, path: &str, hash: &str) {
+    brano(c, id, path);
+    c.execute(
+        "INSERT OR IGNORE INTO cover_art (hash, mime_type, width, height, byte_size, source, created_at)
+         VALUES (?1, 'image/jpeg', 1, 1, 1, 'provider', 1)",
+        [hash],
+    )
+    .unwrap();
+    c.execute(
+        "UPDATE tracks SET cover_art_hash = ?2 WHERE id = ?1",
+        rusqlite::params![id, hash],
+    )
+    .unwrap();
+}
+
+#[test]
+fn una_copertina_che_non_e_di_un_brano_condiviso_non_si_serve() {
+    // S1-9. Lo store delle copertine è uno solo per tutti i brani — di qui, del
+    // cloud, di catalogo, quelle prese da altri dispositivi — e un pari che
+    // conosce l'impronta di un'immagine (BLAKE3 dei suoi byte) sapeva dire se è
+    // in libreria, anche per un brano che non gli è mai stato elencato.
+    let c = libreria();
+    con_copertina(&c, 1, "C:/M/1.flac", &impronta('1'));
+    con_copertina(
+        &c,
+        2,
+        "nuvola://onedrive-abcdefgh/Musica/2.flac",
+        &impronta('2'),
+    );
+    con_copertina(
+        &c,
+        3,
+        &format!("lontano://{}/9", chiave('a')),
+        &impronta('3'),
+    );
+    con_copertina(&c, 4, "D:/Vecchia/4.flac", &impronta('4'));
+    c.execute("UPDATE tracks SET source = 'lontano' WHERE id = 3", [])
+        .unwrap();
+    let si = |h: &str| condivisa::copertina_condivisa(&c, h).unwrap();
+    assert!(
+        si(&impronta('1')),
+        "il controllo: quella di un brano condiviso"
+    );
+    assert!(!si(&impronta('2')), "di un brano del cloud");
+    assert!(!si(&impronta('3')), "di una riga specchio");
+    assert!(
+        !si(&impronta('4')),
+        "di un brano fuori dalle cartelle sorvegliate"
+    );
+    assert!(!si(&impronta('5')), "che non c'è in nessuna riga");
+    // E come ogni cosa che dipende dalle cartelle: tolta la cartella, esce.
+    radici(&c, &["D:/Altra"]);
+    assert!(!si(&impronta('1')));
+}
+
+#[test]
+fn la_copertina_di_un_album_elencato_si_serve_anche_se_viene_da_un_altro_dispositivo() {
+    // La copertina di un album è un voto fra le righe del disco, e un disco di qui
+    // con righe specchio unite può prenderla da una di loro. È quella che
+    // `condivisa::album` dice all'altro: non serve altro che quel che già dice.
+    let c = libreria();
+    con_copertina(&c, 1, "C:/M/1.flac", &impronta('1'));
+    for n in 2..=4 {
+        con_copertina(
+            &c,
+            n,
+            &format!("lontano://{}/{n}", chiave('a')),
+            &impronta('9'),
+        );
+        c.execute("UPDATE tracks SET source = 'lontano' WHERE id = ?1", [n])
+            .unwrap();
+    }
+    let mut c = c;
+    let tx = c.transaction().unwrap();
+    super::rebuild_aggregates(&tx).unwrap();
+    tx.commit().unwrap();
+    let album = condivisa::album(&c, 0, 50).unwrap();
+    assert_eq!(album.len(), 1, "un disco con un brano condiviso");
+    let detta = album[0].cover_art_hash.clone().expect("una copertina");
+    assert!(
+        condivisa::copertina_condivisa(&c, &detta).unwrap(),
+        "l'impronta che l'album dice ({detta}) si serve"
+    );
+}
+
+// ── S1-10: i brani di un album hanno un tetto ────────────────────────────────
+
+#[test]
+fn i_brani_di_un_album_hanno_il_tetto_della_cornice() {
+    // S1-10. Una cartella senza tag d'album, o una raccolta con la stessa chiave,
+    // può essere un disco da decine di migliaia di brani: la risposta non ha una
+    // pagina, e tutti i `BranoRemoto` si costruivano per una cornice che poi li
+    // rifiutava. Come ogni altra domanda d'elenco, al più una pagina.
+    let c = libreria();
+    let troppi = i64::from(condivisa::MASSIMI_BRANI_ALBUM) + 10;
+    {
+        let tx = c.unchecked_transaction().unwrap();
+        for id in 1..=troppi {
+            brano(&tx, id, &format!("C:/M/{id}.flac"));
+        }
+        tx.commit().unwrap();
+    }
+    c.execute("UPDATE tracks SET track_number = id", [])
+        .unwrap();
+    let album = condivisa::brani_album(&c, &condivisa::impronta_album("al")).unwrap();
+    assert_eq!(
+        album.len(),
+        usize::try_from(condivisa::MASSIMI_BRANI_ALBUM).unwrap(),
+        "al più una pagina"
+    );
+    assert_eq!(
+        album.iter().map(|b| b.id).take(3).collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "i primi del disco, nell'ordine del disco"
+    );
+    // Un disco normale si serve intero.
+    let piccolo = libreria();
+    locali(&piccolo, [1, 2, 3]);
+    assert_eq!(
+        condivisa::brani_album(&piccolo, &condivisa::impronta_album("al"))
+            .unwrap()
+            .len(),
+        3
+    );
 }

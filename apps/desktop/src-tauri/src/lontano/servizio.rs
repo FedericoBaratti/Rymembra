@@ -243,6 +243,22 @@ fn copertina(app: &Nucleo, impronta: &str) -> Result<Risposta, AppError> {
             what: Some("lontano".to_owned()),
         })
     })?;
+    la_copertina_di(&stato, impronta)
+}
+
+/// [`copertina`] per uno stato: solo le copertine di un brano che questa libreria
+/// condivide (S1-9).
+///
+/// Lo store è uno solo per tutti i brani — anche quelli non condivisi, del cloud,
+/// di catalogo — e chi sa l'impronta di un'immagine sapeva se è in libreria e la
+/// scaricava, anche per un brano che non gli si è mai elencato. Qui si chiede
+/// **prima** alla libreria, su una connessione a parte, e solo se l'impronta è di
+/// un brano condiviso si apre lo store: per ogni altra la risposta è quella di una
+/// che non c'è, e nessuna decodifica è a spese di chi risponde.
+fn la_copertina_di(stato: &Stato, impronta: &str) -> Result<Risposta, AppError> {
+    if !leggi_da(stato, |c| condivisa::copertina_condivisa(c, impronta))? {
+        return Ok(Risposta::Fatto);
+    }
     match stato.copertine()?.media(impronta)? {
         Some(byte) => Ok(Risposta::Byte {
             totale: u64::try_from(byte.len()).unwrap_or(u64::MAX),
@@ -252,6 +268,10 @@ fn copertina(app: &Nucleo, impronta: &str) -> Result<Risposta, AppError> {
         None => Ok(Risposta::Fatto),
     }
 }
+
+/// I brani di un album non superano una pagina, come ogni altra domanda d'elenco:
+/// la cornice del protocollo è dimensionata su quella.
+const _: () = assert!(condivisa::MASSIMI_BRANI_ALBUM == MASSIMA_PAGINA);
 
 /// Quanti byte e da quando, sul disco: la versione di un file aperto.
 fn come_sta(file: &File) -> Result<(u64, i64), AppError> {
@@ -562,6 +582,9 @@ mod prove {
         let c = rymembra_app::db::open_in_memory()
             .expect("database in memoria")
             .connection;
+        // Il brano sta sotto una cartella sorvegliata: senza, niente si condivide.
+        rymembra_app::settings::write_json(&c, rymembra_app::settings::CHIAVE_CARTELLE, &["C:/m"])
+            .expect("cartelle sorvegliate");
         c.execute(
             "INSERT INTO tracks
                  (id, path, track_key, title, artist, album, duration_ms,
@@ -755,6 +778,8 @@ mod prove {
 
     /// Un brano condiviso, scritto nella libreria dello stato.
     fn metti_il_brano(c: &rusqlite::Connection, id: i64) -> Result<(), AppError> {
+        // Sotto una cartella sorvegliata: senza, niente si condivide.
+        rymembra_app::settings::write_json(c, rymembra_app::settings::CHIAVE_CARTELLE, &["C:/m"])?;
         c.execute(
             "INSERT INTO tracks
                  (id, path, track_key, title, artist, album, duration_ms,
@@ -904,6 +929,68 @@ mod prove {
             panic!("il testo di dopo");
         };
         assert_eq!(dopo["scartoMs"], -120);
+    }
+
+    /// S1-9. Lo store delle copertine è uno solo: una copertina di un brano del
+    /// cloud c'è, e chi ne conosce l'impronta la riceveva. Si serve solo quella
+    /// di un brano condiviso; per ogni altra si risponde come per una che non c'è.
+    #[test]
+    fn una_copertina_si_serve_solo_se_e_di_un_brano_condiviso() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let (condivisa_h, cloud_h) = ("1".repeat(64), "2".repeat(64));
+        crate::stato::con_libreria(&stato, |l| {
+            let prova = |err: rusqlite::Error| rymembra_app::db::codice_da_sqlite("prova", &err);
+            metti_il_brano(&l.connection, 1)?;
+            for hash in [&condivisa_h, &cloud_h] {
+                l.connection
+                    .execute(
+                        "INSERT INTO cover_art (hash, mime_type, width, height, byte_size, source,
+                                                created_at)
+                         VALUES (?1, 'image/jpeg', 1, 1, 1, 'provider', 1)",
+                        [hash],
+                    )
+                    .map_err(prova)?;
+            }
+            l.connection
+                .execute(
+                    "UPDATE tracks SET cover_art_hash = ?1 WHERE id = 1",
+                    [&condivisa_h],
+                )
+                .map_err(prova)?;
+            l.connection
+                .execute(
+                    "INSERT INTO tracks (id, path, track_key, title, artist, album, file_size,
+                                         date_added, date_modified, cover_art_hash)
+                     VALUES (2, 'nuvola://drive/2.mp3', 'k2', 'T', 'A', 'B', 1, 0, 0, ?1)",
+                    [&cloud_h],
+                )
+                .map_err(prova)?;
+            Ok(())
+        })
+        .expect("la libreria di prova");
+        // Tutte e due le copertine stanno nello store, nella forma media.
+        let store = stato.copertine().expect("lo store");
+        for hash in [&condivisa_h, &cloud_h] {
+            let percorso = store.percorso_media(hash);
+            std::fs::create_dir_all(percorso.parent().expect("una cartella")).expect("cartella");
+            std::fs::write(percorso, b"jpeg finto").expect("copertina");
+        }
+
+        let Ok(Risposta::Byte { byte, .. }) = la_copertina_di(&stato, &condivisa_h) else {
+            panic!("la copertina di un brano condiviso si serve");
+        };
+        assert_eq!(byte, b"jpeg finto");
+        assert_eq!(
+            la_copertina_di(&stato, &cloud_h).expect("risposta"),
+            Risposta::Fatto,
+            "quella di un brano del cloud no: come se non ci fosse"
+        );
+        assert_eq!(
+            la_copertina_di(&stato, &"3".repeat(64)).expect("risposta"),
+            Risposta::Fatto,
+            "e una che non c'è risponde allo stesso modo"
+        );
     }
 
     #[test]

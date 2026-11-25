@@ -6720,6 +6720,9 @@ fn agli_altri_dispositivi_si_mostrano_solo_i_file() {
 /// titolo. Per le prove delle pagine che Sfoglia chiede agli altri dispositivi.
 fn libreria_da_sfogliare(n: i64) -> (tempfile::TempDir, CoverStore, Connection) {
     let (dir, store, connection) = banco();
+    // Le cartelle sorvegliate: senza, niente si condivide (S1-8).
+    crate::settings::write_json(&connection, crate::settings::CHIAVE_CARTELLE, &["/musica"])
+        .expect("cartelle sorvegliate");
     for id in 1..=n {
         connection
             .execute(
@@ -7924,4 +7927,43 @@ fn costo_dell_origine_su_una_libreria_di_trentamila_brani() {
     misura("list_artists (dopo)", &|| {
         let _ = list_artists(&c, &Origine::Tutti).expect("artisti");
     });
+}
+
+#[test]
+fn una_scansione_che_non_cambia_niente_non_ricalcola_i_doppioni() {
+    // S2-5. Doppioni e chiavi d'album si rifacevano dopo **ogni** scansione, anche
+    // senza una riga nuova, cambiata o tolta: sul telefono con un PC da
+    // duecentomila righe, secondi di lucchetto per ogni avvio, sveglia e raffica
+    // di eventi di una cartella.
+    use crate::specchio::archivio::PASSATE_DI_DOPPIONI;
+    let rifatti = || PASSATE_DI_DOPPIONI.with(std::cell::Cell::get);
+    let mut lib = Libreria::nuova();
+    lib.brano("A/Disco/01.wav", "Uno", "Tale", "Disco");
+    riga_specchio(&lib.connection, 900, 1, "tale|pezzo|disco", "Flac");
+
+    let prima = rifatti();
+    let primo = lib.scansiona();
+    assert_eq!(primo.inserted, 1);
+    assert_eq!(rifatti(), prima + 1, "una riga nuova: si rifanno");
+
+    let secondo = lib.scansiona();
+    assert_eq!(
+        (
+            secondo.inserted,
+            secondo.updated,
+            secondo.moved,
+            secondo.removed
+        ),
+        (0, 0, 0, 0),
+        "{secondo:?}"
+    );
+    assert_eq!(rifatti(), prima + 1, "nessuna novità: non si rifanno");
+
+    // Un file nuovo, uno tolto: si rifanno.
+    lib.brano("A/Disco/02.wav", "Due", "Tale", "Disco");
+    assert_eq!(lib.scansiona().inserted, 1);
+    assert_eq!(rifatti(), prima + 2);
+    std::fs::remove_file(lib.musica().join("A/Disco/02.wav")).expect("tolto");
+    assert_eq!(lib.scansiona().removed, 1);
+    assert_eq!(rifatti(), prima + 3);
 }

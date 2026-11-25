@@ -1207,3 +1207,105 @@ fn misura_dimenticare_un_pc_da_duecentomila_righe_a_blocchi() {
         n(&c, "SELECT COUNT(*) FROM tracks WHERE source = 'lontano'")
     );
 }
+
+// ── S2-5: un giro che non cambia niente, e una scansione che non cambia niente ───
+
+/// Le righe dell'id remoto da 1 a `fino` del PC della scena
+/// ([`telefono_con_un_pc_al_tetto`]), come le manderebbe il PC: stessi tag, stesse
+/// chiavi, stessa qualità. `ascolti` è il numero di ascolti che dichiarano.
+fn righe_della_scena(fino: i64, ascolti: i64) -> Vec<crate::library::condivisa::BranoCatalogo> {
+    (1..=fino)
+        .map(|i| {
+            let mut r = riga(i);
+            r.track_key = if i <= 20_000 {
+                format!("artista {}|titolo {i}|album {}", i % 900, i.div_euclid(12))
+            } else {
+                format!("artista {}|solo pc {i}|album {}", i % 900, i.div_euclid(12))
+            };
+            r.content_key = Some(r.track_key.clone());
+            r.title = format!("Titolo {i}");
+            r.artist = format!("Artista {}", i % 900);
+            r.album = format!("Album {}", i.div_euclid(12));
+            r.album_key = Some(format!("{:032x}", i.div_euclid(12)));
+            r.codec = Some("flac".to_owned());
+            r.bitrate = Some(900);
+            r.sample_rate = Some(96_000);
+            r.duration_ms = 200_000;
+            r.dimensione = 24_000_000;
+            r.play_count = ascolti;
+            r
+        })
+        .collect()
+}
+
+/// Un giro con `righe` come unico secchio (gli id da 0 a 499), chiuso come lo
+/// chiude il nucleo. Restituisce i millisecondi di `applica_secchio` e di
+/// `chiudi`: quest'ultimo è il lucchetto che tiene la chiusura.
+fn un_giro_di_un_secchio(
+    c: &Connection,
+    righe: Vec<crate::library::condivisa::BranoCatalogo>,
+) -> (u128, u128, crate::specchio::archivio::Chiusura) {
+    use crate::library::condivisa::SecchioCatalogo;
+    use crate::specchio::archivio::Giro;
+    use std::time::Instant;
+    let pc = chiave(PC);
+    let secchio = SecchioCatalogo {
+        da_id: 0,
+        a_id: 499,
+        impronta: "x".to_owned(),
+        righe: i64::try_from(righe.len()).expect("righe"),
+    };
+    let mut giro = Giro::nuovo(&pc, 200_000);
+    let t = Instant::now();
+    giro.applica_secchio(c, &secchio, righe, ADESSO)
+        .expect("secchio");
+    let secchio_ms = t.elapsed().as_millis();
+    let t = Instant::now();
+    let chiusura = giro.chiudi(c, &[], true, 1, ADESSO).expect("chiusura");
+    (secchio_ms, t.elapsed().as_millis(), chiusura)
+}
+
+#[test]
+#[ignore = "misura"]
+fn misura_la_chiusura_di_un_giro_e_una_scansione_che_non_cambiano_niente() {
+    // La scena di «Dimentica»: 50.000 brani di qui e un PC da 200.000 righe. Il PC
+    // suona musica: ogni ascolto cambia il suo catalogo, il giro entra, rilegge un
+    // secchio e `chiudi` rifaceva doppioni e chiavi d'album su tutta la libreria.
+    use std::time::Instant;
+    let c = telefono_con_un_pc_al_tetto();
+    // Il primo giro porta il secchio allo stato del PC (impronta e chiave d'album).
+    let (_, _, prima_volta) = un_giro_di_un_secchio(&c, righe_della_scena(499, 0));
+    eprintln!("preparazione: primo giro del secchio, chiusura {prima_volta:?}");
+    // Il PC ha ascoltato qualcosa: tre righe con un ascolto in più. Niente che
+    // cambi chi è un doppione o a quale disco appartiene.
+    let mut righe = righe_della_scena(499, 0);
+    for r in righe.iter_mut().take(3) {
+        r.play_count = 1;
+        r.last_played_at = Some(1_700_000_000_000);
+        r.stats_updated_at = 1_700_000_000_000;
+    }
+    let (secchio_ms, chiudi_ms, chiusura) = un_giro_di_un_secchio(&c, righe);
+    eprintln!(
+        "MISURA giro con solo ascolti (50.000 di qui, 200.000 del PC): secchio {secchio_ms} ms, chiudi {chiudi_ms} ms (copie cambiate: {})",
+        chiusura.copie_cambiate
+    );
+    // Un giro che non porta niente.
+    let (secchio_ms, chiudi_ms, _) = un_giro_di_un_secchio(&c, righe_della_scena(499, 0));
+    eprintln!(
+        "MISURA giro identico a quello di prima: secchio {secchio_ms} ms, chiudi {chiudi_ms} ms"
+    );
+    // La scansione che non cambia niente rifaceva questo, dopo ogni passata; adesso
+    // lo chiede solo se la passata ha cambiato qualcosa.
+    let t = Instant::now();
+    crate::specchio::archivio::ricalcola_doppioni_se_serve(&c, false).expect("doppioni");
+    eprintln!(
+        "MISURA fine di una scansione che non cambia niente (ricalcola_doppioni_se_serve): {} ms",
+        t.elapsed().as_millis()
+    );
+    let t = Instant::now();
+    crate::specchio::archivio::ricalcola_doppioni(&c).expect("doppioni");
+    eprintln!(
+        "MISURA ricalcola_doppioni (il lavoro che una scansione che ha cambiato qualcosa rifà): {} ms",
+        t.elapsed().as_millis()
+    );
+}

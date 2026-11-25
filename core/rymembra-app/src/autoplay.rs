@@ -497,25 +497,33 @@ fn bacino_della_radio(
     origine: &Origine,
 ) -> Result<Vec<TrackSummary>, AppError> {
     // Una radio, come l'autoplay, non propone la musica di un dispositivo che
-    // adesso non risponde: la condizione di origine sta sulla riga intera, non
-    // sul riempimento casuale (che pescherebbe anche da lì).
-    let origine = origine.sql("t.")?;
+    // adesso non risponde. La condizione sta sulla riga intera **e dentro ognuna
+    // delle tre pescate**: sull'esterna da sola arrivava dopo i `LIMIT`, e il
+    // riempimento a caso, che prende duemila righe su tutte quelle della libreria,
+    // ne spendeva la gran parte su un PC spento — con trecento brani di qui e
+    // cinquantamila di là la radio partiva con una manciata (S12-3).
+    let origine_fuori = origine.sql("t.")?;
+    let origine_artista = origine.sql("a.")?;
+    let origine_genere = origine.sql("g.")?;
+    let origine_riempimento = origine.sql("f.")?;
     let sql = format!(
         "SELECT {} FROM tracks t
-          WHERE t.id <> ?1 AND {origine} AND t.id IN (
+          WHERE t.id <> ?1 AND {origine_fuori} AND t.id IN (
             SELECT vicino_id FROM brano_vicino WHERE track_id = ?1
             UNION
             SELECT id FROM (
               SELECT a.id FROM tracks s JOIN tracks a ON a.artist = s.artist
-               WHERE s.id = ?1
+               WHERE s.id = ?1 AND {origine_artista}
                ORDER BY RANDOM() LIMIT ?2)
             UNION
             SELECT id FROM (
               SELECT g.id FROM tracks s JOIN tracks g ON g.genre = s.genre
-               WHERE s.id = ?1 AND TRIM(s.genre) <> ''
+               WHERE s.id = ?1 AND TRIM(s.genre) <> '' AND {origine_genere}
                ORDER BY RANDOM() LIMIT ?2)
             UNION
-            SELECT id FROM (SELECT id FROM tracks ORDER BY RANDOM() LIMIT ?3)
+            SELECT id FROM (
+              SELECT f.id FROM tracks f WHERE {origine_riempimento}
+               ORDER BY RANDOM() LIMIT ?3)
           )
           ORDER BY RANDOM()",
         library::COLONNE_BRANO
@@ -1831,6 +1839,38 @@ mod prove {
         assert!(
             acceso.iter().any(|id| del_pc.contains(id)),
             "con il PC acceso la sua musica entra nel bacino: {acceso:?}"
+        );
+    }
+
+    /// S12-3. Il riempimento a caso pesca **prima** di togliere i dispositivi
+    /// spenti: con venti brani di qui e cinquemila di un PC che non risponde, due
+    /// mila pescati a caso su cinquemila e venti lasciavano di qui una manciata, e
+    /// la radio partiva con quella invece che con tutto quel che c'è.
+    #[test]
+    fn la_radio_con_il_pc_spento_ha_comunque_i_brani_di_qui() {
+        use crate::specchio::comuni::{ADESSO, chiave, giro, riga};
+        let connection = libreria_larga(20, 1);
+        let righe: Vec<_> = (1..=5_000).map(riga).collect();
+        giro(&connection, &chiave('a'), &righe, ADESSO);
+        let del_pc: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE path LIKE 'lontano://%'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("conteggio");
+        assert_eq!(del_pc, 5_000, "il giro non ha scritto le righe");
+
+        let coda =
+            radio(&connection, 1, 30, 0, &Origine::Raggiungibili(Vec::new())).expect("radio");
+        assert_eq!(
+            coda.len(),
+            19,
+            "tutti i brani di qui tranne il seme, nessuno del PC spento: {coda:?}"
+        );
+        assert!(
+            coda.iter().all(|id| *id % 100 == 1),
+            "un brano del PC spento è finito nella radio: {coda:?}"
         );
     }
 }

@@ -379,6 +379,9 @@ pub fn ricorda_scelta(
     voce: &Voce,
 ) -> Result<(), AppError> {
     crate::playback::riga_della_libreria(brano.id)?;
+    // Se al suo posto c'era la copia del testo del proprietario, vale finché lui
+    // manda lo stesso: se ne ricorda l'impronta (T-1).
+    ricorda_la_copia_scartata(connection, &brano.track_key)?;
     connection
         .execute(
             "INSERT INTO lyrics
@@ -528,6 +531,9 @@ pub fn rifiuta(connection: &Connection, track_key: &str) -> Result<(), AppError>
     use rusqlite::OptionalExtension as _;
 
     let guasto = |err: rusqlite::Error| db_error("scarto di un testo del catalogo", &err);
+    // Se la riga è la copia del testo del proprietario, se ne ricorda l'impronta:
+    // vale finché lui manda lo stesso testo (T-1).
+    ricorda_la_copia_scartata(connection, track_key)?;
     // L'elenco si rifà qui e non in SQL perché ha un tetto e un ordine: i più
     // recenti, senza doppioni. Con `json_insert` cresceva di una voce a ogni
     // scarto, comandato anche da un altro dispositivo (60 scritture al minuto).
@@ -558,6 +564,113 @@ pub fn rifiuta(connection: &Connection, track_key: &str) -> Result<(), AppError>
         )
         .map(|_| ())
         .map_err(guasto)
+}
+
+/// Il testo che un proprietario non ha più diritto di rimettere: l'impronta di
+/// quel che mandava quando chi ascolta qui l'ha scartato — con «Non è questo» —
+/// o ha scelto una voce al suo posto.
+///
+/// # Perché un'impronta e non un identificativo
+///
+/// Per una voce del catalogo c'è l'identificativo di LRCLIB, che `scartati`
+/// ricorda. Il testo di un proprietario non ne ha uno: è un testo, e lo si
+/// riconosce per quel che dice. L'impronta (BLAKE3 del testo com'è arrivato, otto
+/// byte) sta in **`scartati`**, la colonna che c'è già, come un intero **negativo**:
+/// un identificativo di LRCLIB è positivo, e le due specie non si incontrano.
+/// Nessuna migrazione, e il tetto di [`MASSIMI_SCARTATI`] è lo stesso.
+///
+/// # E quando torna
+///
+/// Quando lui manda un testo **diverso**: l'impronta non c'è fra gli scartati, e il
+/// proprietario ha ragione sul suo brano, com'è sempre stato. Un rifiuto che
+/// vincesse per sempre farebbe tacere un testo rifatto, che chi l'ha scartato non
+/// ha mai visto.
+#[must_use]
+pub fn impronta_del_testo(grezzo: &str) -> i64 {
+    let mut otto = [0_u8; 8];
+    otto.copy_from_slice(&blake3::hash(grezzo.as_bytes()).as_bytes()[..8]);
+    // Trenta bit in meno e un segno: mai positivo, mai zero.
+    let senza_segno = u64::from_le_bytes(otto) >> 2;
+    -i64::try_from(senza_segno).unwrap_or(i64::MAX - 1) - 1
+}
+
+/// Il testo del proprietario che sta per essere sostituito, nella forma di cui
+/// si fa l'impronta: il testo com'è, o un segno per uno strumentale.
+fn testo_per_l_impronta(
+    synced: Option<String>,
+    plain: Option<String>,
+    strumentale: bool,
+) -> Option<String> {
+    if strumentale {
+        return Some(STRUMENTALE.to_owned());
+    }
+    synced.or(plain).filter(|testo| !testo.trim().is_empty())
+}
+
+/// Il testo di un proprietario che dice «strumentale» non ha un testo da cui
+/// fare l'impronta: ne vale una fissa.
+pub const STRUMENTALE: &str = "\u{1}strumentale";
+
+/// L'impronta di quel che un proprietario manda, come la riga la ricorderebbe.
+#[must_use]
+pub fn impronta_di_quel_che_manda(grezzo: &str, strumentale: bool) -> i64 {
+    impronta_del_testo(if strumentale { STRUMENTALE } else { grezzo })
+}
+
+/// Se la riga di `track_key` è la copia del testo del proprietario
+/// (`source = 'proprietario'`), ne mette l'impronta fra gli scartati: chi ascolta
+/// la sta per scartare ([`rifiuta`]) o per sostituirla con una voce scelta
+/// ([`ricorda_scelta`]), e il proprietario che la manda **uguale** alla prossima
+/// apertura non deve rimetterla (T-1). Una riga che non è sua non si tocca.
+///
+/// # Errori
+///
+/// `db.queryFailed`.
+fn ricorda_la_copia_scartata(connection: &Connection, track_key: &str) -> Result<(), AppError> {
+    use rusqlite::OptionalExtension as _;
+    let guasto = |err: rusqlite::Error| db_error("scarto della copia del proprietario", &err);
+    type Copia = (Option<String>, Option<String>, bool, Option<String>);
+    let copia: Option<Copia> = connection
+        .query_row(
+            "SELECT synced, plain, instrumental, scartati FROM lyrics
+              WHERE track_key = ?1 AND source = 'proprietario'",
+            [track_key],
+            |riga| Ok((riga.get(0)?, riga.get(1)?, riga.get(2)?, riga.get(3)?)),
+        )
+        .optional()
+        .map_err(guasto)?;
+    let Some((synced, plain, strumentale, scartati)) = copia else {
+        return Ok(());
+    };
+    let Some(testo) = testo_per_l_impronta(synced, plain, strumentale) else {
+        return Ok(());
+    };
+    let elenco = scartati_con(scartati.as_deref(), impronta_del_testo(&testo));
+    connection
+        .execute(
+            "UPDATE lyrics SET scartati = ?2 WHERE track_key = ?1 AND source = 'proprietario'",
+            rusqlite::params![track_key, elenco],
+        )
+        .map(|_| ())
+        .map_err(guasto)
+}
+
+/// Chi ascolta qui ha scartato questo testo del proprietario — o gli ha preferito
+/// una voce — e lui lo manda ancora uguale? Allora non lo si rimette (T-1).
+///
+/// Una lettura che fallisce vale «no»: nel dubbio vince il proprietario, com'era.
+#[must_use]
+pub fn copia_scartata(connection: &Connection, track_key: &str, impronta: i64) -> bool {
+    connection
+        .query_row(
+            "SELECT scartati FROM lyrics WHERE track_key = ?1",
+            [track_key],
+            |riga| riga.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .and_then(|json| serde_json::from_str::<Vec<i64>>(&json).ok())
+        .is_some_and(|voci| voci.contains(&impronta))
 }
 
 /// Quante voci del catalogo, al più, si ricordano come scartate per un brano.

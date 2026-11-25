@@ -1937,7 +1937,8 @@ fn mostra_nella_cartella(app: &tauri::AppHandle, id: i64) -> Esito<()> {
 /// # Errori
 ///
 /// `library.trackNotFound` se il brano non c'è più;
-/// `playback.sourceUnavailable` se è di catalogo; `db.*` se la lettura fallisce.
+/// `playback.sourceUnavailable` se è di catalogo; `lontano.nonQui` se è la copia
+/// di un brano di un altro dispositivo; `db.*` se la lettura fallisce.
 pub(crate) fn file_da_mostrare(
     connection: &rusqlite::Connection,
     id: i64,
@@ -1955,6 +1956,14 @@ pub(crate) fn file_da_mostrare(
         })
         .with_cause("un brano di catalogo non sta in nessuna cartella".to_owned())
     })?;
+    // Una riga specchio è la copia di un brano di un altro dispositivo: il suo
+    // file non sta qui, e Esplora risorse risponderebbe «non esiste» con in
+    // mano `lontano://<chiave>/<id>`, cioè la chiave pubblica dell'altro. Come
+    // ogni gesto sul file (`cancellazione::da_togliere`, `files`, `scrittura`),
+    // lo rifiuta il nucleo e non la finestra che nasconde la voce (S12-2).
+    if rymembra_app::specchio::e_specchio(&percorso) {
+        return Err(AppError::new(ErrorCode::LontanoNonQui));
+    }
     let immagine: Option<String> = connection
         .query_row("SELECT immagine FROM tracks WHERE id = ?1", [id], |riga| {
             riga.get(0)
@@ -3395,6 +3404,35 @@ mod prove_della_scansione {
         );
         let manca = file_da_mostrare(&libreria.connection, 99).expect_err("non c'è");
         assert_eq!(manca.code().kind().code(), "library.trackNotFound");
+    }
+
+    /// S12-2. Una riga specchio non ha un file qui: «Mostra nella cartella» la
+    /// rifiuta il nucleo, con `lontano.nonQui`, come ogni altro gesto sul suo
+    /// file. Prima rispondeva «non esiste» con dentro il percorso `lontano://…`,
+    /// cioè la chiave pubblica dell'altro dispositivo.
+    #[test]
+    fn mostra_nella_cartella_rifiuta_una_riga_specchio() {
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        let mut guardia = stato.libreria.lock().expect("lucchetto");
+        let libreria = guardia.as_mut().expect("libreria aperta");
+        let percorso = rymembra_app::specchio::percorso(&"a".repeat(64), 7);
+        libreria
+            .connection
+            .execute(
+                "INSERT INTO tracks (id, path, track_key, title, artist, album, album_key,
+                                     duration_ms, file_size, date_added, date_modified, source)
+                 VALUES (1, ?1, 'k1', 'T', 'A', 'Al', 'g', 1000, 1, 0, 0, 'lontano')",
+                [&percorso],
+            )
+            .expect("riga specchio");
+        let rifiutata =
+            file_da_mostrare(&libreria.connection, 1).expect_err("non è un file di qui");
+        assert_eq!(rifiutata.code().kind().code(), "lontano.nonQui");
+        assert!(
+            !format!("{rifiutata:?}").contains(&"a".repeat(64)),
+            "il rifiuto non porta la chiave dell'altro dispositivo"
+        );
     }
 
     /// Il ciclo intero dell'attesa del turno, in una prova sola: i due posti
