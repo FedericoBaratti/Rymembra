@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -623,7 +624,16 @@ object Sessione {
       .build()
     val esito = audio.requestAudioFocus(nuova)
     if (esito != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-      Log.i(PAUSA, "il fuoco audio non è stato concesso (esito $esito)")
+      // `AUDIOFOCUS_REQUEST_FAILED` è lo stesso esito di una chiamata in corso, di
+      // un'app che non cede il fuoco e — da Android 17 con `targetSdk` 37 — del
+      // sistema che lo nega a chi non ha un servizio in primo piano con la
+      // capacità «while-in-use» (S6-3): l'API non li distingue, e il codice non
+      // dice quale dei tre è. Dice l'esito, il livello di Android e dove guardare.
+      Log.i(
+        PAUSA,
+        "il fuoco audio non è stato concesso (esito $esito, Android API ${Build.VERSION.SDK_INT}): " +
+          "una chiamata, un'altra app, o dal 17 il sistema (cerca «AudioHardening» nel logcat)",
+      )
       return false
     }
     richiesta = nuova
@@ -638,8 +648,12 @@ object Sessione {
   /**
    * Il fuoco audio per **far partire** la musica da soli — «Parti con l'auto»,
    * vedi [Presenza] —: lo si chiede prima del «riprendi», come vuole Android
-   * per chi suona, invece di prenderlo quando la scheda dice che suona. Se un'altra
-   * app lo tiene e non lo cede, `false`: non si parte.
+   * per chi suona, invece di prenderlo quando la scheda dice che suona. Se Android
+   * non lo concede, `false`: non si parte. Non si sa perché: una chiamata in
+   * corso, un'altra app che non lo cede e — da Android 17 — la restrizione
+   * sull'audio dallo sfondo (un servizio avviato all'accensione o
+   * dall'aggiornamento non ha la capacità «while-in-use») tornano tutte
+   * `AUDIOFOCUS_REQUEST_FAILED`, e nessuna API le distingue ([chiediIlFuoco]).
    *
    * Se poi la musica non parte — un errore in Rust, una coda che non si apre —
    * nessuna scheda con «suona» arriva a dire che il fuoco serve ancora, e

@@ -251,7 +251,9 @@ class Presenza : Service() {
 
   /**
    * L'auto si è collegata: se c'è qualcosa da riprendere, riparte. Il fuoco
-   * audio si chiede **prima** — se un'altra app lo tiene e non lo cede, non si
+   * audio si chiede **prima** — se Android non lo concede (una chiamata in corso,
+   * un'altra app che non lo cede, da Android 17 la restrizione sull'audio per i
+   * servizi partiti dallo sfondo: vedi [Sessione.fuocoPerPartire]) non si
    * parte — e poi il gesto è lo stesso del tasto play, per la stessa strada:
    * la musica la fa Rust, e il fuoco già preso lo trova la sessione quando
    * arriva la scheda che dice «suona».
@@ -278,7 +280,7 @@ class Presenza : Service() {
       ).buildAsync()
     }
     if (!Sessione.fuocoPerPartire(this)) {
-      Log.i(ETICHETTA, "«Parti con l'auto» non parte: il fuoco audio non è stato concesso")
+      Log.i(ETICHETTA, "«Parti con l'auto» non parte: Android non ha concesso il fuoco audio (il perché, se c'è, sta in RymembraPausa)")
       return
     }
     Sessione.gesto("riprendi")

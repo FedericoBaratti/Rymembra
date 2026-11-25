@@ -314,6 +314,33 @@ test("il fuoco per partire si lascia se la musica non parte, e il nome del gesto
   assert.match(leggi("../rymembra-android/src/sessione.rs"), /"riprendi"/);
 });
 
+test("un fuoco audio negato non si spiega con «un'altra app lo tiene»: da Android 17 può essere il sistema (S6-3)", () => {
+  // Con targetSdk 37 un servizio in primo piano partito dallo sfondo (l'accensione, un
+  // aggiornamento, un `kill` e la ripartenza) non ha la capacità «while-in-use», e
+  // `requestAudioFocus` torna `AUDIOFOCUS_REQUEST_FAILED` — lo stesso esito di una chiamata in
+  // corso: l'API non li distingue (developer.android.com/about/versions/17/changes/bg-audio).
+  // Il codice e i documenti non devono dire la causa che non sanno: né «un'altra app»
+  // né «il sistema». Dicono l'esito, il livello di Android e dove guardare.
+  const sessione = kotlin("Sessione.kt");
+  const nega = /if \(esito != AudioManager\.AUDIOFOCUS_REQUEST_GRANTED\) \{[\s\S]*?return false/.exec(sessione)?.[0] ?? "";
+  assert.ok(nega.length > 0, "il ramo del fuoco negato non si trova");
+  assert.match(nega, /esito \$esito/);
+  assert.match(nega, /Build\.VERSION\.SDK_INT/);
+  assert.match(nega, /AudioHardening/);
+  assert.match(kotlin("Presenza.kt"), /Android non ha concesso il fuoco audio/);
+  // I commenti e i documenti che lo davano per certo.
+  for (const [nome, testo] of [
+    ["Sessione.kt", leggi(`${KOTLIN}Sessione.kt`)],
+    ["Presenza.kt", leggi(`${KOTLIN}Presenza.kt`)],
+    ["site/docs/contenuto/devices.js", leggi("../../../site/docs/contenuto/devices.js")],
+  ] as const) {
+    // A capo e asterischi dei commenti si tolgono: la frase può andare a capo dove vuole.
+    const piatto = testo.replace(/\s*\n\s*(?:\*\s*)?/g, " ");
+    assert.doesNotMatch(piatto, /se un'altra app lo tiene e non lo cede/i, `${nome}: dice che a negare è un'altra app`);
+    assert.doesNotMatch(piatto, /if another app keeps the focus, nothing starts/i, `${nome}: dice che a negare è un'altra app`);
+  }
+});
+
 test("Ponte passa a Presenza se «Parti con l'auto» è accesa, e Rust la porta a ogni chiamata", () => {
   assert.match(kotlin("Ponte.kt"), /a\.optBoolean\("partiConAuto", false\)/);
   assert.match(kotlin("Presenza.kt"), /dallaPersona: Boolean,\s*partiConAuto: Boolean,/);
