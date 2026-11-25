@@ -14,6 +14,9 @@ import androidx.core.content.FileProvider
 import org.json.JSONArray
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * La consegna di un aggiornamento all'installatore di Android.
@@ -69,7 +72,8 @@ object Installatore {
 
   /**
    * `installatore`, `permesso` o `altraChiave`: vedi `sistema::Installazione`
-   * in Rust.
+   * in Rust. Se Android non apre la schermata è un'eccezione, e arriva a Rust come
+   * errore ([apri]).
    */
   fun installa(attivita: MainActivity, percorso: String): String {
     soloFuoriDalPlay()
@@ -77,11 +81,10 @@ object Installatore {
     // Prima del permesso: un APK che non è Rymembra non vale la domanda.
     if (!verifica(attivita, file)) return "altraChiave"
     if (!attivita.packageManager.canRequestPackageInstalls()) {
-      attivita.runOnUiThread {
-        attivita.startActivity(
-          Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${attivita.packageName}"))
-        )
-      }
+      apri(
+        attivita,
+        Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${attivita.packageName}")),
+      )
       return "permesso"
     }
     val indirizzo = FileProvider.getUriForFile(attivita, "${attivita.packageName}.fileprovider", file)
@@ -89,8 +92,48 @@ object Installatore {
       .setDataAndType(indirizzo, TIPO_APK)
       .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     intento.component = installatoreDiSistema(attivita.packageManager, intento)
-    attivita.runOnUiThread { attivita.startActivity(intento) }
+    apri(attivita, intento)
     return "installatore"
+  }
+
+  /** Quanto si aspetta che il filo dell'interfaccia dica com'è andata l'apertura. */
+  private const val ATTESA_APERTURA_MS = 10_000L
+
+  /**
+   * Apre una schermata del sistema — l'installatore, o la pagina in cui si
+   * permette a Rymembra di installare app — dal filo dell'interfaccia, e **dice
+   * com'è andata** a chi aspetta (S5-9).
+   *
+   * `startActivity` può lanciare: l'installatore sparito o che rifiuta l'intento
+   * fra la ricerca e l'apertura (`ActivityNotFoundException`), una pagina di
+   * impostazioni che un telefono non ha, un `SecurityException` di una ROM. Lanciata
+   * dentro un `runOnUiThread` l'eccezione nasce sul filo principale, fuori dal
+   * `try` di [Ponte.chiama] che ha già risposto, e nessun gestore la prende: il
+   * processo muore, con la musica e il collegamento con i PC, e Rust crede che
+   * l'installatore sia aperto. Qui si prende dove nasce, si porta a chi aspetta e
+   * torna a Rust come errore (`consegna`), che la finestra racconta.
+   *
+   * Chi chiama sta su un filo di Rust. Se fosse il principale `runOnUiThread`
+   * esegue subito, e l'attesa non si blocca.
+   */
+  private fun apri(attivita: MainActivity, intento: Intent) {
+    val esito = CompletableFuture<Exception?>()
+    attivita.runOnUiThread {
+      try {
+        attivita.startActivity(intento)
+        esito.complete(null)
+      } catch (e: Exception) {
+        esito.complete(e)
+      }
+    }
+    val errore = try {
+      esito.get(ATTESA_APERTURA_MS, TimeUnit.MILLISECONDS)
+    } catch (e: TimeoutException) {
+      throw IllegalStateException("l'interfaccia non ha aperto la schermata dell'installazione in tempo", e)
+    }
+    if (errore != null) {
+      throw IllegalStateException("la schermata dell'installazione non si apre: ${errore.javaClass.simpleName}", errore)
+    }
   }
 
   private const val TIPO_APK = "application/vnd.android.package-archive"

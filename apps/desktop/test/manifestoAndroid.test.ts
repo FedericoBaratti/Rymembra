@@ -314,6 +314,33 @@ test("il fuoco per partire si lascia se la musica non parte, e il nome del gesto
   assert.match(leggi("../rymembra-android/src/sessione.rs"), /"riprendi"/);
 });
 
+test("un fuoco audio negato non si spiega con «un'altra app lo tiene»: da Android 17 può essere il sistema (S6-3)", () => {
+  // Con targetSdk 37 un servizio in primo piano partito dallo sfondo (l'accensione, un
+  // aggiornamento, un `kill` e la ripartenza) non ha la capacità «while-in-use», e
+  // `requestAudioFocus` torna `AUDIOFOCUS_REQUEST_FAILED` — lo stesso esito di una chiamata in
+  // corso: l'API non li distingue (developer.android.com/about/versions/17/changes/bg-audio).
+  // Il codice e i documenti non devono dire la causa che non sanno: né «un'altra app»
+  // né «il sistema». Dicono l'esito, il livello di Android e dove guardare.
+  const sessione = kotlin("Sessione.kt");
+  const nega = /if \(esito != AudioManager\.AUDIOFOCUS_REQUEST_GRANTED\) \{[\s\S]*?return false/.exec(sessione)?.[0] ?? "";
+  assert.ok(nega.length > 0, "il ramo del fuoco negato non si trova");
+  assert.match(nega, /esito \$esito/);
+  assert.match(nega, /Build\.VERSION\.SDK_INT/);
+  assert.match(nega, /AudioHardening/);
+  assert.match(kotlin("Presenza.kt"), /Android non ha concesso il fuoco audio/);
+  // I commenti e i documenti che lo davano per certo.
+  for (const [nome, testo] of [
+    ["Sessione.kt", leggi(`${KOTLIN}Sessione.kt`)],
+    ["Presenza.kt", leggi(`${KOTLIN}Presenza.kt`)],
+    ["site/docs/contenuto/devices.js", leggi("../../../site/docs/contenuto/devices.js")],
+  ] as const) {
+    // A capo e asterischi dei commenti si tolgono: la frase può andare a capo dove vuole.
+    const piatto = testo.replace(/\s*\n\s*(?:\*\s*)?/g, " ");
+    assert.doesNotMatch(piatto, /se un'altra app lo tiene e non lo cede/i, `${nome}: dice che a negare è un'altra app`);
+    assert.doesNotMatch(piatto, /if another app keeps the focus, nothing starts/i, `${nome}: dice che a negare è un'altra app`);
+  }
+});
+
 test("Ponte passa a Presenza se «Parti con l'auto» è accesa, e Rust la porta a ogni chiamata", () => {
   assert.match(kotlin("Ponte.kt"), /a\.optBoolean\("partiConAuto", false\)/);
   assert.match(kotlin("Presenza.kt"), /dallaPersona: Boolean,\s*partiConAuto: Boolean,/);
@@ -450,7 +477,7 @@ function ricevitore(nome: string): string {
   return blocco?.[0] ?? "";
 }
 
-test("all'accensione riparte solo BOOT_COMPLETED: dopo lo sblocco, non directBootAware, non esportato", () => {
+test("all'accensione riparte BOOT_COMPLETED, e non LOCKED_BOOT_COMPLETED: dopo lo sblocco, non directBootAware, non esportato", () => {
   const avvio = ricevitore("AvvioAccensione");
   assert.ok(avvio, "il ricevitore .AvvioAccensione non c'è");
   assert.match(avvio, /<action\s+android:name="android\.intent\.action\.BOOT_COMPLETED"\s*\/>/);
@@ -470,13 +497,41 @@ test("il ricevitore dell'accensione avvia Presenza solo se il sottofondo è volu
   const avvio = kotlin("AvvioAccensione.kt");
   const corpo = /override fun onReceive\([\s\S]*?\n  }\n/.exec(avvio)?.[0] ?? "";
   assert.ok(corpo, "onReceive non si trova");
-  assert.match(corpo, /intento\.action != Intent\.ACTION_BOOT_COMPLETED\) return/);
+  // Le due notizie che il sistema manda e che permettono di avviare un servizio in
+  // primo piano dallo sfondo (S6-2): l'accensione e l'aggiornamento dell'app. Ogni
+  // altra azione, e un intento senza azione, non fa niente.
+  assert.match(
+    corpo,
+    /intento\.action != Intent\.ACTION_BOOT_COMPLETED &&\s*intento\.action != Intent\.ACTION_MY_PACKAGE_REPLACED\) return/,
+  );
   const voluto = corpo.indexOf("Presenza.voluto(contesto)");
   const parte = corpo.indexOf("startForegroundService(");
   assert.ok(voluto > 0 && parte > voluto, "il servizio parte prima di sapere se il sottofondo è voluto");
   assert.match(corpo, /if \(!Presenza\.voluto\(contesto\)\) return/);
   // Non fa altro: niente nucleo, niente libreria, niente attività.
   assert.doesNotMatch(corpo, /Ponte\.|Nucleo\.|startActivity/);
+});
+
+test("l'aggiornamento dell'app riavvia il sottofondo: .AvvioAccensione ascolta MY_PACKAGE_REPLACED (S6-2)", () => {
+  // Android ferma il processo quando sostituisce l'app, e con lui il servizio, il
+  // nucleo e il collegamento con i PC: senza questa notizia nessuno li fa
+  // ripartire finché la persona non apre l'app. È fra le esenzioni dal divieto di
+  // avviare un servizio in primo piano dallo sfondo, accanto a BOOT_COMPLETED
+  // (developer.android.com/develop/background-work/services/fgs/restrictions-bg-start).
+  const avvio = ricevitore("AvvioAccensione");
+  assert.ok(avvio, "il ricevitore .AvvioAccensione non c'è");
+  assert.match(avvio, /<action\s+android:name="android\.intent\.action\.MY_PACKAGE_REPLACED"\s*\/>/);
+  // Il sistema la manda solo all'app sostituita, e a un componente non esportato:
+  // nessun'altra app può mandarla, e non serve nessun permesso.
+  assert.match(avvio, /android:exported="false"/);
+  assert.doesNotMatch(avvio, /directBootAware/);
+  // La guardia resta una sola: il sottofondo voluto, come per l'accensione.
+  const corpo = /override fun onReceive\([\s\S]*?\n  }\n/.exec(kotlin("AvvioAccensione.kt"))?.[0] ?? "";
+  assert.ok(corpo.indexOf("ACTION_MY_PACKAGE_REPLACED") > 0, "il ricevitore non guarda l'aggiornamento");
+  assert.ok(
+    corpo.indexOf("ACTION_MY_PACKAGE_REPLACED") < corpo.indexOf("Presenza.voluto(contesto)"),
+    "l'azione si controlla prima del sottofondo",
+  );
 });
 
 test("il servizio avvia il nucleo da sé, e l'attività toglie il contesto del servizio prima di nascere", () => {
@@ -590,6 +645,48 @@ test("un avvio dal servizio fallito si può rifare, e un nucleo caduto a metà n
   }
 });
 
+test("un avvio che cade in Kotlin lo dice alla notifica: non resta «si sta avviando» per sempre (S6-4)", () => {
+  // Il servizio crea la notifica con `startForeground` **prima** di `avviaIlNucleo`: il nucleo non
+  // c'è ancora e non è «non parte», quindi la frase è «si sta avviando». Se `loadLibrary` o la
+  // chiamata JNI cadono, Rust non è mai entrato e non dirà mai `nucleo.nonParte`: l'unico
+  // che può rifare la notifica è questo ramo, come fa `nucleo.nonParte` per i guasti di Rust.
+  const avvia = /fun avviaIlNucleo\([\s\S]*?\n  }\n/.exec(kotlin("Ponte.kt"))?.[0] ?? "";
+  assert.ok(avvia.length > 0, "avviaIlNucleo non si trova");
+  const presa = avvia.indexOf("catch (e: Throwable)");
+  assert.ok(presa > 0, "avviaIlNucleo non prende i guasti di loadLibrary e del JNI");
+  const gestore = avvia.slice(presa);
+  const segno = gestore.indexOf("nucleoNonParte = true");
+  const rifa = gestore.search(/principale\.post \{\s*Presenza\.rinfresca\(applicazione\)\s*\}/);
+  assert.ok(segno >= 0, "il guasto non alza il segno «non parte»");
+  assert.ok(rifa > segno, "la notifica non si rifà dopo aver alzato il segno");
+  // Dal ramo di Rust arriva alla stessa notifica per la stessa strada.
+  assert.match(kotlin("Ponte.kt"), /"nucleo\.nonParte" -> \{[\s\S]*?principale\.post \{ Presenza\.rinfresca\(app\) \}/);
+});
+
+test("«Installa» non chiude l'app se Android non apre la schermata: l'errore torna a Rust (S5-9)", () => {
+  // `startActivity` dentro `runOnUiThread` senza `try`: se la schermata non si apre
+  // (`ActivityNotFoundException`, `SecurityException`) l'eccezione nasce sul filo
+  // dell'interfaccia, fuori dal `try` di `Ponte.chiama` che ha già risposto, e il
+  // processo muore con la musica e il collegamento con i PC. Qui l'esito torna a chi
+  // aspetta, e a Rust come errore.
+  const sorgente = kotlin("Installatore.kt");
+  const inizio = sorgente.indexOf("object Installatore");
+  const installatore = sorgente.slice(inizio, sorgente.indexOf("object Condividi", inizio));
+  assert.ok(inizio >= 0 && installatore.length > 0, "object Installatore non si trova");
+  assert.doesNotMatch(
+    installatore,
+    /runOnUiThread\s*\{\s*attivita\.startActivity/,
+    "una schermata si apre sul filo dell'interfaccia senza prendere l'eccezione",
+  );
+  const apri = /private fun apri\([\s\S]*?\n  }\n/.exec(installatore)?.[0] ?? "";
+  assert.ok(apri.length > 0, "manca la funzione che apre la schermata e riporta l'esito");
+  assert.match(apri, /runOnUiThread \{\s*try \{\s*attivita\.startActivity\(intento\)[\s\S]*?\} catch \(e: Exception\) \{[\s\S]*?\.complete\(e\)/);
+  assert.match(apri, /\.get\([A-Z_\d]+, TimeUnit\.MILLISECONDS\)/, "chi chiama non aspetta l'esito");
+  assert.match(apri, /throw IllegalStateException\(/, "l'errore non arriva a Rust");
+  // La pagina del permesso e l'installatore passano tutte e due di qui.
+  assert.equal([...installatore.matchAll(/\bapri\(\s*attivita,/g)].length, 2);
+});
+
 test("un nucleo caduto a metà resta caduto: né un «pronto» né un «non parte» in ritardo lo cancellano", () => {
   // FC5, C1. `sessione.pronta` parte a metà di `avvia_il_nucleo` (`media::avvia`), e Kotlin lo
   // posta sul filo principale; `nucleo.nonParte` arriva da un filo di Rust e agisce subito. Un
@@ -641,4 +738,74 @@ test("Rust esporta le tre funzioni di Ponte, e l'unsafe sta solo in jvm.rs", () 
   const lib = leggi("../src-tauri/src/lib.rs");
   assert.match(lib, /rymembra_android::esporta_il_nucleo!\(crate::avvia_dal_servizio\);/);
   assert.doesNotMatch(lib.split("#[cfg(test)]\nmod prove")[0] ?? "", /\bunsafe\b\s*[{(]|unsafe\s+fn|unsafe\(no_mangle\)/);
+});
+
+// ── Gli aggiornamenti del telefono (`mobile/aggiornamenti.rs`) ─────────────────
+//
+// Il modulo si compila solo per `cfg(mobile)`: `cargo test` sul computer non lo
+// raggiunge, e una prova scritta lì dentro non girerebbe mai. Queste leggono il
+// sorgente come le prove di sopra leggono il Kotlin.
+
+/** `mobile/aggiornamenti.rs` senza i commenti: nominano quel che il codice non fa. */
+const aggiornamentiTelefono = () =>
+  leggi("../src-tauri/src/mobile/aggiornamenti.rs").replace(/\/\/.*$/gm, "");
+
+/** Il corpo di una funzione di primo livello, fino alla sua graffa che chiude. */
+function funzioneRust(sorgente: string, nome: string): string {
+  const inizio = new RegExp(`\\bfn ${nome}\\b`).exec(sorgente)?.index ?? -1;
+  assert.ok(inizio >= 0, `fn ${nome} non si trova`);
+  const fine = sorgente.indexOf("\n}\n", inizio);
+  assert.ok(fine > inizio, `fn ${nome} non finisce`);
+  return sorgente.slice(inizio, fine + 3);
+}
+
+test("un APK in attesa si riverifica con minisign prima di consegnarlo (S5-4)", () => {
+  // SECURITY.md promette che il file si ricontrolla contro la firma prima di ogni
+  // consegna, anche se già in cache. Per l'APK in attesa («Installa» dopo «Aggiorna»)
+  // `lavora` chiamava direttamente `consegna`, e Kotlin rifaceva solo «è questa app».
+  const sorgente = aggiornamentiTelefono();
+  const lavora = funzioneRust(sorgente, "lavora");
+  const inizio = lavora.search(/if let Some\([\s\S]*?\) = pronto \{/);
+  const fine = lavora.indexOf("} else {", inizio);
+  assert.ok(inizio >= 0 && fine > inizio, "il ramo dell'APK in attesa non si trova");
+  const ramo = lavora.slice(inizio, fine);
+  const verifica = ramo.indexOf("verifica(");
+  const consegna = ramo.indexOf("consegna(");
+  assert.ok(verifica >= 0, "il ramo dell'APK in attesa non verifica la firma");
+  assert.ok(consegna > verifica, "l'APK in attesa si consegna prima di verificarne la firma");
+  // La firma si tiene con l'APK: senza, non c'è niente da ricontrollare.
+  assert.match(/struct Pronto \{[\s\S]*?\n\}/.exec(sorgente)?.[0] ?? "", /\bfirma: String,/);
+  assert.match(funzioneRust(sorgente, "installa_ora"), /pronto\.firma\.clone\(\)/);
+});
+
+test("un APK finito dopo lo spegnimento del controllo non resta in attesa né accende la notifica (S5-3)", () => {
+  const sorgente = aggiornamentiTelefono();
+  // La generazione si legge **prima** di far partire il filo: spegnere l'interruttore
+  // mentre l'APK scende la fa cambiare, e il filo la confronta con questa.
+  const installa = funzioneRust(sorgente, "installa_ora");
+  const legge = installa.indexOf("generazione.load(");
+  const parte = installa.indexOf("std::thread::Builder");
+  assert.ok(legge >= 0 && legge < parte, "la generazione di partenza non si legge prima del filo");
+  assert.match(installa, /lavora\(&suo, &trovato, pronto, partenza\)/);
+  assert.match(sorgente, /fn lavora\([\s\S]*?partenza: u64[\s\S]*?\) \{/);
+
+  // Il deposito guarda la generazione sotto lo stesso lucchetto del posto: lo spegnimento
+  // alza la generazione e poi svuota il posto, e fra i due un deposito non può sfuggire.
+  const deposita = funzioneRust(sorgente, "deposita_pronto_se_vale");
+  const lucchetto = deposita.indexOf(".lock()");
+  const guarda = deposita.indexOf("generazione.load(");
+  const scrive = deposita.search(/\*\w+ = Some\(/);
+  assert.ok(lucchetto >= 0 && lucchetto < guarda && guarda < scrive, "il deposito non guarda la generazione sotto il lucchetto");
+  assert.match(funzioneRust(sorgente, "tieni_per_installa"), /deposita_pronto_se_vale\(/);
+
+  // La notifica «Pronto da installare» si accende solo se il pacchetto è stato tenuto, e
+  // si rispegne se nel frattempo l'interruttore è stato spento (il posto era già vuoto, e
+  // `scarta_pronto` non avrebbe niente da buttare né da spegnere).
+  const lavora = funzioneRust(sorgente, "lavora");
+  assert.match(lavora, /if tieni_per_installa\([\s\S]*?\) \{\s*notifica_pronto\(true, &trovato\.versione\);/);
+  assert.match(lavora, /generazione\s*\.load\(Ordering::Acquire\) != partenza[\s\S]*?notifica_pronto\(false, ""\)/);
+
+  // E spegnere il controllo ferma anche lo scaricamento in corso, non solo il suo esito.
+  const attivo = funzioneRust(sorgente, "aggiornamenti_attivo");
+  assert.match(attivo, /installazione\s*\.load\(Ordering::Acquire\)[\s\S]*?annulla\s*\.store\(true, Ordering::Release\)/);
 });
