@@ -31,7 +31,9 @@
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-/// L'evento con cui il lettore dice che non riesce a suonare.
+/// L'evento con cui il lettore dice che non riesce a suonare. Solo sul computer:
+/// il telefono non ha una finestra che muore e rinasce da sola.
+#[cfg(desktop)]
 pub const EVENTO_ERRORE_DEL_LETTORE: &str = "riproduzione:errore";
 
 /// Quanto un errore perso resta buono da mostrare.
@@ -57,6 +59,7 @@ impl Persi {
     /// Il lettore ha emesso un errore. Con una pagina che ascolta arriva da sé, e
     /// non si copia niente: una seconda copia a ogni ricarica sarebbe un errore
     /// che torna da solo.
+    #[cfg(desktop)]
     fn emesso(&mut self, carico: serde_json::Value, adesso: Instant) {
         if self.ascolta {
             return;
@@ -90,7 +93,8 @@ fn persi() -> MutexGuard<'static, Persi> {
 }
 
 /// Il lettore ha emesso un errore: chiamata da [`crate::spegnimento::Emette`]
-/// per questo evento soltanto.
+/// per questo evento soltanto, e solo sul computer.
+#[cfg(desktop)]
 pub fn errore_del_lettore_emesso<C: serde::Serialize>(carico: &C) {
     let mut persi = persi();
     // La copia in JSON costa solo se nessuna pagina ascolta.
