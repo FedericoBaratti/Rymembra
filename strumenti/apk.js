@@ -140,7 +140,7 @@ function configurazione() {
 }
 
 /**
- * Il nome dell'asset sulla release: `Rymembra_3.2.1_android-arm64.apk`.
+ * Il nome dell'asset sulla release: `Rymembra_3.3.0_android-arm64.apk`.
  *
  * Deve far trovare l'APK a `rilasci.rs::apk_per` su un telefono `aarch64`:
  * finisce in `.apk`, dice «arm64» e nessun'altra architettura. Il `.sig`

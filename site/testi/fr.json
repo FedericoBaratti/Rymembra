@@ -214,7 +214,7 @@
       },
       {
         "d": "Peut-on écouter avec un collègue ?",
-        "r": "Oui. Sur le même réseau, il vous faut tous les deux Rymembra 3.1 ou plus récent : l'un accueille une session depuis « Écouter ensemble » ; l'autre la trouve tout seul, ou saisit l'adresse que le premier voit à l'écran, et la première fois vous comparez un code à quatre chiffres. Sur le PC qui accueille, Windows demande s'il faut laisser passer Rymembra : « Autoriser », aussi pour les « Réseaux publics » si le réseau est marqué ainsi. À distance, reliez une fois les deux appareils dans Paramètres › Appareils avec un QR code (à partir de la 3.2.1), et la session fonctionne aussi par Internet."
+        "r": "Oui. Sur le même réseau, il vous faut tous les deux Rymembra 3.1 ou plus récent : l'un accueille une session depuis « Écouter ensemble » ; l'autre la trouve tout seul, ou saisit l'adresse que le premier voit à l'écran, et la première fois vous comparez un code à quatre chiffres. Sur le PC qui accueille, Windows demande s'il faut laisser passer Rymembra : « Autoriser », aussi pour les « Réseaux publics » si le réseau est marqué ainsi. À distance, reliez une fois les deux appareils dans Paramètres › Appareils avec un QR code (à partir de la 3.3.0), et la session fonctionne aussi par Internet."
       },
       {
         "d": "Envoie-t-il mes données quelque part ?",

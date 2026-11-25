@@ -214,7 +214,7 @@
       },
       {
         "d": "Kann ich mit einem Kollegen zusammen hören?",
-        "r": "Ja. Im selben Netz braucht ihr beide Rymembra 3.1 oder neuer: Einer lädt über „Zusammen hören“ zu einer Sitzung ein; der andere findet sie von selbst oder tippt die Adresse ein, die der erste auf dem Bildschirm sieht, und beim ersten Mal vergleicht ihr einen vierstelligen Code. Auf dem einladenden PC fragt Windows, ob Rymembra durchgelassen werden soll: „Zulassen“, auch für „Öffentliche Netzwerke“, wenn das Netz so markiert ist. Aus der Ferne verbindet ihr die beiden Geräte einmal unter Einstellungen › Geräte mit einem QR-Code (ab 3.2.1), dann funktioniert die Sitzung auch über das Internet."
+        "r": "Ja. Im selben Netz braucht ihr beide Rymembra 3.1 oder neuer: Einer lädt über „Zusammen hören“ zu einer Sitzung ein; der andere findet sie von selbst oder tippt die Adresse ein, die der erste auf dem Bildschirm sieht, und beim ersten Mal vergleicht ihr einen vierstelligen Code. Auf dem einladenden PC fragt Windows, ob Rymembra durchgelassen werden soll: „Zulassen“, auch für „Öffentliche Netzwerke“, wenn das Netz so markiert ist. Aus der Ferne verbindet ihr die beiden Geräte einmal unter Einstellungen › Geräte mit einem QR-Code (ab 3.3.0), dann funktioniert die Sitzung auch über das Internet."
       },
       {
         "d": "Schickt er meine Daten irgendwohin?",

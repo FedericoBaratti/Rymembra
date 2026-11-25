@@ -1,6 +1,6 @@
 # Screenshot da rifare con musica libera
 
-**Da rifare per la 3.2.1.** Confrontate con l'interfaccia della 3.2.1 (16/11/2026), le immagini di adesso sono
+**Da rifare per la 3.3.0.** Confrontate con l'interfaccia del 16/11/2026, le immagini di adesso sono
 indietro in questi punti:
 
 - `fonti`: la scheda si chiama «Importa da un servizio» (nell'immagine «Da dove arriva la musica»), e nel menu delle

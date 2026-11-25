@@ -214,7 +214,7 @@
       },
       {
         "d": "Can I listen together with a colleague?",
-        "r": "Yes. On the same network you both need Rymembra 3.1 or later: one of you hosts a session from “Listen together”; the other finds it by itself, or types the address the first one sees on screen, and the first time you compare a four-digit code. On the hosting PC Windows asks whether to let Rymembra through: “Allow”, for “Public networks” too if the network is marked that way. From afar, link the two devices once in Settings › Devices with a QR code (3.2.1 or later), and the session works over the internet too."
+        "r": "Yes. On the same network you both need Rymembra 3.1 or later: one of you hosts a session from “Listen together”; the other finds it by itself, or types the address the first one sees on screen, and the first time you compare a four-digit code. On the hosting PC Windows asks whether to let Rymembra through: “Allow”, for “Public networks” too if the network is marked that way. From afar, link the two devices once in Settings › Devices with a QR code (3.3.0 or later), and the session works over the internet too."
       },
       {
         "d": "Does it send my data anywhere?",
