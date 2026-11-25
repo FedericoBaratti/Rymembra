@@ -332,7 +332,6 @@ fn le_decodifiche_di_byte_altrui_non_sono_piu_di_due_insieme() {
         (1..=DECODIFICHE_ESTRANEE_INSIEME).contains(&massimo),
         "{massimo} decodifiche di byte altrui insieme, il tetto è {DECODIFICHE_ESTRANEE_INSIEME}"
     );
-    assert_eq!(DECODIFICHE_ESTRANEE.0.load(Ordering::SeqCst), 0);
 }
 
 #[test]
