@@ -202,6 +202,11 @@ impl<'a> Motore<'a> {
     /// `mio` è quel che questo dispositivo ha da dire, già costruito da chi ha il
     /// database. Torna lo stato fuso di tutti, che chi ha il database applica.
     ///
+    /// Il documento pubblicato è `mio` più il segno di capacità
+    /// ([`documento::CAPACITA_VOCI_ASSENTI`]): lo aggiunge la passata, così
+    /// nessun chiamante può dimenticarlo, e `passata.impronta` è quella del
+    /// documento com'è lassù.
+    ///
     /// # Errori
     ///
     /// Quelli del magazzino, e solo per i guasti che riguardano **tutta** la
@@ -362,10 +367,21 @@ impl<'a> Motore<'a> {
         }
         passata.ignoti.sort_unstable();
         passata.ignoti.dedup();
-        tutti.push(Documento::nuovo(&self.dispositivo, mio.clone(), adesso_ms));
+        // Il documento che si pubblica porta il segno di capacità, e l'impronta
+        // si calcola **su questo**: è quella che `scrivi` lascia accanto al file
+        // e che `impronta_remota` ritrova rileggendolo. Calcolata su `mio`, che
+        // il segno non ce l'ha, non coinciderebbe mai con quella del file letto,
+        // e un dispositivo fermo lo riscriverebbe a ogni avvio. Vedi
+        // [`documento::CAPACITA_VOCI_ASSENTI`].
+        let mut mio_firmato = mio.clone();
+        mio_firmato
+            .capacita
+            .extend(documento::capacita_di_questa_versione());
+        let mio_documento = Documento::nuovo(&self.dispositivo, mio_firmato, adesso_ms);
+        tutti.push(mio_documento.clone());
         let fuso = fusione::fondi(&tutti);
 
-        passata.impronta = documento::impronta(mio)?;
+        passata.impronta = documento::impronta(&mio_documento.content)?;
         // Si scrive se il contenuto è cambiato, **o se il proprio documento
         // lassù non c'è più**: qualcuno ha pulito la cartella, o è finito nel
         // cestino di Drive. L'impronta ricordata dice com'era l'ultima volta che
@@ -380,11 +396,7 @@ impl<'a> Motore<'a> {
             // magazzino ammette due file con lo stesso nome (Drive) lo rinomina
             // aggiornandolo, senza lasciare un doppione.
             let esistente = proprio.map(|file| file.id.clone());
-            let byte = documento::serializza(&Documento::nuovo(
-                &self.dispositivo,
-                mio.clone(),
-                adesso_ms,
-            ))?;
+            let byte = documento::serializza(&mio_documento)?;
             self.magazzino.scrivi(
                 &mio_nome,
                 esistente.as_deref(),
@@ -488,6 +500,177 @@ mod prove {
         motore.passata(&mio, 1_000, &niente).expect("prima");
         let seconda = motore.passata(&mio, 2_000, &niente).expect("seconda");
         assert!(!seconda.passata.scritto, "riscritto senza motivo");
+    }
+
+    /// Un documento com'è scritto dalla 3.2.0: la stessa busta, e un `content`
+    /// che non ha nessun campo `capacita`. Scritto a mano e non con
+    /// [`documento::serializza`], che oggi il segno lo conosce.
+    fn documento_della_3_2_0(dispositivo: &str, brano: &str, voto: u8, quando: i64) -> Vec<u8> {
+        use std::io::Write as _;
+        let crudo = format!(
+            r#"{{"version":1,"device":"{dispositivo}","generatedAt":500,"content":{{"voti":{{"{brano}":{{"v":{voto},"at":{quando}}}}},"lapidi":{{"brani":{{}},"playlist":{{}}}}}}}}"#
+        );
+        let mut compressore =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        compressore.write_all(crudo.as_bytes()).expect("comprime");
+        compressore.finish().expect("chiude")
+    }
+
+    /// Il documento di `dispositivo` com'è nella cartella, già letto.
+    fn documento_di(magazzino: &Cartella, dispositivo: &str) -> Documento {
+        let nome = documento::nome_file(dispositivo);
+        let byte = magazzino.leggi(&nome).expect("il documento c'è");
+        documento::interpreta(&byte).expect("si legge")
+    }
+
+    #[test]
+    fn il_documento_che_si_pubblica_porta_il_segno_di_capacita() {
+        // V2: il segno sta dentro `content` (l'impronta si calcola lì) e la 3.2.0
+        // lo ignora perché legge per puntatore. Senza, nessuna 3.3.x potrà mai
+        // distinguere un pari 3.3.0 da un PC rimasto sulla 3.2.0.
+        let dove = tempfile::tempdir().expect("cartella");
+        let magazzino = Cartella::nuova(dove.path().join("dispositivi"));
+        let mut memoria_motore = Memoria::nuova();
+        let mut motore = Motore::nuovo(&magazzino, "uno", &mut memoria_motore);
+        motore
+            .passata(&con_voto("a", Voto { v: 4, at: 10 }), 1_000, &niente)
+            .expect("passata");
+
+        let letto = documento_di(&magazzino, "uno");
+        assert!(
+            letto
+                .content
+                .capacita
+                .contains(documento::CAPACITA_VOCI_ASSENTI),
+            "il documento non porta il segno: {:?}",
+            letto.content.capacita
+        );
+        // E nel posto giusto: dentro `content`, non nella busta.
+        let crudo = {
+            use std::io::Read as _;
+            let byte = magazzino
+                .leggi(&documento::nome_file("uno"))
+                .expect("il documento c'è");
+            let mut testo = String::new();
+            flate2::read::GzDecoder::new(byte.as_slice())
+                .read_to_string(&mut testo)
+                .expect("si apre");
+            serde_json::from_str::<serde_json::Value>(&testo).expect("json")
+        };
+        assert!(crudo.get("capacita").is_none(), "non va nella busta");
+        assert_eq!(
+            crudo.pointer("/content/capacita"),
+            Some(&serde_json::json!([documento::CAPACITA_VOCI_ASSENTI]))
+        );
+        assert_eq!(crudo.get("version"), Some(&serde_json::json!(1)));
+    }
+
+    #[test]
+    fn un_dispositivo_fermo_non_ripubblica_il_proprio_documento_dopo_un_riavvio() {
+        // La trappola dell'impronta: `impronta_remota` rilegge il proprio
+        // documento e ne calcola l'impronta sul `content` letto. Se il segno non
+        // tornasse indietro da `interpreta`, o l'impronta si calcolasse sul
+        // `Contenuto` senza segno, i due non coinciderebbero mai e un PC
+        // aggiornato e fermo riscriverebbe il suo documento a ogni avvio, per
+        // sempre.
+        let dove = tempfile::tempdir().expect("cartella");
+        let magazzino = Cartella::nuova(dove.path().join("dispositivi"));
+        let mio = con_voto("a", Voto { v: 4, at: 10 });
+        {
+            let mut memoria_motore = Memoria::nuova();
+            let mut motore = Motore::nuovo(&magazzino, "uno", &mut memoria_motore);
+            let prima = motore.passata(&mio, 1_000, &niente).expect("prima");
+            assert!(prima.passata.scritto);
+            let seconda = motore.passata(&mio, 2_000, &niente).expect("seconda");
+            assert!(!seconda.passata.scritto, "riscritto senza motivo");
+        }
+        // Il riavvio: una memoria nuova, che l'impronta la deve rileggere da lassù.
+        let mut memoria_nuova = Memoria::nuova();
+        let mut motore = Motore::nuovo(&magazzino, "uno", &mut memoria_nuova);
+        let dopo = motore.passata(&mio, 3_000, &niente).expect("dopo");
+        assert!(
+            !dopo.passata.scritto,
+            "il documento è identico: dopo un riavvio non si riscrive"
+        );
+    }
+
+    #[test]
+    fn il_proprio_documento_della_3_2_0_si_riscrive_una_volta_col_segno() {
+        // Un PC che si aggiorna dalla 3.2.0 trova lassù il suo documento di prima,
+        // senza segno, con lo stesso contenuto di adesso. Va riscritto — una
+        // volta — perché porti il segno; poi basta.
+        let dove = tempfile::tempdir().expect("cartella");
+        let magazzino = Cartella::nuova(dove.path().join("dispositivi"));
+        magazzino
+            .scrivi(
+                &documento::nome_file("uno"),
+                None,
+                TIPO,
+                &documento_della_3_2_0("uno", "a", 4, 10),
+                "impronta-di-prima",
+            )
+            .expect("il documento di prima");
+        let mio = con_voto("a", Voto { v: 4, at: 10 });
+
+        let mut memoria_motore = Memoria::nuova();
+        let mut motore = Motore::nuovo(&magazzino, "uno", &mut memoria_motore);
+        let prima = motore.passata(&mio, 1_000, &niente).expect("prima");
+        assert!(
+            prima.passata.scritto,
+            "il documento senza segno va riscritto col segno"
+        );
+        assert!(
+            documento_di(&magazzino, "uno")
+                .content
+                .capacita
+                .contains(documento::CAPACITA_VOCI_ASSENTI)
+        );
+        let seconda = motore.passata(&mio, 2_000, &niente).expect("seconda");
+        assert!(!seconda.passata.scritto, "una volta sola");
+
+        // Anche dopo un riavvio.
+        let mut memoria_nuova = Memoria::nuova();
+        let mut riavviato = Motore::nuovo(&magazzino, "uno", &mut memoria_nuova);
+        let dopo = riavviato.passata(&mio, 3_000, &niente).expect("dopo");
+        assert!(!dopo.passata.scritto, "né dopo un riavvio");
+    }
+
+    #[test]
+    fn il_documento_di_un_pari_della_3_2_0_si_legge_senza_segno_e_senza_perdere_niente() {
+        // Il documento di un pari rimasto alla 3.2.0 entra come prima: nessuna
+        // regola nuova lo tocca, e il suo voto arriva. «Senza segno» è proprio
+        // quel che lo distingue, per chi lo vorrà sapere.
+        let dove = tempfile::tempdir().expect("cartella");
+        let magazzino = Cartella::nuova(dove.path().join("dispositivi"));
+        magazzino
+            .scrivi(
+                &documento::nome_file("vecchio"),
+                None,
+                TIPO,
+                &documento_della_3_2_0("vecchio", "so-what", 5, 100),
+                "x",
+            )
+            .expect("il documento del pari");
+
+        let mut memoria_motore = Memoria::nuova();
+        let mut motore = Motore::nuovo(&magazzino, "nuovo", &mut memoria_motore);
+        let esito = motore
+            .passata(&Contenuto::default(), 2_000, &niente)
+            .expect("passata");
+        assert_eq!(esito.fuso.voti.get("so-what").map(|v| v.v), Some(5));
+        assert!(
+            documento_di(&magazzino, "vecchio")
+                .content
+                .capacita
+                .is_empty(),
+            "il pari della 3.2.0 non porta il segno"
+        );
+        assert!(
+            documento_di(&magazzino, "nuovo")
+                .content
+                .capacita
+                .contains(documento::CAPACITA_VOCI_ASSENTI)
+        );
     }
 
     #[test]
@@ -713,6 +896,19 @@ mod prove {
             .expect("scrive");
     }
 
+    /// Il contenuto com'è nel documento pubblicato da questa versione: col
+    /// segno di capacità che la passata aggiunge.
+    ///
+    /// Per le prove che vogliono un documento «già a posto»: uno senza il segno
+    /// si riscrive una volta (vedi
+    /// `il_proprio_documento_della_3_2_0_si_riscrive_una_volta_col_segno`).
+    fn con_il_segno(mut contenuto: Contenuto) -> Contenuto {
+        contenuto
+            .capacita
+            .extend(documento::capacita_di_questa_versione());
+        contenuto
+    }
+
     /// Un giorno, in millisecondi: più del margine con cui si accetta un
     /// orologio avanti.
     const UN_GIORNO: i64 = 24 * 60 * 60 * 1000;
@@ -928,7 +1124,7 @@ mod prove {
         let mut mio = Contenuto::default();
         mio.ascolti.insert("so-what".to_owned(), 5);
         mio.voti.insert("so-what".to_owned(), Voto { v: 4, at: 10 });
-        scrivi_di_prima(&magazzino, "portatile", mio.clone());
+        scrivi_di_prima(&magazzino, "portatile", con_il_segno(mio.clone()));
 
         let mut memoria = Memoria::nuova();
         let mut motore = Motore::nuovo(&magazzino, "portatile", &mut memoria);
@@ -955,7 +1151,7 @@ mod prove {
             .leggi(&documento::nome_file("portatile"))
             .and_then(|byte| documento::interpreta(&byte))
             .expect("rileggibile");
-        assert_eq!(riletto.content, mio);
+        assert_eq!(riletto.content, con_il_segno(mio));
     }
 
     #[test]
@@ -997,7 +1193,7 @@ mod prove {
         let cartella = Cartella::nuova(dove.path().join("dispositivi"));
         let mut mio = Contenuto::default();
         mio.ascolti.insert("so-what".to_owned(), 5);
-        scrivi_di_prima(&cartella, "portatile", mio.clone());
+        scrivi_di_prima(&cartella, "portatile", con_il_segno(mio.clone()));
         let magazzino = SenzaRinomina(cartella.clone());
 
         let mut memoria = Memoria::nuova();

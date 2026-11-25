@@ -41,7 +41,7 @@
 //! «adesso»: il futuro dipende da quando lo si guarda, e un documento letto una
 //! volta resta in memoria per molte passate.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Write as _};
 
 use rymembra_domain::eredita;
@@ -53,6 +53,50 @@ use crate::sequenza::Sequenza;
 
 /// La versione del formato scritta nei documenti nuovi.
 pub const VERSIONE: u32 = 1;
+
+/// Il segno con cui un dispositivo dichiara, nel proprio documento, che **sa
+/// lasciare le voci di playlist dei brani che qui mancano**: se una playlist ha
+/// brani che la sua libreria non ha, non li seppellisce con una lapide.
+///
+/// # Perché esiste
+///
+/// La 3.2.0 quei brani li seppelliva, e il formato non dice con che versione
+/// è stato scritto un documento: `version` vale 1 per tutte e due, e alzarla
+/// non serve, perché la 3.2.0 rifiuterebbe di *leggere* i documenti nuovi ma
+/// continuerebbe a *scrivere* i suoi. Senza un segno nessuna 3.3.x potrebbe
+/// mai distinguere un pari 3.3.0 da un PC rimasto sulla 3.2.0, e un filtro
+/// futuro delle lapidi dovrebbe trattare tutti come vecchi. Il segno è
+/// irreversibile — dopo il rilascio non si può più mettere — e per questo c'è
+/// già, anche se oggi nessun codice lo legge: chi lo guarderà sarà una 3.3.x.
+///
+/// # Dove sta, e perché
+///
+/// **Dentro `content`**, non nella busta: l'impronta si calcola sul solo
+/// contenuto ([`impronta`]), e un segno nella busta lascerebbe un dispositivo
+/// appena aggiornato e fermo a pubblicare un documento senza segno finché non
+/// cambia un ascolto. Dentro, l'impronta cambia, e ogni dispositivo riscrive il
+/// proprio una volta sola al primo giro dopo l'aggiornamento.
+///
+/// La 3.2.0 lo ignora: [`interpreta`] legge per puntatore, campo per campo, e
+/// non conosce questo.
+pub const CAPACITA_VOCI_ASSENTI: &str = "voci-assenti-1";
+
+/// Quanti segni si leggono da un documento altrui: sedici.
+///
+/// I documenti degli altri non sono fidati, e questo campo si fonde (si
+/// uniscono gli insiemi) e si tiene in memoria per ogni pari: senza un tetto
+/// un documento potrebbe riempirlo di milioni di stringhe dentro i limiti di
+/// [`MASSIMO_VALORI`].
+const MASSIMO_CAPACITA: usize = 16;
+
+/// Quanto può essere lungo un segno che si legge: sessantaquattro byte.
+const LUNGHEZZA_MASSIMA_CAPACITA: usize = 64;
+
+/// I segni che questa versione scrive nel proprio documento.
+#[must_use]
+pub fn capacita_di_questa_versione() -> BTreeSet<String> {
+    BTreeSet::from([CAPACITA_VOCI_ASSENTI.to_owned()])
+}
 
 /// Il nome del servizio nei codici d'errore.
 const SERVIZIO: &str = "sincronia";
@@ -288,6 +332,15 @@ pub struct Contenuto {
     /// La skin attiva.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin_attiva: Option<Scelta>,
+    /// Quel che il dispositivo che l'ha scritto sa fare: vedi
+    /// [`CAPACITA_VOCI_ASSENTI`].
+    ///
+    /// Un documento senza questo campo — tutti quelli della 3.2.0 — lo porta
+    /// vuoto. Non è un dato dell'utente e nessuna fusione lo usa: lo mette
+    /// [`crate::Motore::passata`] sul documento che pubblica, e chi legge gli
+    /// altri lo trova qui.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub capacita: BTreeSet<String>,
 }
 
 impl Registro for Contenuto {
@@ -317,6 +370,7 @@ impl Registro for Contenuto {
                 (Some(una), None) | (None, Some(una)) => Some(una.clone()),
                 (None, None) => None,
             },
+            capacita: self.capacita.union(&altro.capacita).cloned().collect(),
         }
     }
 }
@@ -556,8 +610,32 @@ pub fn interpreta(compresso: &[u8]) -> Result<Documento, AppError> {
             skin_attiva: contenuto
                 .get("skin_attiva")
                 .and_then(|valore| serde_json::from_value(valore.clone()).ok()),
+            capacita: segni(contenuto.get("capacita")),
         },
     })
+}
+
+/// I segni di capacità di un documento, quelli che sono testo ragionevole.
+///
+/// Si leggono anche se questa versione non li conosce: servono a chi guarda un
+/// pari e vuole sapere cosa sa fare, e un segno nuovo di una 3.3.x non deve
+/// sparire passando di qui. Ma con un tetto di numero e di lunghezza: vedi
+/// [`MASSIMO_CAPACITA`].
+fn segni(valore: Option<&serde_json::Value>) -> BTreeSet<String> {
+    valore
+        .and_then(serde_json::Value::as_array)
+        .map(|elenco| {
+            elenco
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|segno| !segno.is_empty() && segno.len() <= LUNGHEZZA_MASSIMA_CAPACITA)
+                .map(ToOwned::to_owned)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .take(MASSIMO_CAPACITA)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Quanti valori JSON al più stanno in questo testo, senza costruire niente.
@@ -784,6 +862,118 @@ mod prove {
         let documento = interpreta(&byte).expect("interpreta");
         assert_eq!(documento.content.voti.len(), 1, "il voto buono resta");
         assert_eq!(documento.content.ultimo.len(), 1);
+    }
+
+    fn gzip(crudo: &str) -> Vec<u8> {
+        let mut compressore =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        compressore.write_all(crudo.as_bytes()).expect("comprime");
+        compressore.finish().expect("chiude")
+    }
+
+    #[test]
+    fn un_documento_della_3_2_0_senza_il_segno_si_legge_come_prima() {
+        // Scritto a mano, com'è nella 3.2.0: nessun campo `capacita`. Si legge
+        // tutto quel che c'era, il segno resta vuoto, e il contenuto riserializzato
+        // non ne porta (`skip_serializing_if`): l'impronta di chi non ha segno è
+        // quella di sempre.
+        let documento = interpreta(&gzip(
+            r#"{"version":1,"device":"vecchio","generatedAt":7,"content":{
+                "ascolti":{"a":3},"ultimo":{"a":500},
+                "voti":{"a":{"v":4,"at":10}},
+                "preferiti":{"a":{"on":true,"at":11}},
+                "lapidi":{"brani":{"x":5},"playlist":{"p":6}},
+                "cartelle":{"D:/Musica":{"on":true,"at":1}},
+                "skin":{"nera":"abc"},"skin_attiva":{"id":"nera","at":2}
+            }}"#,
+        ))
+        .expect("si legge");
+        assert!(documento.content.capacita.is_empty());
+        assert_eq!(documento.content.ascolti.get("a"), Some(&3));
+        assert_eq!(documento.content.voti.get("a").map(|v| v.v), Some(4));
+        assert_eq!(documento.content.lapidi.brani.get("x"), Some(&5));
+        assert_eq!(documento.content.cartelle.len(), 1);
+        assert_eq!(
+            documento
+                .content
+                .skin_attiva
+                .as_ref()
+                .map(|s| s.id.as_str()),
+            Some("nera")
+        );
+        let canonico =
+            String::from_utf8(canonico(&documento.content).expect("canonico")).expect("utf8");
+        assert!(
+            !canonico.contains("capacita"),
+            "senza segno il contenuto non ne scrive: {canonico}"
+        );
+    }
+
+    #[test]
+    fn il_segno_si_rilegge_e_cambia_l_impronta_solo_di_chi_lo_porta() {
+        let senza = Contenuto::default();
+        let con = Contenuto {
+            capacita: capacita_di_questa_versione(),
+            ..Contenuto::default()
+        };
+        assert_ne!(
+            impronta(&senza).expect("impronta"),
+            impronta(&con).expect("impronta")
+        );
+
+        // Scritto e riletto, il documento ha lo stesso contenuto e la stessa
+        // impronta: è ciò che permette a `Motore::passata` di non riscriverlo.
+        let scritto = serializza(&Documento::nuovo("uno", con.clone(), 1)).expect("serializza");
+        let letto = interpreta(&scritto).expect("si legge");
+        assert_eq!(letto.content, con);
+        assert_eq!(
+            impronta(&letto.content).expect("impronta"),
+            impronta(&con).expect("impronta")
+        );
+    }
+
+    #[test]
+    fn i_segni_di_un_documento_altrui_hanno_un_tetto() {
+        // Il campo si fonde (unione) e si tiene in memoria per ogni pari: un
+        // documento ostile non deve poterlo gonfiare dentro i limiti generali.
+        let molti: Vec<String> = (0..1_000).map(|n| format!("\"s{n:04}\"")).collect();
+        let lungo = "x".repeat(10_000);
+        let documento = interpreta(&gzip(&format!(
+            r#"{{"version":1,"device":"ostile","content":{{"capacita":[{},"{lungo}",7,null,""]}}}}"#,
+            molti.join(",")
+        )))
+        .expect("si legge");
+        assert!(
+            documento.content.capacita.len() <= 16,
+            "{}",
+            documento.content.capacita.len()
+        );
+        assert!(
+            documento
+                .content
+                .capacita
+                .iter()
+                .all(|segno| !segno.is_empty() && segno.len() <= 64)
+        );
+        // Un segno sconosciuto di una 3.3.x, invece, passa.
+        let futuro = interpreta(&gzip(
+            r#"{"version":1,"device":"nuovo","content":{"capacita":["voci-assenti-1","altro-2"]}}"#,
+        ))
+        .expect("si legge");
+        assert!(futuro.content.capacita.contains("altro-2"));
+        assert!(futuro.content.capacita.contains(CAPACITA_VOCI_ASSENTI));
+    }
+
+    #[test]
+    fn i_segni_si_uniscono_e_la_fusione_resta_commutativa() {
+        let mut uno = Contenuto::default();
+        uno.capacita.insert("a-1".to_owned());
+        let mut due = Contenuto::default();
+        due.capacita.insert("b-1".to_owned());
+        assert_eq!(uno.fondi(&due), due.fondi(&uno));
+        assert_eq!(uno.fondi(&due).capacita.len(), 2);
+        assert_eq!(uno.fondi(&uno), uno);
+        assert_eq!(uno.fondi(&Contenuto::default()), uno);
     }
 
     #[test]
