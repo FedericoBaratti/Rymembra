@@ -169,6 +169,12 @@ pub const MASSIMI_TEMPI_PER_RIGA: usize = 32;
 /// lì**: il resto, tag e testo, si scarta — non si accoda all'ultima parola,
 /// perché due pezzi di testo che si toccano senza il tag in mezzo possono
 /// comporre un tag nuovo.
+///
+/// Il pezzo che sta **prima** della prima parola (`Oh <00:10.50>…`) non ha un tag,
+/// ma [`leggi`] gliene dà uno — quello della riga — e [`scrivi`] lo scrive: alla
+/// rilettura è una parola come le altre, e se fosse la cinquecentotredicesima la
+/// riga si accorcerebbe di una parola a ogni giro. Per questo conta nel tetto: una
+/// riga che lo ha ne ha al più cinquecentoundici con un tempo.
 pub const MASSIME_PAROLE_PER_RIGA: usize = 512;
 
 /// Quante righe, al più, [`leggi`] costruisce **prima** della fusione dei tempi
@@ -476,6 +482,13 @@ fn fondi_allo_stesso_tempo(righe: Vec<Riga>) -> Vec<Riga> {
         if secondarie >= MASSIME_SECONDARIE_PER_RIGA {
             continue;
         }
+        // Una secondaria si riscrive come una riga sua, `[tempo]testo`, e non ha parole: se quel testo,
+        // riletto, non torna lo stesso, la riga che `scrivi` produce è un'altra — con un tempo in più,
+        // un'intestazione, o senza un pezzo — e la riscrittura non sarebbe stabile. Succede solo con il
+        // testo di una riga di parole (`<0:0>[0:7]tradotta`, `x<0<0:1>:0>y`): non entra.
+        if !si_rilegge_uguale(&riga.testo) {
+            continue;
+        }
         match ultima.secondaria.as_mut() {
             Some(gia) if gia.lines().any(|l| l == riga.testo) => {}
             Some(gia) => {
@@ -490,6 +503,12 @@ fn fondi_allo_stesso_tempo(righe: Vec<Riga>) -> Vec<Riga> {
         }
     }
     fuse
+}
+
+/// Il testo, scritto come una riga sua (`[tempo]testo`), si rilegge com'è: non comincia con un tag
+/// (`[0:7]`, `[ti:…]`) e non ne ha uno di parola (`<0:0>`) in mezzo.
+fn si_rilegge_uguale(testo: &str) -> bool {
+    !separa_tag(testo).0.ha_tag && separa_parole(testo).0 == testo
 }
 
 /// I `[…]` in testa a una riga: i tempi che portano, lo scarto dichiarato, e se
@@ -592,6 +611,10 @@ fn tempo_di_parola(dopo: &str) -> Option<(u32, &str)> {
 /// testo all'ultima parola togliendo solo i tag, perché due pezzi che si toccano
 /// senza un tag in mezzo possono comporne uno nuovo — `x<0` e `:0>y` danno
 /// `x<0:0>y` —, e la riscrittura lo leggerebbe come tempo.
+///
+/// Il pezzo prima del primo tag (se non è di soli spazi) ha già il suo posto fra
+/// le parole: [`leggi`] lo riscrive come parola con il tempo della riga, quindi
+/// ne toglie uno al tetto dei tag.
 fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
     if !testo.contains('<') {
         return (testo.to_owned(), None, Vec::new());
@@ -602,6 +625,7 @@ fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
     let mut pezzo = String::new();
     let mut resto = testo;
     let mut con_tempo = 0_usize;
+    let mut tetto = MASSIME_PAROLE_PER_RIGA;
 
     while let Some(apre) = resto.find('<') {
         let (Some(prima), Some(dopo)) = (resto.get(..apre), resto.get(apre.saturating_add(1)..))
@@ -611,7 +635,10 @@ fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
         match tempo_di_parola(dopo) {
             Some((ms, avanti)) => {
                 pezzo.push_str(prima);
-                if con_tempo >= MASSIME_PAROLE_PER_RIGA {
+                if con_tempo == 0 && !pezzo.trim().is_empty() {
+                    tetto = tetto.saturating_sub(1);
+                }
+                if con_tempo >= tetto {
                     resto = "";
                     break;
                 }
@@ -736,9 +763,13 @@ fn tempo_ms(grezzo: &str) -> Option<u32> {
 /// La conseguenza va detta: scrivere **arrotonda** al centesimo. Quindi
 /// `leggi(scrivi(x)) == x` vale sui tempi allineati al centesimo, e
 /// `scrivi(leggi(scrivi(x))) == scrivi(x)` vale per ogni testo dentro i tetti del
-/// lettore — cioè per ogni testo che [`leggi`] restituisce — quindi riscrivere un
-/// file non lo cambia mai due volte. È la proprietà che conta, ed è provata,
-/// anche sugli ingressi che i tetti tagliano.
+/// lettore — cioè per ogni testo che [`leggi`] restituisce — le cui righe stanno a
+/// un centesimo o più l'una dall'altra, quindi riscrivere un file non lo cambia
+/// mai due volte. È la proprietà che conta, ed è provata, anche sugli ingressi che
+/// i tetti tagliano. Due righe a **meno** di un centesimo (`[00:02.000]` e
+/// `[00:02.004]`) scrivono lo stesso tempo, e la prima lettura le fonde — una
+/// riga vuota così vicina a una piena sparisce —: è la seconda riscrittura a
+/// trovarle già fuse, e da lì il testo è stabile.
 ///
 /// Un [`Testo`] **costruito a mano** oltre i tetti (un editor che salva più di
 /// [`MASSIME_RIGHE_ESPANSE`] righe, più di [`MASSIME_PAROLE_PER_RIGA`] parole in
@@ -1396,6 +1427,51 @@ mod prove {
         let primo = scrivi(&storto);
         assert_eq!(primo, "[00:12.35]prima riga\n");
         assert_eq!(scrivi(&leggi(&primo)), primo);
+    }
+
+    #[test]
+    fn due_righe_a_meno_di_un_centesimo_si_fondono_alla_prima_riscrittura() {
+        // B2 (fuzzing): una riga piena e una vuota a due millesimi di distanza sono due tempi per
+        // `leggi`, ma `scrivi` li arrotonda allo stesso centesimo. La prima riscrittura li porta
+        // sulla stessa riga e la lettura dopo li fonde (la riga vuota non è una traduzione): la
+        // proprietà `scrivi(leggi(scrivi(x))) == scrivi(x)` vale per le righe a un centesimo o più,
+        // e per queste si ferma alla seconda scrittura invece che alla prima.
+        let letto = leggi("[00:02.00]uno\n[00:02.002]\n");
+        assert_eq!(letto.righe.len(), 2, "per `leggi` i tempi sono distinti");
+        let primo = scrivi(&letto);
+        assert_eq!(primo, "[00:02.00]uno\n[00:02.00]\n");
+        let secondo = scrivi(&leggi(&primo));
+        assert_eq!(secondo, "[00:02.00]uno\n", "la lettura le fonde");
+        assert_eq!(scrivi(&leggi(&secondo)), secondo, "e da lì è stabile");
+    }
+
+    #[test]
+    fn una_secondaria_che_riscritta_si_leggerebbe_diversa_non_entra() {
+        let _uno = una_alla_volta();
+        // B2 (fuzzing): il testo di una riga di parole (`<0:0>[0:7]tradotta`) comincia con qualcosa che
+        // sembra un tag, ma lì è testo di una parola. Se la riga cade sullo stesso tempo di un'altra
+        // diventa la sua secondaria, che `scrivi` scrive come riga sua: `[0:0][0:7]tradotta`, che si
+        // rilegge come due tempi e un testo senza il suo inizio. La riscrittura non era stabile.
+        for grezzo in [
+            "[0:0]uno\n[0:0]<0:0>[0:7]tradotta\n",
+            "[0:0]uno\n[0:0]x<0<0:1>:0>y\n",
+            "[0:0]uno\n[0:0]<0:0>[ti:titolo]\n",
+        ] {
+            let letto = leggi(grezzo);
+            assert_eq!(letto.righe.len(), 1, "{grezzo:?}");
+            assert_eq!(
+                letto.righe.first().and_then(|r| r.secondaria.as_deref()),
+                None,
+                "{grezzo:?}"
+            );
+            riscrittura_stabile(grezzo);
+        }
+        // Una traduzione vera continua a entrare.
+        let vera = leggi("[0:0]uno\n[0:0]one\n");
+        assert_eq!(
+            vera.righe.first().and_then(|r| r.secondaria.as_deref()),
+            Some("one")
+        );
     }
 
     #[test]
@@ -2139,6 +2215,40 @@ mod prove {
         assert!(!prima.testo.contains('y'));
         assert!(!scrivi(&testo).contains(":0>y"));
         riscrittura_stabile(&grezzo);
+    }
+
+    #[test]
+    fn il_pezzo_prima_della_prima_parola_conta_fra_le_parole_della_riga() {
+        let _uno = una_alla_volta();
+        // B2 (fuzzing): `Oh <0:1>…` non ha un tag per il pezzo davanti, ma `leggi` lo trasforma in
+        // una parola con il tempo della riga e `scrivi` lo scrive con un tag. Con cinquecentododici
+        // parole con un tempo la riga ne aveva cinquecentotredici, e la rilettura dell'ultima non
+        // ne vedeva il tag: ogni giro ne perdeva una, e `scrivi(leggi(scrivi(x))) != scrivi(x)`.
+        let mut grezzo = String::from("[0:0]Oh ");
+        grezzo.push_str(&parole_distinte(MASSIME_PAROLE_PER_RIGA + 5));
+        let testo = leggi(&grezzo);
+        let prima = testo.righe.first().expect("una riga");
+        assert_eq!(
+            prima.parole.len(),
+            MASSIME_PAROLE_PER_RIGA,
+            "il pezzo prima conta come una parola"
+        );
+        assert_eq!(prima.parole.first().map(|p| p.testo.as_str()), Some("Oh "));
+        assert_eq!(
+            leggi(&scrivi(&testo)).righe.first().map(|r| r.parole.len()),
+            Some(MASSIME_PAROLE_PER_RIGA),
+            "e la rilettura ne trova altrettante"
+        );
+        riscrittura_stabile(&grezzo);
+        // Sotto il tetto il pezzo davanti non toglie niente a nessuno.
+        let mut meno = String::from("[0:0]Oh ");
+        meno.push_str(&parole_distinte(MASSIME_PAROLE_PER_RIGA - 1));
+        let senza_taglio = leggi(&meno);
+        assert_eq!(
+            senza_taglio.righe.first().map(|r| r.parole.len()),
+            Some(MASSIME_PAROLE_PER_RIGA)
+        );
+        riscrittura_stabile(&meno);
     }
 
     #[test]

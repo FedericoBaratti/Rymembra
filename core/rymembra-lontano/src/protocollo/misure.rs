@@ -160,6 +160,22 @@ fn misura_dati_al_limite_dei_nodi() {
     misura("dati al limite dei nodi", &compressa, json.len());
 }
 
+/// Il peggio che passa dopo B2-5: tanti oggetti piccoli (`{"a":0}`) quanti il tetto
+/// ne concede, ~95 000. Prima il tetto li contava due unità l'uno e ne lasciava
+/// passare 255 000: 164 MiB (misurati con un allocatore che conta, fuori dal repo).
+#[test]
+#[ignore = "misura: si lancia a mano, una per volta"]
+fn misura_dati_di_oggetti_al_limite() {
+    let quanti = MASSIMI_NODI_DATI
+        .saturating_sub(PESO_DI_UN_OGGETTO + 3)
+        .div_euclid(PESO_DI_UN_OGGETTO + 1);
+    let mut json = String::from(r#"{"tipo":"dati","dati":["#);
+    json.push_str(&r#"{"a":0},"#.repeat(quanti.saturating_sub(1)));
+    json.push_str(r#"{"a":0}]}"#);
+    let compressa = comprimi(&json);
+    misura("dati di oggetti al limite", &compressa, json.len());
+}
+
 /// Il controllo: una pagina vera da cinquecento brani, come la manda un pari
 /// onesto. Quel che si fa per i due casi sopra non deve toccarla.
 #[test]

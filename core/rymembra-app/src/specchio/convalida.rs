@@ -136,7 +136,11 @@ pub fn tronca_opz(testo: Option<String>, massimo: usize) -> Option<String> {
 
 /// Un testo da mostrare: ripulito e nei tetti, vuoto se non resta niente.
 fn testo(grezzo: &str, massimo: usize) -> String {
-    tronca(&ripulisci(grezzo), massimo)
+    let tagliato = tronca(&ripulisci(grezzo), massimo);
+    // `ripulisci` non lascia mai uno spazio in coda, ma il taglio può fermarsi proprio dopo uno: senza
+    // questo il testo usciva con lo spazio, e una seconda convalida lo toglieva (la convalida non
+    // era idempotente). Dopo `ripulisci` l'unico spazio rimasto è U+0020.
+    tagliato.trim_end().to_owned()
 }
 
 /// Un testo facoltativo: `None` se non resta niente.
@@ -503,6 +507,30 @@ mod prove {
         assert!(v.righe.windows(2).all(|c| c[0].id < c[1].id), "per id");
         assert_eq!(v.righe.first().map(|r| r.id), Some(1_000));
         assert_eq!(v.righe.last().map(|r| r.id), Some(1_499));
+    }
+
+    #[test]
+    fn un_testo_tagliato_dopo_uno_spazio_non_resta_con_lo_spazio_in_coda() {
+        // B2: `ripulisci` non lascia mai uno spazio in coda, ma il taglio a `MAX_NOME` byte può
+        // fermarsi proprio dopo uno spazio, e la riga restava «xxx… » (con lo spazio). Una seconda
+        // convalida lo toglieva: la convalida non era idempotente, e due righe dello stesso brano
+        // — una convalidata una volta, una due — non avevano lo stesso titolo.
+        let mut r = riga(1);
+        r.title = format!("{} y z", "x".repeat(MAX_NOME - 1));
+        r.album_artist = Some(format!("{}x y", "é".repeat(99)));
+        r.genre = Some(format!("{} pop", "g".repeat(MAX_GENERE - 1)));
+        let una = convalida_riga(r, ADESSO).unwrap();
+        for testo in [
+            Some(&una.title),
+            una.album_artist.as_ref(),
+            una.genre.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(!testo.ends_with(' '), "spazio in coda: {testo:?}");
+        }
+        assert_eq!(convalida_riga(una.clone(), ADESSO), Ok(una));
     }
 
     #[test]

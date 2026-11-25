@@ -349,8 +349,10 @@ feature off nothing listens. What is supposed to hold:
   checked — 64 KiB for a request from a linked device. An answer is read in two
   steps, the kind first and then the body with the ceiling of that kind: a
   presence 16 KiB; “done”, a refusal and the head of an answer of bytes 1 KiB;
-  data 8 MiB and at most 512 Ki JSON nodes — so 8 KB that open into 8 MiB cost
-  about 10 MiB, not 150 to 260 — and an answer of bytes is never longer than
+  data 8 MiB and a weight of at most 560 Ki, where a JSON value counts one and
+  an object five — so 8 KB that open into 8 MiB cost about 10 MiB, not 150 to
+  260, and the worst answer accepted about 65 MiB — and an answer of bytes is
+  never longer than
   the request asked for (2 MiB a read, 1 MiB a cover), which its head says
   before anything is allocated. A read asks for at most 2 MiB, a list for at
   most 500 entries; a device has at most 8 requests served at a time and at

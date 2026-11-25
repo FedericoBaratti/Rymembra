@@ -440,6 +440,74 @@ fn le_copertine_degli_altri_hanno_un_tetto_di_spazio() {
     assert!(store.path_for(&nuova).exists());
 }
 
+/// Una PNG piccola che ricodificata pesa molto: una piastrella di rumore da 16×16 che si
+/// ripete su 1024×1024. Il deflate vede la ripetizione, la JPEG no.
+fn png_di_rumore_che_si_ripete() -> Vec<u8> {
+    use image::ImageEncoder as _;
+    let mut seme = 0x2545_F491_4F6C_DD1D_u64;
+    let tessera: Vec<[u8; 3]> = (0..256)
+        .map(|_| {
+            seme ^= seme << 13;
+            seme ^= seme >> 7;
+            seme ^= seme << 17;
+            let byte = seme.to_le_bytes();
+            [byte[0], byte[1], byte[2]]
+        })
+        .collect();
+    let immagine = image::RgbImage::from_fn(1024, 1024, |x, y| {
+        image::Rgb(tessera[usize::try_from((y % 16) * 16 + x % 16).unwrap_or(0)])
+    });
+    let mut fuori = Vec::new();
+    image::codecs::png::PngEncoder::new_with_quality(
+        &mut fuori,
+        image::codecs::png::CompressionType::Best,
+        image::codecs::png::FilterType::NoFilter,
+    )
+    .write_image(
+        immagine.as_raw(),
+        1024,
+        1024,
+        image::ExtendedColorType::Rgb8,
+    )
+    .expect("png");
+    fuori
+}
+
+#[test]
+fn il_tetto_di_spazio_vale_per_quel_che_si_scrive_e_non_per_quel_che_arriva() {
+    // B2 (fuzzing): il controllo dello spazio guardava i byte in ingresso, ma sul disco
+    // finiscono la JPEG ricodificata e la miniatura. Una PNG di 60 KB di rumore che si
+    // ripete diventa mezzo mebibyte: con cento kilobyte di margine entrava lo stesso, e il
+    // tetto restava superato di quel che mancava.
+    let dir = tempfile::tempdir().expect("cartella");
+    let store = CoverStore::open(dir.path()).expect("store");
+    riempi_di_estranee(&store, &"11".repeat(32), SPAZIO_MASSIMO_ESTRANEE - 100_000);
+    let ingresso = png_di_rumore_che_si_ripete();
+    assert!(
+        ingresso.len() < 90_000,
+        "la prova vuole una PNG piccola: {} byte",
+        ingresso.len()
+    );
+    assert!(
+        store.ha_spazio_per_estranee(u64::try_from(ingresso.len()).expect("un numero")),
+        "per i byte in ingresso il posto c'è"
+    );
+    let nuova = "22".repeat(32);
+    let errore = store
+        .salva_estranea(&nuova, &ingresso)
+        .expect_err("quel che si scrive non ci sta");
+    assert!(
+        errore.to_string().contains("spazio"),
+        "il motivo si dice: {errore}"
+    );
+    assert!(
+        !store.path_for(&nuova).exists()
+            && !store.thumbnail_path_for(&nuova).exists()
+            && !store.percorso_segno(&nuova).exists(),
+        "e non lascia niente"
+    );
+}
+
 #[test]
 fn lo_spazio_delle_copertine_degli_altri_si_conta_da_quel_che_c_e_sul_disco() {
     // Un riavvio non azzera il conto: si rifà dai segni lasciati dalle copertine

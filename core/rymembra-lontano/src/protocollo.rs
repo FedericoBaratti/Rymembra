@@ -92,16 +92,44 @@ pub const MASSIMA_TESTA_PRESENZA: usize = 16 * 1024;
 /// numeri e una versione, che per una copertina è la sua impronta).
 pub const MASSIMA_TESTA_PICCOLA: usize = 1024;
 
-/// Quanti nodi JSON — valori di un array, voci di un oggetto — può avere una
-/// risposta di dati.
+/// Quante «unità» di peso, al più, ha una risposta di dati: ogni valore di un
+/// array, ogni voce di un oggetto e ogni contenitore vale una; un oggetto ne vale
+/// [`PESO_DI_UN_OGGETTO`].
 ///
 /// Il tetto in byte (8 MiB aperti) non dice quanto costa leggerla: un valore di
 /// `serde_json` pesa 32 byte e un `0,` ne occupa due, quindi 8 MiB di zeri
-/// diventavano ~260 MiB (reperto S1-2). Una pagina vera da cinquecento righe ne ha
-/// una decina di migliaia; il riassunto di un catalogo da quaranta milioni di id
-/// — il più lungo che sta negli 8 MiB — ne ha meno di quattrocentomila. A mezzo
-/// milione una risposta ostile costa al più ~26 MiB di memoria (misurato).
-pub const MASSIMI_NODI_DATI: usize = 512 * 1024;
+/// diventavano ~260 MiB (reperto S1-2). Con il tetto a 573 440 unità **un array**
+/// di zeri costa 50 MiB (il suo `Vec` raddoppia a un milione di posti), ma un
+/// oggetto non vale 32 byte: è un `BTreeMap`, e il primo elemento alloca una foglia
+/// da undici voci. Misurato (reperto B2-5, con un allocatore che conta il picco,
+/// 20 KB sul filo): 255 000 `{"a":0}`, 510 000 nodi, 164 MiB; 170 000 `{"a":[]}`,
+/// 113 MiB; 14 400 oggetti da 35 campi, 518 000 nodi, 59 MiB. Con l'oggetto a
+/// [`PESO_DI_UN_OGGETTO`] unità quelle risposte non passano più, e il peggio che
+/// passa, al tetto, è di 62 MiB (95 572 `{"a":0}`) o 59 MiB (14 335 oggetti da 35
+/// campi); con le misure a mano di `misure.rs` (working set e commit del processo, senza
+/// ASan) sono 64 e 65 MiB per i primi, e 35 e 49 per l'array di zeri.
+///
+/// Quel che un pari onesto manda sta ben dentro: una pagina da cinquecento righe e
+/// quaranta campi ne pesa ventimila; il riassunto del catalogo più lungo che il
+/// filo lascia passare — il tetto della cornice è 1 MiB compresso, e con
+/// un'impronta casuale di 16 byte a secchio sono circa 39 000 secchi con il
+/// compressore di questo crate da solo (`miniz_oxide`, quello delle prove) e meno
+/// di 35 000 con zlib-rs, che è quello del desktop e dell'APK — ne pesa al più
+/// 360 000 (nove unità a secchio), un tetto e sessanta centesimi sotto, di più nelle
+/// build vere. (I quaranta milioni di id di cui parlava questo
+/// commento, 80 000 secchi, compressi sono 2,3 MB: non li manda né questa build né
+/// `8b89651`.) Il tetto è 560 × 1024 e non 512 × 1024 per questo margine: a 524 288
+/// unità quei 39 000 secchi ne avevano uno e quarantotto centesimi.
+pub const MASSIMI_NODI_DATI: usize = 560 * 1024;
+
+/// Quante unità vale un oggetto JSON (la sua `{`): il costo di tenerlo in memoria
+/// — ~700 byte per un oggetto da un campo, contro i ~50 di una voce di un array —
+/// in unità da cinquanta byte, meno quelle che la sua virgola e la sua parentesi già
+/// contano. Scelto perché il peggio degli oggetti piccoli stia sotto quello dei grandi
+/// (62 contro 59 MiB, vedi [`MASSIMI_NODI_DATI`]) e il riassunto del catalogo ci stia
+/// con margine: con un peso più alto il tetto dovrebbe salire, e con esso il peggio
+/// dei grandi e quello degli array.
+pub const PESO_DI_UN_OGGETTO: usize = 5;
 
 /// Oltre questo il JSON si comprime.
 pub const SOGLIA_COMPRESSIONE: usize = 8 * 1024;
@@ -824,13 +852,21 @@ struct CampiRifiuto {
     codice: String,
 }
 
-/// Il JSON di una risposta di dati ha un numero di nodi che sta in
-/// [`MASSIMI_NODI_DATI`]? Ogni valore di un array, ogni voce di un oggetto e ogni
-/// contenitore è un nodo: si contano le virgole, le parentesi aperte e la radice,
-/// fuori dalle stringhe — dentro, `\"` non le chiude. Una sola passata sui byte,
-/// senza allocare: costa una frazione di quel che costerebbe leggerli.
+/// Il JSON di una risposta di dati ha un peso che sta in [`MASSIMI_NODI_DATI`]?
+/// Vedi [`peso_dei_nodi`].
 fn nodi_nei_tetti(json: &[u8]) -> bool {
-    let mut nodi = 1_usize;
+    peso_dei_nodi(json) <= MASSIMI_NODI_DATI
+}
+
+/// Il peso di un JSON, in unità: la radice vale una, e una ogni virgola e ogni
+/// `[` — ogni valore di un array, ogni voce di un oggetto, ogni contenitore —,
+/// mentre una `{` vale [`PESO_DI_UN_OGGETTO`]. Si contano fuori dalle stringhe:
+/// dentro, `\"` non le chiude. Una sola passata sui byte, senza allocare: costa una
+/// frazione di quel che costerebbe leggerli. Si ferma appena supera
+/// [`MASSIMI_NODI_DATI`], e allora restituisce un numero oltre quel tetto, non il
+/// peso intero.
+fn peso_dei_nodi(json: &[u8]) -> usize {
+    let mut peso = 1_usize;
     let mut in_stringa = false;
     let mut protetto = false;
     for &byte in json {
@@ -846,16 +882,15 @@ fn nodi_nei_tetti(json: &[u8]) -> bool {
         }
         match byte {
             b'"' => in_stringa = true,
-            b',' | b'[' | b'{' => {
-                nodi = nodi.saturating_add(1);
-                if nodi > MASSIMI_NODI_DATI {
-                    return false;
-                }
-            }
+            b',' | b'[' => peso = peso.saturating_add(1),
+            b'{' => peso = peso.saturating_add(PESO_DI_UN_OGGETTO),
             _ => {}
         }
+        if peso > MASSIMI_NODI_DATI {
+            return peso;
+        }
     }
-    true
+    peso
 }
 
 /// La testa di una risposta, dal corpo di una cornice: l'unica porta da cui una
@@ -1572,6 +1607,127 @@ mod prove {
             testa_entro(virgole.as_bytes(), false, MASSIMA_TESTA).is_ok(),
             "il testo non è una struttura"
         );
+    }
+
+    #[test]
+    fn un_oggetto_pesa_quel_che_costa_e_non_come_il_valore_di_un_array() {
+        // Reperto B2-5: 255 000 `{"a":0}` sono 510 000 nodi — sotto il tetto di allora —, ~20 KB
+        // sul filo e 164 MiB di memoria (misurati), sei volte quanto costano 510 000 zeri: un
+        // oggetto è un `BTreeMap`, e il primo elemento alloca una foglia da undici voci.
+        let oggetti = |quanti: usize| {
+            let mut json = String::from(r#"{"tipo":"dati","dati":["#);
+            json.push_str(&r#"{"a":0},"#.repeat(quanti.saturating_sub(1)));
+            json.push_str(r#"{"a":0}]}"#);
+            json
+        };
+        let bomba = oggetti(255_000);
+        assert!(
+            testa_entro(bomba.as_bytes(), false, MASSIMA_TESTA).is_err(),
+            "{} byte, {} unità: si leggono",
+            bomba.len(),
+            peso_dei_nodi(bomba.as_bytes())
+        );
+        // Il bordo: ogni oggetto vale `{` + la sua virgola, più la testa di sette unità e la radice.
+        let al_tetto = MASSIMI_NODI_DATI
+            .saturating_sub(PESO_DI_UN_OGGETTO + 3)
+            .div_euclid(PESO_DI_UN_OGGETTO + 1);
+        assert!(nodi_nei_tetti(oggetti(al_tetto).as_bytes()), "{al_tetto}");
+        assert!(
+            !nodi_nei_tetti(oggetti(al_tetto + 1).as_bytes()),
+            "{al_tetto}"
+        );
+        // Un array di zeri non cambia: pesa come prima.
+        assert_eq!(
+            peso_dei_nodi(format!("[{}0]", "0,".repeat(1_000)).as_bytes()),
+            1_002
+        );
+        // Una `{` dentro una stringa non pesa.
+        assert_eq!(
+            peso_dei_nodi(br#"{"a":"{{{{,,,,[[[["}"#),
+            1 + PESO_DI_UN_OGGETTO
+        );
+    }
+
+    /// Un riassunto del catalogo di `n` secchi, com'è sul filo: `{generazione, secchi: [{daId, aId,
+    /// impronta, righe}]}`, con l'impronta casuale (la peggiore per la compressione).
+    fn riassunto_di(n: u64) -> Testa {
+        let mut seme = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut prossimo = move || {
+            seme ^= seme << 13;
+            seme ^= seme >> 7;
+            seme ^= seme << 17;
+            seme
+        };
+        let secchi: Vec<serde_json::Value> = (0..n)
+            .map(|k| {
+                serde_json::json!({
+                    "daId": k * 500,
+                    "aId": k * 500 + 499,
+                    "impronta": format!("{:016x}{:016x}", prossimo(), prossimo()),
+                    "righe": 500,
+                })
+            })
+            .collect();
+        Testa::Dati {
+            dati: serde_json::json!({ "generazione": 1, "secchi": secchi }),
+        }
+    }
+
+    #[test]
+    fn la_risposta_legittima_piu_grande_sta_nel_tetto_con_un_tetto_e_mezzo_di_margine() {
+        // Il riassunto più lungo che un pari vero può mandare — questa build o `8b89651`: la cornice
+        // compressa non supera 1 MiB (`MASSIMA_CORNICE`) —, cercato per bisezione con la `cornice`
+        // vera. Il commento di una volta dava 80 000 secchi (quaranta milioni di id): compressi sono
+        // 2,3 MB, e nessuno dei due lati li manda.
+        let (mut sta, mut non_sta) = (30_000_u64, 80_000_u64);
+        assert!(cornice(&riassunto_di(sta), MASSIMA_TESTA).is_ok());
+        assert!(
+            cornice(&riassunto_di(non_sta), MASSIMA_TESTA).is_err(),
+            "80 000 secchi non stanno nel filo"
+        );
+        while non_sta - sta > 500 {
+            let meta = sta + (non_sta - sta).div_euclid(2);
+            if cornice(&riassunto_di(meta), MASSIMA_TESTA).is_ok() {
+                sta = meta;
+            } else {
+                non_sta = meta;
+            }
+        }
+        // Passa davvero, dalla porta vera...
+        let testa = riassunto_di(sta);
+        let byte = cornice(&testa, MASSIMA_TESTA).expect("la cornice parte");
+        let (quanti, compressa) =
+            lunghezza_entro(byte[..4].try_into().unwrap(), MASSIMA_TESTA).unwrap();
+        assert_eq!(quanti, byte.len() - 4);
+        assert_eq!(
+            testa_entro(&byte[4..], compressa, MASSIMA_TESTA).unwrap(),
+            testa
+        );
+        // ...e con il margine: il riassunto del primo numero di secchi che non passa (un limite
+        // superiore di quel che passa) pesa al più due terzi del tetto.
+        let peso = peso_dei_nodi(
+            serde_json::to_string(&riassunto_di(non_sta))
+                .unwrap()
+                .as_bytes(),
+        );
+        assert!(
+            peso * 3 <= MASSIMI_NODI_DATI * 2,
+            "{non_sta} secchi pesano {peso} unità su {MASSIMI_NODI_DATI}"
+        );
+        // Una pagina di cinquecento righe da quaranta campi sta dentro con lo stesso margine.
+        let righe: Vec<serde_json::Value> = (0..MASSIMA_PAGINA)
+            .map(|n| {
+                let campi: serde_json::Map<String, serde_json::Value> = (0..40)
+                    .map(|c| (format!("campo{c}"), serde_json::json!(n)))
+                    .collect();
+                serde_json::Value::Object(campi)
+            })
+            .collect();
+        let pagina = serde_json::to_string(&Testa::Dati {
+            dati: serde_json::json!({ "generazione": 1, "brani": righe }),
+        })
+        .unwrap();
+        assert!(peso_dei_nodi(pagina.as_bytes()) * 3 <= MASSIMI_NODI_DATI * 2);
     }
 
     #[test]

@@ -995,11 +995,16 @@ findings are still open, and signing the sync documents is planned work
   read. No path crosses the connection. Frames are capped at 1 MiB, and
   inflated at 16 KiB while linking and 64 KiB for a request. An answer is read
   in two steps, with a ceiling for each kind — a presence 16 KiB; “done”, a
-  refusal and the head of an answer of bytes 1 KiB; data 8 MiB and at most
-  512 Ki JSON nodes — so 8 KB that open into 8 MiB cost about 10 MiB instead of
-  150 to 260; and an answer of bytes is never longer than what the request
-  asked for (a piece of up to 2 MiB, a cover of 1 MiB), which the head says
-  before anything is allocated or downloaded. Lists are capped at 500 entries,
+  refusal and the head of an answer of bytes 1 KiB; data 8 MiB and a weight of
+  at most 560 Ki, where a JSON value counts one and an object five, because
+  that is what it costs to hold — so 8 KB that open into 8 MiB cost about
+  10 MiB instead of 150 to 260, 20 KB of tiny objects that used to take 164 MiB
+  are refused, and the worst answer accepted takes about 65 MiB (measured),
+  while the largest catalog summary that fits on the wire and a page of 500
+  rows stay inside with a margin of one and a half; and an answer of bytes is
+  never longer than what the request asked for (a piece of up to 2 MiB, a cover
+  of 1 MiB), which the head says before anything is allocated or downloaded.
+  Lists are capped at 500 entries,
   requests at 8 at a time and connections at four per device (a fifth closes
   the oldest).
 - **The device's key** is in the system keychain (`lontano.chiave.<device>`;
@@ -1062,7 +1067,8 @@ findings are still open, and signing the sync documents is planned work
   your files**: at most 1 MiB, only JPEG, PNG or WebP (also in “Listen
   together”), at most 1024 pixels a side read from the header before anything
   is decoded, two decodes at a time in the whole program, and at most 256 MiB
-  in the store. A 0.4 MiB progressive JPEG of 8192×8192 used to cost 577 MiB
+  in the store, counted on what is written (the re-encoded cover and its
+  thumbnail), not on the size of the image received. A 0.4 MiB progressive JPEG of 8192×8192 used to cost 577 MiB
   of memory. They are cached per device, read only while the device is still
   linked, shown only when their bytes are an image of those three kinds, and
   never kept by the window; every `rymembra-cover` response says
