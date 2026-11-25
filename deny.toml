@@ -34,9 +34,10 @@ ignore = [
   # (iroh → netwatch → netlink-*, cioè la lettura delle interfacce di rete su
   # Android). Si toglie da qui quando tutti e due la sostituiscono.
   { id = "RUSTSEC-2024-0436", reason = "macro di sola compilazione, portata da lofty e da netlink-packet-core; nessun codice nell'eseguibile" },
-  # Tre difetti di `zip` (8.x, nostro, e 4.x, di `tauri-plugin-updater`), tutti
-  # dentro `ZipArchive::extract` e `ZipStreamReader::extract`, l'estrazione di
-  # un archivio intero su disco: bit SUID/SGID conservati, permessi Unix
+  # Tre difetti della copia 4.x di `zip`, quella di `tauri-plugin-updater` (la
+  # nostra è la 9, che li ha chiusi), tutti dentro `ZipArchive::extract` e
+  # `ZipStreamReader::extract`, l'estrazione di un archivio intero su disco: bit
+  # SUID/SGID conservati, permessi Unix
   # applicati attraverso un collegamento simbolico, collegamenti simbolici che
   # puntano fuori dalla cartella. Rymembra non estrae mai un archivio intero:
   # skin, profili e archivi degli account si leggono voce per voce, con i nomi
@@ -44,7 +45,7 @@ ignore = [
   # impacchettato in zip, e solo dopo averne verificato la firma con la nostra
   # chiave (`Update::download`); le release pubblicano l'installer `.exe`, non
   # uno zip. I permessi Unix su Windows non esistono. La correzione è `zip` 9:
-  # per il nostro si passa quando lo si tocca, per l'updater quando lo porta lui.
+  # per l'updater quando la porta lui (`tauri-plugin-updater` 2.14.1).
   { id = "RUSTSEC-2026-0367", reason = "zip: SUID/SGID in extract(); mai chiamato da noi, l'updater estrae solo pacchetti firmati, e su Windows non ci sono" },
   { id = "RUSTSEC-2026-0368", reason = "zip: link simbolici fuori dalla cartella in extract(); mai chiamato da noi, l'updater estrae solo pacchetti firmati" },
   { id = "RUSTSEC-2026-0369", reason = "zip: permessi Unix attraverso link simbolici in extract(); mai chiamato da noi, e su Windows non ci sono" },
@@ -53,22 +54,15 @@ ignore = [
   # per i tre sopra — nessuna chiamata a `extract` nel nostro codice, e
   # l'updater estrae solo pacchetti firmati.
   { id = "RUSTSEC-2026-0429", reason = "zip: abort in extract() su un link simbolico enorme; mai chiamato da noi, l'updater estrae solo pacchetti firmati" },
-  # Altri quattro avvisi di `zip`, usciti dopo il rilascio 3.2.1 (novembre 2026),
-  # tutti corretti in `zip` 9 e nessuno raggiungibile qui. Il `Cargo.lock` lo
-  # mostra: nessuna delle due copie porta `aes` né `bitstream-io`. La nostra, la
-  # 8.6, ha `default-features = false` e solo `deflate`; quella dell'updater, la
-  # 4.6, non ha nemmeno quello.
+  # Altri due avvisi di `zip`, usciti il 17 e il 22 ottobre 2026 (advisory-db),
+  # corretti in `zip` 9 (la 0548 solo dalla 9.0.5) e nessuno raggiungibile qui:
+  # restano per la copia 4.6 di `tauri-plugin-updater`, che non porta `aes` e ha
+  # solo `deflate`. Il `Cargo.lock` lo mostra: né `aes` né `bitstream-io`.
   # - 0545: le voci cifrate AES accettate senza controllarne il codice di
   #   autenticazione. Esiste solo con la feature `aes-crypto`.
-  # - 0546: `extract` che scrive fuori dalla cartella attraverso link simbolici
-  #   assoluti o a catena. È lo stesso posto e la stessa ragione di 0368.
-  # - 0547: i decodificatori Shrink, Reduce e Implode che riservano in anticipo
-  #   tutta la dimensione dichiarata. Esistono solo con `legacy-zip`.
   # - 0548: `ZipStreamReader`, che estrae con i nomi delle intestazioni locali.
   #   Non lo usiamo noi, e l'updater apre con `ZipArchive`.
-  { id = "RUSTSEC-2026-0545", reason = "zip: AES senza codice di autenticazione; feature aes-crypto spenta in tutte e due le copie" },
-  { id = "RUSTSEC-2026-0546", reason = "zip: link simbolici in extract(); mai chiamato da noi, l'updater estrae solo pacchetti firmati" },
-  { id = "RUSTSEC-2026-0547", reason = "zip: decodificatori legacy che preallocano; feature legacy-zip spenta in tutte e due le copie" },
+  { id = "RUSTSEC-2026-0545", reason = "zip: AES senza codice di autenticazione; feature aes-crypto spenta" },
   { id = "RUSTSEC-2026-0548", reason = "zip: ZipStreamReader con i nomi locali; mai usato, né da noi né dall'updater" },
   # `chrono` non ha più un manutentore. L'avviso non segnala un difetto e non
   # propone una versione sicura. Arriva solo per via indiretta: iroh → netwatch

@@ -27,8 +27,9 @@ serde_json.workspace = true
 # e aes sarebbero sei decompressori in più esposti a un archivio ostile, per
 # leggere formati che il nostro scrittore non produce mai. Restano implementazioni
 # in puro Rust, che è anche ciò che serve a compilare per Android senza portarsi
-# dietro una libreria C.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+# dietro una libreria C. La stessa versione del resto dell'albero (vedi la
+# `Cargo.toml` di radice): due `zip` nello stesso binario sono codice doppio.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

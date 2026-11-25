@@ -87,7 +87,7 @@ drawn from Google's **Material Icons** — `history`, `queue_music`,
 
 ---
 
-## The list: 609 crates
+## The list: 610 crates
 
 Identical texts are collected once only, with the list of the crates that
 carry them underneath. Anyone looking for a specific crate finds it with
@@ -162,6 +162,7 @@ their reader's search: it appears in its license's group.
 | `combine` | 4.6.8 | MIT | <https://github.com/Marwes/combine> |
 | `const-oid` | 0.10.2 | Apache-2.0 OR MIT | <https://github.com/RustCrypto/formats> |
 | `constant_time_eq` | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 | <https://github.com/cesarb/constant_time_eq> |
+| `constant_time_eq` | 0.6.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 | <https://codeberg.org/cesarb/constant_time_eq> |
 | `convert_case` | 0.10.0 | MIT | <https://github.com/rutrum/convert-case> |
 | `cookie` | 0.18.3 | MIT OR Apache-2.0 | <https://github.com/SergioBenitez/cookie-rs> |
 | `cordyceps` | 0.3.5 | MIT | <https://github.com/hawkw/mycelium> |
@@ -607,7 +608,7 @@ their reader's search: it appears in its license's group.
 | `trash` | 5.2.9 | MIT | <https://github.com/ArturKovacs/trash> |
 | `tray-icon` | 0.25.1 | MIT OR Apache-2.0 | <https://github.com/tauri-apps/tray-icon> |
 | `try-lock` | 0.2.5 | MIT | <https://github.com/seanmonstar/try-lock> |
-| `typed-path` | 0.12.3 | MIT OR Apache-2.0 | <https://github.com/chipsenkbeil/typed-path> |
+| `typed-path` | 0.13.0 | MIT OR Apache-2.0 | <https://github.com/chipsenkbeil/typed-path> |
 | `typeid` | 1.0.3 | MIT OR Apache-2.0 | <https://github.com/dtolnay/typeid> |
 | `typenum` | 1.20.1 | MIT OR Apache-2.0 | <https://github.com/paholg/typenum> |
 | `unicode-ident` | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | <https://github.com/dtolnay/unicode-ident> |
@@ -697,7 +698,7 @@ their reader's search: it appears in its license's group.
 | `zerovec` | 0.11.8 | Unicode-3.0 | <https://github.com/unicode-org/icu4x> |
 | `zerovec-derive` | 0.11.6 | Unicode-3.0 | <https://github.com/unicode-org/icu4x> |
 | `zip` | 4.6.1 | MIT | <https://github.com/zip-rs/zip2.git> |
-| `zip` | 8.6.0 | MIT | <https://github.com/zip-rs/zip2> |
+| `zip` | 9.8.2 | MIT | <https://github.com/zip-rs/zip2> |
 | `zlib-rs` | 0.6.8 | Zlib | <https://github.com/trifectatechfoundation/zlib-rs> |
 | `zmij` | 1.0.23 | MIT | <https://github.com/dtolnay/zmij> |
 | `zopfli` | 0.8.3 | Apache-2.0 | <https://github.com/zopfli-rs/zopfli> |
@@ -1167,7 +1168,7 @@ limitations under the License.
 - `thiserror 2.0.21`
 - `thiserror-impl 1.0.69`
 - `thiserror-impl 2.0.21`
-- `typed-path 0.12.3`
+- `typed-path 0.13.0`
 - `typeid 1.0.3`
 - `unicode-ident 1.0.26`
 - `utf8-zero 0.8.1`
@@ -1202,12 +1203,13 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Text `95bd3988beee` — 37 packages
+### Text `95bd3988beee` — 38 packages
 
 <details><summary>Which packages</summary>
 
 - `anyhow 1.0.104`
 - `constant_time_eq 0.4.2`
+- `constant_time_eq 0.6.2`
 - `dtoa 1.0.11`
 - `dyn-clone 1.0.20`
 - `erased-serde 0.4.10`
@@ -1239,7 +1241,7 @@ DEALINGS IN THE SOFTWARE.
 - `thiserror 2.0.21`
 - `thiserror-impl 1.0.69`
 - `thiserror-impl 2.0.21`
-- `typed-path 0.12.3`
+- `typed-path 0.13.0`
 - `typeid 1.0.3`
 - `unicode-ident 1.0.26`
 - `utf8-zero 0.8.1`
@@ -4181,121 +4183,13 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### Text `1847e0e06981` — 5 packages
-
-<details><summary>Which packages</summary>
-
-- `half 2.7.1`
-- `ident_case 1.0.1`
-- `papaya 0.2.5`
-- `simdutf8 0.1.5`
-- `widestring 1.2.1`
-
-</details>
-
-```
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### Text `778f4b3d1627` — 5 packages
-
-<details><summary>Which packages</summary>
-
-- `netlink-packet-core 0.8.2`
-- `netlink-packet-core 0.9.0`
-- `netlink-proto 0.12.2`
-- `netlink-sys 0.8.8`
-- `netlink-sys 0.9.0`
-
-</details>
-
-```
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-of the Software, and to permit persons to whom the Software is furnished to do
-so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-Distributions of all or part of the Software intended to be used by the
-recipients as they would use the unmodified Software, containing modifications
-that substantially alter, remove, or disable functionality of the Software,
-outside of the documented configuration mechanisms provided by the Software,
-shall be modified such that the Original Author's bug reporting email addresses
-and urls are either replaced with the contact information of the parties
-responsible for the changes, or removed entirely.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### Text `ec5d7c323662` — 5 packages
-
-<details><summary>Which packages</summary>
-
-- `phf 0.13.1`
-- `phf_codegen 0.13.1`
-- `phf_generator 0.13.1`
-- `phf_macros 0.13.1`
-- `phf_shared 0.13.1`
-
-</details>
-
-```
-The MIT License (MIT)
-
-Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-```
-
-### Text `6d489af62926` — 4 packages
+### Text `6d489af62926` — 5 packages
 
 <details><summary>Which packages</summary>
 
 - `blake3 1.8.7`
 - `constant_time_eq 0.4.2`
+- `constant_time_eq 0.6.2`
 - `dunce 1.0.5`
 - `imgref 1.12.3`
 
@@ -4423,6 +4317,115 @@ express Statement of Purpose.
  d. Affirmer understands and acknowledges that Creative Commons is not a
     party to this document and has no duty or obligation with respect to
     this CC0 or use of the Work.
+```
+
+### Text `1847e0e06981` — 5 packages
+
+<details><summary>Which packages</summary>
+
+- `half 2.7.1`
+- `ident_case 1.0.1`
+- `papaya 0.2.5`
+- `simdutf8 0.1.5`
+- `widestring 1.2.1`
+
+</details>
+
+```
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Text `778f4b3d1627` — 5 packages
+
+<details><summary>Which packages</summary>
+
+- `netlink-packet-core 0.8.2`
+- `netlink-packet-core 0.9.0`
+- `netlink-proto 0.12.2`
+- `netlink-sys 0.8.8`
+- `netlink-sys 0.9.0`
+
+</details>
+
+```
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+Distributions of all or part of the Software intended to be used by the
+recipients as they would use the unmodified Software, containing modifications
+that substantially alter, remove, or disable functionality of the Software,
+outside of the documented configuration mechanisms provided by the Software,
+shall be modified such that the Original Author's bug reporting email addresses
+and urls are either replaced with the contact information of the parties
+responsible for the changes, or removed entirely.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Text `ec5d7c323662` — 5 packages
+
+<details><summary>Which packages</summary>
+
+- `phf 0.13.1`
+- `phf_codegen 0.13.1`
+- `phf_generator 0.13.1`
+- `phf_macros 0.13.1`
+- `phf_shared 0.13.1`
+
+</details>
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### Text `ea753cf1e3ec` — 4 packages
@@ -6862,6 +6865,32 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
+### Text `ee3c852dd133` — 2 packages
+
+<details><summary>Which packages</summary>
+
+- `constant_time_eq 0.4.2`
+- `constant_time_eq 0.6.2`
+
+</details>
+
+```
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
 ### Text `bccaa8b6c09f` — 2 packages
 
 <details><summary>Which packages</summary>
@@ -9069,7 +9098,7 @@ SOFTWARE.
 <details><summary>Which packages</summary>
 
 - `spin 0.10.1`
-- `zip 8.6.0`
+- `zip 9.8.2`
 
 </details>
 
@@ -12432,31 +12461,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-```
-
-### Text `ee3c852dd133` — 1 packages
-
-<details><summary>Which packages</summary>
-
-- `constant_time_eq 0.4.2`
-
-</details>
-
-```
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### Text `aed7b1758e35` — 1 packages
