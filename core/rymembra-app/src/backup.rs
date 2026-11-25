@@ -2377,7 +2377,10 @@ mod prove {
         let fuso = fondi(&locale, &dalla_3_2_0);
 
         assert_eq!(fuso.roots, ["D:/Musica".to_owned()]);
-        assert!(!fuso.skins.contains_key("bianca"), "la skin tolta resta tolta");
+        assert!(
+            !fuso.skins.contains_key("bianca"),
+            "la skin tolta resta tolta"
+        );
         assert!(fuso.skins.contains_key("nera"));
         assert_eq!(fuso.tombstones.roots.get("D:/Vecchia"), Some(&200));
         assert_eq!(fuso.tombstones.skins.get("bianca"), Some(&200));

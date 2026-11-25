@@ -63,7 +63,7 @@
         {
           ol: [
             "Lock window 1: `sincronia::allinea` brings `sync_ascolti`, `sync_sequenza` and `sync.roots` in step with the library — and puts into `playlist_tracks`, at their place, the tracks that arrived after their playlist entry; `contenuto` builds this device's document.",
-            "No lock: `Motore::passata` lists the store (`Magazzino`: list, read, write, rename, delete), reads only documents whose hash changed (remembered in `Memoria`), merges with `fusione::fondi`, and rewrites its own document only if its hash changed.",
+            "No lock: `Motore::passata` lists the store (`Magazzino`: list, read, write, rename, delete), reads only documents whose hash changed (remembered in `Memoria`), merges with `fusione::fondi`, and rewrites its own document only if its hash changed. The document it publishes carries a capability mark inside `content` (`capacita: [\"voci-assenti-1\"]`, added by the pass itself and counted in the hash): version 1 is the same for 3.2.0 and 3.3.0, and 3.2.0 reads by pointer and ignores the field, so a later 3.3.x can tell a 3.3.0 device from a PC still on 3.2.0. A device that finds its own document without the mark rewrites it once; nothing reads the mark yet.",
             "Lock window 2: `sincronia::applica_se_ferma` re-checks that playlists and roots did not change meanwhile (otherwise it rolls back and retries later) and writes counters, registers, playlists (sequence → `playlist_tracks`), roots and tombstones.",
           ],
         },
