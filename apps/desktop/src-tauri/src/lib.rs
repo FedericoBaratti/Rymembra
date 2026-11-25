@@ -97,6 +97,7 @@ mod spegnimento;
 mod stato;
 mod studio;
 mod telefono;
+mod tempi_avvio;
 mod testi;
 mod trascinati;
 #[cfg_attr(mobile, path = "mobile/vassoio.rs")]
@@ -150,6 +151,7 @@ const ATTESA_PRIMO_COLORE: std::time::Duration = std::time::Duration::from_secs(
 /// che la mostrano — con [`finestra_mostra`] e la rete di sicurezza.
 #[tauri::command]
 fn pronto(finestra: tauri::WebviewWindow) {
+    tempi_avvio::fase("la pagina dice pronto: la finestra si mostra");
     #[cfg(desktop)]
     comparsa::mostra(&finestra);
     #[cfg(mobile)]
@@ -166,6 +168,9 @@ fn pronto(finestra: tauri::WebviewWindow) {
 /// pronta.
 #[tauri::command]
 fn finestra_mostra(finestra: tauri::WebviewWindow) {
+    tempi_avvio::fase(
+        "la pagina chiede di mostrare la finestra con la libreria ancora in apertura",
+    );
     #[cfg(desktop)]
     comparsa::mostra(&finestra);
     #[cfg(mobile)]
@@ -350,6 +355,7 @@ fn apri_e_avvia(app: &tauri::AppHandle, data_dir: PathBuf) {
                 return;
             };
             apri_la_libreria(&Nucleo::di(&mano), &stato, cartella);
+            tempi_avvio::fase("libreria aperta (filo dell'apertura)");
             // Chi ha chiuso Rymembra mentre la libreria si apriva non vuole
             // il resto dell'avvio: vedi [`finisci_l_avvio`].
             if spegnimento::in_uscita() {
@@ -418,15 +424,18 @@ fn finisci_l_avvio(app: &tauri::AppHandle) {
     if spegnimento::in_uscita() {
         return;
     }
+    tempi_avvio::fase("il filo della finestra comincia il resto dell'avvio");
     // Dov'era la finestra, prima che la pagina — che la mostra — monti: il
     // cancello si apre dopo. Vedi `comparsa`.
     #[cfg(desktop)]
     comparsa::ritrova_la_geometria(app);
+    tempi_avvio::fase("geometria della finestra ritrovata");
     avvia_dopo_la_libreria(app);
     if let Some(stato) = app.try_state::<stato::Stato>() {
         let fase = stato.apri_il_cancello();
         app.emetti("libreria:stato", fase);
     }
+    tempi_avvio::fase("cancello aperto: la pagina può montare l'applicazione");
 }
 
 /// Il resto dell'avvio: quel che vuole la libreria aperta, nell'ordine di sempre.
@@ -463,6 +472,7 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
 
     if !nucleo.e_gia_avviato() {
         avvia_il_nucleo(&nucleo);
+        tempi_avvio::fase("nucleo avviato (lettore, coda di ieri, fili del nucleo)");
         nucleo.avvio_finito();
         // Il nucleo qui è partito dalla finestra, anche se la libreria non si è aperta (come
         // sul computer: la pagina mostra l'errore). Sul telefono la notifica del sottofondo
@@ -472,6 +482,7 @@ fn avvia_dopo_la_libreria(app: &tauri::AppHandle) {
         avvisa_se_la_libreria_manca(&nucleo);
     }
     avvia_la_finestra(app);
+    tempi_avvio::fase("finestra avviata (vassoio, sorveglianza, fili di sottofondo)");
 }
 
 /// La libreria non c'è: lo stato non c'è, o non si è aperta.
@@ -1147,8 +1158,21 @@ pub(crate) fn rete_di_sicurezza(app: &tauri::AppHandle) {
             return;
         }
         if let Some(finestra) = app.get_webview_window("main") {
+            // Quale strada ha mostrato la finestra — la pagina con `pronto`, o
+            // questa rete — è la prima cosa che si chiede a un avvio lento.
             #[cfg(desktop)]
-            comparsa::mostra(&finestra);
+            {
+                // Due righe: la prima all'istante in cui scatta il tempo, la
+                // seconda quando il filo della finestra ha risposto a «è visibile?».
+                // Se fra le due passa molto, il filo della finestra era occupato.
+                tempi_avvio::fase("rete di sicurezza: scattata");
+                tempi_avvio::fase(if finestra.is_visible().unwrap_or(false) {
+                    "rete di sicurezza: la finestra era già visibile"
+                } else {
+                    "rete di sicurezza: la finestra era ancora nascosta, la mostra lei"
+                });
+                comparsa::mostra(&finestra);
+            }
             #[cfg(mobile)]
             let _ = finestra.show();
         }
@@ -1182,6 +1206,9 @@ fn inizia_il_processo() {
 /// il punto d'ingresso che `mobile_entry_point` genera.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // L'orologio dell'avvio parte qui: le righe `[avvio] fase …` del diario
+    // contano da questo punto. Vedi `tempi_avvio`.
+    tempi_avvio::comincia();
     // Per prima cosa, prima ancora di costruire la finestra: da qui in poi un
     // panico lascia scritto cos'era invece di far sparire il processo in
     // silenzio. Finché `setup` non apre il diario le righe del gancio vanno nel
@@ -1250,6 +1277,7 @@ pub fn run() {
             // `stato::con_libreria`.
             stato::segna_filo_della_finestra();
             riproduzione::segna_filo_della_finestra();
+            tempi_avvio::fase("setup cominciato (il diario è aperto dopo)");
             // Il nucleo del processo, agganciato alla finestra **prima** di ogni
             // altro stato: da qui gli stati che il nucleo possiede diventano anche
             // quelli di Tauri, e gli eventi partono verso la pagina. Vedi `nucleo`.
@@ -1290,6 +1318,7 @@ pub fn run() {
             // Per ultima, e dopo tutto il resto: quel che conta è che parta a
             // finestra già costruita, non prima di aprire il database.
             rete_di_sicurezza(app.handle());
+            tempi_avvio::fase("setup finito");
             Ok(())
         })
         // La chiusura, prima che diventi un'uscita.

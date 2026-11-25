@@ -52,6 +52,17 @@
 //! storto anche se ce se ne accorge il giorno dopo, e abbastanza pochi da non
 //! doverci pensare mai più.
 //!
+//! # Una riga che si ripete non riempie il diario
+//!
+//! Tre file da due megabyte tengono la storia di una giornata solo se nessuno
+//! li gira da solo. La stessa riga scritta a ogni richiesta di un dispositivo
+//! collegato — la libreria occupata da una scansione, una domanda che cade —
+//! li girava in ore. Qui la **stessa** riga si scrive [`RIPETUTE_AMMESSE`]
+//! volte per minuto; le altre si contano, e il diario dice che lo fa e quante
+//! sono state ([`Ripetute`]). Il tetto sta qui, dove le righe passano tutte, e
+//! non in ogni posto che ne scrive troppe. Il gancio dei panici e le righe
+//! d'emergenza non lo conoscono.
+//!
 //! # Il diario non fa mai cadere niente
 //!
 //! Ogni errore di scrittura qui dentro si ignora, e non è pigrizia: un disco
@@ -61,7 +72,9 @@
 //! sorvegliando è peggio di nessun diario.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
+use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
@@ -139,6 +152,169 @@ struct Aperto {
     file: File,
     /// Quanti byte ci sono dentro adesso.
     scritti: u64,
+    /// Le righe che si stanno ripetendo: vedi [`Ripetute`]. Passano da un file
+    /// al successivo con la rotazione, o chi ripete riavrebbe il suo tetto
+    /// intero a ogni file.
+    ripetute: Ripetute,
+}
+
+/// Quante volte la **stessa** riga si scrive, in una finestra di
+/// [`FINESTRA_DELLE_RIPETUTE_MS`], prima che ci si limiti a contarla.
+const RIPETUTE_AMMESSE: u32 = 3;
+
+/// La finestra in cui una riga uguale si conta: un minuto.
+const FINESTRA_DELLE_RIPETUTE_MS: i64 = 60_000;
+
+/// Quante righe diverse si tengono d'occhio insieme. Oltre, una riga nuova si
+/// scrive e basta, senza essere contata: la memoria del diario ha un limite
+/// anche quando chi lo riempie scrive righe tutte diverse.
+const RIGHE_TENUTE_D_OCCHIO: usize = 256;
+
+/// Quanto di una riga ripetuta si riporta nelle righe che la raccontano.
+const TESTO_DELLA_RIPETUTA: usize = 160;
+
+/// Una riga che si sta ripetendo, e da quanto.
+#[derive(Debug)]
+struct Osservata {
+    /// Quando è passata la prima volta, in questa finestra.
+    dal: i64,
+    /// Quante volte è stata scritta, in questa finestra.
+    scritte: u32,
+    /// Quante volte è stata omessa, in questa finestra.
+    omesse: u32,
+    /// Il suo testo, per dire quale riga si ripeteva: solo quando si comincia
+    /// a ometterla, perché una riga che non si ripete non lo deve pagare.
+    testo: Option<Box<str>>,
+}
+
+/// Le righe che il diario ha scritto da poco, e quante volte.
+///
+/// # Perché un tetto per riga uguale e non per tutto il diario
+///
+/// Perché quel che riempie un diario non è mai la varietà ma la ripetizione:
+/// la stessa riga a ogni richiesta di un dispositivo collegato (la libreria
+/// occupata da una scansione, una domanda che cade), a ogni giro di un filo
+/// che riprova. Un tetto sul totale toglierebbe righe diverse e vere insieme
+/// alle ripetute; qui le prime volte passano tutte, e solo la quarta in poi
+/// della stessa riga, dentro lo stesso minuto, si conta senza scriverla.
+///
+/// Il diario lo dice, con due righe: una alla prima omessa («si ripete: le
+/// uguali si contano e non si scrivono») e una alla fine del minuto («altre N
+/// volte»). Un'omissione non è mai silenziosa.
+///
+/// # Dove sta
+///
+/// Dentro il lucchetto del diario e non fuori: la riga si decide mentre si
+/// scrive, dalla stessa mano, e un secondo lucchetto sarebbe quello che il
+/// gancio dei panici — che lo chiede con `try_lock` — non conosce. Il gancio
+/// e la riga d'emergenza non passano di qui: quel che dicono si scrive sempre.
+///
+/// Pura rispetto all'orologio, che le passa chi chiama: la prova non aspetta un
+/// minuto.
+#[derive(Debug)]
+struct Ripetute {
+    /// Per l'impronta della riga, senza l'istante.
+    per_riga: HashMap<u64, Osservata>,
+    /// Quando scade la prima finestra: finché l'ora è prima, niente da chiudere.
+    scade_alle: i64,
+}
+
+impl Default for Ripetute {
+    fn default() -> Self {
+        Self {
+            per_riga: HashMap::new(),
+            scade_alle: i64::MAX,
+        }
+    }
+}
+
+/// Cosa fare di una riga che sta per essere scritta.
+#[derive(Debug, PartialEq, Eq)]
+struct Vaglio {
+    /// La riga va scritta.
+    scrivi: bool,
+    /// Righe da scrivere **prima**, che raccontano quel che si è omesso.
+    racconti: Vec<String>,
+}
+
+impl Ripetute {
+    /// Decide se la riga `testo`, che passa all'ora `ora_ms`, si scrive.
+    fn vaglia(&mut self, testo: &str, ora_ms: i64) -> Vaglio {
+        let mut racconti = Vec::new();
+        if ora_ms >= self.scade_alle {
+            self.chiudi_le_scadute(ora_ms, &mut racconti);
+        }
+        let mut hasher = DefaultHasher::new();
+        testo.hash(&mut hasher);
+        let impronta = hasher.finish();
+        let scrivi = if let Some(osservata) = self.per_riga.get_mut(&impronta) {
+            if osservata.scritte < RIPETUTE_AMMESSE {
+                osservata.scritte += 1;
+                true
+            } else {
+                if osservata.omesse == 0 {
+                    let riportata = riporta(testo);
+                    racconti.push(format!(
+                        "[diario] questa riga si ripete: per un minuto le uguali si contano e non si scrivono: {riportata}"
+                    ));
+                    osservata.testo = Some(riportata.into());
+                }
+                osservata.omesse = osservata.omesse.saturating_add(1);
+                false
+            }
+        } else {
+            if self.per_riga.len() < RIGHE_TENUTE_D_OCCHIO {
+                self.per_riga.insert(
+                    impronta,
+                    Osservata {
+                        dal: ora_ms,
+                        scritte: 1,
+                        omesse: 0,
+                        testo: None,
+                    },
+                );
+                self.scade_alle = self
+                    .scade_alle
+                    .min(ora_ms.saturating_add(FINESTRA_DELLE_RIPETUTE_MS));
+            }
+            true
+        };
+        Vaglio { scrivi, racconti }
+    }
+
+    /// Chiude le finestre scadute: dice quante righe si sono omesse, e smette di
+    /// tenerle d'occhio.
+    fn chiudi_le_scadute(&mut self, ora_ms: i64, racconti: &mut Vec<String>) {
+        self.per_riga.retain(|_, osservata| {
+            if ora_ms.saturating_sub(osservata.dal) < FINESTRA_DELLE_RIPETUTE_MS {
+                return true;
+            }
+            if osservata.omesse > 0 {
+                racconti.push(format!(
+                    "[diario] altre {} volte in un minuto, non scritte: {}",
+                    osservata.omesse,
+                    osservata.testo.as_deref().unwrap_or_default()
+                ));
+            }
+            false
+        });
+        self.scade_alle = self
+            .per_riga
+            .values()
+            .map(|osservata| osservata.dal.saturating_add(FINESTRA_DELLE_RIPETUTE_MS))
+            .min()
+            .unwrap_or(i64::MAX);
+    }
+}
+
+/// Il principio di una riga, per raccontarla: al più [`TESTO_DELLA_RIPETUTA`]
+/// caratteri, senza rompere un accento.
+fn riporta(testo: &str) -> String {
+    let mut riportata: String = testo.chars().take(TESTO_DELLA_RIPETUTA).collect();
+    if riportata.len() < testo.len() {
+        riportata.push('…');
+    }
+    riportata
 }
 
 /// Il diario del processo, uno solo.
@@ -224,6 +400,7 @@ fn apri_il_file(cartella: PathBuf) -> Option<Aperto> {
         cartella,
         file,
         scritti,
+        ripetute: Ripetute::default(),
     })
 }
 
@@ -253,11 +430,36 @@ pub fn nota(argomenti: std::fmt::Arguments<'_>) {
     // Il lucchetto si prende e si lascia **dentro** questo blocco: la rotazione
     // che può seguire lo riprende, e tenerlo qui vorrebbe dire aspettare se
     // stessi per sempre.
-    let pieno = scrivi_la_riga(&mut preso(), argomenti);
+    let pieno = scrivi_la_riga_con_tetto(&mut preso(), argomenti, adesso_ms());
 
     if pieno {
         ruota();
     }
+}
+
+/// Scrive una riga nel diario aperto sotto il tetto delle righe uguali
+/// ([`Ripetute`]), con l'istante `ora_ms` davanti. `true` se il file ha passato
+/// il tetto di grandezza e va ruotato: vedi [`scrivi_la_riga`].
+///
+/// È la via di [`nota()`], cioè di tutte le righe normali. Il gancio dei panici
+/// e la riga d'emergenza non passano di qui: quel che dicono non si omette.
+fn scrivi_la_riga_con_tetto(
+    guardia: &mut Option<Aperto>,
+    argomenti: std::fmt::Arguments<'_>,
+    ora_ms: i64,
+) -> bool {
+    let Some(aperto) = guardia.as_mut() else {
+        return false;
+    };
+    let testo = testo_della_riga(argomenti);
+    let vaglio = aperto.ripetute.vaglia(&testo, ora_ms);
+    for racconto in &vaglio.racconti {
+        aperto.scrivi(&riga_con_istante(racconto, ora_ms));
+    }
+    if vaglio.scrivi {
+        aperto.scrivi(&riga_con_istante(&testo, ora_ms));
+    }
+    aperto.scritti >= TETTO
 }
 
 /// Scrive una riga nel diario aperto, con l'istante davanti, sotto una guardia
@@ -265,25 +467,46 @@ pub fn nota(argomenti: std::fmt::Arguments<'_>) {
 /// ruotato — cosa che tocca a chi chiama, **dopo** aver lasciato la guardia.
 ///
 /// Una funzione a parte perché le strade per arrivarci sono due: [`nota()`], che
-/// il lucchetto lo aspetta, e [`nota_dal_gancio`], che non può.
+/// il lucchetto lo aspetta e passa dal tetto delle righe uguali
+/// ([`scrivi_la_riga_con_tetto`]), e [`nota_dal_gancio`], che non può aspettare
+/// e non omette niente.
 fn scrivi_la_riga(guardia: &mut Option<Aperto>, argomenti: std::fmt::Arguments<'_>) -> bool {
     let Some(aperto) = guardia.as_mut() else {
         return false;
     };
-    let riga = componi_la_riga(argomenti);
-    // Un errore di scrittura non si racconta a nessuno: raccontarlo vorrebbe
-    // dire scriverlo sul diario che non si riesce a scrivere.
-    if aperto.file.write_all(riga.as_bytes()).is_ok() {
-        aperto.scritti = aperto
-            .scritti
-            .saturating_add(u64::try_from(riga.len()).unwrap_or(0));
-    }
-    // `flush` a ogni riga, e sì, costa. È il prezzo del solo caso che conta: se
-    // il processo muore un istante dopo — ed è precisamente quando si vuole
-    // leggere l'ultima riga — un buffer non ancora svuotato è la riga che
-    // spiegava tutto, persa.
-    let _ = aperto.file.flush();
+    aperto.scrivi(&componi_la_riga(argomenti));
     aperto.scritti >= TETTO
+}
+
+impl Aperto {
+    /// Scrive una riga già composta, a capo compreso, e conta i byte.
+    fn scrivi(&mut self, riga: &str) {
+        // Un errore di scrittura non si racconta a nessuno: raccontarlo vorrebbe
+        // dire scriverlo sul diario che non si riesce a scrivere.
+        if self.file.write_all(riga.as_bytes()).is_ok() {
+            self.scritti = self
+                .scritti
+                .saturating_add(u64::try_from(riga.len()).unwrap_or(0));
+        }
+        // `flush` a ogni riga, e sì, costa. È il prezzo del solo caso che conta: se
+        // il processo muore un istante dopo — ed è precisamente quando si vuole
+        // leggere l'ultima riga — un buffer non ancora svuotato è la riga che
+        // spiegava tutto, persa.
+        let _ = self.file.flush();
+    }
+}
+
+/// Il messaggio di una riga come va su disco: i caratteri di controllo resi
+/// visibili ([`visibile`]) e senza il nome dell'utente ([`senza_utente`]). Senza
+/// l'istante: è da questo che si riconosce una riga uguale a un'altra.
+fn testo_della_riga(argomenti: std::fmt::Arguments<'_>) -> String {
+    let messaggio = argomenti.to_string();
+    senza_utente(&visibile(&messaggio), cartelle_dell_utente()).into_owned()
+}
+
+/// L'istante, il messaggio già composto e l'a capo.
+fn riga_con_istante(testo: &str, ora_ms: i64) -> String {
+    format!("{} {testo}\n", istante_iso(ora_ms))
 }
 
 /// La riga come va su disco, nel diario o nel file di riserva: l'istante, il
@@ -294,9 +517,7 @@ fn scrivi_la_riga(guardia: &mut Option<Aperto>, argomenti: std::fmt::Arguments<'
 /// fanno di un file una sequenza di righe di cui fidarsi: una che ne
 /// dimenticasse una delle due sarebbe il buco da cui passa tutto.
 fn componi_la_riga(argomenti: std::fmt::Arguments<'_>) -> String {
-    let messaggio = argomenti.to_string();
-    let riga = format!("{} {}\n", istante_iso(adesso_ms()), visibile(&messaggio));
-    senza_utente(&riga, cartelle_dell_utente()).into_owned()
+    riga_con_istante(&testo_della_riga(argomenti), adesso_ms())
 }
 
 /// Il messaggio con gli a capo e gli altri caratteri di controllo scritti in
@@ -439,6 +660,7 @@ fn ruota() {
         return;
     };
     let cartella = aperto.cartella;
+    let ripetute = aperto.ripetute;
     drop(aperto.file);
 
     // Dal più vecchio al più giovane: al contrario, ogni rinomina
@@ -456,7 +678,10 @@ fn ruota() {
         let _ = fs::rename(da, cartella.join(format!("rymembra.{indice}.log")));
     }
 
-    *guardia = apri_il_file(cartella);
+    *guardia = apri_il_file(cartella).map(|mut nuovo| {
+        nuovo.ripetute = ripetute;
+        nuovo
+    });
 }
 
 /// L'orologio, in millisecondi dall'epoca.
@@ -1421,6 +1646,159 @@ mod prove {
             assert!(
                 testo.contains("[PANICO] filo=prova a qui: fuori"),
                 "la riga del panico non è nel diario: {testo}"
+            );
+        });
+    }
+
+    /// La riga che `lontano::servizio::occupata` scrive a ogni domanda caduta
+    /// per la libreria occupata (S1-5, resto): sempre la stessa, a ogni
+    /// richiesta di un pari mentre una scansione tiene il lucchetto.
+    const RIGA_RIPETUTA: &str = "[lontano] una domanda non servita: la libreria è occupata codice=db.locked causa=la libreria è occupata: il collegamento non l'aspetta";
+
+    #[test]
+    fn cento_righe_uguali_in_un_minuto_non_sono_cento_righe() {
+        // Il caso vero: con una scansione in corso un pari fa scrivere fino a
+        // cento righe al minuto (otto posti, cinque secondi l'uno), tutte
+        // uguali, e tre file da due megabyte sono la storia di una giornata.
+        // La prova gira dentro un minuto: nessun orologio da muovere.
+        in_una_cartella(|radice| {
+            for _ in 0..100 {
+                nota!("{RIGA_RIPETUTA}");
+            }
+            let testo = fs::read_to_string(radice.join(CARTELLA).join(NOME)).unwrap_or_default();
+            let scritte = testo
+                .lines()
+                .filter(|riga| riga.contains("una domanda non servita"))
+                .count();
+            assert!(
+                scritte <= 5,
+                "100 righe uguali in un minuto: {scritte} righe nel file"
+            );
+            // Le prime passano intere, e una riga dice che le altre si contano.
+            // Quelle intere: l'istante (24 caratteri) e uno spazio, poi la riga. La
+            // riga che racconta l'omissione la porta in coda, ma non è lei.
+            let intere = testo
+                .lines()
+                .filter(|riga| riga.get(25..) == Some(RIGA_RIPETUTA))
+                .count();
+            assert_eq!(intere, RIPETUTE_AMMESSE as usize, "{testo}");
+            assert!(
+                testo.contains("[diario] questa riga si ripete"),
+                "l'omissione non è detta: {testo}"
+            );
+        });
+    }
+
+    #[test]
+    fn passato_il_minuto_il_diario_dice_quante_ne_ha_omesse() {
+        let mut ripetute = Ripetute::default();
+        let inizio = 1_800_000_000_000;
+        for passo in 0..100 {
+            let _ = ripetute.vaglia("[prova] sempre uguale", inizio + passo);
+        }
+        let dopo = ripetute.vaglia("[prova] sempre uguale", inizio + FINESTRA_DELLE_RIPETUTE_MS);
+        assert!(dopo.scrivi, "una finestra nuova ricomincia da capo");
+        assert_eq!(dopo.racconti.len(), 1);
+        assert!(
+            dopo.racconti[0].contains("altre 97 volte")
+                && dopo.racconti[0].contains("sempre uguale"),
+            "il riepilogo non dice quante né quale: {:?}",
+            dopo.racconti
+        );
+    }
+
+    #[test]
+    fn il_riepilogo_arriva_anche_con_la_riga_di_un_altro() {
+        // Chi si ripeteva ha smesso: nessuna sua riga verrà a chiudere la
+        // finestra, e il conto lo chiude la prima riga qualunque dopo il minuto
+        // (alla chiusura, quella dello spegnimento).
+        let mut ripetute = Ripetute::default();
+        let inizio = 1_800_000_000_000;
+        for passo in 0..10 {
+            let _ = ripetute.vaglia("[prova] sempre uguale", inizio + passo);
+        }
+        let altra = ripetute.vaglia(
+            "[uscita] si chiude",
+            inizio + FINESTRA_DELLE_RIPETUTE_MS + 5,
+        );
+        assert!(altra.scrivi);
+        assert_eq!(altra.racconti.len(), 1, "{:?}", altra.racconti);
+        assert!(
+            altra.racconti[0].contains("altre 7 volte"),
+            "{:?}",
+            altra.racconti
+        );
+    }
+
+    #[test]
+    fn righe_diverse_non_si_tolgono_la_parola() {
+        let mut ripetute = Ripetute::default();
+        for numero in 0..50 {
+            let vaglio = ripetute.vaglia(&format!("[prova] riga {numero}"), 1_800_000_000_000);
+            assert!(vaglio.scrivi && vaglio.racconti.is_empty());
+        }
+    }
+
+    #[test]
+    fn una_riga_che_torna_ogni_minuto_passa_sempre() {
+        // L'aggiornamento che non trova la rete ripete la stessa riga ogni
+        // minuto: è un fatto, non una raffica.
+        let mut ripetute = Ripetute::default();
+        let inizio = 1_800_000_000_000;
+        for giro in 0..20 {
+            let vaglio = ripetute.vaglia(
+                "[aggiornamenti] controllo non riuscito",
+                inizio + giro * FINESTRA_DELLE_RIPETUTE_MS,
+            );
+            assert!(
+                vaglio.scrivi && vaglio.racconti.is_empty(),
+                "al giro {giro}"
+            );
+        }
+    }
+
+    #[test]
+    fn le_righe_tenute_d_occhio_hanno_un_limite_e_le_nuove_passano_lo_stesso() {
+        let mut ripetute = Ripetute::default();
+        for numero in 0..(RIGHE_TENUTE_D_OCCHIO + 100) {
+            let vaglio = ripetute.vaglia(&format!("[prova] riga {numero}"), 1_800_000_000_000);
+            assert!(vaglio.scrivi, "la riga {numero} non si scrive");
+        }
+        assert_eq!(ripetute.per_riga.len(), RIGHE_TENUTE_D_OCCHIO);
+    }
+
+    #[test]
+    fn il_gancio_dei_panici_e_l_emergenza_non_omettono_niente() {
+        in_una_cartella(|radice| {
+            for _ in 0..20 {
+                nota_dal_gancio(format_args!("[PANICO] filo=prova a qui: sempre uguale"));
+                let _ = nota_di_emergenza(format_args!("[avvio] sempre uguale"));
+            }
+            let testo = fs::read_to_string(radice.join(CARTELLA).join(NOME)).unwrap_or_default();
+            assert_eq!(testo.matches("[PANICO] filo=prova").count(), 20, "{testo}");
+            assert_eq!(
+                testo.matches("[avvio] sempre uguale").count(),
+                20,
+                "{testo}"
+            );
+        });
+    }
+
+    #[test]
+    fn la_rotazione_non_rida_il_tetto_a_chi_si_ripete() {
+        in_una_cartella(|radice| {
+            for _ in 0..10 {
+                nota!("{RIGA_RIPETUTA}");
+            }
+            riempi_fino_al_tetto();
+            nota!("[prova] la riga che fa traboccare");
+            for _ in 0..10 {
+                nota!("{RIGA_RIPETUTA}");
+            }
+            let nuovo = fs::read_to_string(radice.join(CARTELLA).join(NOME)).unwrap_or_default();
+            assert!(
+                !nuovo.contains(RIGA_RIPETUTA),
+                "il file nuovo ha ricominciato a scrivere la riga che si ripete: {nuovo}"
             );
         });
     }

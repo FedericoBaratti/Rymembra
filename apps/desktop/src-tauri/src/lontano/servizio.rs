@@ -1110,4 +1110,32 @@ mod prove {
             );
         });
     }
+
+    #[test]
+    fn un_pari_che_trova_la_libreria_occupata_cento_volte_non_riempie_il_diario() {
+        // S1-5, il resto: `occupata` scrive una riga a ogni domanda che cade per
+        // la libreria occupata, e con una scansione in corso un pari ne fa
+        // cadere otto ogni cinque secondi. Il tetto sta nel diario, non qui: la
+        // prova passa dal produttore vero, e conta quel che arriva nel file.
+        let diario = crate::diario::a_diario_aperto(|| {
+            for _ in 0..100 {
+                let _ = occupata(
+                    &AppError::new(ErrorCode::DbLocked)
+                        .with_cause("la libreria è occupata: il collegamento non l'aspetta"),
+                );
+            }
+        });
+        let scritte = diario
+            .lines()
+            .filter(|riga| riga.contains("una domanda non servita"))
+            .count();
+        assert!(
+            diario.contains("sessione aperta"),
+            "la prova deve vedere il diario, o non prova niente: {diario}"
+        );
+        assert!(
+            scritte <= 5,
+            "100 domande cadute per la stessa causa in un minuto: {scritte} righe nel diario"
+        );
+    }
 }

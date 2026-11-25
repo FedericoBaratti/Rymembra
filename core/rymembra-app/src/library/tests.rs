@@ -407,6 +407,100 @@ fn gli_elenchi_non_ordinano_la_tabella_a_ogni_pagina() {
 }
 
 #[test]
+fn la_pagina_dei_recenti_legge_dall_indice_delle_date_e_non_ordina_la_libreria() {
+    // R33-prestazioni. «Recenti» ordina per istante d'ingresso e, a parità, per
+    // l'ordine del disco (R18-2): l'indice delle date serve il primo termine, e
+    // SQLite deve ordinare da sé soltanto i brani dello stesso istante — una
+    // scansione ne scrive cinquecento insieme. Senza una guida il pianificatore
+    // sceglieva la scansione della tabella e l'ordinamento di tutta, a ogni
+    // pagina da duecento righe: 70 ms su ventinovemila brani contro 0,4 prima
+    // di R18-2 (le misure sono in `misure_prestazioni.rs`). Come per gli altri
+    // ordini la prova guarda il piano, ma su una libreria con le date
+    // raggruppate come le scrive una scansione, e con le statistiche fatte.
+    let lib = Libreria::nuova();
+    lib.connection
+        .execute(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+             INSERT INTO tracks
+                 (id, path, track_key, title, artist, album_artist, album, album_key,
+                  track_number, year, duration_ms, file_size, play_count,
+                  date_added, date_modified)
+             SELECT i, '/m/' || i || '.mp3', 'k' || i, 'Titolo ' || i,
+                    'Artista ' || (i % 50), NULL, 'Disco ' || (i % 400),
+                    'ak' || (i % 400), i % 12 + 1, 1970 + i % 50, 200000, 5000000,
+                    i % 5, i / 500, 0
+               FROM n",
+            [5_000],
+        )
+        .expect("righe di prova");
+    lib.connection
+        .execute_batch("ANALYZE")
+        .expect("statistiche");
+    let sql = super::interrogazioni::sql_della_pagina(
+        &lib.connection,
+        &crate::specchio::Origine::Tutti,
+        TrackOrder::RecentlyAdded,
+    )
+    .expect("la domanda");
+    let mut statement = lib
+        .connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .expect("piano");
+    let piano = statement
+        .query_map(rusqlite::params![200_i64, 0_i64], |r| r.get::<_, String>(3))
+        .expect("righe del piano")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("piano letto")
+        .join(" | ");
+    assert!(
+        piano.contains("idx_tracks_added"),
+        "la pagina dei Recenti non legge dall'indice delle date: {piano}"
+    );
+    assert!(
+        !piano.contains("FOR ORDER BY"),
+        "la pagina dei Recenti ordina la libreria intera a ogni pagina: {piano}"
+    );
+}
+
+#[test]
+fn la_pagina_dei_recenti_si_legge_sotto_ogni_origine() {
+    // `INDEXED BY` fa fallire la domanda («no query solution») se l'indice non
+    // può servirla: la guida dei Recenti deve reggere ogni filtro che
+    // `Origine::sql` mette nel `WHERE`, non solo «Tutti» senza righe nascoste.
+    let mut lib = Libreria::nuova();
+    lib.brano("Disco/01.wav", "Uno", "Artista", "Disco");
+    lib.brano("Disco/02.wav", "Due", "Artista", "Disco");
+    lib.brano("Disco/03.wav", "Tre", "Artista", "Disco");
+    assert_eq!(lib.scansiona().inserted, 3);
+    // Una riga nascosta dietro un'altra, perché il filtro di «Tutti» ci sia.
+    lib.connection
+        .execute(
+            "UPDATE tracks SET copia_di = (SELECT MAX(id) FROM tracks)
+              WHERE id = (SELECT MIN(id) FROM tracks)",
+            [],
+        )
+        .expect("riga nascosta");
+    let chiave = "ab".repeat(32);
+    for origine in [
+        Origine::Tutti,
+        Origine::Locale,
+        Origine::Dispositivo(chiave.clone()),
+        Origine::Raggiungibili(vec![chiave]),
+    ] {
+        let pagina = list_tracks(&lib.connection, &origine, TrackOrder::RecentlyAdded, 0, 10)
+            .unwrap_or_else(|errore| panic!("{origine:?}: {errore:?}"));
+        match origine {
+            // Una delle tre è nascosta dietro un'altra.
+            Origine::Tutti => assert_eq!(pagina.len(), 2, "{origine:?}"),
+            Origine::Locale => assert_eq!(pagina.len(), 3, "{origine:?}"),
+            // Nessuna riga di un dispositivo: la pagina è vuota, e non è un errore.
+            Origine::Dispositivo(_) => assert!(pagina.is_empty(), "{origine:?}"),
+            Origine::Raggiungibili(_) => assert!(pagina.len() <= 3, "{origine:?}"),
+        }
+    }
+}
+
+#[test]
 fn la_correzione_torna_con_il_file() {
     // Il file sparisce — la cartella tolta, il disco scollegato — e la
     // scansione cancella la riga. Il file torna, e la riga nuova deve
