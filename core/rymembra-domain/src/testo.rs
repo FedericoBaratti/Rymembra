@@ -736,9 +736,13 @@ fn tempo_ms(grezzo: &str) -> Option<u32> {
 /// La conseguenza va detta: scrivere **arrotonda** al centesimo. Quindi
 /// `leggi(scrivi(x)) == x` vale sui tempi allineati al centesimo, e
 /// `scrivi(leggi(scrivi(x))) == scrivi(x)` vale per ogni testo dentro i tetti del
-/// lettore — cioè per ogni testo che [`leggi`] restituisce — quindi riscrivere un
-/// file non lo cambia mai due volte. È la proprietà che conta, ed è provata,
-/// anche sugli ingressi che i tetti tagliano.
+/// lettore — cioè per ogni testo che [`leggi`] restituisce — le cui righe stanno a
+/// un centesimo o più l'una dall'altra, quindi riscrivere un file non lo cambia
+/// mai due volte. È la proprietà che conta, ed è provata, anche sugli ingressi che
+/// i tetti tagliano. Due righe a **meno** di un centesimo (`[00:02.000]` e
+/// `[00:02.004]`) scrivono lo stesso tempo, e la prima lettura le fonde — una
+/// riga vuota così vicina a una piena sparisce —: è la seconda riscrittura a
+/// trovarle già fuse, e da lì il testo è stabile.
 ///
 /// Un [`Testo`] **costruito a mano** oltre i tetti (un editor che salva più di
 /// [`MASSIME_RIGHE_ESPANSE`] righe, più di [`MASSIME_PAROLE_PER_RIGA`] parole in
@@ -1396,6 +1400,22 @@ mod prove {
         let primo = scrivi(&storto);
         assert_eq!(primo, "[00:12.35]prima riga\n");
         assert_eq!(scrivi(&leggi(&primo)), primo);
+    }
+
+    #[test]
+    fn due_righe_a_meno_di_un_centesimo_si_fondono_alla_prima_riscrittura() {
+        // B2 (fuzzing): una riga piena e una vuota a due millesimi di distanza sono due tempi per
+        // `leggi`, ma `scrivi` li arrotonda allo stesso centesimo. La prima riscrittura li porta
+        // sulla stessa riga e la lettura dopo li fonde (la riga vuota non è una traduzione): la
+        // proprietà `scrivi(leggi(scrivi(x))) == scrivi(x)` vale per le righe a un centesimo o più,
+        // e per queste si ferma alla seconda scrittura invece che alla prima.
+        let letto = leggi("[00:02.00]uno\n[00:02.002]\n");
+        assert_eq!(letto.righe.len(), 2, "per `leggi` i tempi sono distinti");
+        let primo = scrivi(&letto);
+        assert_eq!(primo, "[00:02.00]uno\n[00:02.00]\n");
+        let secondo = scrivi(&leggi(&primo));
+        assert_eq!(secondo, "[00:02.00]uno\n", "la lettura le fonde");
+        assert_eq!(scrivi(&leggi(&secondo)), secondo, "e da lì è stabile");
     }
 
     #[test]
