@@ -893,12 +893,12 @@ answer.
 - **`cargo deny check` passes**: BSD-2-Clause (`spez`, through iroh) is allowed, and the few
   advisories that do not reach Rymembra's code are listed in `deny.toml`, each with its
   reason. Two are closed by an update and no longer listed: `tokio` 1.53.3 (`AsyncFd`) and
-  SQLite 3.54.0, which `rusqlite` 0.41 bundles (a database opened with a `-wal` built by
+  SQLite 3.54.1, which `rusqlite` 0.41.1 bundles (a database opened with a `-wal` built by
   someone else).
 - **Dependencies.** `tokio` 1.53.3; `tauri` 2.12.7 with `wry` 0.57.1 and
   `tauri-plugin-dialog` 2.8.3 (patch releases: an empty URI path no longer panics the IPC
   and asset handlers, among others); `zip` 9, which closes the advisories about extraction
-  that Rymembra never calls; and `rusqlite` 0.41 with SQLite 3.54.0.
+  that Rymembra never calls; and `rusqlite` 0.41.1 with SQLite 3.54.1.
 - **Gradle 9.8.2**, with the distribution’s SHA-256 checked by the wrapper; vite 7.3.8.
 - **The release workflow checks the APK’s Android Auto icons.**
   `strumenti/apk.js controlla` runs `aapt2 dump resources` and stops the
