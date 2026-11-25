@@ -72,21 +72,6 @@ pub(crate) fn e_un_impronta(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Il tipo di un'immagine dai suoi primi byte: JPEG, PNG o WebP, le sole che
-/// una copertina di un altro dispositivo può essere (decisione D-32). `None`
-/// per tutto il resto.
-pub(crate) fn tipo_immagine(byte: &[u8]) -> Option<&'static str> {
-    if byte.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        Some("image/jpeg")
-    } else if byte.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if byte.starts_with(b"RIFF") && byte.get(8..12) == Some(b"WEBP".as_slice()) {
-        Some("image/webp")
-    } else {
-        None
-    }
-}
-
 fn risposta(status: u16, tipo: &str, corpo: Vec<u8>) -> http::Response<Vec<u8>> {
     risposta_con(status, tipo, corpo, cache_per(status))
 }
@@ -325,28 +310,6 @@ mod tests {
         risposte.push(risposta_con(200, "image/jpeg", vec![1], "no-store"));
         for r in &risposte {
             assert!(nosniff(r), "stato {}", r.status());
-        }
-    }
-
-    #[test]
-    fn le_copertine_degli_altri_sono_solo_immagini() {
-        // Decisione D-32: JPEG, PNG e WebP, riconosciuti dai byte.
-        assert_eq!(
-            tipo_immagine(&[0xFF, 0xD8, 0xFF, 0xE0, 0]),
-            Some("image/jpeg")
-        );
-        assert_eq!(tipo_immagine(b"\x89PNG\r\n\x1a\n\0\0"), Some("image/png"));
-        assert_eq!(tipo_immagine(b"RIFF\x10\0\0\0WEBPVP8 "), Some("image/webp"));
-        for altro in [
-            b"".as_slice(),
-            b"\xFF\xD8",
-            b"<html><script>x</script></html>",
-            b"GIF89a",
-            b"RIFF\x10\0\0\0WAVEfmt ",
-            b"RIFF",
-            b"%PDF-1.7",
-        ] {
-            assert_eq!(tipo_immagine(altro), None, "{altro:?}");
         }
     }
 

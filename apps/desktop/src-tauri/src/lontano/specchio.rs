@@ -850,6 +850,11 @@ impl Drop for Posto {
     }
 }
 
+/// Il diario ha già detto che lo spazio per le copertine degli altri dispositivi
+/// è finito: lo dice una volta, non a ogni riga che scorre.
+static SPAZIO_FINITO_DETTO: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Le copertine che un dispositivo ha detto di non avere, e da quando.
 static ASSENTI: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
 
@@ -904,6 +909,19 @@ pub(crate) fn copertina_di_una_riga(
     if copertine.path_for(impronta).exists() {
         return copertine.media(impronta);
     }
+    // Lo spazio per le copertine degli altri dispositivi è finito: non si
+    // chiede quel che poi non si può tenere (reperto S8-9). La riga resta senza
+    // immagine finché non si fa posto — un dispositivo dimenticato porta via le
+    // sue —, e il diario lo dice una volta.
+    if !copertine.ha_spazio_per_estranee(0) {
+        if !SPAZIO_FINITO_DETTO.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            nota!(
+                "[lontano] lo spazio per le copertine degli altri dispositivi è finito: le nuove non si prendono"
+            );
+        }
+        return Ok(None);
+    }
+    SPAZIO_FINITO_DETTO.store(false, std::sync::atomic::Ordering::Relaxed);
     let dati = DallApp::nuovo(app)?;
     let risposta = dati.chiedi(
         &dispositivo,
@@ -921,7 +939,7 @@ pub(crate) fn copertina_di_una_riga(
         return Ok(None);
     }
     // Solo un'immagine, riconosciuta dai suoi byte, e nei limiti dello store.
-    if crate::copertine::tipo_immagine(&byte).is_none() {
+    if rymembra_app::covers::tipo_immagine(&byte).is_none() {
         nota!("[lontano] una copertina di un altro dispositivo non è un'immagine: non si tiene");
         return Err(AppError::new(ErrorCode::LontanoProtocollo)
             .with_cause("una copertina che non è un'immagine"));

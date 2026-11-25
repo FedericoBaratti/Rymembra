@@ -981,11 +981,13 @@ impl Copertine {
 }
 
 /// Una copertina arrivata dalla rete, pronta per la finestra: decodificata
-/// dentro i limiti di `rymembra_app::covers` e ricodificata in una JPEG di
-/// Rymembra (al più 640 pixel). Alla finestra non arriva mai un byte scelto
-/// dall'altro PC: un'immagine che non si decodifica entro quei limiti — una
-/// bomba da diecimila pixel per lato, o spazzatura — resta fuori, e la voce
-/// senza copertina. Si chiama fuori da ogni lucchetto: è lavoro di CPU.
+/// dentro i limiti di `rymembra_app::covers::ricodifica_estranea` — solo JPEG,
+/// PNG o WebP, al più 1024 pixel per lato dall'intestazione, due decodifiche
+/// insieme in tutto il processo — e ricodificata in una JPEG di Rymembra (al più
+/// 640 pixel). Alla finestra non arriva mai un byte scelto dall'altro PC: un'immagine
+/// che non passa quei limiti — una bomba da diecimila pixel per lato, una GIF, o
+/// spazzatura — resta fuori, e la voce senza copertina. Si chiama fuori da ogni
+/// lucchetto: è lavoro di CPU.
 #[must_use]
 pub fn copertina_accettata(byte: &[u8]) -> Option<Arc<[u8]>> {
     rymembra_app::covers::ricodifica_estranea(byte)

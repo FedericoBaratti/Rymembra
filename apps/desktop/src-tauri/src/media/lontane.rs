@@ -145,11 +145,20 @@ impl Richieste {
         let impronta = impronta.to_owned();
         let per_lanciare = ambiente.clone();
         per_lanciare.in_disparte(Box::new(move || {
-            ambiente.scarica(&impronta);
+            // Se lo scaricamento cade a metà — un panico del decoder, che il pool
+            // bloccante ingoia — la richiesta non resta «in volo» per sempre: con
+            // sei impronte così la finestra non chiederebbe più nessuna copertina
+            // (reperto S8-7).
+            let mut fine = FineDellaRichiesta {
+                richieste,
+                impronta,
+                segnata: false,
+            };
+            ambiente.scarica(&fine.impronta);
             // Si ripubblica solo se la copertina è davvero nello store: vedi
             // «Un ciclo» in cima al modulo.
-            let portata = ambiente.nello_store(&impronta);
-            richieste.finita(&impronta, portata);
+            let portata = ambiente.nello_store(&fine.impronta);
+            fine.segna(portata);
             if portata {
                 arrivata();
             }
@@ -201,6 +210,31 @@ impl Richieste {
             dentro.remove(impronta);
         } else {
             dentro.insert(impronta.to_owned(), Stato::NonArrivata(Instant::now()));
+        }
+    }
+}
+
+/// La fine di una richiesta, anche se il lavoro cade: se non si è segnata da sé
+/// ([`FineDellaRichiesta::segna`]), a `Drop` la richiesta torna «non arrivata», e
+/// si potrà riprovare fra [`RIPROVA`].
+struct FineDellaRichiesta {
+    richieste: Richieste,
+    impronta: String,
+    segnata: bool,
+}
+
+impl FineDellaRichiesta {
+    /// La richiesta è tornata: `portata` dice se la copertina è nello store.
+    fn segna(&mut self, portata: bool) {
+        self.richieste.finita(&self.impronta, portata);
+        self.segnata = true;
+    }
+}
+
+impl Drop for FineDellaRichiesta {
+    fn drop(&mut self) {
+        if !self.segnata {
+            self.richieste.finita(&self.impronta, false);
         }
     }
 }
@@ -304,7 +338,7 @@ mod prove {
     use super::*;
     use std::collections::HashSet;
     use std::sync::Condvar;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread::JoinHandle;
 
     const IMPRONTA: &str = "0123456789abcdef0123456789abcdef";
@@ -321,6 +355,8 @@ mod prove {
         /// Lo scaricamento aspetta qui.
         cancello: Arc<(Mutex<bool>, Condvar)>,
         fili: Arc<Mutex<Vec<JoinHandle<()>>>>,
+        /// Lo scaricamento cade con un panico, come un decoder su un input ostile.
+        panica: Arc<AtomicBool>,
     }
 
     impl Finto {
@@ -331,6 +367,7 @@ mod prove {
                 porta: Arc::new(Mutex::new(porta)),
                 cancello: Arc::new((Mutex::new(aperto), Condvar::new())),
                 fili: Arc::new(Mutex::new(Vec::new())),
+                panica: Arc::new(AtomicBool::new(false)),
             }
         }
 
@@ -355,6 +392,7 @@ mod prove {
 
         fn scarica(&self, impronta: &str) {
             self.scaricate.fetch_add(1, Ordering::SeqCst);
+            assert!(!self.panica.load(Ordering::SeqCst), "il decoder cade");
             let (aperto, quando) = &*self.cancello;
             let mut dentro = aperto.lock().unwrap();
             while !*dentro {
@@ -438,6 +476,41 @@ mod prove {
             1,
             "e una sola ripubblicazione"
         );
+    }
+
+    /// Reperto S8-7: un panico del decoder, ingoiato dal pool bloccante, lasciava la
+    /// richiesta «in volo» per sempre. Con `IN_VOLO_PER_LA_FINESTRA` impronte così
+    /// la finestra non chiedeva più nessuna copertina dei pari.
+    #[test]
+    fn un_panico_nello_scaricamento_non_lascia_la_richiesta_in_volo() {
+        let finto = Finto::nuovo(true, true);
+        finto.panica.store(true, Ordering::SeqCst);
+        let richieste = Richieste::nuove(Duration::ZERO);
+        for n in 0..IN_VOLO_PER_LA_FINESTRA {
+            let impronta = format!("{n:032x}");
+            richieste.richiedi(&finto, &impronta, IN_VOLO_PER_LA_FINESTRA, || {});
+        }
+        let cadute: Vec<_> = finto.fili.lock().unwrap().drain(..).collect();
+        assert_eq!(cadute.len(), IN_VOLO_PER_LA_FINESTRA);
+        for filo in cadute {
+            assert!(filo.join().is_err(), "il panico c'è stato");
+        }
+        // Un'altra impronta, a numero chiuso: oggi le sei cadute sono ancora in
+        // volo, e non parte.
+        finto.panica.store(false, Ordering::SeqCst);
+        let prima = finto.scaricate.load(Ordering::SeqCst);
+        richieste.richiedi(&finto, IMPRONTA, IN_VOLO_PER_LA_FINESTRA, || {});
+        finto.aspetta();
+        assert_eq!(
+            finto.scaricate.load(Ordering::SeqCst),
+            prima + 1,
+            "la richiesta dopo i panici parte"
+        );
+        // E una di quelle cadute si riprova: non è arrivata, non è in volo.
+        let prima = finto.scaricate.load(Ordering::SeqCst);
+        richieste.richiedi(&finto, &format!("{:032x}", 0), 1, || {});
+        finto.aspetta();
+        assert_eq!(finto.scaricate.load(Ordering::SeqCst), prima + 1);
     }
 
     /// Una copertina che non arriva — l'altro non la ha, è spento — non
