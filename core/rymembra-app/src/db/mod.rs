@@ -43,7 +43,7 @@ pub use manutenzione::{
     Controllo, CopiaDiPrima, CopieTolte, ISTANTANEE_TENUTE, Istantanea, Ritorno, controlla_il_file,
     controllo_rapido, copia_di_prima, nome_istantanea, nome_messa_da_parte, ottimizza,
     sostituisci_con, svuota_il_giornale, togli_le_copie_di_prima, torna_alla_copia,
-    torna_alla_copia_del_file,
+    torna_alla_copia_del_file, versione_della_copia,
 };
 pub use migrations::{LATEST_VERSION, MIGRATIONS, Migration};
 

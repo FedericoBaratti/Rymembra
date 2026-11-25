@@ -1114,6 +1114,12 @@ pub fn libreria_fase(stato: tauri::State<'_, Stato>) -> FaseLibreria {
 /// La versione dello schema da cui l'apertura di `percorso` migrerà, se
 /// migrerà: `Some(da)` con `0 < da < LATEST_VERSION`.
 ///
+/// È anche la versione che dà il nome alla copia che la schermata annuncia
+/// (`rymembra.db.schema-<da>.bak`): se una catena si era fermata a metà e la
+/// copia della sua partenza c'è, `da` è la partenza — il database è alla 41, ma
+/// la copia che si tiene è la 038, e nominare la 041 sarebbe dire il falso
+/// (S3-2). Vedi [`rymembra_app::db::versione_della_copia`].
+///
 /// Si legge con una connessione sua, senza creare il file, senza migrare e
 /// con `query_only`, chiusa prima che [`apri_libreria`] apra la sua: `PRAGMA
 /// user_version` passa dal giornale, quindi dice la versione vera anche dopo
@@ -1131,10 +1137,12 @@ pub fn versione_da_aggiornare(percorso: &Path) -> Option<u32> {
     let versione: i64 = connessione
         .query_row("PRAGMA user_version", [], |riga| riga.get(0))
         .ok()?;
-    drop(connessione);
-    u32::try_from(versione)
+    let da = u32::try_from(versione)
         .ok()
-        .filter(|da| *da > 0 && *da < rymembra_app::db::LATEST_VERSION)
+        .filter(|da| *da > 0 && *da < rymembra_app::db::LATEST_VERSION)?;
+    let della_copia = rymembra_app::db::versione_della_copia(&connessione, percorso, da);
+    drop(connessione);
+    Some(della_copia)
 }
 
 /// Apre la libreria in `data_dir`: la cartella, le copertine, il database con
@@ -2574,6 +2582,42 @@ mod prove {
         let stato = Stato::in_apertura(dir.path().to_path_buf());
         stato.in_aggiornamento(38);
         assert_eq!(stato.fase(), FaseLibreria::Aggiornamento { da: 38 });
+    }
+
+    #[test]
+    fn su_una_catena_ripresa_la_schermata_nomina_la_copia_della_partenza() {
+        // S3-2. La catena 038→043 si è fermata alla 042: il database è alla 41,
+        // ma la copia che l'aggiornamento tiene è `schema-038.bak` — la
+        // `schema-041.bak` non c'è e non ci sarà. La schermata annuncia il nome
+        // della copia che c'è.
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join(NOME_DATABASE);
+        {
+            let connessione = Connection::open(&percorso).expect("apertura");
+            for migrazione in rymembra_app::db::MIGRATIONS
+                .iter()
+                .filter(|m| m.version <= 41)
+            {
+                connessione
+                    .execute_batch(migrazione.sql)
+                    .expect("migrazione");
+            }
+            connessione
+                .execute_batch(&format!(
+                    "PRAGMA user_version = 41;
+                     INSERT INTO settings (key, value) VALUES ('db.catena_da', '38>{}');",
+                    rymembra_app::db::LATEST_VERSION
+                ))
+                .expect("versione e segno della catena");
+        }
+        // Senza la copia della partenza, il database di adesso è quel che c'è.
+        assert_eq!(versione_da_aggiornare(&percorso), Some(41));
+        std::fs::write(
+            rymembra_app::db::nome_istantanea(&percorso, 38),
+            b"la copia della partenza",
+        )
+        .expect("copia");
+        assert_eq!(versione_da_aggiornare(&percorso), Some(38));
     }
 
     #[test]

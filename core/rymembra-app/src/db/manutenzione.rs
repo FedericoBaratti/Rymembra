@@ -478,16 +478,33 @@ fn catena_in_corso(connection: &Connection) -> Option<u32> {
     (a == super::LATEST_VERSION).then_some(da)
 }
 
-/// La copia della partenza della catena in corso, se c'è una catena fermata a
+/// La versione di partenza della catena in corso, se c'è una catena fermata a
 /// metà e la sua copia è ancora sul disco.
+fn partenza_protetta(connection: &Connection, percorso: &Path, versione: u32) -> Option<u32> {
+    catena_in_corso(connection)
+        .filter(|da| *da < versione && nome_istantanea(percorso, *da).is_file())
+}
+
+/// La copia della partenza della catena in corso: vedi [`partenza_protetta`].
 fn copia_della_partenza(
     connection: &Connection,
     percorso: &Path,
     versione: u32,
 ) -> Option<PathBuf> {
-    let da = catena_in_corso(connection).filter(|da| *da < versione)?;
-    let partenza = nome_istantanea(percorso, da);
-    partenza.is_file().then_some(partenza)
+    partenza_protetta(connection, percorso, versione).map(|da| nome_istantanea(percorso, da))
+}
+
+/// La versione che dà il nome alla copia che proteggerà questo aggiornamento:
+/// quella di partenza se una catena si era fermata a metà e la sua copia c'è,
+/// altrimenti `versione`, quella del database di adesso.
+///
+/// Serve alla schermata «Aggiorno la libreria…», che nomina il file della copia:
+/// su una catena ripresa il database è alla 41, ma la copia che si tiene — e che
+/// `prima_di_migrare` troverà — è `schema-038.bak`, e nominare
+/// `schema-041.bak`, che non esiste, sarebbe dire una cosa falsa (S3-2).
+#[must_use]
+pub fn versione_della_copia(connection: &Connection, percorso: &Path, versione: u32) -> u32 {
+    partenza_protetta(connection, percorso, versione).unwrap_or(versione)
 }
 
 /// Segna che una catena cominciata da `versione` è protetta dalla sua copia.
