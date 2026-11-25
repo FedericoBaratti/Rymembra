@@ -129,6 +129,9 @@ export const ipc = {
   // **programma** — non della pagina, che con la X sul vassoio muore e rinasce —
   // e non ricorda nessuna risposta: il prossimo avvio la rifà.
   propostaSottofondoRimanda: () => invoke<void>("proposta_sottofondo_rimanda"),
+  // L'ultimo errore del lettore emesso mentre nessuna pagina ascoltava (la finestra
+  // era chiusa col vassoio): una volta sola, dopo aver aperto l'ascolto (S4-5).
+  riproduzioneErrorePerso: () => invoke<ErroreIpc | null>("riproduzione_errore_perso"),
 
   avvio: () => invoke<Avvio>("avvio"),
   // Scrive le cartelle sorvegliate e dice cosa ne ha fatto: le annidate si

@@ -75,6 +75,8 @@ mod nuvola_app;
 mod nuvola_musica;
 mod pacchetto;
 mod pagina;
+// Gli eventi una tantum che a finestra distrutta non hanno una pagina (S4-5).
+mod perso;
 mod playlist;
 mod procura;
 mod profilo;
@@ -1366,6 +1368,7 @@ pub fn run() {
             vassoio::secondo_piano,
             vassoio::secondo_piano_attiva,
             vassoio::vassoio_lingua,
+            perso::riproduzione_errore_perso,
             avvio_con_windows::avvio_con_windows_stato,
             avvio_con_windows::avvio_con_windows_imposta,
             avvio_con_windows::proposta_sottofondo_da_fare,

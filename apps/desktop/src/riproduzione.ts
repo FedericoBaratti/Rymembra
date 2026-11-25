@@ -564,7 +564,17 @@ export function useRiproduzione(): Riproduzione {
     ),
   );
 
-  useAscolto<ErroreIpc>("riproduzione:errore", setErrore);
+  // L'errore che il lettore ha emesso a finestra distrutta — la X col vassoio, un tasto
+  // multimediale su un file sparito — non ha trovato nessuna pagina: il nucleo lo
+  // tiene, e lo si chiede **dopo** aver aperto l'ascolto, una volta (S4-5).
+  useAscolto<ErroreIpc>("riproduzione:errore", setErrore, true, () => {
+    ipc
+      .riproduzioneErrorePerso()
+      .then((perso) => {
+        if (perso !== null) setErrore(perso);
+      })
+      .catch(() => undefined);
+  });
 
   // Il dispositivo sparito. Arriva **una volta** — l'orologio annuncia il
   // passaggio, non lo stato — e va nello stato invece che fra gli errori:
