@@ -282,7 +282,7 @@ feature off nothing listens. What is supposed to hold:
   touch to a text timed by hand on the owner does not override it — the answer
   is “done”, without writing, so that it does not wait in the outbox for thirty
   days. A text a correction replaces is kept as a copy of one level (never in a
-  profile, a backup or sync), which the lyrics panel can bring back; a device
+  profile, the Drive backup or sync), which the lyrics panel can bring back; a device
   can write at most 100 texts in 24 hours (beyond that the answer is
   `lontano.irraggiungibile` and the sender keeps them), because 60 writes a
   minute is some 86,000 texts a day. The limit of that

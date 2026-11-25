@@ -1163,7 +1163,7 @@ again (see “What stays on your computer”).
 A lyrics correction that reaches you from a linked device carries the time it was
 decided, and does not override a text you timed by hand that is more recent.
 When it replaces one, the old text is kept in your library as a copy of one level
-— not in a profile, a backup or sync — which “Restore the previous lyrics” in
+— not in a profile, the Drive backup or sync — which “Restore the previous lyrics” in
 the lyrics panel puts back; and a device can write at most 100 lyrics texts in
 24 hours on yours.
 

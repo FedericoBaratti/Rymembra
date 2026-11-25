@@ -109,7 +109,8 @@ code, in November 2026, fixed what they found; one flaw they found already
 affected 3.2.0: a crafted lyrics text could take gigabytes of memory (see
 Security).
 
-**If you come from 3.2.0**, three things are not in the lists below:
+**If you come from 3.2.0**, three things to know before you update, each
+with its details below:
 
 - The first start migrates the library from schema 38 to 43 in one opening,
   after making a full copy of it, `rymembra.db.schema-038.bak`. A library that
@@ -126,8 +127,8 @@ Security).
 
 **3.3.0 is a minor**, by the rules at the top of this file, and not because of
 its size. After this release something *outside* this copy of Rymembra has to
-keep up: the other PCs that sync with it, which must be on 3.3.0 too, and the
-meantime breaks nothing that 3.2.0 did not already do. The skin format is still
+keep up: the other PCs that sync with it have to be on 3.3.0 too — and until
+they are, nothing breaks that was not already breaking in 3.2.0. The skin format is still
 2 and the «Listen together» protocol still 1; the device link
 (`rymembra/lontano/1`, `rymembra/associa/1` and `rymembra/insieme/1`) is new in
 this release, so there is no earlier version of it that could stop understanding
