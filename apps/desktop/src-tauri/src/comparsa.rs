@@ -865,7 +865,10 @@ mod prove {
         };
         let leggi = corpo("fn leggi(");
         assert!(leggi.contains("geometria::misura_da_ricordare("));
-        assert!(!leggi.contains("inner_size"), "si ricorda la misura interna");
+        assert!(
+            !leggi.contains("inner_size"),
+            "si ricorda la misura interna"
+        );
         let applica = corpo("fn applica(");
         let posizione = applica
             .find("set_position(")
@@ -873,7 +876,10 @@ mod prove {
         let misura = applica
             .find("geometria::rimetti_la_misura(")
             .expect("la misura non passa dalla cornice");
-        assert!(posizione < misura, "la misura si rimette prima della posizione");
+        assert!(
+            posizione < misura,
+            "la misura si rimette prima della posizione"
+        );
         assert!(
             !applica.contains(".set_size("),
             "la misura si chiede alla finestra cruda, senza la sua cornice"
