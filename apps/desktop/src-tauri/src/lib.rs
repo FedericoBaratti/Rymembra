@@ -1155,6 +1155,10 @@ pub(crate) fn rete_di_sicurezza(app: &tauri::AppHandle) {
             // questa rete — è la prima cosa che si chiede a un avvio lento.
             #[cfg(desktop)]
             {
+                // Due righe: la prima all'istante in cui scatta il tempo, la
+                // seconda quando il filo della finestra ha risposto a «è visibile?».
+                // Se fra le due passa molto, il filo della finestra era occupato.
+                tempi_avvio::fase("rete di sicurezza: scattata");
                 tempi_avvio::fase(if finestra.is_visible().unwrap_or(false) {
                     "rete di sicurezza: la finestra era già visibile"
                 } else {
