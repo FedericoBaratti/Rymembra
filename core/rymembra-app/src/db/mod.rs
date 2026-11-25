@@ -40,9 +40,10 @@ mod manutenzione;
 mod migrations;
 
 pub use manutenzione::{
-    Controllo, CopiaDiPrima, ISTANTANEE_TENUTE, Istantanea, Ritorno, controlla_il_file,
+    Controllo, CopiaDiPrima, CopieTolte, ISTANTANEE_TENUTE, Istantanea, Ritorno, controlla_il_file,
     controllo_rapido, copia_di_prima, nome_istantanea, nome_messa_da_parte, ottimizza,
-    sostituisci_con, svuota_il_giornale, torna_alla_copia, torna_alla_copia_del_file,
+    sostituisci_con, svuota_il_giornale, togli_le_copie_di_prima, torna_alla_copia,
+    torna_alla_copia_del_file,
 };
 pub use migrations::{LATEST_VERSION, MIGRATIONS, Migration};
 
@@ -472,6 +473,9 @@ fn open_connection(connection: Connection, percorso: Option<&Path>) -> Result<Op
         crate::library::riempi_le_chiavi_d_ordine_all_apertura(&connection)?;
     }
     if percorso.is_some() {
+    // La catena, se c'era, è arrivata in fondo: il segno che la proteggeva non
+    // serve più. Vedi `manutenzione::chiudi_la_catena`.
+    manutenzione::chiudi_la_catena(&connection);
         // Dopo le migrazioni e non prima: SQLite chiede un `optimize` dopo ogni
         // cambio di schema, e un indice appena creato è precisamente la cosa
         // su cui il pianificatore non ha ancora statistiche.
