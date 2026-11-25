@@ -190,17 +190,11 @@ fn misura_prestazioni_brani_per_ordine() {
             "SELECT {COLONNE_DI_R21} FROM tracks t ORDER BY {} LIMIT ?1 OFFSET ?2",
             ordine_di_r21(ordine)
         );
+        let sql_della_funzione = super::interrogazioni::sql_della_pagina(&c, &tutti, ordine)
+            .expect("la domanda della pagina");
         println!(
-            "PIANO {nome} oggi: {}",
-            piano(
-                &c,
-                &format!(
-                    "SELECT {} FROM tracks t WHERE 1 ORDER BY {} LIMIT ?1 OFFSET ?2",
-                    super::COLONNE_BRANO,
-                    ordine.sql()
-                ),
-                &[&PAGINA, &0_i64]
-            )
+            "PIANO {nome} oggi (la domanda di list_tracks): {}",
+            piano(&c, &sql_della_funzione, &[&PAGINA, &0_i64])
         );
         println!(
             "PIANO {nome} R21: {}",
@@ -231,7 +225,7 @@ fn misura_prestazioni_brani_per_ordine() {
     let oggi = con_le_colonne_di_oggi(TrackOrder::RecentlyAdded.sql());
     let vecchio_ordine = con_le_colonne_di_oggi("t.date_added DESC, t.id DESC");
     println!(
-        "PIANO recenti, ordine di oggi: {}",
+        "PIANO recenti, l'ordine di oggi senza la guida all'indice: {}",
         piano(&c, &oggi, &[&PAGINA, &0_i64])
     );
     println!(
@@ -536,6 +530,27 @@ fn misura_prestazioni_con_copie_nascoste() {
         },
         || {
             let _ = counts(&senza, &tutti).expect("numeri");
+        },
+    );
+    // La durata totale come si sommava (una scansione meno quella delle
+    // nascoste, per indice) e come si somma adesso (una scansione sola), sulla
+    // stessa connessione e nella stessa sessione.
+    let durata_di_prima = "SELECT (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)
+              - (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks WHERE copia_di IS NOT NULL)";
+    let durata_di_adesso =
+        "SELECT COALESCE(SUM(CASE WHEN copia_di IS NULL THEN duration_ms END), 0) FROM tracks";
+    let somma = |sql: &str| -> i64 {
+        con.query_row(sql, [], |riga| riga.get(0))
+            .expect("durata totale")
+    };
+    assert_eq!(somma(durata_di_prima), somma(durata_di_adesso));
+    confronta(
+        "con nascoste, durata: oggi una scansione sola / prima scansione meno nascoste",
+        || {
+            let _ = esegui(&con, durata_di_adesso, &[]);
+        },
+        || {
+            let _ = esegui(&con, durata_di_prima, &[]);
         },
     );
     confronta(
