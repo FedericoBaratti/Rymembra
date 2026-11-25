@@ -509,7 +509,7 @@
   "errors.insieme.identitaPersa": "This PC’s identity cannot be read from Windows Credential Manager. Without it, listening together cannot be done safely. Restart Rymembra; if it keeps happening, restart Windows.",
   "errors.insieme.identitaPersa.telefono": "This phone’s identity cannot be read from its keychain (Android Keystore). Without it, listening together cannot be done safely. Reopen Rymembra; if it keeps happening, restart the phone.",
   "errors.insieme.gestoNonDisponibile": "This cannot be done while listening together.",
-  "errors.insieme.braniAltrui": "Tracks from another device can’t join a “Listen together” session: a session only plays tracks that are on this device. Remove the other device’s tracks from the queue, or download them here.",
+  "errors.insieme.braniAltrui": "Tracks you only have on another device can’t join a “Listen together” session: a session only plays tracks that are on this device. Remove the tracks that live only elsewhere from the queue, or download them here.",
   "errors.insieme.nonConcesso": "The host hasn’t given you this control.",
   "errors.insieme.superato": "The track had already changed, so the action was no longer needed.",
   "errors.insieme.rifiutato": "No answer, or the answer was no.",

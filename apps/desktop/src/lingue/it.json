@@ -509,7 +509,7 @@
   "errors.insieme.identitaPersa": "L'identità di questo PC non si legge da Gestione credenziali di Windows. Senza, non si può ascoltare insieme in sicurezza. Riavvia Rymembra; se continua, riavvia Windows.",
   "errors.insieme.identitaPersa.telefono": "L'identità di questo telefono non si legge dal suo portachiavi (Android Keystore). Senza, non si può ascoltare insieme in sicurezza. Riapri Rymembra; se continua, riavvia il telefono.",
   "errors.insieme.gestoNonDisponibile": "Mentre si ascolta insieme questo non si può fare.",
-  "errors.insieme.braniAltrui": "I brani di un altro dispositivo non entrano in una sessione di «Ascolta insieme»: la sessione parte solo con brani di questo dispositivo. Togli dalla coda quelli di un altro dispositivo, o scaricali qui.",
+  "errors.insieme.braniAltrui": "I brani che hai solo su un altro dispositivo non entrano in una sessione di «Ascolta insieme»: la sessione parte solo con brani che hai su questo dispositivo. Togli dalla coda quelli che stanno solo altrove, o scaricali qui.",
   "errors.insieme.nonConcesso": "Chi ospita non ti ha dato questo comando.",
   "errors.insieme.superato": "Il brano era già cambiato: il gesto non serviva più.",
   "errors.insieme.rifiutato": "Nessuna risposta, o la risposta è stata no.",

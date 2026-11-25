@@ -2,6 +2,7 @@
 //! in rete letti dal database e dal disco, con una scadenza sola. Il lettore qui non si tocca.
 
 use crate::nucleo::Nucleo;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rymembra_app::library::TrackSummary;
@@ -81,7 +82,8 @@ pub struct FileDellaVoce {
 ///
 /// # Errori
 ///
-/// Quelli della libreria.
+/// Quelli della libreria; `insieme.braniAltrui` se una riga è di un altro
+/// dispositivo e non ha una copia di qui — vedi [`le_righe_di_qui`].
 pub fn voci_da_libreria(app: &Nucleo, ids: &[i64]) -> Result<Vec<i64>, AppError> {
     Ok(voci_allineate(app, ids)?.into_iter().flatten().collect())
 }
@@ -89,6 +91,10 @@ pub fn voci_da_libreria(app: &Nucleo, ids: &[i64]) -> Result<Vec<i64>, AppError>
 /// Come [`voci_da_libreria`], ma allineate agli id chiesti: `None` dove la
 /// riga non c'è. Serve a chi deve ritrovare la voce di un posto preciso — il
 /// brano corrente, entrando.
+///
+/// Una riga di un altro dispositivo che ha una copia di qui entra con **la
+/// copia di qui**: è un file di questo PC, e la sessione lo offre e lo conta
+/// come qualunque altro (`da_contare` è la riga della copia).
 pub(super) fn voci_allineate(app: &Nucleo, ids: &[i64]) -> Result<Vec<Option<i64>>, AppError> {
     let ids = ids.get(..ids.len().min(MASSIMO_VOCI)).unwrap_or_default();
     let righe: Vec<i64> = ids
@@ -96,26 +102,34 @@ pub(super) fn voci_allineate(app: &Nucleo, ids: &[i64]) -> Result<Vec<Option<i64
         .copied()
         .filter(|id| ospiti::e_di_libreria(*id))
         .collect();
-    let schede = if righe.is_empty() {
-        std::collections::HashMap::new()
+    let (di_qui, schede) = if righe.is_empty() {
+        (HashMap::new(), HashMap::new())
     } else {
         let stato = super::libreria_di(app, "voci di sessione")?;
         con_libreria(&stato, |libreria| {
-            rifiuta_le_righe_lontane(&libreria.connection, &righe)?;
-            leggi_schede(&libreria.connection, &righe)
+            let di_qui = le_righe_di_qui(&libreria.connection, &righe)?;
+            let effettive: Vec<i64> = righe
+                .iter()
+                .map(|id| di_qui.get(id).copied().unwrap_or(*id))
+                .collect();
+            let schede = leggi_schede(&libreria.connection, &effettive)?;
+            Ok((di_qui, schede))
         })?
     };
     ospiti::con_registro(app, |registro| {
         ids.iter()
             .map(|id| {
-                let scheda = schede.get(id)?.clone();
+                // La riga che si apre davvero: quella di qui, se la riga in
+                // coda era di un altro dispositivo.
+                let riga = di_qui.get(id).copied().unwrap_or(*id);
+                let scheda = schede.get(&riga)?.clone();
                 let uid = registro.nuovo_uid();
                 Some(registro.registra(Voce {
                     uid,
                     proprietario: None,
                     scheda,
-                    apertura: Apertura::Libreria { track_id: *id },
-                    da_contare: Some(*id),
+                    apertura: Apertura::Libreria { track_id: riga },
+                    da_contare: Some(riga),
                 }))
             })
             .collect()
@@ -127,26 +141,39 @@ pub(super) fn voci_allineate(app: &Nucleo, ids: &[i64]) -> Result<Vec<Option<i64
     })
 }
 
-/// Una sessione non porta righe della libreria unica (`lontano://…`): chi
-/// ospita offrirebbe agli altri `Apertura::Libreria` per un file che raggiunge
-/// solo attraverso un terzo dispositivo. La restrizione di sempre — le voci di
-/// un altro dispositivo non entrano in una sessione — resta, controllata sullo
+/// Le righe della libreria unica (`lontano://…`) fra `righe`, ognuna con la sua
+/// copia di qui: `riga specchio → riga di questo PC`.
+///
+/// Una sessione non porta righe di un altro dispositivo: chi ospita offrirebbe
+/// agli altri `Apertura::Libreria` per un file che raggiunge solo attraverso un
+/// terzo dispositivo. La restrizione di sempre — le voci di un altro
+/// dispositivo non entrano in una sessione — resta (§4.7), controllata sullo
 /// schema del percorso: con le righe specchio, che hanno un id positivo, il
 /// cancello sulle maniglie non le vedrebbe.
 ///
+/// Ma un brano che c'è anche qui — la libreria unica mostra una voce sola, e il
+/// suo rappresentante può essere la riga del PC — non è «un brano di un altro
+/// dispositivo»: è un file di questa macchina, e entra con quella riga. Solo le
+/// righe **senza** una copia di qui si rifiutano.
+///
 /// # Errori
 ///
-/// `insieme.braniAltrui` se una delle righe è una riga specchio — la frase dice che
-/// i brani di un altro dispositivo non entrano in una sessione —; quelli della
-/// libreria.
-pub(super) fn rifiuta_le_righe_lontane(
+/// `insieme.braniAltrui` se una delle righe è una riga specchio senza copia di
+/// qui — la frase dice che quei brani non entrano in una sessione e di toglierli
+/// o scaricarli —; quelli della libreria.
+pub(super) fn le_righe_di_qui(
     connection: &rusqlite::Connection,
     righe: &[i64],
-) -> Result<(), AppError> {
-    if rymembra_app::specchio::archivio::tra_le_righe_specchio(connection, righe)? {
-        return Err(AppError::new(ErrorCode::InsiemeBraniAltrui));
+) -> Result<HashMap<i64, i64>, AppError> {
+    let specchio = rymembra_app::specchio::archivio::righe_specchio_fra(connection, righe)?;
+    let mut di_qui = HashMap::with_capacity(specchio.len());
+    for id in specchio {
+        let Some(copia) = rymembra_app::specchio::scelta::copia_di_qui(connection, id)? else {
+            return Err(AppError::new(ErrorCode::InsiemeBraniAltrui));
+        };
+        di_qui.insert(id, copia);
     }
-    Ok(())
+    Ok(di_qui)
 }
 
 /// Le schede di alcune righe, dal database, con un'occhiata sola per tutte
