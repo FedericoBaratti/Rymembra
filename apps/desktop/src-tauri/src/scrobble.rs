@@ -630,7 +630,7 @@ pub fn sta_suonando(app: &Nucleo, track_id: i64) {
         let manico = app.clone();
         let casella = Arc::clone(&scrobble.adesso);
         let avviato = std::thread::Builder::new()
-            .name("rymembra-scrobble-adesso".to_owned())
+            .name(FILO_ADESSO.to_owned())
             .spawn(move || filo_adesso(&manico, &casella));
         if let Err(err) = avviato {
             nota!("[scrobble] il filo del «sta suonando» non è partito: {err}");
@@ -650,9 +650,16 @@ fn filo_adesso(manico: &Nucleo, casella: &Casella) {
         let Some(stato) = manico.try_state::<Stato>() else {
             return;
         };
-        manda_adesso(&stato, casella, chiesto);
+        // Un giro per volta dentro `sorvegliato`: il filo nasce una volta sola per
+        // processo (`filo_adesso` è un `OnceLock`), e un panico dentro
+        // `manda_adesso` — HTTP verso Last.fm o ListenBrainz, una risposta che il
+        // parser non si aspettava — lo spegneva fino al riavvio (S7-3).
+        let _ = crate::stato::sorvegliato(FILO_ADESSO, || manda_adesso(&stato, casella, chiesto));
     }
 }
+
+/// Il nome del filo del «sta suonando», nel diario dei panici e nella salute dei fili.
+const FILO_ADESSO: &str = "rymembra-scrobble-adesso";
 
 /// Il «sta suonando» di un brano, a ciascun servizio collegato.
 fn manda_adesso(stato: &Stato, casella: &Casella, chiesto: Chiesto) {
@@ -1589,5 +1596,27 @@ mod prove {
         // `stato_ipc` che Last.fm è configurato.
         settings::write(&c, coda::CHIAVE_LFM_API_KEY, "   ").expect("scrittura");
         assert_eq!(travasa_chiave_lastfm(&InMemoria::nuovo(), &c), Ok(false));
+    }
+
+    /// S7-3: il filo del «sta ascoltando» sopravvive a un panico. È un `OnceLock`:
+    /// nasce al primo uso e non rinasce, quindi un panico dentro `manda_adesso`
+    /// (HTTP verso Last.fm o ListenBrainz, una risposta che il parser non si
+    /// aspettava) lo spegneva per tutta la vita del processo.
+    #[test]
+    fn il_filo_del_sta_ascoltando_sopravvive_a_un_panico() {
+        let sorgente = include_str!("scrobble.rs");
+        let sorgente = sorgente
+            .split("\n#[cfg(test)]\nmod prove")
+            .next()
+            .unwrap_or(sorgente);
+        let inizio = sorgente
+            .find("fn filo_adesso(manico: &Nucleo")
+            .expect("filo_adesso");
+        let resto = &sorgente[inizio..];
+        let corpo = &resto[..resto.find("\n}\n").expect("fine")];
+        assert!(
+            corpo.contains("sorvegliato("),
+            "un panico in `manda_adesso` spegne il filo del «sta ascoltando» per sempre"
+        );
     }
 }

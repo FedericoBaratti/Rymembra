@@ -136,6 +136,55 @@ use rymembra_domain::errors::{AppError, ErrorCode};
 use crate::errore::{Esito, errore};
 use crate::nucleo::ComeNucleo;
 
+/// Una chiusura che parte quando questa guardia finisce — o, con
+/// [`scatta`](Self::scatta), prima —, anche se il filo cade in un panico.
+///
+/// Per chi tiene un «posto» finché un filo vive: una bandiera alzata, una chiave
+/// in un insieme, un turno. Senza guardia un panico lascia il filo morto e il
+/// posto occupato, e la funzione resta spenta fino al riavvio (S7-3). Con
+/// [`sempre`](Self::sempre) la chiusura parte comunque finisca il filo;
+/// con [`solo_se_cade`](Self::solo_se_cade) solo in un panico, per chi alla fine
+/// normale il posto l'ha già passato a un altro e non deve toccarlo.
+#[must_use = "la guardia fa il suo lavoro quando cade: tenuta in una variabile con nome"]
+pub(crate) struct AllaFine<F: FnOnce()> {
+    chiusura: Option<F>,
+    solo_se_cade: bool,
+}
+
+impl<F: FnOnce()> AllaFine<F> {
+    /// Parte alla fine del filo, in ogni caso.
+    pub(crate) const fn sempre(chiusura: F) -> Self {
+        Self {
+            chiusura: Some(chiusura),
+            solo_se_cade: false,
+        }
+    }
+
+    /// Parte alla fine del filo solo se il filo cade in un panico.
+    pub(crate) const fn solo_se_cade(chiusura: F) -> Self {
+        Self {
+            chiusura: Some(chiusura),
+            solo_se_cade: true,
+        }
+    }
+
+    /// La chiusura parte adesso, una volta sola: alla fine non riparte.
+    pub(crate) fn scatta(&mut self) {
+        if let Some(chiusura) = self.chiusura.take() {
+            chiusura();
+        }
+    }
+}
+
+impl<F: FnOnce()> Drop for AllaFine<F> {
+    fn drop(&mut self) {
+        if self.solo_se_cade && !std::thread::panicking() {
+            return;
+        }
+        self.scatta();
+    }
+}
+
 /// Esegue `lavoro` sul pool bloccante e ne aspetta l'esito.
 ///
 /// `nome` è quel che finisce nella causa dell'errore se il lavoro non arriva mai
@@ -849,5 +898,44 @@ mod prove {
             sincroni.is_empty(),
             "comandi sincroni in lontano/: {sincroni:#?}"
         );
+    }
+
+    /// S7-3: la guardia fa il suo lavoro in un panico, `scatta` una volta sola, e
+    /// la variante «solo se cade» lascia in pace una fine normale.
+    #[test]
+    fn la_guardia_di_un_filo_libera_il_posto_anche_in_un_panico() {
+        use super::AllaFine;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let volte = std::sync::Arc::new(AtomicU32::new(0));
+        let conta = |v: &std::sync::Arc<AtomicU32>| {
+            let v = std::sync::Arc::clone(v);
+            move || {
+                v.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+
+        // Fine normale: «sempre» parte, «solo se cade» no.
+        drop(AllaFine::sempre(conta(&volte)));
+        assert_eq!(volte.load(Ordering::SeqCst), 1);
+        drop(AllaFine::solo_se_cade(conta(&volte)));
+        assert_eq!(volte.load(Ordering::SeqCst), 1);
+
+        // `scatta` una volta sola, anche con la guardia che cade dopo.
+        let mut guardia = AllaFine::sempre(conta(&volte));
+        guardia.scatta();
+        guardia.scatta();
+        drop(guardia);
+        assert_eq!(volte.load(Ordering::SeqCst), 2);
+
+        // Un panico: partono tutte e due.
+        let dentro = std::sync::Arc::clone(&volte);
+        let caduto = std::thread::spawn(move || {
+            let _sempre = AllaFine::sempre(conta(&dentro));
+            let _se_cade = AllaFine::solo_se_cade(conta(&dentro));
+            std::panic::resume_unwind(Box::new("caduta di prova"));
+        })
+        .join();
+        assert!(caduto.is_err());
+        assert_eq!(volte.load(Ordering::SeqCst), 4);
     }
 }

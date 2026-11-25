@@ -360,6 +360,9 @@ pub fn ascoltato_qui(app: &Nucleo, dispositivo: &str, brano: i64, ascolto: &List
 /// C'è un giro di invii in corso.
 static POSTINO: AtomicBool = AtomicBool::new(false);
 
+/// Il nome del filo degli ascolti, nel diario dei panici e nella salute dei fili.
+const FILO_ASCOLTI: &str = "rymembra-lontano-ascolti";
+
 /// Un invio non è riuscito, o un giro non è partito: il filo riprova al
 /// prossimo giro.
 static DA_RIPROVARE: AtomicBool = AtomicBool::new(false);
@@ -389,14 +392,23 @@ pub(super) fn manda_gli_ascolti(app: &Nucleo, comune: &Arc<Comune>, solo: Option
     let app = app.clone();
     let comune = Arc::clone(comune);
     let partito = std::thread::Builder::new()
-        .name("rymembra-lontano-ascolti".to_owned())
+        .name(FILO_ASCOLTI.to_owned())
         .spawn(move || {
+            // La bandiera si abbassa quando il filo finisce comunque finisca: con un
+            // panico dentro `manda_a` (un ascolto che il parser o SQLite non si
+            // aspettavano) restava alzata, e gli ascolti in coda non partivano più
+            // verso nessun pari fino al riavvio (S7-3).
+            let _posto =
+                crate::disparte::AllaFine::sempre(|| POSTINO.store(false, Ordering::Release));
             for chiave in presenti {
-                if !manda_a(&app, &comune, &chiave) {
+                // Un dispositivo che fa cadere il giro non ferma quelli dopo di lui; e
+                // un giro caduto è un invio da riprovare.
+                let riuscito =
+                    crate::stato::sorvegliato(FILO_ASCOLTI, || manda_a(&app, &comune, &chiave));
+                if riuscito != Some(true) {
                     DA_RIPROVARE.store(true, Ordering::Release);
                 }
             }
-            POSTINO.store(false, Ordering::Release);
         });
     if let Err(err) = partito {
         nota!("[lontano] il filo degli ascolti non parte: {err}");
@@ -911,5 +923,32 @@ mod prove {
         assert!(si_ripulisce(false, &fatta), "la prima volta sì");
         assert!(!si_ripulisce(false, &fatta), "poi più");
         assert!(!si_ripulisce(true, &fatta));
+    }
+
+    /// S7-3: il filo degli ascolti libera il suo «posto» — la bandiera `POSTINO` —
+    /// anche se cade in un panico (un ascolto che il parser o SQLite non si
+    /// aspettavano), e un giro che cade non ferma i dispositivi dopo di lui.
+    /// Senza, la bandiera restava alzata: gli ascolti in coda non partivano più
+    /// verso nessun pari fino al riavvio.
+    #[test]
+    fn il_filo_degli_ascolti_libera_il_posto_anche_in_un_panico() {
+        let sorgente = include_str!("sfoglia.rs");
+        let sorgente = sorgente
+            .split("\n#[cfg(test)]\nmod prove")
+            .next()
+            .unwrap_or(sorgente);
+        let inizio = sorgente
+            .find("pub(super) fn manda_gli_ascolti(")
+            .expect("manda_gli_ascolti");
+        let resto = &sorgente[inizio..];
+        let corpo = &resto[..resto.find("\n}\n").expect("fine")];
+        assert!(
+            corpo.contains("AllaFine::sempre("),
+            "il filo degli ascolti non ha una guardia che libera `POSTINO` in un panico"
+        );
+        assert!(
+            corpo.contains("sorvegliato("),
+            "un giro che cade ferma i dispositivi dopo di lui"
+        );
     }
 }

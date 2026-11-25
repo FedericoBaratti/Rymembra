@@ -679,22 +679,41 @@ fn presi<T>(m: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
 /// c'è, ne vuole un altro appena finisce): la posta e il catalogo. Non
 /// aspetta.
 pub(super) fn richiedi(app: &Nucleo, chiave: &str) {
+    let app = app.clone();
+    richiedi_con(chiave, move |suo| lavora(&app, suo));
+}
+
+/// [`richiedi`], col lavoro di un giro in mano a chi chiama: una funzione sola
+/// perché si possa provare con un giro che cade.
+///
+/// Il «posto» del dispositivo — la chiave in [`IN_CORSO`] — si libera quando il
+/// filo finisce **comunque finisca**: con una guardia, perché un panico nel giro
+/// (un catalogo di un pari che mette serde, SQLite o un parser davanti a byte
+/// che non si aspettava) lasciava la chiave dov'era, e ogni `richiedi` dopo la
+/// trovava, rimetteva solo `RIPETI` e tornava: quel dispositivo non rileggeva
+/// più il catalogo né mandava più la posta fino al riavvio (S7-3).
+fn richiedi_con(chiave: &str, lavora: impl Fn(&str) + Send + 'static) {
     if !presi(&IN_CORSO).insert(chiave.to_owned()) {
         presi(&RIPETI).insert(chiave.to_owned());
         return;
     }
-    let app = app.clone();
     let suo = chiave.to_owned();
     let partito = std::thread::Builder::new()
         .name("rymembra-lontano-specchio".to_owned())
         .spawn(move || {
+            let _posto = crate::disparte::AllaFine::sempre({
+                let suo = suo.clone();
+                move || {
+                    presi(&RIPETI).remove(&suo);
+                    presi(&IN_CORSO).remove(&suo);
+                }
+            });
             loop {
-                lavora(&app, &suo);
+                lavora(&suo);
                 if !presi(&RIPETI).remove(&suo) {
                     break;
                 }
             }
-            presi(&IN_CORSO).remove(&suo);
         });
     if let Err(err) = partito {
         presi(&IN_CORSO).remove(chiave);
@@ -783,28 +802,37 @@ pub(crate) fn posta_nuova(app: &impl ComeNucleo, dispositivi: &[String]) {
 
 static CICLO: Once = Once::new();
 
+/// Il nome del filo del ciclo, nel diario dei panici e nella salute dei fili.
+const FILO_CICLO: &str = "rymembra-lontano-ciclo";
+
 /// Il filo che, ogni [`OGNI`], riguarda il catalogo di chi risponde.
 fn parte_il_ciclo(app: &Nucleo) {
     CICLO.call_once(|| {
         let app = app.clone();
         let partito = std::thread::Builder::new()
-            .name("rymembra-lontano-ciclo".to_owned())
+            .name(FILO_CICLO.to_owned())
             .spawn(move || {
                 loop {
                     std::thread::sleep(OGNI);
-                    let Ok(comune) = comune(&app) else {
-                        continue;
-                    };
-                    if comune.nodo().is_none() {
-                        continue;
-                    }
-                    let presenti: Vec<String> = super::filo::prendi(&comune.presenze)
-                        .keys()
-                        .cloned()
-                        .collect();
-                    for chiave in presenti {
-                        richiedi(&app, &chiave);
-                    }
+                    // Un giro per volta dentro `sorvegliato`: il ciclo parte una volta
+                    // sola per processo (`CICLO` è un `Once`), e un panico in un giro
+                    // lo spegneva per sempre — la rilettura ogni cinque minuti non
+                    // tornava più per nessuno (S7-3).
+                    let _ = crate::stato::sorvegliato(FILO_CICLO, || {
+                        let Ok(comune) = comune(&app) else {
+                            return;
+                        };
+                        if comune.nodo().is_none() {
+                            return;
+                        }
+                        let presenti: Vec<String> = super::filo::prendi(&comune.presenze)
+                            .keys()
+                            .cloned()
+                            .collect();
+                        for chiave in presenti {
+                            richiedi(&app, &chiave);
+                        }
+                    });
                 }
             });
         if let Err(err) = partito {
@@ -2578,5 +2606,46 @@ mod prove {
             "si ferma alla prima: le altre non partirebbero nemmeno"
         );
         assert_eq!(in_posta_ancora(&dati, &pc).len(), 3, "nessuna si butta");
+    }
+
+    /// S7-3: un giro che cade in un panico libera il posto del suo dispositivo.
+    /// Il posto restava occupato — la chiave in `IN_CORSO` — e ogni richiesta dopo
+    /// la trovava e tornava: quel dispositivo non rileggeva più il catalogo né
+    /// mandava più la posta fino al riavvio.
+    #[test]
+    fn un_giro_che_panica_libera_il_posto_del_dispositivo() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        // Una chiave solo di questa prova: gli insiemi sono dell'intero processo.
+        let chiave = "prova-un-giro-che-panica";
+        let (cade, caduto) = channel::<()>();
+        richiedi_con(chiave, move |_| {
+            let _ = cade.send(());
+            std::panic::resume_unwind(Box::new("giro caduto di prova"));
+        });
+        caduto
+            .recv_timeout(Duration::from_secs(5))
+            .expect("il primo giro parte");
+        // Il filo muore subito dopo: si aspetta che il posto si liberi.
+        let fine = std::time::Instant::now() + Duration::from_secs(5);
+        while presi(&IN_CORSO).contains(chiave) {
+            assert!(
+                std::time::Instant::now() < fine,
+                "il posto del dispositivo non si libera dopo il panico di un giro"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // E una richiesta dopo il panico esegue davvero il suo giro.
+        let (parte, partito) = channel::<()>();
+        richiedi_con(chiave, move |_| {
+            let _ = parte.send(());
+        });
+        partito
+            .recv_timeout(Duration::from_secs(5))
+            .expect("il secondo giro non parte: il posto era rimasto occupato");
+        while presi(&IN_CORSO).contains(chiave) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!presi(&RIPETI).contains(chiave));
     }
 }
