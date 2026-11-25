@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 18 November 2026.
+Last updated: 25 November 2026.
 
 **Rymembra has no telemetry and no analytics, sends no crash reports of its
 own, and sends nothing to me.** There is no Rymembra server. There is no account to create. There is
@@ -33,7 +33,11 @@ Everything Rymembra knows about you:
   the update” (*Settings › Library and data*), the library you had until
   then stays beside it too, as another full copy,
   `rymembra.db.messa-da-parte.bak` (then `…messa-da-parte-2.bak` and on),
-  until you delete it yourself.
+  until you delete it yourself; and the copy it puts in place is renamed
+  `rymembra.db.schema-NNN.ripristinata.bak` (then `…ripristinata-2.bak`), so
+  that the next update makes a new one — it too is a full copy of the library,
+  and stays until you delete it. On the phone the `schema-NNN.bak` copy is
+  deleted after the first successful start of the new version.
 - **The settings**, in the same folder — among them, from 3.3, where the
   window was on screen and how big (`ui.window.geometry`), and how many tracks
   you chose to keep when a linked device stopped sharing them
@@ -41,7 +45,8 @@ Everything Rymembra knows about you:
   profiles.
 - **The cover art**, in a file cache next to the database — the covers of the
   tracks of your linked devices, which Rymembra asks them for, are saved there
-  too, in a version of 320 pixels at most (§ 4-quinquies).
+  too, in a version of 320 pixels at most, up to 256 MiB in all
+  (§ 4-quinquies).
 - **Your skins and Skin Studio drafts**, in the `skin` folder beside it —
   including, from 3.0, the conversations with the Studio's chat (§ 2-quater),
   and a skin you replaced by installing another with the same id, kept aside
@@ -75,10 +80,15 @@ Everything Rymembra knows about you:
   In the local application data folder (`%LOCALAPPDATA%` on Windows), while a
   «Listen together» session lasts, the covers of its tracks, removed when it ends.
   Nothing of this — the rows, their statistics, the hidden ones — goes into a
-  profile, a backup, sync, an exported playlist or a scrobble; the one thing that
-  does is the text of a song fetched from another device, which sits in the
+  profile, a backup, sync, an exported playlist or a scrobble; two things do.
+  One is the text of a song fetched from another device, which sits in the
   lyrics table like every other and goes into a profile you export yourself
-  (§ 2-bis).
+  (§ 2-bis). The other is the **key** of a track that exists only on another
+  device, when it is in one of your playlists: the playlist carries it — the
+  artist, the title and the album, normalized, in plain text — into the
+  profile, the Drive backup and the sync file, because the playlist must find
+  the track again; the rest of the row (the file, the statistics, the cover)
+  stays out.
 - **The Google account of the backup**, if you connect it: its email
   address, which Google gives Rymembra with the `openid email` permission,
   shown in Settings and kept in the database until you disconnect (§ 4).
@@ -125,10 +135,10 @@ with `/P` or `/S`, never show it and never delete data.
 
 | What | Without the box | With the box |
 |---|---|---|
-| The library, settings, covers, skins and drafts, the log, the copies of the database taken before a migration and a library set aside by “Go back to the copy from before the update” (`%APPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
+| The library, settings, covers, skins and drafts, the log, the copies of the database taken before a migration, a library set aside by “Go back to the copy from before the update” and the copy it used (`%APPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
 | The window’s own data, the cache of tracks played from cloud folders and, if a session was running when Rymembra closed, the covers of a «Listen together» session (`%LOCALAPPDATA%\io.github.federicobaratti.rymembra`) | stay | removed |
 | The installer's registry key (`HKCU\Software\Federico Baratti\Rymembra`) | stays | removed |
-| Start with Windows, if you turned it on: the value `Rymembra` in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, and the value `Rymembra` that Windows writes in `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run` when you turn it off in Task Manager (an update leaves both) | removed | removed |
+| Start with Windows, if you turned it on: the value `Rymembra` in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, and the value `Rymembra` that Windows writes in `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run` when you turn it off in Task Manager (an update leaves both — from the app, or with a newer installer run by hand over the installed copy) | removed | removed |
 | The `rymembra://` link handler (`HKCU\Software\Classes\rymembra`), registered by the installer (an update rewrites it, and never removes it): an uninstall removes it only if its command points at the folder being uninstalled | removed | removed |
 | The secrets in Windows Credential Manager — account tokens, API keys, the keys that identify this PC in «Listen together» and to your devices | **stay** | **stay** |
 | The previous version's window data (`%LOCALAPPDATA%\io.github.federicobaratti.aether`) | stays | stays |
@@ -177,12 +187,25 @@ What the app asks Android for, and why:
 | Foreground service (media playback) | Keeping the music playing with the screen off. Android allows it only together with the player's notification. |
 | Foreground service (data sync) | Finishing a «Download here» from another linked device with the screen off (§ 4-quinquies): only while tracks are downloading, with a notification that says which one, stopped at the end of the queue. Nothing is sent anywhere for it. |
 | Foreground service (connected device) | “Stay active in the background” (§ 4-quinquies, “The phone”): keeping Rymembra running, and the connection to your linked devices open, after you swipe it away from recent apps. Only while you have turned the setting on (off by default), with a minimal notification that is hidden on the lock screen and has a “Turn off” button. It is the same link as before, kept awake: nothing new is sent, and it does not turn on “Reachable from the internet”. |
+| Start when the phone is switched on (`RECEIVE_BOOT_COMPLETED`) | Letting “Stay active in the background” start again by itself after a restart of the phone, as soon as you have unlocked it for the first time, and with it the player, the library and the link to your linked devices (§ 4-quinquies, “The phone”). It does the same after an update of Rymembra, which needs no permission: Android tells only the app it has just replaced. The receiver is not exported and does nothing unless “Stay active in the background” is on, which is off by default. Nothing is sent anywhere for it. |
 | Internet, network state | The same requests as on the computer, described in the rest of this document, except the update check, which on the phone is a different request, to GitHub’s API (§ 6). |
 | Wi-Fi state, Wi-Fi multicast | «Listen together» (§ 4-ter): finding the other Rymembra instances on your network. The multicast lock is held only while the function is on. |
 | Keep the device awake (Wi-Fi lock) | Keeping the Wi-Fi from dozing with the screen off during a «Listen together» session, and while a track of another linked device is playing or downloading (§ 4-quinquies). Released as soon as neither is true. |
 | Camera | Reading the QR code that links a device (§ 4-quinquies). Asked the first time you press «Scan QR code», used only while the scanner is open; the frames never leave the phone. Denied, you can paste the link instead. |
 | Nearby devices (local network, Android 17 and later) | «Listen together» (§ 4-ter), and servers on your own network: from Android 17 an app sees the devices on your home network only with this permission. Rymembra asks for it when you turn the function on, host, pair or join, and before connecting a WebDAV server or a language model on a private address; denied, Rymembra says so and nothing else changes. It is not used to locate you: Rymembra talks only to the addresses of your own network. |
 | Install apps | Handing a downloaded update to Android's installer (§ 6). Android asks you to allow it the first time, and asks you to confirm every installation; Rymembra cannot install anything by itself. **Only in the build distributed on GitHub:** the build made for Google Play neither declares this permission nor contains an updater, and does not look for updates (Google Play updates it). |
+
+**Which apps Rymembra can see.** From Android 11 an app sees other apps only
+if its manifest names them. Rymembra’s manifest names a few — Android Auto
+(`com.google.android.projection.gearhead`), the media center of cars that run
+Android (`com.android.car.media`, `com.android.car.carlauncher`), the Google
+app (`com.google.android.googlequicksearchbox`) and the car’s assistant
+(`com.google.android.carassistant`) — and asks which apps have a notification
+listener (a watch’s, a music remote’s) and which can open an APK. So it can
+tell whether those apps are installed and which ones have notification access.
+It does so for one purpose: deciding who may join the music session (below)
+and finding Android’s own installer to hand an update to. The answers stay on
+the phone, are not written to the library and are never sent anywhere.
 
 The player's notification shows the title, the artist, the album and the
 cover of what is playing, **also on the lock screen**, where anyone holding
@@ -215,15 +238,19 @@ Rymembra asks Android for the audio focus and, if it gets it, resumes the queue
 it had saved. The setting is a fact of this phone, and stays out of profiles
 and backups.
 
-**No other app on the phone can browse the library.** Android's media session
+**No other app on the phone can browse the library or read your history.** Android's media session
 is open only to Rymembra itself, to the system — the notification, the lock
 screen, quick settings, Bluetooth, and an app you allowed to read your
 notifications, such as a watch’s or a music remote’s — to Android Auto and to
 Google Assistant, each recognized by its package and by Google’s
 certificate, and to the media center of a car that runs Android. Any other
 app is turned away: it cannot browse the library, the
-history or the playlists, see what is playing, control playback or change
-favorites.
+history or the playlists, see what is playing or change favorites. What any
+app can still do, as with every Android music app, is send Rymembra a media
+key — play, pause, next, previous, stop — or ask it to play something by name
+through the system’s “play from search”: the session cannot tell such a key
+from a headset’s, and a secret token would break the real Bluetooth and car
+controls. It moves what plays and nothing else, and it reads nothing.
 
 **The covers** are served to the system — the car, the lock screen, the
 playback-resumption card — by a read-only content provider that any app on
@@ -298,6 +325,9 @@ constructor that allowed that was removed along with the code that needed it.
 
 These start on their own, on a background thread, when the library holds tracks
 with no album, no cover art, or a title that looks derived from a file name.
+They look up only what is a file on this computer: the tracks of another of your
+devices (§ 4-quinquies) are never sent to MusicBrainz, iTunes or Deezer, not
+even when one of them shares an album with a track of yours.
 Automatic enrichment **can be switched off** in Settings › Folders and
 scanning › Metadata. In the same place, **iTunes and Deezer each have a
 switch of their own, and both are off by default** — for everyone, also
@@ -412,13 +442,15 @@ cookie. LRCLIB doesn't ask for an account and Rymembra hasn't got one to give it
 What reaches whoever hosts the catalog is the IP address the request comes
 from, as with any site.
 
-Two things that are refused before they even start, and that are worth knowing:
+Three things that are refused before they even start, and that are worth knowing:
 
 - **a lyric that was inside a file's tag is never published.** You didn't write
   it, and sending it with your name on it would be passing off someone else's
   work;
 - **what came from the catalog doesn't go back to it.** That would be noise,
-  and nothing else.
+  and nothing else;
+- **a text that came from another of your devices isn't published as yours**:
+  it is a copy of what the owner has.
 
 The rule lives in the core (`testi::da_restituire`), not in the window: it holds
 even if one day the button were somewhere else.
@@ -1100,12 +1132,11 @@ key that is not linked is turned away before it can ask anything.
 | --- | --- |
 | The device's name, its Rymembra version, and whether «Listen together» is on and hosting | each, to every linked device it can reach |
 | **The catalog of your tracks**, so that the other device shows them in its own library: for each shared track its title, artist, album, album artist, genre, duration, year, track and disc number, play count, like and rating (and when each last changed), when it was added and last played, codec, bitrate, sample rate, channels, file size and date, a key that identifies its content, and its MusicBrainz identifiers if it has them — never a path. First a summary (a fingerprint for each group of 500 tracks), then only the groups that changed | the owner, to the device that asks |
-| The lists of your albums, artists and tracks and the results of a search typed on the other device — what an older version, which still browses, asks for | the owner, to the device browsing it |
-| The cover of a track, as a JPEG of 320 pixels at most, when the other device asks for it by its fingerprint | the owner, to the device that asks, which keeps it in its cover store |
+| The cover of a track, as a JPEG of 320 pixels at most, when the other device asks for it by its fingerprint — only for a track you share | the owner, to the device that asks, which keeps it in its cover store (at most 256 MiB of covers from other devices, 1,024 pixels a side and 1 MiB each, JPEG, PNG or WebP) |
 | The **bytes of the file** of a track the other device plays or downloads, with its size and date | the owner, to that device |
 | A listen of one of your tracks played on the other device: when, for how long | the device that played it, to you |
 | A heart or a star rating given on the other device to one of your tracks, with the time it was given | the device that gave it, to the owner, which keeps the newest for each of the two |
-| The lyrics of one of your tracks — the text, timed or plain, with its source and offset — when the other device has the lyrics panel open on it (§ 2-bis); and a correction made there: an offset, a text timed by hand, a candidate chosen, “not this one” | the owner, to the device with the panel open; the correction, from that device to the owner |
+| The lyrics of one of your tracks — the text, timed or plain, with its source and offset — when the other device has the lyrics panel open on it (§ 2-bis); and a correction made there: an offset, a text timed by hand, a candidate chosen, “not this one”, with the time it was decided | the owner, to the device with the panel open; the correction, from that device to the owner |
 | A «Listen together» session, when one of the two hosts and the other joins: what § 4-ter, «In a session», lists, inside a second encryption of its own | between host and members |
 
 **Only tracks in local and network folders** are shared: not the folders in
@@ -1123,7 +1154,18 @@ so that it finds its place in a playlist again if it comes back. Those rows are
 a read-only copy: they are not shared with a third device, not part of the other
 device’s profile, Drive backup, sync or exported playlists, and your play counts,
 likes and ratings in them are not counted again in its statistics, and never
-scrobbled — a listen is yours, counted on you.
+scrobbled — a listen is yours, counted on you. The one thing of them that does
+leave that device is the key of a track — artist, title and album, normalized, in
+plain text — when the track is in one of its playlists: the playlist carries it
+into the profile, the Drive backup and the sync file, so that it finds the track
+again (see “What stays on your computer”).
+
+A lyrics correction that reaches you from a linked device carries the time it was
+decided, and does not override a text you timed by hand that is more recent.
+When it replaces one, the old text is kept in your library as a copy of one level
+— not in a profile, the Drive backup or sync — which “Restore the previous lyrics” in
+the lyrics panel puts back; and a device can write at most 100 lyrics texts in
+24 hours on yours.
 
 A track of another device that you play is **counted on its owner**, not
 here: the listen waits in the `dispositivi_ascolti` table until the owner is
@@ -1135,8 +1177,10 @@ folder, and from then on counts here.
 
 On a metered network — mobile data, a hotspot — the phone asks before playing
 or downloading another device's tracks, and before a «Listen together» session
-over the internet (*Settings › Devices*: Ask, Yes, Wi-Fi only). The lists and
-the presence always pass.
+over the internet (*Settings › Devices*: Ask, Yes, Wi-Fi only). The question is
+asked from a gesture you make in the app; where nobody can answer — a media key,
+the notification, the car, autoplay — «Ask» counts as «No». The lists and the
+presence always pass.
 
 ### The phone
 
@@ -1147,9 +1191,10 @@ default) it is reachable all the time: a foreground service keeps Rymembra, and
 the connection, alive after you swipe it away from recent apps, with a minimal
 notification that stays visible (and is hidden on the lock screen). It also
 starts again by itself when the phone is switched on — after the first unlock,
-without opening the app — and starts the player, the library and the link to your
-devices; the permission `RECEIVE_BOOT_COMPLETED` is only for that, and the
-receiver does nothing unless the setting is on. That changes
+without opening the app — and after an update of Rymembra, and starts the player,
+the library and the link to your devices; the permission
+`RECEIVE_BOOT_COMPLETED` is only for the first of the two (the update needs no
+permission), and the receiver does nothing unless the setting is on. That changes
 *when* the phone can be reached, not *who* can reach it: only the devices you
 linked, and only if «Reachable from the internet» is on — the setting does not
 turn it on, and the card says so. Nothing new is sent; the phone's public key and
@@ -1250,7 +1295,14 @@ to a temporary folder (`%TEMP%\Rymembra-<version>-updater-*`, the folder in the
 table of *When you uninstall*), as every update does. If Windows is shutting down
 or signing you out, Rymembra exits on its own and installs nothing. If you
 never exit, the update card asks again after three days. The package is thrown
-away if the release it belongs to is no longer the latest.
+away if the release it belongs to is no longer the latest. The download stops at
+256 MiB, and turning the check off stops one in progress.
+
+**A small file for the restart.** Just before «Install now» starts the
+installer, Rymembra writes a small file with the time (`rilancio-aggiornamento`,
+in the data folder), so that the copy the installer restarts opens normally and
+not minimized; it deletes it at the next start, and ignores one that is more
+than five minutes old. Nothing of it is sent anywhere.
 
 **What it downloads gets verified.** The installer carries a cryptographic
 signature, and Rymembra checks it against a public key compiled into the
@@ -1261,7 +1313,8 @@ system store — can't make you install a program of theirs.
 
 **It switches off**, in *Settings → Updates*. Switched off, Rymembra never
 contacts GitHub: you'll stay on this version until you come and press «Check
-now» or download the installer by hand. It's on by default, and that's a choice:
+now» or download the installer by hand — on the phone too, where turning it off
+also stops a download that is in progress. It's on by default, and that's a choice:
 a music player that doesn't update is a music player holding a network library
 that's months out of date.
 
@@ -1321,8 +1374,11 @@ opens only when you tap «Install», and asks you to confirm; the first time,
 Android also asks you to allow Rymembra to install apps. If the APK is ready
 while Rymembra is out of view, a low-importance notification, “Update ready to
 install”, can bring you back to it: it is shown only if notifications are
-already allowed, and it is never asked for. The same switch in *Settings →
-Updates* turns the check off.
+already allowed, and it is never asked for. Right before the APK is handed to
+Android’s installer its signature is verified once more, against the file as it
+is then on disk, so a file that changed in the cache while it waited is deleted
+and never handed over. The same switch in *Settings → Updates* turns the check
+off.
 
 **The Android build made for Google Play does none of this.** It has no
 updater and no permission to install apps; it never asks GitHub for a release,
@@ -1357,6 +1413,13 @@ Rymembra does not receive.
 - **SmartScreen**, which checks the addresses a page visits with Microsoft,
   is off in Rymembra’s window (wry, the library under Tauri, starts WebView2
   with it disabled), and the window opens no address but its own.
+
+**Getting WebView2.** If the PC does not have WebView2 yet, the **installer**
+downloads Microsoft’s small installer for it — from `go.microsoft.com`, which
+redirects to Microsoft’s download servers — and runs it. That is a request of
+the installer, made once, while you install, and not of Rymembra, which sends
+nothing of yours with it; Microsoft sees, as for any download, the IP address
+that asks. The Microsoft Store package has no installer to do it.
 
 WebView2 keeps its own data — cache, storage, crash reports — in
 `%LOCALAPPDATA%\io.github.federicobaratti.rymembra\EBWebView` (§ 8).
@@ -1501,8 +1564,8 @@ What Rymembra writes, and where:
 - **Its local counterpart** — `%LOCALAPPDATA%\io.github.federicobaratti.rymembra`,
   which does not roam with your Windows profile — where Rymembra keeps the
   cache of the cloud tracks you played (`nuvola-cache`, § 4-quater), the
-  cache of the covers of your linked devices (`copertine-lontane`,
-  § 4-quinquies), the window engine’s own data (`EBWebView`, § 6-bis) and,
+  covers of the tracks of a «Listen together» session while it lasts
+  (`copertine-lontane`, § 4-ter), the window engine’s own data (`EBWebView`, § 6-bis) and,
   after a start that failed, `avvio.log` (see «The log» below).
 
 Rymembra sends none of it anywhere by itself — a synchronization file goes

@@ -129,7 +129,7 @@ si usano dove sono. Per Rymembra è trasparente, con queste conseguenze:
 
 - su un PC senza la copia NSIS, la libreria della copia del Store è sua e basta,
   e disinstallare il pacchetto da Windows cancella quella cartella;
-- dalla 3.2.1 la copia del Store tiene la libreria in una cartella sua, col
+- dalla 3.3.0 la copia del Store tiene la libreria in una cartella sua, col
   suffisso `.store`: `%APPDATA%\io.github.federicobaratti.rymembra.store`, e la
   cache in `%LOCALAPPDATA%\io.github.federicobaratti.rymembra.store`
   (`cartella_di_serie` in `lib.rs`, col marcatore `rymembra-store.txt`). Dal
@@ -140,7 +140,7 @@ si usano dove sono. Per Rymembra è trasparente, con queste conseguenze:
 - al primo avvio, una volta sola e solo se la sua libreria è ancora vuota
   (niente brani e niente playlist), la copia del Store propone di **copiare**
   quella che trova nella cartella senza suffisso: della copia NSIS, o sua di
-  prima della 3.2.1, che dal pacchetto si vedono nello stesso posto
+  prima della 3.3.0, che dal pacchetto si vedono nello stesso posto
   (`trasloco::copia_la_libreria_di`). Il database si copia coi suoi file in una
   cartella di passaggio, si porta alla versione di questa build ed entra nella
   libreria; copertine e skin si copiano senza sovrascrivere niente; poi

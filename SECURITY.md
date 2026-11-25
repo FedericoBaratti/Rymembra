@@ -65,7 +65,14 @@ installer launched while Windows is killing processes would stop halfway.
 Installing a package that did not pass the check, or making an installer start
 when nobody closed the program, is a report. The package waits as long as it
 takes (the card asks again after three days), and is thrown away if the release
-it belongs to is no longer the one announced.
+it belongs to is no longer the one announced. The download stops at 256 MiB —
+the plugin keeps the package in memory, and the only other limit used to be
+60 seconds without data, which every piece resets — and turning the check off
+stops one in progress and discards a package that finishes afterwards. The
+manifest, `latest.json`, is read without a ceiling on the computer, because the
+plugin offers none. Just before “Install now” runs the installer a small file
+with the time is left in the data folder, so that the copy it restarts opens
+normally; it is read once and ignored after five minutes.
 
 On the phone the APK goes through the same minisign key and more. Rymembra
 announces an APK only if it is an asset of the project’s GitHub release with
@@ -85,13 +92,30 @@ says so and closes; it must never stay alive without a window.
 The phone now does both checks — the signature and the certificate — as soon as
 the download ends, without handing the file over; Android’s installer opens only
 when the person taps “Install”, and the checks run again right before the
-handoff. The **Google Play build** is a second variant of the same app
+handoff: the minisign signature, kept with the waiting package, is verified once
+more against the file as it is on disk then — a file that changed in the cache
+while it waited is deleted and never handed over — and the Kotlin side repeats
+the package and certificate check on the APK it is given. The **Google Play build** is a second variant of the same app
 (`-Pdistribuzione=play`) with no updater at all: its manifest removes
 `REQUEST_INSTALL_PACKAGES`, the core is told the distribution
 (`BuildConfig.DISTRIBUZIONE`) and refuses to check for updates, never contacting
 GitHub, and the installer class refuses to run. A build that asks for that
 permission, or that checks GitHub on the Play variant, is a report. The release
 workflow builds only the `github` variant: the Play one is made by hand.
+
+**The release chain.** The key that signs updates and the key that signs the
+APK live in the secrets of the protected `release` environment, in three jobs
+that each wait for an approval: `segreti`, right after the tag, checks that the
+five secrets are there and have the right shape, that the Android keystore
+opens with its password and alias, and that its certificate is the one pinned in
+the repository, so that a wrong secret shows up in two minutes; `firma` and
+`firma-apk` sign. Before anything is published the workflow also verifies the
+minisign signature of the installer, the one inside `latest.json` and the
+APK’s against the bytes (BLAKE2b-512 and Ed25519, with Node’s own crypto, as the
+updater does), and not only the key id and the version: a `.sig` that is not the
+file’s stops the release instead of being found out by every installed copy. A
+way to publish a signature that does not belong to the file it sits beside is a
+report.
 
 **The OAuth return port.** The consent screens of Google, Microsoft (from 3.2,
 for OneDrive) and Dropbox (from 3.2) open in the system browser and come back
@@ -217,7 +241,10 @@ feature off nothing listens. What is supposed to hold:
   «yes» links;
 - a linked device can list only tracks in local and network folders and read
   only the file of such a track, by its id, while it is still under a watched
-  folder; the size and date are checked around every read. No path ever
+  folder — as the folders are now: one you take away stops being shared at once
+  (`CONDIVISO` checks the watched folders on every question, and a device that
+  mirrored it already drops those rows at its next round, about five minutes
+  later); the size and date are checked around every read. No path ever
   crosses the connection, in either direction;
 - **the library is shared as a catalog** — from this version a device asks the
   other for a summary (`CatalogoRiassunto`: the generation and, for each bucket
@@ -246,12 +273,36 @@ feature off nothing listens. What is supposed to hold:
   which the answer is `lontano.irraggiungibile` and the sender keeps the write in
   its outbox and tries again. A heart or rating is validated (stars from 0 to 5,
   a clock that is a real instant), a clock later than now is brought back to now,
-  and the newest clock wins for each field. A lyrics correction is applied with the commands’ own logic and
+  and the newest clock wins for each field — a heart and a rating keep a clock
+  each. A lyrics correction is applied with the commands’ own logic and
   **only to the database, never to a file**: a linked device does not write a
-  `.lrc` in the owner’s music folders. Its limits are 48,000 bytes, 4,000 lines,
-  40,000 words, times up to 12 hours, an offset of at most an hour and no
-  control characters, and what is read from the other side is capped at 256 KiB.
-  Reading lyrics never takes the library lock;
+  `.lrc` in the owner’s music folders. It carries the clock of when it was
+  decided (`quandoMs`, optional like every field added to the protocol, which
+  keeps the number `/1`; without one it counts as made now), and a correction decided before the last
+  touch to a text timed by hand on the owner does not override it — the answer
+  is “done”, without writing, so that it does not wait in the outbox for thirty
+  days. A text a correction replaces is kept as a copy of one level (never in a
+  profile, the Drive backup or sync), which the lyrics panel can bring back; a device
+  can write at most 100 texts in 24 hours (beyond that the answer is
+  `lontano.irraggiungibile` and the sender keeps them), because 60 writes a
+  minute is some 86,000 texts a day. The limit of that
+  copy is one level: two replacements of the same track by a hostile device
+  exhaust it, which is declared, not fixed. The text a device sends as “timed by
+  hand” is kept on the other side as a copy that follows the owner
+  (`proprietario`): it is never published as the work of the one who listens,
+  and “not this one” discards it. The limits of a text are 48,000 bytes, 4,000
+  lines, 40,000 words, times up to 12 hours, an offset of at most an hour and no
+  control characters — a text over 48,000 bytes is refused before it reaches the
+  reader — and what is read from outside is capped at 256 KiB. **The lyrics
+  reader itself bounds its cost, whatever it is given**: 32 distinct times and
+  512 timed words per line, 16,000 rows and 200,000 words in all, 16 secondary
+  lines per row, and the excess is dropped, not kept as text — a tag of
+  `[0:0]` and `<0:0>x` of a few dozen kilobytes used to cost about a gigabyte,
+  one of 256 KiB tens of gigabytes, and the same text reached the reader from
+  LRCLIB, a `.lrc` file and a tag already in 3.2.0. Every entry point caps the
+  bytes first (256 KiB for a `.lrc`, a tag, a field of LRCLIB; 48,000 for a
+  correction), and a text that makes the reader take seconds or gigabytes is a
+  problem. Reading lyrics never takes the library lock;
 - **what arrives is validated field by field before it touches the library**
   (`rymembra_app::specchio::convalida`): at most 200,000 rows for a device,
   names of 200 characters, genre 64, codec 24, keys 300; a bucket with a bad row
@@ -270,21 +321,48 @@ feature off nothing listens. What is supposed to hold:
 - **a track of another device never leaves this one**: not shared onward, not in
   the profile, the Drive backup, sync, an exported playlist file or a scrobble,
   and never counted in the statistics (a restore or an account import does not
-  write onto them). The text of its lyrics, when it was fetched, is the one
-  exception: it sits in `lyrics` like every text, so it goes into a profile you
-  export yourself. A playlist that contains such a track travels with its key
-  only;
+  write onto them). There are two exceptions. The text of its lyrics, when it was
+  fetched, sits in `lyrics` like every text, so it goes into a profile you
+  export yourself. And a playlist that contains such a track travels with its
+  key — artist, title and album, normalized, in plain text — into the profile,
+  the Drive backup and the sync file, because it must find the track again;
+  nothing else of the row goes with it. A track whose key is longer than 300
+  bytes is not shared, since a cut key could name another track. A linked
+  device that declares the same MusicBrainz id as one of your albums cannot
+  change that album’s title, artist or cover on your side, and enrichment never
+  reads, looks up or rewrites the rows of another device;
 - **“Download here” from the library** takes ids of library rows
   (`lontano_scarica_righe`) and builds the requests from the mirror, skipping
   rows the owner no longer sends; a set from 50 tracks asks the user first
   (`lontano_scarica_anteprima`: the number of tracks and the bytes it knows),
-  and more than 5,000 goes in blocks;
+  and more than 5,000 goes in blocks. What the other device declares in its
+  first answer is not taken on its word: the size must be close to the one in
+  its catalog, never zero and never above 8 GiB; the disk space is reserved
+  before the first byte on Windows (on Android a full disk shows up while
+  writing), a file that ends early does not count as downloaded, two queues
+  never write the same part (`<name>.<8 digits>.part`), and a file that
+  appears meanwhile is never replaced;
 - every frame is size-checked before anything is allocated (1 MiB), and so is
   what it inflates to: 16 KiB for a link request — read before its token is
-  checked — 64 KiB for a request from a linked device, 8 MiB for an answer. A
-  read asks for at most 2 MiB, a list for at most 500 entries; a device has at
-  most 8 requests served at a time and at most four live connections, and a
-  fifth closes the oldest;
+  checked — 64 KiB for a request from a linked device. An answer is read in two
+  steps, the kind first and then the body with the ceiling of that kind: a
+  presence 16 KiB; “done”, a refusal and the head of an answer of bytes 1 KiB;
+  data 8 MiB and at most 512 Ki JSON nodes — so 8 KB that open into 8 MiB cost
+  about 10 MiB, not 150 to 260 — and an answer of bytes is never longer than
+  the request asked for (2 MiB a read, 1 MiB a cover), which its head says
+  before anything is allocated. A read asks for at most 2 MiB, a list for at
+  most 500 entries; a device has at most 8 requests served at a time and at
+  most four live connections, and a fifth closes the oldest. A device that sends
+  more than 30 presence announcements a minute is refused, and one that sends 30
+  wrong requests a minute — unreadable, or not arriving within 30 seconds — is
+  ignored for a while, not disconnected; each 64 KiB piece of an answer has 30
+  seconds, so a device that never reads cannot keep the seats, and a link that
+  never opens its stream is closed after 10; the node writes at most 20 diary
+  lines a minute, the app’s diary writes the same line at most three times a
+  minute — then it counts the repeats and says how many it left out, while
+  panics and start-up failures are never held back — and the mailbox of the
+  window’s thread holds 512 messages, so a device that insists cannot wake it
+  without end or rotate the diary away;
 - the device's secret key lives in the system keychain
   (`lontano.chiave.<device>`), is never overwritten, and is never sent; the key
   of «Listen together» exchanged when linking is used only to recognize that
@@ -301,8 +379,9 @@ feature off nothing listens. What is supposed to hold:
   Forgetting a device also removes the «Listen together» key its QR gave, and a
   QR code never unblocks a key the user blocked;
 - «Download here» writes only audio files with the extensions the scan reads,
-  and listens reported by a linked device are capped (120 an hour), never dated
-  in the future and never move a clock back;
+  and listens reported by a linked device are capped (120 an hour, the same
+  listen again counted too), never dated in the future and never move a clock
+  back;
 - names are resolved only through the system's DNS servers, with no public
   fallback, and no plain-HTTP request is made.
 - turning the feature off closes the node at once — no new connection is
@@ -314,12 +393,19 @@ feature off nothing listens. What is supposed to hold:
   track of another device is asked for by its fingerprint (16 to 128 hex digits,
   checked on both sides), only from a device that answers and has a row with
   that fingerprint, three at a time for each device, and answered as a
-  320-pixel JPEG. The asking side takes at most 1 MiB, recognizes a JPEG, PNG or
-  WebP image from its first bytes, decodes it within the cover store’s limits,
-  encodes it again as a JPEG of its own and saves it under the fingerprint the
-  device declared — unless a cover with that fingerprint is already in the
-  store: a linked device does not decide what is in the store of the one that
-  linked it. The `rymembra-cover` protocol serves only fingerprints, and every
+  320-pixel JPEG — and only for the cover of a track that is shared (or of an
+  album that the shared catalog lists): any other fingerprint is answered as one
+  that does not exist, so a linked device cannot learn whether another image is
+  in the library. The asking side takes at most 1 MiB, recognizes a JPEG, PNG or
+  WebP image from its first bytes (a GIF or a BMP is refused), reads its sides
+  from the header and refuses it above 1024 pixels before decoding anything,
+  decodes it with 32 MiB of memory at most and two decodes at a time in the
+  whole process (a decoder that falls over does not take the thread of the
+  covers of «Listen together» with it), encodes it again as a JPEG of its own
+  and saves it under the fingerprint the device declared — unless a cover with
+  that fingerprint is already in the store: a linked device does not decide what
+  is in the store of the one that linked it — and the store keeps at most
+  256 MiB of such covers, after which it asks for no more until room is made. The `rymembra-cover` protocol serves only fingerprints, and every
   response says `X-Content-Type-Options: nosniff`.
 
 Reaching a library — or a «Listen together» session — with a key that is not
@@ -340,7 +426,10 @@ again when a second copy is started (the first one is told, and a second
 quote of `"%1"` — the usual way to inject an argument — is ignored. A link that
 passes goes to the same question as on the phone, naming the device and its key
 fingerprint, and nothing is linked without a “yes”; opening a link does not turn
-on “Reachable from the internet” by itself. A link that links without that
+on “Reachable from the internet” by itself. A second link that arrives while
+the first waits for the answer is discarded, with a line in the diary — the
+first one wins — and neither it nor a command line that is not a linking link
+brings the window to the front. A link that links without that
 question, an argument that gets through, or a handler that points anywhere but at
 Rymembra, is a problem.
 
@@ -393,7 +482,10 @@ however the path is written (`\\host`, `//host`, mixed separators,
 folders, it lists them as not checked. A sync device waiting to be accepted
 is trusted only through “Accept”: renaming it does not trust it. Sync
 documents are not signed yet: the sync folder must be writable by you
-alone. Catalog
+alone. Each one now carries a capability mark (`capacita`, inside `content`),
+which says only what the device that wrote it can do and is read with a cap —
+16 marks of 64 bytes — because the document is another device’s; 3.2.0 ignores
+it, and nothing acts on it yet. Catalog
 downloads start only from the catalog's own addresses, follow redirects only
 inside it, and must be audio. Error messages of AI services are cleaned of the
 API key, and what a service sends back is capped: 4 MiB of text and 64 MiB read
@@ -471,12 +563,17 @@ on the web go through a closed list of their own (`apri_documento`), whose
 addresses are built in Rust from the repository’s. A way to read any other file
 through either is a problem.
 
-**On the phone, other apps are the other side.** The music service accepts
-only trusted controllers — the app itself, the system (notification, lock
+**On the phone, other apps are the other side.** The music service lets only
+trusted controllers browse — the app itself, the system (notification, lock
 screen, Bluetooth), an app the user allowed to read notifications (a watch’s,
 a music remote), Android Auto, the car’s media center and Google Assistant,
 checked by uid and, for Android Auto, the car and the Assistant, by package
-and certificate; the cover provider serves only files of two folders,
+and certificate. What does not go through that gate is a media key, or a “play
+from search” sent to the main activity: any app can send them, as to every
+Android music app, and the session cannot tell them from a headset’s — a secret
+token would break the real Bluetooth and car controls. They only move what
+plays (play, pause, next, previous, stop, or a search by name) and read
+nothing. The cover provider serves only files of two folders,
 read-only, exported with no permission because the system is the one that asks:
 the cover store (`xx/<fingerprint>[.m|.t].jpg`) and a second root for the cache
 `copertine-lontane` (`lontane/<64 hex>/<2–128 hex>.jpg`), each opened only if its
@@ -485,9 +582,8 @@ covers of a “Listen together” session, in a reserved folder of sixty-four
 zeros, under a name derived from a hash of the cover’s access token — never the
 token, which is a read permission and would end up in a `content://` address —
 and Rust removes them when the session ends; the provider itself would open any
-file of that shape, so what keeps the root narrow is what Rust writes there, and
-the first start after an update deletes what older versions left. The file
-provider shares only two cache folders; the main activity has an empty task
+file of that shape, so what keeps the root narrow is what Rust writes there. The
+file provider shares only two cache folders; the main activity has an empty task
 affinity. The background service (`Presenza`, `connectedDevice`, with the
 permission `FOREGROUND_SERVICE_CONNECTED_DEVICE`) and the service that keeps a
 “Download here” going are not exported. The media-button receiver
@@ -498,11 +594,14 @@ off; it is a subclass of Media3’s receiver whose guard starts the music servic
 only when the core is running **and** the background service is wanted, so a
 play key after a restart without the core starts nothing and cannot make Android
 close the app. The power-on receiver (`AvvioAccensione`, permission
-`RECEIVE_BOOT_COMPLETED`) is not exported, listens only to `BOOT_COMPLETED` —
-after the first unlock, never to the locked-boot broadcast, and it is not direct-boot
-aware, because the library, the settings and the Keystore live in
-credential-encrypted storage — and starts the background service only when “Stay
-active in the background” is on. Starting the core from a service, with no
+`RECEIVE_BOOT_COMPLETED`) is not exported, listens to `BOOT_COMPLETED` — after
+the first unlock, never to the locked-boot broadcast — and to
+`MY_PACKAGE_REPLACED`, which the system sends only to the app it has just
+replaced (the update stops the process, and without it the service would stay
+off until the app was opened); it is not direct-boot aware, because the
+library, the settings and the Keystore live in credential-encrypted storage,
+and it starts the background service only when “Stay active in the
+background” is on. Starting the core from a service, with no
 activity, shares the process with the window that may be born later: Android’s
 `ndk-context` is set once by whichever starts first, and Kotlin — which alone knows
 whether an activity was ever created — decides whether the service may set it. The
@@ -516,8 +615,9 @@ in the window gets no Android permission
 of its own: a request for the camera, the microphone, the location or
 anything else is always denied (`telefono::crea_la_finestra`), and the
 WebView has content access, geolocation and windows opened by scripts off.
-Another app browsing the library, controlling playback or reading a file it
-was not given, or the page obtaining a permission: all problems.
+Another app browsing the library, reading the history, changing a setting or
+reading a file it was not given, or the page obtaining a permission: all
+problems.
 
 ## What isn't one
 
