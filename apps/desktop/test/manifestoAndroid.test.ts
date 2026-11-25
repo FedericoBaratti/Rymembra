@@ -618,6 +618,24 @@ test("un avvio dal servizio fallito si può rifare, e un nucleo caduto a metà n
   }
 });
 
+test("un avvio che cade in Kotlin lo dice alla notifica: non resta «si sta avviando» per sempre (S6-4)", () => {
+  // Il servizio crea la notifica con `startForeground` **prima** di `avviaIlNucleo`: il nucleo non
+  // c'è ancora e non è «non parte», quindi la frase è «si sta avviando». Se `loadLibrary` o la
+  // chiamata JNI cadono, Rust non è mai entrato e non dirà mai `nucleo.nonParte`: l'unico
+  // che può rifare la notifica è questo ramo, come fa `nucleo.nonParte` per i guasti di Rust.
+  const avvia = /fun avviaIlNucleo\([\s\S]*?\n  }\n/.exec(kotlin("Ponte.kt"))?.[0] ?? "";
+  assert.ok(avvia.length > 0, "avviaIlNucleo non si trova");
+  const presa = avvia.indexOf("catch (e: Throwable)");
+  assert.ok(presa > 0, "avviaIlNucleo non prende i guasti di loadLibrary e del JNI");
+  const gestore = avvia.slice(presa);
+  const segno = gestore.indexOf("nucleoNonParte = true");
+  const rifa = gestore.search(/principale\.post \{\s*Presenza\.rinfresca\(applicazione\)\s*\}/);
+  assert.ok(segno >= 0, "il guasto non alza il segno «non parte»");
+  assert.ok(rifa > segno, "la notifica non si rifà dopo aver alzato il segno");
+  // Dal ramo di Rust arriva alla stessa notifica per la stessa strada.
+  assert.match(kotlin("Ponte.kt"), /"nucleo\.nonParte" -> \{[\s\S]*?principale\.post \{ Presenza\.rinfresca\(app\) \}/);
+});
+
 test("un nucleo caduto a metà resta caduto: né un «pronto» né un «non parte» in ritardo lo cancellano", () => {
   // FC5, C1. `sessione.pronta` parte a metà di `avvia_il_nucleo` (`media::avvia`), e Kotlin lo
   // posta sul filo principale; `nucleo.nonParte` arriva da un filo di Rust e agisce subito. Un

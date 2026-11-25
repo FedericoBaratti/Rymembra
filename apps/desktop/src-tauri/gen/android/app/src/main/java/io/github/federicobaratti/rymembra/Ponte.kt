@@ -204,6 +204,13 @@ object Ponte {
     } catch (e: Throwable) {
       nucleoNonParte = true
       Log.e("Rymembra", "il nucleo non parte dal servizio", e)
+      // La libreria nativa che non si carica, o la chiamata JNI che torna con
+      // un'eccezione: Rust non è mai entrato, o non ha fatto in tempo a dire
+      // `nucleo.nonParte`. La notifica del servizio, fatta un attimo fa con «si
+      // sta avviando», non ha nessun altro che la corregga: la si rifà qui, come
+      // per i guasti che passano da Rust (S6-4). Sul filo principale e dopo il
+      // ritorno: `Presenza.rinfresca` guarda il segno appena alzato.
+      principale.post { Presenza.rinfresca(applicazione) }
     }
   }
 
