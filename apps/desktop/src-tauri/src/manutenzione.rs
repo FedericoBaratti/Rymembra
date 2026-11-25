@@ -717,6 +717,20 @@ pub async fn manutenzione_torna_alla_copia(app: AppHandle) -> Esito<()> {
                     ritorno.copia.versione,
                     ritorno.messa_da_parte.display()
                 );
+                // La copia usata si rinomina fuori dal giro delle copie: così il
+                // prossimo aggiornamento ne fa una nuova (S3-5). Se non è
+                // riuscita il ritorno è fatto lo stesso, ma al prossimo
+                // aggiornamento la copia vecchia risulterebbe «già presente», e
+                // il diario lo dice.
+                match &ritorno.copia_consumata {
+                    Ok(dove) => nota!(
+                        "[manutenzione] la copia usata non è più una copia di prima dell'aggiornamento: ora è {}",
+                        dove.display()
+                    ),
+                    Err(perche) => nota!(
+                        "[manutenzione] la copia usata NON si è rinominata ({perche}): al prossimo aggiornamento risulterà già presente e non se ne farà una nuova"
+                    ),
+                }
                 crate::spegnimento::chiedi();
                 app.exit(0);
                 Ok(())

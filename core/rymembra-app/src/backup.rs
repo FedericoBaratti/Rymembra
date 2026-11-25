@@ -2340,6 +2340,58 @@ mod prove {
     }
 
     #[test]
+    fn un_file_della_3_2_0_non_toglie_le_lapidi_nuove_alla_fusione() {
+        // S3-8, la metà che sta in questo codice. Con una 3.2.0 e una 3.3.0 sullo
+        // stesso progetto Google la 3.2.0 rilegge il file per puntatore e lo
+        // riscrive coi soli campi che conosce — niente `rootsAt`, `skinsAt`,
+        // `draftsAt`, niente lapidi di cartelle, skin e bozze — e questo non lo
+        // può impedire nessuna riga della 3.3.0 (è codice già pubblicato). Quel
+        // che la 3.3.0 deve garantire è la sua parte: un file scritto così,
+        // fuso con lo stato di qui, non rimette una cartella o una skin che qui
+        // sono state tolte, e il verso della fusione non conta.
+        let dalla_3_2_0 = interpreta(
+            br#"{"version":1,"generatedAt":1,"generatedBy":"3.2.0","content":{
+                "tracks":[],"playlists":[],
+                "tombstones":{"tracks":{},"playlists":{}},
+                "roots":["D:/Musica","D:/Vecchia"],
+                "activeSkin":"bianca",
+                "skins":{"nera":"abc","bianca":"def"},
+                "drafts":{}
+            }}"#,
+        )
+        .expect("un file della 3.2.0")
+        .content;
+        assert!(dalla_3_2_0.roots_at.is_empty() && dalla_3_2_0.skins_at.is_empty());
+
+        let mut locale = Contenuto {
+            roots: vec!["D:/Musica".to_owned()],
+            skins: BTreeMap::from([("nera".to_owned(), "abc".to_owned())]),
+            ..Contenuto::default()
+        };
+        locale.roots_at.insert("D:/Musica".to_owned(), 100);
+        locale.skins_at.insert("nera".to_owned(), 100);
+        // Qui «D:/Vecchia» e la skin «bianca» sono state tolte, dopo.
+        locale.tombstones.roots.insert("D:/Vecchia".to_owned(), 200);
+        locale.tombstones.skins.insert("bianca".to_owned(), 200);
+
+        let fuso = fondi(&locale, &dalla_3_2_0);
+
+        assert_eq!(fuso.roots, ["D:/Musica".to_owned()]);
+        assert!(
+            !fuso.skins.contains_key("bianca"),
+            "la skin tolta resta tolta"
+        );
+        assert!(fuso.skins.contains_key("nera"));
+        assert_eq!(fuso.tombstones.roots.get("D:/Vecchia"), Some(&200));
+        assert_eq!(fuso.tombstones.skins.get("bianca"), Some(&200));
+        assert_eq!(
+            fondi(&dalla_3_2_0, &locale),
+            fuso,
+            "da tutte e due le parti la stessa cosa"
+        );
+    }
+
+    #[test]
     fn fondere_non_resuscita_una_playlist_cancellata() {
         let mut lapidi = Lapidi::default();
         lapidi.playlists.insert("serata".to_owned(), 100);

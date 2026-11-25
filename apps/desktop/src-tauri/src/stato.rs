@@ -80,6 +80,17 @@ pub struct Libreria {
     /// Anche questa sta qui solo per la riga di avvio: se un aggiornamento va
     /// storto, la prima domanda è se c'è una copia da cui ripartire, e dove.
     pub istantanea: Option<rymembra_app::db::Istantanea>,
+    /// Quante chiavi d'ordine dei brani ha rifatto l'apertura (0 quasi sempre),
+    /// per la riga di avvio. Vedi [`rymembra_app::db::Opened::chiavi_riempite`].
+    pub chiavi_riempite: usize,
+    /// Perché l'apertura non è riuscita a rifarle, se ci ha provato: la libreria
+    /// si apre lo stesso, ma i Brani per titolo mettono per primi quelli senza
+    /// chiave, e il diario deve dirlo.
+    pub chiavi_non_riempite: Option<String>,
+    /// Le copie di prima dell'aggiornamento tolte dopo l'apertura: solo sul
+    /// telefono, dove non si possono usare (S3-6). `None` altrove, e quando non
+    /// c'era niente da togliere.
+    pub copie_tolte: Option<rymembra_app::db::CopieTolte>,
 }
 
 /// Il corpo dello stato condiviso fra i comandi: quel che [`Stato`] tiene dietro un `Arc`.
@@ -1103,6 +1114,12 @@ pub fn libreria_fase(stato: tauri::State<'_, Stato>) -> FaseLibreria {
 /// La versione dello schema da cui l'apertura di `percorso` migrerà, se
 /// migrerà: `Some(da)` con `0 < da < LATEST_VERSION`.
 ///
+/// È anche la versione che dà il nome alla copia che la schermata annuncia
+/// (`rymembra.db.schema-<da>.bak`): se una catena si era fermata a metà e la
+/// copia della sua partenza c'è, `da` è la partenza — il database è alla 41, ma
+/// la copia che si tiene è la 038, e nominare la 041 sarebbe dire il falso
+/// (S3-2). Vedi [`rymembra_app::db::versione_della_copia`].
+///
 /// Si legge con una connessione sua, senza creare il file, senza migrare e
 /// con `query_only`, chiusa prima che [`apri_libreria`] apra la sua: `PRAGMA
 /// user_version` passa dal giornale, quindi dice la versione vera anche dopo
@@ -1120,20 +1137,40 @@ pub fn versione_da_aggiornare(percorso: &Path) -> Option<u32> {
     let versione: i64 = connessione
         .query_row("PRAGMA user_version", [], |riga| riga.get(0))
         .ok()?;
-    drop(connessione);
-    u32::try_from(versione)
+    let da = u32::try_from(versione)
         .ok()
-        .filter(|da| *da > 0 && *da < rymembra_app::db::LATEST_VERSION)
+        .filter(|da| *da > 0 && *da < rymembra_app::db::LATEST_VERSION)?;
+    let della_copia = rymembra_app::db::versione_della_copia(&connessione, percorso, da);
+    drop(connessione);
+    Some(della_copia)
 }
 
 /// Apre la libreria in `data_dir`: la cartella, le copertine, il database con
 /// le sue migrazioni. È il lavoro lungo dell'avvio, e gira sul filo
 /// dell'apertura (`lib.rs`, `apri_e_avvia`).
 pub fn apri_libreria(data_dir: PathBuf) -> Result<Libreria, AppError> {
+    apri_libreria_per(data_dir, cfg!(mobile))
+}
+
+/// [`apri_libreria`], con la piattaforma passata da fuori: `sul_telefono` dice
+/// se la copia di prima dell'aggiornamento serve a qualcosa.
+///
+/// Sul telefono non serve (S3-6): Android non installa una versione più vecchia
+/// sopra una più nuova senza disinstallare, e disinstallare porta via libreria e
+/// copia insieme, quindi «Torna alla copia» lì non c'è e la copia — grande quanto
+/// il database — resterebbe per sempre nella cartella privata dell'app. Si tiene
+/// durante la migrazione e si toglie dopo il primo avvio **riuscito**: se
+/// l'apertura fallisce, e qui non si arriva, resta. Si toglie a ogni apertura
+/// riuscita, e così porta via anche quelle lasciate da una build di prima.
+fn apri_libreria_per(data_dir: PathBuf, sul_telefono: bool) -> Result<Libreria, AppError> {
     std::fs::create_dir_all(&data_dir)
         .map_err(|err| rymembra_app::files::io_error(&data_dir.display().to_string(), &err))?;
     let covers = CoverStore::open(data_dir.join("copertine"))?;
-    let aperto = rymembra_app::db::open(&data_dir.join(NOME_DATABASE))?;
+    let percorso = data_dir.join(NOME_DATABASE);
+    let aperto = rymembra_app::db::open(&percorso)?;
+    let copie_tolte = sul_telefono
+        .then(|| rymembra_app::db::togli_le_copie_di_prima(&percorso))
+        .filter(|tolte| *tolte != rymembra_app::db::CopieTolte::default());
     Ok(Libreria {
         connection: aperto.connection,
         covers,
@@ -1142,6 +1179,15 @@ pub fn apri_libreria(data_dir: PathBuf) -> Result<Libreria, AppError> {
         fts5: aperto.fts5,
         giornale: aperto.giornale,
         istantanea: aperto.istantanea,
+        chiavi_riempite: aperto.chiavi_riempite,
+        chiavi_non_riempite: aperto.chiavi_non_riempite.map(|errore| {
+            format!(
+                "codice={} causa={}",
+                errore.code().kind().code(),
+                errore.cause().unwrap_or("—")
+            )
+        }),
+        copie_tolte,
     })
 }
 
@@ -1171,12 +1217,41 @@ pub fn riga_di_avvio(stato: &Stato) {
                 libreria.giornale
             );
             riga_dell_istantanea(libreria.istantanea.as_ref());
+            righe_delle_chiavi_e_delle_copie(libreria);
         }
         Err(errore) => nota!(
             "[avvio] libreria NON aperta codice={} causa={}",
             errore.code().kind().code(),
             errore.cause().unwrap_or("—")
         ),
+    }
+}
+
+/// Le righe di diario di quel che l'apertura ha fatto oltre a migrare: le chiavi
+/// d'ordine dei brani rifatte (S3-4) e, sul telefono, le copie tolte (S3-6).
+///
+/// Ci sono solo quando c'è qualcosa da dire; e un guasto — le chiavi che non si
+/// sono potute rifare, una copia che non si è lasciata togliere — si dice con la
+/// sua causa, invece di restare un declassamento silenzioso.
+fn righe_delle_chiavi_e_delle_copie(libreria: &Libreria) {
+    if libreria.chiavi_riempite > 0 {
+        nota!(
+            "[avvio] chiavi d'ordine dei brani rifatte all'apertura: {}",
+            libreria.chiavi_riempite
+        );
+    }
+    if let Some(causa) = &libreria.chiavi_non_riempite {
+        nota!(
+            "[avvio] chiavi d'ordine dei brani NON rifatte, la libreria si apre lo stesso: {causa}"
+        );
+    }
+    if let Some(tolte) = libreria.copie_tolte {
+        nota!(
+            "[avvio] copie di prima dell'aggiornamento tolte (sul telefono non si possono usare): {} ({} MiB), non tolte: {}",
+            tolte.tolte,
+            tolte.byte >> 20,
+            tolte.rimaste
+        );
     }
 }
 
@@ -1301,6 +1376,11 @@ fn uscendo_con(stato: &Stato, ottimizzato: &AtomicBool) {
                 ),
             }
         }
+        // La libreria staccata apposta da «Torna alla copia» non è un guasto
+        // (D4 di L-WSB33): il ritorno ha già riportato il giornale nel file, e
+        // ogni giro della sequenza di spegnimento scriveva due righe d'errore in
+        // un diario sano.
+        Some(Err(err)) if e_il_ritorno_alla_copia(&err) => {}
         Some(Err(err)) => nota!(
             "[uscita] ottimizzazione del database non riuscita codice={} causa={}",
             err.code().kind().code(),
@@ -1362,10 +1442,30 @@ pub fn torna_alla_copia_di_prima(stato: &Stato) -> Result<rymembra_app::db::Rito
     };
     // La connessione si chiude qui, cadendo: da adesso ogni comando risponde
     // con questo errore, e nessuno scrive più nella copia rimessa.
-    *guardia = Err(AppError::new(ErrorCode::InternalAborted {
-        what: Some("libreria tornata alla copia di prima dell'aggiornamento".to_owned()),
-    }));
+    *guardia = Err(errore_del_ritorno());
     Ok(ritorno)
+}
+
+/// Cosa dice l'errore che sta al posto della libreria dopo
+/// [`torna_alla_copia_di_prima`].
+const LIBRERIA_TORNATA_ALLA_COPIA: &str = "libreria tornata alla copia di prima dell'aggiornamento";
+
+/// L'errore che sta al posto della libreria dopo il ritorno alla copia.
+fn errore_del_ritorno() -> AppError {
+    AppError::new(ErrorCode::InternalAborted {
+        what: Some(LIBRERIA_TORNATA_ALLA_COPIA.to_owned()),
+    })
+}
+
+/// `errore` è quello lasciato da «Torna alla copia»: la libreria è staccata
+/// **apposta**, e chi la trova così alla chiusura — l'ottimizzazione di uscita,
+/// la geometria della finestra — non ha niente da raccontare al diario.
+#[must_use]
+pub fn e_il_ritorno_alla_copia(errore: &AppError) -> bool {
+    matches!(
+        errore.code(),
+        ErrorCode::InternalAborted { what: Some(cosa) } if cosa == LIBRERIA_TORNATA_ALLA_COPIA
+    )
 }
 
 /// L'orologio, in millisecondi dall'epoca.
@@ -1914,6 +2014,103 @@ mod prove {
         );
     }
 
+    /// Un database vero alla versione 38 — quello della 3.2.0 — in `percorso`.
+    fn database_alla_38(percorso: &Path) {
+        let connection = Connection::open(percorso).expect("il database");
+        for migrazione in rymembra_app::db::MIGRATIONS
+            .iter()
+            .filter(|m| m.version <= 38)
+        {
+            connection
+                .execute_batch(migrazione.sql)
+                .expect("migrazione");
+        }
+        connection
+            .execute_batch("PRAGMA user_version = 38")
+            .expect("versione");
+    }
+
+    /// Una copia di prima dell'aggiornamento vera, alla 38, accanto al database.
+    fn metti_una_copia_alla_38(cartella: &Path) {
+        database_alla_38(&rymembra_app::db::nome_istantanea(
+            &cartella.join(NOME_DATABASE),
+            38,
+        ));
+    }
+
+    #[test]
+    fn sul_telefono_la_copia_di_prima_si_toglie_dopo_il_primo_avvio_riuscito() {
+        // S3-6. Sul telefono «Torna alla copia» non c'è, e la copia fatta prima
+        // della migrazione — grande quanto il database — restava per sempre nella
+        // cartella privata dell'app. Si tiene mentre si migra e si toglie quando
+        // l'apertura è riuscita.
+        let sul_telefono = tempfile::tempdir().expect("cartella");
+        let percorso = sul_telefono.path().join(NOME_DATABASE);
+        database_alla_38(&percorso);
+        let libreria = apri_libreria_per(sul_telefono.path().to_path_buf(), true)
+            .unwrap_or_else(|errore| panic!("{errore:?}"));
+        assert_eq!(libreria.migrazioni, rymembra_app::db::MIGRATIONS.len() - 38);
+        assert!(
+            !rymembra_app::db::nome_istantanea(&percorso, 38).exists(),
+            "la copia è tolta"
+        );
+        let tolte = libreria.copie_tolte.expect("e lo dice");
+        assert_eq!(tolte.tolte, 1);
+        assert_eq!(tolte.rimaste, 0);
+
+        // Sul desktop invece la copia è quella del gesto, e resta.
+        let sul_computer = tempfile::tempdir().expect("cartella");
+        let percorso = sul_computer.path().join(NOME_DATABASE);
+        database_alla_38(&percorso);
+        let libreria = apri_libreria_per(sul_computer.path().to_path_buf(), false)
+            .unwrap_or_else(|errore| panic!("{errore:?}"));
+        assert!(libreria.copie_tolte.is_none());
+        assert!(rymembra_app::db::nome_istantanea(&percorso, 38).is_file());
+
+        // E se la catena cade, sul telefono la copia resta: finché non si sa
+        // com'è andata non è il momento di buttarla.
+        let caduta = tempfile::tempdir().expect("cartella");
+        let percorso = caduta.path().join(NOME_DATABASE);
+        database_alla_38(&percorso);
+        Connection::open(&percorso)
+            .expect("apertura")
+            .execute_batch("ALTER TABLE tracks ADD COLUMN ordine_titolo TEXT")
+            .expect("la colonna di intralcio");
+        assert!(
+            apri_libreria_per(caduta.path().to_path_buf(), true).is_err(),
+            "la 042 cade"
+        );
+        assert!(rymembra_app::db::nome_istantanea(&percorso, 38).is_file());
+    }
+
+    #[test]
+    fn dopo_il_ritorno_alla_copia_l_uscita_non_scrive_un_errore_a_ogni_giro() {
+        // D4 di L-WSB33. «Torna alla copia» lascia la libreria staccata apposta,
+        // e la sequenza di spegnimento — che gira due o tre volte — scriveva ogni
+        // volta «ottimizzazione del database non riuscita codice=internal.aborted»:
+        // due righe d'errore in un diario sano, che chi legge scambia per un
+        // guasto del ritorno.
+        let dir = tempfile::tempdir().expect("cartella");
+        let stato = Stato::apri(dir.path().to_path_buf());
+        metti_una_copia_alla_38(dir.path());
+        torna_alla_copia_di_prima(&stato).expect("il ritorno riesce");
+
+        let ottimizzato = AtomicBool::new(false);
+        let diario = crate::diario::a_diario_aperto(|| {
+            uscendo_con(&stato, &ottimizzato);
+            uscendo_con(&stato, &ottimizzato);
+        });
+
+        assert!(
+            diario.contains("sessione aperta"),
+            "la prova deve vedere il diario, o non prova niente: {diario}"
+        );
+        assert!(
+            !diario.contains("internal.aborted"),
+            "la libreria staccata dal ritorno è attesa, non è un guasto: {diario}"
+        );
+    }
+
     #[test]
     fn il_turno_si_libera_anche_uscendo_per_la_via_breve() {
         // La ragione per cui è una guardia e non due `store`: fra il primo e il
@@ -2385,6 +2582,42 @@ mod prove {
         let stato = Stato::in_apertura(dir.path().to_path_buf());
         stato.in_aggiornamento(38);
         assert_eq!(stato.fase(), FaseLibreria::Aggiornamento { da: 38 });
+    }
+
+    #[test]
+    fn su_una_catena_ripresa_la_schermata_nomina_la_copia_della_partenza() {
+        // S3-2. La catena 038→043 si è fermata alla 042: il database è alla 41,
+        // ma la copia che l'aggiornamento tiene è `schema-038.bak` — la
+        // `schema-041.bak` non c'è e non ci sarà. La schermata annuncia il nome
+        // della copia che c'è.
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join(NOME_DATABASE);
+        {
+            let connessione = Connection::open(&percorso).expect("apertura");
+            for migrazione in rymembra_app::db::MIGRATIONS
+                .iter()
+                .filter(|m| m.version <= 41)
+            {
+                connessione
+                    .execute_batch(migrazione.sql)
+                    .expect("migrazione");
+            }
+            connessione
+                .execute_batch(&format!(
+                    "PRAGMA user_version = 41;
+                     INSERT INTO settings (key, value) VALUES ('db.catena_da', '38>{}');",
+                    rymembra_app::db::LATEST_VERSION
+                ))
+                .expect("versione e segno della catena");
+        }
+        // Senza la copia della partenza, il database di adesso è quel che c'è.
+        assert_eq!(versione_da_aggiornare(&percorso), Some(41));
+        std::fs::write(
+            rymembra_app::db::nome_istantanea(&percorso, 38),
+            b"la copia della partenza",
+        )
+        .expect("copia");
+        assert_eq!(versione_da_aggiornare(&percorso), Some(38));
     }
 
     #[test]

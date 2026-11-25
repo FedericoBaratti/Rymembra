@@ -85,3 +85,24 @@ test("le frasi che nominano la copia nominano anche il giornale, o il gesto", ()
   assert.ok(!IT["errors.db.migrationFailed"]!.includes("intatto"));
   assert.ok(!EN["errors.db.migrationFailed"]!.includes("intact"));
 });
+
+test("la frase dell'aggiornamento fermo non afferma che la copia c'è (S3-3)", () => {
+  // La copia si salta quando lo spazio libero non basta, e la scheda del gesto
+  // compare solo se la copia c'è: la frase non può dire «ho copiato».
+  const dice = {
+    it: { prova: /prova a copiare/, salta: /la salta se non c'è abbastanza spazio/, vieta: /ha copiato/ },
+    en: { prova: /tries to copy/, salta: /skips the copy if there isn’t enough free space/, vieta: /copied the library/ },
+  } as const;
+  for (const [lingua, testi] of [
+    ["it", IT],
+    ["en", EN],
+  ] as const) {
+    const frase = testi["errors.db.migrationFailed"]!;
+    assert.match(frase, dice[lingua].prova, `${lingua}: non dice che è un tentativo`);
+    assert.match(frase, dice[lingua].salta, `${lingua}: non dice che la copia si può saltare`);
+    assert.doesNotMatch(frase, dice[lingua].vieta, `${lingua}: afferma la copia`);
+    // Sul telefono la copia non è mai un'offerta, e non si promette.
+    const telefono = testi["errors.db.migrationFailed.telefono"]!;
+    assert.doesNotMatch(telefono, /copia|copy/i, `${lingua}: il telefono promette una copia`);
+  }
+});

@@ -53,6 +53,21 @@ use rymembra_domain::errors::{AppError, ErrorCode};
 /// ogni istantanea pesa quanto il database intero.
 pub const ISTANTANEE_TENUTE: usize = 2;
 
+/// Dove, dentro il database, si ricorda che una catena di migrazioni è
+/// cominciata e non è ancora finita: `<versione di partenza>><versione a cui
+/// punta questa build>`, per esempio `38>43`.
+///
+/// Serve a una cosa: quando la catena cade a metà e si riavvia, il database è
+/// già a una versione intermedia (41), e la copia che si farebbe adesso è di un
+/// database **a metà**, che la versione di partenza non apre. Con il segno,
+/// [`prima_di_migrare`] sa che la copia che protegge la catena è quella della
+/// partenza, e non ne fa un'altra. Si scrive **dopo** la copia — nella copia non
+/// c'è —, si toglie quando la catena arriva in fondo ([`chiudi_la_catena`]), e
+/// vale solo per la build che punta alla stessa versione finale: uno rimasto
+/// da una catena mai chiusa non può far saltare la copia di un aggiornamento
+/// di un'altra.
+const CHIAVE_CATENA_DA: &str = "db.catena_da";
+
 /// Il margine d'aria oltre l'istantanea, sotto il quale non la si fa.
 ///
 /// Il minimo: 32 MiB. Il margine vero è metà del database, se è di più — vedi
@@ -314,9 +329,12 @@ pub enum Istantanea {
         /// Quanto è durata.
         millisecondi: u64,
     },
-    /// C'era già una copia della stessa versione, da un avvio precedente in
-    /// cui la migrazione non è andata in porto: si tiene quella, che è la copia
-    /// del database **prima** di qualunque tentativo.
+    /// C'era già la copia che protegge questa catena di migrazioni, da un avvio
+    /// precedente in cui non è andata in porto: si tiene quella, che è la copia
+    /// del database **prima** di qualunque tentativo. Può essere della stessa
+    /// versione, o — se la catena si era fermata a metà — della versione da cui
+    /// è partita (vedi [`CHIAVE_CATENA_DA`]): è quella la copia che la versione
+    /// di prima sa aprire.
     Presente {
         /// Dove sta.
         percorso: PathBuf,
@@ -363,6 +381,11 @@ fn spazio_da_chiedere(stima: u64) -> u64 {
 ///
 /// # I passi
 ///
+/// 0. se una catena di migrazioni è già cominciata e si è fermata a metà — lo
+///    dice [`CHIAVE_CATENA_DA`] — la copia che la protegge è quella della sua
+///    **partenza**, e non se ne fa un'altra: il database di adesso è a una
+///    versione intermedia, e la sua copia sarebbe più recente di quella giusta
+///    e non la aprirebbe nessuna delle versioni di prima (S3-2);
 /// 1. se l'istantanea di questa versione c'è già, si tiene quella;
 /// 2. si stima quanto peserà la copia: le pagine usate, senza quelle libere
 ///    che `VACUUM INTO` non copia;
@@ -384,8 +407,12 @@ pub(super) fn prima_di_migrare(
     versione: u32,
 ) -> Istantanea {
     let inizio = Instant::now();
+    if let Some(partenza) = copia_della_partenza(connection, percorso, versione) {
+        return Istantanea::Presente { percorso: partenza };
+    }
     let destinazione = nome_istantanea(percorso, versione);
     if destinazione.is_file() {
+        segna_la_catena(connection, versione);
         return Istantanea::Presente {
             percorso: destinazione,
         };
@@ -429,10 +456,89 @@ pub(super) fn prima_di_migrare(
     }
 
     tieni_le_ultime(percorso, &destinazione);
+    segna_la_catena(connection, versione);
     Istantanea::Fatta {
         byte: std::fs::metadata(&destinazione).map_or(0, |dati| dati.len()),
         percorso: destinazione,
         millisecondi: u64::try_from(inizio.elapsed().as_millis()).unwrap_or(u64::MAX),
+    }
+}
+
+/// La versione da cui è cominciata la catena in corso, se il segno è valido per
+/// questa build: vedi [`CHIAVE_CATENA_DA`].
+///
+/// Un segno illeggibile, o che punta a un'altra versione finale, vale «nessuna
+/// catena in corso»: meglio una copia in più che una copia saltata.
+fn catena_in_corso(connection: &Connection) -> Option<u32> {
+    let segno = crate::settings::read(connection, CHIAVE_CATENA_DA)
+        .ok()
+        .flatten()?;
+    let (da, a) = segno.split_once('>')?;
+    let (da, a) = (da.parse::<u32>().ok()?, a.parse::<u32>().ok()?);
+    (a == super::LATEST_VERSION).then_some(da)
+}
+
+/// La versione di partenza della catena in corso, se c'è una catena fermata a
+/// metà e la sua copia è ancora sul disco.
+fn partenza_protetta(connection: &Connection, percorso: &Path, versione: u32) -> Option<u32> {
+    catena_in_corso(connection)
+        .filter(|da| *da < versione && nome_istantanea(percorso, *da).is_file())
+}
+
+/// La copia della partenza della catena in corso: vedi [`partenza_protetta`].
+fn copia_della_partenza(
+    connection: &Connection,
+    percorso: &Path,
+    versione: u32,
+) -> Option<PathBuf> {
+    partenza_protetta(connection, percorso, versione).map(|da| nome_istantanea(percorso, da))
+}
+
+/// La versione che dà il nome alla copia che proteggerà questo aggiornamento:
+/// quella di partenza se una catena si era fermata a metà e la sua copia c'è,
+/// altrimenti `versione`, quella del database di adesso.
+///
+/// Serve alla schermata «Aggiorno la libreria…», che nomina il file della copia:
+/// su una catena ripresa il database è alla 41, ma la copia che si tiene — e che
+/// `prima_di_migrare` troverà — è `schema-038.bak`, e nominare
+/// `schema-041.bak`, che non esiste, sarebbe dire una cosa falsa (S3-2).
+#[must_use]
+pub fn versione_della_copia(connection: &Connection, percorso: &Path, versione: u32) -> u32 {
+    partenza_protetta(connection, percorso, versione).unwrap_or(versione)
+}
+
+/// Segna che una catena cominciata da `versione` è protetta dalla sua copia.
+///
+/// Si scrive **dopo** la copia, e solo se non c'è già il segno di una catena in
+/// corso: vale la partenza, non il passo. Un guasto qui non si dice: la riga è
+/// una scrittura nello stesso file che la migrazione sta per scrivere, e se
+/// quello non si lascia scrivere la migrazione cade subito dopo con il suo
+/// errore, che si dice. Il danno di un segno mancante è uno solo — dopo una
+/// caduta a metà si offrirebbe la copia intermedia, com'era prima di S3-2.
+fn segna_la_catena(connection: &Connection, versione: u32) {
+    if catena_in_corso(connection).is_some() {
+        return;
+    }
+    let _ = crate::settings::write(
+        connection,
+        CHIAVE_CATENA_DA,
+        &format!("{versione}>{}", super::LATEST_VERSION),
+    );
+}
+
+/// Toglie il segno di una catena che è arrivata in fondo.
+///
+/// Si chiama a **ogni** apertura che finisce le migrazioni, anche quando non ce
+/// n'era nessuna da fare: un segno rimasto — una chiusura brutale fra l'ultimo
+/// `COMMIT` e questo punto, o una libreria portata dentro un'altra — non deve
+/// vivere fino al prossimo aggiornamento. Prima si legge: un database che non
+/// si lascia scrivere non ha niente da togliere e non deve dare errore.
+pub(super) fn chiudi_la_catena(connection: &Connection) {
+    if matches!(
+        crate::settings::read(connection, CHIAVE_CATENA_DA),
+        Ok(Some(_))
+    ) {
+        let _ = crate::settings::forget(connection, CHIAVE_CATENA_DA);
     }
 }
 
@@ -516,15 +622,88 @@ fn istantanee_di(percorso: &Path) -> Vec<(std::time::SystemTime, PathBuf, u32)> 
     voci.flatten()
         .filter_map(|voce| {
             let nome = voce.file_name().to_str()?.to_owned();
-            let versione = nome.strip_prefix(&prefisso)?.strip_suffix(".bak")?;
-            if versione.is_empty() || !versione.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            let versione = versione.parse::<u32>().ok()?;
+            let versione = versione_nel_nome(&nome, &prefisso, ".bak")?;
             let quando = voce.metadata().ok()?.modified().ok()?;
             Some((quando, voce.path(), versione))
         })
         .collect()
+}
+
+/// La versione scritta in `<prefisso>NNN<suffisso>`, se il nome ha proprio
+/// quella forma: solo cifre fra il prefisso e il suffisso.
+///
+/// Così `…schema-038.ripristinata.bak` — la copia che «Torna alla copia» ha
+/// usato — non è una copia da offrire né da contare.
+fn versione_nel_nome(nome: &str, prefisso: &str, suffisso: &str) -> Option<u32> {
+    let versione = nome.strip_prefix(prefisso)?.strip_suffix(suffisso)?;
+    if versione.is_empty() || !versione.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    versione.parse::<u32>().ok()
+}
+
+/// Quel che [`togli_le_copie_di_prima`] ha fatto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CopieTolte {
+    /// Quante copie (e avanzi di copie a metà) ha tolto.
+    pub tolte: usize,
+    /// Quanti byte ha liberato.
+    pub byte: u64,
+    /// Quante non è riuscito a togliere.
+    pub rimaste: usize,
+}
+
+/// Toglie tutte le copie di prima dell'aggiornamento: `rymembra.db.schema-NNN.bak`
+/// e gli avanzi `.bak.parziale` di una copia interrotta.
+///
+/// # Per il telefono
+///
+/// Android non installa una versione più vecchia sopra una più nuova senza
+/// disinstallare, e disinstallare porta via libreria e copia insieme: lì
+/// «Torna alla copia» non si può offrire, e la copia — grande quanto il
+/// database, cento megabyte e più con cinquantamila brani — non servirebbe a
+/// nessuno. Si tiene fino al primo avvio **riuscito** della versione nuova, e
+/// si toglie lì: se la catena cade a metà resta, perché finché non si sa come
+/// è andata non è il momento di buttarla. Chi la chiama la chiama a ogni
+/// apertura riuscita, e così porta via anche le copie lasciate da una build di
+/// prima.
+///
+/// Non tocca la libreria messa da parte da un ritorno
+/// (`rymembra.db.messa-da-parte.bak`): quella non ha la forma di una copia, ed
+/// è una libreria intera che qualcuno ha scelto di tenere.
+#[must_use]
+pub fn togli_le_copie_di_prima(percorso: &Path) -> CopieTolte {
+    let mut tolte = CopieTolte::default();
+    let Some(cartella) = percorso.parent() else {
+        return tolte;
+    };
+    let nome = percorso
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let prefisso = format!("{nome}.schema-");
+    let Ok(voci) = std::fs::read_dir(cartella) else {
+        return tolte;
+    };
+    for voce in voci.flatten() {
+        let Some(nome_voce) = voce.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        if versione_nel_nome(&nome_voce, &prefisso, ".bak").is_none()
+            && versione_nel_nome(&nome_voce, &prefisso, ".bak.parziale").is_none()
+        {
+            continue;
+        }
+        let byte = voce.metadata().map_or(0, |dati| dati.len());
+        match std::fs::remove_file(voce.path()) {
+            Ok(()) => {
+                tolte.tolte += 1;
+                tolte.byte = tolte.byte.saturating_add(byte);
+            }
+            Err(_) => tolte.rimaste += 1,
+        }
+    }
+    tolte
 }
 
 // ── tornare alla copia di prima dell'aggiornamento ─────────────────────────
@@ -592,10 +771,42 @@ pub fn nome_messa_da_parte(percorso: &Path) -> PathBuf {
 /// Com'è andato il ritorno alla copia.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ritorno {
-    /// La copia rimessa. Resta anche dov'era, intera.
+    /// La copia rimessa.
     pub copia: CopiaDiPrima,
     /// Dove sta adesso la libreria di prima del ritorno.
     pub messa_da_parte: PathBuf,
+    /// Dove sta adesso la copia usata: rinominata `…schema-NNN.ripristinata.bak`,
+    /// fuori dal giro delle istantanee (S3-5). Il database rimesso è identico
+    /// alla copia, quindi niente si perde; ma la copia non è più «di prima
+    /// dell'aggiornamento» — lo era dell'aggiornamento che si è appena
+    /// disfatto — e al prossimo aggiornamento se ne fa una nuova, della
+    /// libreria com'è allora. `Err` col perché se la rinomina non è riuscita: il
+    /// ritorno è fatto lo stesso, e chi chiama lo scrive nel diario.
+    pub copia_consumata: Result<PathBuf, String>,
+}
+
+/// Dove va la copia usata da [`torna_alla_copia`]: `rymembra.db.schema-NNN.ripristinata.bak`,
+/// o col primo numero libero (`…ripristinata-2.bak`).
+///
+/// Non ha la forma delle istantanee ([`versione_nel_nome`]): non si offre, non
+/// si conta fra le [`ISTANTANEE_TENUTE`] e `prima_di_migrare` non la scambia
+/// per la copia dell'aggiornamento che viene.
+fn nome_ripristinata(percorso: &Path, versione: u32) -> PathBuf {
+    let nome = percorso
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let candidato = |n: u32| {
+        percorso.with_file_name(if n == 1 {
+            format!("{nome}.schema-{versione:03}.ripristinata.bak")
+        } else {
+            format!("{nome}.schema-{versione:03}.ripristinata-{n}.bak")
+        })
+    };
+    (1..u32::MAX)
+        .map(candidato)
+        .find(|percorso| !percorso.exists())
+        .unwrap_or_else(|| candidato(u32::MAX))
 }
 
 /// Quanto aspettare la verifica della copia: un minuto, come un controllo
@@ -615,7 +826,8 @@ const TEMPO_DELLA_VERIFICA: Duration = Duration::from_secs(60);
 /// del database nuovo. L'API di backup di SQLite copia la copia dentro il
 /// database **aperto**, pagina per pagina e in una transazione sola sulla
 /// destinazione: o tutto o niente, con il giornale che resta quello del suo
-/// file, coerente. La copia resta dov'è.
+/// file, coerente. Solo a ritorno riuscito la copia usata si rinomina, fuori
+/// dal giro delle istantanee ([`Ritorno::copia_consumata`]).
 ///
 /// # I passi
 ///
@@ -627,7 +839,9 @@ const TEMPO_DELLA_VERIFICA: Duration = Duration::from_secs(60);
 ///    `-wal` coi loro nomi accoppiati;
 /// 3. la copia si rimette;
 /// 4. il giornale si svuota, e si verifica che lo schema sia quello della
-///    copia.
+///    copia;
+/// 5. la copia usata si rinomina, così il prossimo aggiornamento ne fa una
+///    nuova.
 ///
 /// Chi chiama chiude poi la connessione e **non la riapre con questa
 /// versione** se la copia è di uno schema più vecchio: la rimigrerebbe, e il
@@ -658,10 +872,25 @@ pub fn torna_alla_copia(
             copia.versione
         )));
     }
+    // Il ritorno è fatto e verificato. La copia usata si toglie dal giro: se
+    // restasse `schema-NNN.bak`, l'aggiornamento che viene la troverebbe
+    // «presente» e non ne farebbe una nuova, della libreria con le settimane
+    // di uso in più (S3-5, visto dal vivo in L-WSB33).
+    let copia_consumata = consuma_la_copia(percorso, copia);
     Ok(Ritorno {
         copia: copia.clone(),
         messa_da_parte,
+        copia_consumata,
     })
+}
+
+/// Rinomina la copia usata fuori dal giro delle istantanee: vedi
+/// [`Ritorno::copia_consumata`].
+fn consuma_la_copia(percorso: &Path, copia: &CopiaDiPrima) -> Result<PathBuf, String> {
+    let destinazione = nome_ripristinata(percorso, copia.versione);
+    std::fs::rename(&copia.percorso, &destinazione)
+        .map(|()| destinazione)
+        .map_err(|err| format!("{}: {err}", copia.percorso.display()))
 }
 
 /// [`torna_alla_copia`] con la libreria chiusa — una migrazione fermata a
@@ -1272,7 +1501,41 @@ mod prove {
             ),
             "la libreria di prima del ritorno è messa da parte, con l'ascolto nuovo"
         );
-        assert!(copia.percorso.is_file(), "la copia resta anche dov'era");
+        // La copia usata non è più una copia da offrire (S3-5), ma c'è ancora:
+        // rinominata, intera, e senza nessun file di giornale accanto.
+        assert!(
+            !copia.percorso.exists(),
+            "la copia usata si toglie dal giro"
+        );
+        let consumata = ritorno
+            .copia_consumata
+            .expect("la copia usata si è rinominata");
+        assert_eq!(
+            consumata,
+            dir.path().join("rymembra.db.schema-038.ripristinata.bak")
+        );
+        assert_eq!(
+            com_e(&consumata),
+            ("38".to_owned(), "ok".to_owned(), [200, 2_000, 10]),
+            "la copia usata è intera"
+        );
+        let avanzi: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("cartella")
+            .flatten()
+            .map(|voce| voce.file_name().to_string_lossy().into_owned())
+            .filter(|nome| {
+                nome.contains(".schema-038") && (nome.ends_with("-wal") || nome.ends_with("-shm"))
+            })
+            .collect();
+        assert!(
+            avanzi.is_empty(),
+            "file di giornale accanto alla copia: {avanzi:?}"
+        );
+        assert_eq!(
+            copia_di_prima(&percorso),
+            None,
+            "e non si offre di nuovo la stessa copia"
+        );
         assert_eq!(
             std::fs::metadata(accanto(&percorso, "-wal")).map_or(0, |dati| dati.len()),
             0,
@@ -1376,5 +1639,239 @@ mod prove {
             dir.path().join("rymembra.db.messa-da-parte-2.bak")
         );
         assert_eq!(copia_di_prima(&percorso).map(|c| c.versione), Some(38));
+    }
+
+    /// Il valore di una riga di `settings` del file, se c'è.
+    fn impostazione(percorso: &Path, chiave: &str) -> Option<String> {
+        Connection::open(percorso)
+            .expect("apertura")
+            .query_row("SELECT value FROM settings WHERE key = ?1", [chiave], |r| {
+                r.get(0)
+            })
+            .ok()
+    }
+
+    /// Fa cadere la 042: aggiunge a mano la colonna che la 042 vuole creare, e
+    /// «duplicate column name» ferma la catena dopo la 039, la 040 e la 041 —
+    /// come farebbe un disco pieno o un antivirus sul file a metà.
+    fn fai_cadere_la_042(percorso: &Path) {
+        Connection::open(percorso)
+            .expect("apertura")
+            .execute_batch("ALTER TABLE tracks ADD COLUMN ordine_titolo TEXT")
+            .expect("la colonna di intralcio");
+    }
+
+    #[test]
+    fn dopo_una_catena_fermata_a_meta_la_copia_offerta_e_quella_della_versione_di_partenza() {
+        // S3-2. Un 3.2.0 (schema 38) apre la 3.3.0: la copia `schema-038.bak`,
+        // poi la 039, la 040 e la 041 passano, e la 042 cade. L'utente riavvia:
+        // la libreria è alla 41, e un secondo avvio faceva `schema-041.bak`, la
+        // copia di un database già a metà, **più recente**. «Torna alla copia»
+        // offriva quella, che la 3.2.0 rifiuta con `db.versionAhead`, mentre la
+        // copia che la 3.2.0 apre — la 038 — restava sul disco senza che
+        // l'interfaccia potesse più offrirla.
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        libreria_vera_alla(&percorso, 38);
+        fai_cadere_la_042(&percorso);
+
+        let primo = super::super::open(&percorso).expect_err("la 042 cade");
+        assert_eq!(primo.code().kind(), ErrorCodeKind::DbMigrationFailed);
+        assert_eq!(com_e(&percorso).0, "41", "tre passi fatti, e restano");
+        let partenza = nome_istantanea(&percorso, 38);
+        assert!(partenza.is_file(), "la copia della partenza");
+        // Più vecchia di qualunque cosa il secondo avvio faccia: la prova non
+        // dipende dalla risoluzione delle date del file system.
+        filetime::set_file_mtime(
+            &partenza,
+            filetime::FileTime::from_unix_time(1_700_000_000, 0),
+        )
+        .expect("data");
+
+        // Il riavvio, e la stessa caduta.
+        super::super::open(&percorso).expect_err("la 042 cade ancora");
+
+        assert!(
+            !nome_istantanea(&percorso, 41).exists(),
+            "la copia di un tentativo a metà non è una copia da offrire"
+        );
+        assert_eq!(
+            copia_di_prima(&percorso).map(|copia| copia.versione),
+            Some(38),
+            "la copia offerta è quella che la versione di partenza apre"
+        );
+
+        // Tolto l'intralcio la catena riparte e finisce, e la copia resta quella.
+        Connection::open(&percorso)
+            .expect("apertura")
+            .execute_batch("ALTER TABLE tracks DROP COLUMN ordine_titolo")
+            .expect("tolto");
+        let aperto = super::super::open(&percorso).expect("la catena riparte");
+        assert_eq!(aperto.version_before, 41);
+        assert_eq!(
+            aperto.istantanea,
+            Some(Istantanea::Presente {
+                percorso: partenza.clone()
+            }),
+            "il diario dice qual è la copia che protegge la catena"
+        );
+        drop(aperto);
+        assert_eq!(copia_di_prima(&percorso).map(|c| c.versione), Some(38));
+        assert_eq!(
+            impostazione(&percorso, CHIAVE_CATENA_DA),
+            None,
+            "a catena finita il segno si toglie"
+        );
+    }
+
+    #[test]
+    fn le_copie_di_prima_si_tolgono_tutte_e_solo_quelle() {
+        // S3-6, per il telefono: la copia non si può usare né togliere dalla
+        // finestra, e dopo il primo avvio riuscito va via da sé.
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        let scrivi = |nome: &str, byte: usize| {
+            std::fs::write(dir.path().join(nome), vec![7_u8; byte]).expect("file");
+        };
+        scrivi("rymembra.db", 100);
+        scrivi("rymembra.db.schema-036.bak", 10);
+        scrivi("rymembra.db.schema-038.bak", 20);
+        scrivi("rymembra.db.schema-041.bak.parziale", 5);
+        // Quel che non è una copia di prima, e non si tocca.
+        scrivi("rymembra.db.messa-da-parte.bak", 1);
+        scrivi("rymembra.db.schema-038.ripristinata.bak", 1);
+        scrivi("rymembra.db.schema-abc.bak", 1);
+        scrivi("altro.db.schema-038.bak", 1);
+
+        let tolte = togli_le_copie_di_prima(&percorso);
+
+        assert_eq!(
+            tolte,
+            CopieTolte {
+                tolte: 3,
+                byte: 35,
+                rimaste: 0
+            }
+        );
+        let mut resta: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("cartella")
+            .flatten()
+            .map(|voce| voce.file_name().to_string_lossy().into_owned())
+            .collect();
+        resta.sort();
+        assert_eq!(
+            resta,
+            vec![
+                "altro.db.schema-038.bak",
+                "rymembra.db",
+                "rymembra.db.messa-da-parte.bak",
+                "rymembra.db.schema-038.ripristinata.bak",
+                "rymembra.db.schema-abc.bak",
+            ]
+        );
+        assert_eq!(
+            togli_le_copie_di_prima(&percorso),
+            CopieTolte::default(),
+            "la seconda volta non c'è più niente"
+        );
+    }
+
+    #[test]
+    fn un_segno_di_una_catena_di_un_altra_build_non_salta_la_copia() {
+        // Il segno dice «questa catena è cominciata dalla 38 e punta alla 43»:
+        // vale solo per la build che punta alla 43. Uno rimasto da una catena
+        // che nessuno ha chiuso — e una build nuova che punta più in là — non
+        // deve far saltare la copia che serve.
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        let versione = super::super::LATEST_VERSION - 1;
+        database_alla(&percorso, versione);
+        std::fs::write(nome_istantanea(&percorso, 38), b"copia vecchia").expect("copia");
+        Connection::open(&percorso)
+            .expect("apertura")
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                [
+                    CHIAVE_CATENA_DA,
+                    &format!("38>{}", super::super::LATEST_VERSION - 1),
+                ],
+            )
+            .expect("un segno che non è di questa build");
+
+        let aperto = super::super::open(&percorso).expect("apertura");
+        assert!(
+            matches!(aperto.istantanea, Some(Istantanea::Fatta { .. })),
+            "una copia nuova: {:?}",
+            aperto.istantanea
+        );
+        assert!(nome_istantanea(&percorso, versione).is_file());
+    }
+
+    #[test]
+    fn un_segno_rimasto_a_catena_finita_si_toglie_alla_prima_apertura() {
+        // Ogni apertura che arriva in fondo toglie il segno, anche se la catena
+        // l'ha chiusa un altro avvio, o una copia portata dentro la libreria
+        // (`aggiorna_una_copia`, `sostituisci_con`): un segno stantio vale solo
+        // finché non viene il giorno di un aggiornamento nuovo.
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        drop(super::super::open(&percorso).expect("apertura"));
+        Connection::open(&percorso)
+            .expect("apertura")
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                [
+                    CHIAVE_CATENA_DA,
+                    &format!("38>{}", super::super::LATEST_VERSION),
+                ],
+            )
+            .expect("un segno rimasto");
+
+        drop(super::super::open(&percorso).expect("riapertura"));
+
+        assert_eq!(impostazione(&percorso, CHIAVE_CATENA_DA), None);
+    }
+
+    #[test]
+    fn dopo_il_ritorno_il_prossimo_aggiornamento_fa_una_copia_nuova() {
+        // S3-5, visto dal vivo (L-WSB33 A6). Si aggiorna, si torna alla copia, si
+        // usa la 3.2.0 per settimane, e l'updater la porta alla 3.3.x: la
+        // `schema-038.bak` di prima era ancora lì, `Presente`, e la libreria con
+        // le settimane in più migrava senza nessuna copia.
+        let dir = tempfile::tempdir().expect("cartella");
+        let percorso = dir.path().join("rymembra.db");
+        libreria_vera_alla(&percorso, 38);
+        drop(super::super::open(&percorso).expect("primo aggiornamento"));
+        let copia = copia_di_prima(&percorso).expect("la copia c'è");
+        torna_alla_copia_del_file(&percorso, &copia).expect("ritorno alla copia");
+
+        // Le settimane in più, sulla 3.2.0.
+        Connection::open(&percorso)
+            .expect("apertura")
+            .execute(
+                "INSERT INTO play_history (track_id, played_at, ms_played)
+                 VALUES (3, 1800000000000, 180000)",
+                [],
+            )
+            .expect("un ascolto dopo il ritorno");
+
+        assert_eq!(
+            copia_di_prima(&percorso),
+            None,
+            "la copia usata non è più una copia da offrire"
+        );
+        let aperto = super::super::open(&percorso).expect("secondo aggiornamento");
+        assert!(
+            matches!(aperto.istantanea, Some(Istantanea::Fatta { .. })),
+            "una copia nuova, non quella di prima: {:?}",
+            aperto.istantanea
+        );
+        drop(aperto);
+        let nuova = copia_di_prima(&percorso).expect("la copia nuova");
+        assert_eq!(
+            com_e(&nuova.percorso),
+            ("38".to_owned(), "ok".to_owned(), [200, 2_001, 10]),
+            "la copia nuova ha le settimane in più"
+        );
     }
 }

@@ -232,6 +232,23 @@ mod prove {
     }
 
     #[test]
+    fn il_segno_di_capacita_passa_dal_dominio_intatto() {
+        // La copia `sano` che il motore fa di ogni documento altrui è il punto
+        // su cui, in una 3.3.x, si leggerà il segno dei pari: se qui cadesse,
+        // ogni pari sembrerebbe un PC della 3.2.0.
+        let contenuto = Contenuto {
+            capacita: crate::documento::capacita_di_questa_versione(),
+            ..con_tutto_a(DOMANI)
+        };
+        let sano = nel_dominio(contenuto, ADESSO, Futuro::Rinvia);
+        assert_eq!(
+            sano.capacita,
+            crate::documento::capacita_di_questa_versione()
+        );
+        assert!(sano.voti.is_empty(), "e il resto cade come prima");
+    }
+
+    #[test]
     fn la_sincronia_rinvia_il_futuro_e_lo_prende_quando_arriva() {
         let rinviato = nel_dominio(con_tutto_a(DOMANI), ADESSO, Futuro::Rinvia);
         assert_eq!(

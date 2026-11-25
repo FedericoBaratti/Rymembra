@@ -422,6 +422,9 @@ pub fn ricorda_su_disco(app: &tauri::AppHandle) {
                 ricordo.da_scrivere = false;
             }
         }
+        // La libreria staccata apposta da «Torna alla copia» non è un guasto: la
+        // geometria non si ricorda perché si sta uscendo (D4 di L-WSB33).
+        Some(Err(err)) if crate::stato::e_il_ritorno_alla_copia(&err) => {}
         Some(Err(err)) => nota!(
             "[finestra] la geometria non si ricorda: codice={}",
             err.code().kind().code()

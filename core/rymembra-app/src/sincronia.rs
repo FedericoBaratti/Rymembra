@@ -992,6 +992,10 @@ pub fn contenuto(
                 .and_then(|quando| quando.parse().ok())
                 .unwrap_or(0),
         }),
+        // Il segno di capacità non è dello stato locale: lo mette il motore sul
+        // documento che pubblica (`Motore::passata`). Il profilo, che usa
+        // questa stessa forma, non lo porta.
+        ..Contenuto::default()
     })
 }
 
