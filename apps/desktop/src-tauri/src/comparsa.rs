@@ -67,7 +67,7 @@ use rymembra_app::settings;
 use tauri::Manager as _;
 
 use crate::argomenti::{Argomenti, SecondoAvvio, secondo_avvio as decisione};
-use crate::geometria::{self, Area, Geometria, Lettura, Rimessa};
+use crate::geometria::{self, Area, Geometria, Lettura, Misura, MisuraDellaFinestra, Rimessa};
 use crate::stato::{Stato, con_libreria, con_libreria_entro};
 use crate::{nota, spegnimento, vassoio};
 
@@ -222,13 +222,14 @@ pub fn rileggi_se_mossa(app: &tauri::AppHandle) {
 
 /// La finestra com'è adesso, o `None` se il sistema non risponde.
 fn leggi(finestra: &tauri::WebviewWindow) -> Option<Lettura> {
+    // Posizione e misura **esterne**, della stessa cornice: vedi `geometria`.
     let posizione = finestra.outer_position().ok()?;
-    let misura = finestra.inner_size().ok()?;
+    let misura = geometria::misura_da_ricordare(&mut SullaFinestra(finestra))?;
     Some(Lettura {
         x: posizione.x,
         y: posizione.y,
-        larghezza: misura.width,
-        altezza: misura.height,
+        larghezza: misura.larghezza,
+        altezza: misura.altezza,
         ingrandita: finestra.is_maximized().ok()?,
         ridotta: finestra.is_minimized().ok()?,
         schermo_intero: finestra.is_fullscreen().ok()?,
@@ -303,6 +304,27 @@ fn aree(finestra: &tauri::WebviewWindow) -> Vec<Area> {
     geometria::principale_per_prima(tutti, principale)
 }
 
+/// La finestra vera, vista da `geometria::rimetti_la_misura`.
+struct SullaFinestra<'a>(&'a tauri::WebviewWindow);
+
+impl MisuraDellaFinestra for SullaFinestra<'_> {
+    fn esterna(&mut self) -> Option<Misura> {
+        let misura = self.0.outer_size().ok()?;
+        Some(Misura::nuova(misura.width, misura.height))
+    }
+
+    fn interna(&mut self) -> Option<Misura> {
+        let misura = self.0.inner_size().ok()?;
+        Some(Misura::nuova(misura.width, misura.height))
+    }
+
+    fn chiedi_interna(&mut self, misura: Misura) -> Result<(), String> {
+        self.0
+            .set_size(tauri::PhysicalSize::new(misura.larghezza, misura.altezza))
+            .map_err(|err| err.to_string())
+    }
+}
+
 /// Rimette la finestra dov'era: la posizione, la misura, e ingrandita se lo era
 /// e `ingrandisci` lo vuole.
 ///
@@ -327,8 +349,19 @@ fn applica(finestra: &tauri::WebviewWindow, ingrandisci: bool) {
     if let Err(err) = finestra.set_position(tauri::PhysicalPosition::new(messa.x, messa.y)) {
         nota!("[finestra] la posizione non si rimette: {err}");
     }
-    if let Err(err) = finestra.set_size(tauri::PhysicalSize::new(messa.larghezza, messa.altezza)) {
-        nota!("[finestra] la misura non si rimette: {err}");
+    let voluta = Misura::nuova(messa.larghezza, messa.altezza);
+    match geometria::rimetti_la_misura(&mut SullaFinestra(finestra), voluta) {
+        Ok(esito) => nota!(
+            "[finestra] misura rimessa: voluta={}x{} chiesta={}x{} ottenuta={}x{}{}",
+            voluta.larghezza,
+            voluta.altezza,
+            esito.chiesta.larghezza,
+            esito.chiesta.altezza,
+            esito.ottenuta.larghezza,
+            esito.ottenuta.altezza,
+            if esito.corretta { " (corretta)" } else { "" }
+        ),
+        Err(err) => nota!("[finestra] la misura non si rimette: {err}"),
     }
     if ingrandisci
         && messa.ingrandita
@@ -648,6 +681,38 @@ mod prove {
             .find("finestra_nata(app)")
             .expect("la finestra ricreata non riprende guardia e pulsanti");
         assert!(costruita < rimessa && rimessa < nata);
+    }
+
+    /// D1: la misura si ricorda **esterna** — la stessa cornice della posizione — e si
+    /// rimette dopo la posizione, chiedendola alla cornice della finestra nata:
+    /// `set_size` a mano, con la misura interna di prima, la faceva crescere di
+    /// trenta pixel a ogni ricreazione (L-WSB33).
+    #[test]
+    fn la_misura_si_ricorda_esterna_e_si_rimette_dopo_la_posizione() {
+        let sorgente = include_str!("comparsa.rs");
+        let sorgente = sorgente.split("#[cfg(test)]").next().unwrap_or(sorgente);
+        let corpo = |firma: &str| {
+            sorgente
+                .split(firma)
+                .nth(1)
+                .and_then(|resto| resto.split("\n}\n").next())
+                .unwrap_or_default()
+        };
+        let leggi = corpo("fn leggi(");
+        assert!(leggi.contains("geometria::misura_da_ricordare("));
+        assert!(!leggi.contains("inner_size"), "si ricorda la misura interna");
+        let applica = corpo("fn applica(");
+        let posizione = applica
+            .find("set_position(")
+            .expect("la posizione non si rimette");
+        let misura = applica
+            .find("geometria::rimetti_la_misura(")
+            .expect("la misura non passa dalla cornice");
+        assert!(posizione < misura, "la misura si rimette prima della posizione");
+        assert!(
+            !applica.contains(".set_size("),
+            "la misura si chiede alla finestra cruda, senza la sua cornice"
+        );
     }
 
     /// Dove si legge la finestra: `Moved` e `Resized` **segnano** soltanto, e si
