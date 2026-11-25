@@ -353,9 +353,13 @@ a longer listening history than the public API offers.
   are missing: a phone with only part of the music shows the tracks it has,
   and the others stay in the playlist on every other device and come back in
   their place when the file arrives. **Every device that syncs together has to
-  be on 3.2.1:** a 3.2.0 device with only part of the music still removes
-  those tracks from the other devices’ playlists, and what it already removed
-  does not come back.
+  be on 3.3.0:** a PC left on 3.2.0 with only part of the music still removes
+  the entries of the tracks it does not have from the other devices’
+  playlists — including the tracks of your other devices that a playlist can
+  now hold, which a 3.2.0 PC never has — and what it already removed does not
+  come back by itself. Until it is updated, “Forget” it in the list of
+  devices: its old state is not lost, and it can be accepted again
+  afterwards.
 
   **Google Drive needs a Google project of your own, and Rymembra has none
   built in — on purpose.** A desktop program cannot keep an OAuth client
@@ -432,7 +436,9 @@ a longer listening history than the public API offers.
   entry in Windows’ startup list) and on the Store copy (a startup task). With
   «The X closes the window and Rymembra stays in the tray» on, the X really
   closes the window: the music, the media keys and the tray icon go on and the
-  window’s WebView2 processes are gone, until you ask for the window again.
+  window’s WebView2 processes are gone, until you ask for the window again,
+  and the window comes back where it was, at the same size; running a newer
+  installer by hand over the installed copy keeps the switch as it was.
   A one-time question offers both. `rymembra://collega/…` links open Rymembra
   and ask you to confirm before linking.
 - **The phone stays reachable, and Android Auto finds it ready.** *Settings ›
@@ -794,13 +800,22 @@ migration — `rymembra.db.schema-NNN.bak`, beside the database, the last two
 kept. On the computer, “Go back to the copy from before the update”, in
 *Settings › Library and data*, puts it back: it sets the current library
 aside as `rymembra.db.messa-da-parte.bak`, puts the copy in its place inside
-the open database, and closes Rymembra, so that you can install the previous
-version. It works even when the library does not open. Going back by hand
-means quitting Rymembra, also from its icon next to the clock, moving
-`rymembra.db`, `rymembra.db-wal` and `rymembra.db-shm` aside together — the
-last two belong to the newer database, and next to the copy SQLite would
-read them as its own — and copying the `.bak` to `rymembra.db`, not moving
-it, so that the `.bak` stays as a fallback.
+the open database, renames the copy it used to `rymembra.db.schema-NNN.ripristinata.bak`
+— so that the next update makes a fresh copy of the library as it is then, and
+this one stays, whole, until you delete it — and closes Rymembra, so that you
+can install the previous version. It works even when the library does not
+open. Do it **before** installing the previous version: 3.2.0, opened on a
+library already updated to 3.3.0, shows a black window with no message. Going
+back by hand means quitting Rymembra, also from its icon next to the clock,
+moving `rymembra.db`, `rymembra.db-wal` and `rymembra.db-shm` aside together
+— the last two belong to the newer database, and next to the copy SQLite would
+read them as its own — and copying the `.bak` to `rymembra.db`, not moving it,
+so that the `.bak` stays as a fallback. Without the copy, `CHANGELOG.md` (the
+Database section of 3.3.0) has the SQL that takes the schema back from 43 to
+38, inside a transaction; switch off sync and the Drive backup on every device
+before running it. On the phone the copy is deleted after the first successful
+start of the new version, because Android would not install the older one over
+the newer one without uninstalling it, which takes the library along.
 
 ---
 
@@ -885,15 +900,24 @@ environment `release` under the name `TAURI_SIGNING_PRIVATE_KEY`, and its
 password, if it has one, under `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — not into
 the repository secrets, which any workflow on any branch can read. In
 *Settings → Environments → release*, allow only tags `v*` and add a required
-reviewer: the `firma` job, the only one that names the environment, then waits
-for an approval before it gets the key. A release run by hand starts
+reviewer, and the five secrets there and nowhere else: three jobs name the
+environment, and each waits for an approval before it gets a key — `segreti`,
+right after the tag, which checks that the secrets are there, that the Android
+keystore opens with its password and alias and that its certificate is the one
+pinned in `strumenti/android-certificato.sha256`, so that a missing or wrong
+secret shows up in two minutes and not after an hour and a half of building;
+then `firma` and `firma-apk`, which sign. A release run by hand starts
 from the tag itself (*Use workflow from → Tags*), with the same tag in its
 `tag` field; a run from a branch stops at once.
 
 The private key signs the executables that get installed automatically on users'
 systems: losing it permanently prevents every existing installation from
 updating. The `strumenti/manifesto.js` script compares the identifiers of the
-two halves on every release, so that any mismatch surfaces in CI.
+two halves on every release, so that any mismatch surfaces in CI, and
+`strumenti/minisign.js` verifies the signatures themselves against the bytes
+of the installer, of `latest.json` and of the APK (BLAKE2b-512 and Ed25519, as
+the updater does): a `.sig` that is not the file’s stops the release, instead
+of being found out by every installed copy.
 
 Since 3.0 the signature also carries the version it was made for, and the
 updater refuses an update whose signature does not match the version the
@@ -1117,11 +1141,12 @@ constraint is stated explicitly in the terms of use.
   «Reachable from the internet». Only tracks in local and network
   folders are shared, not cloud folders or catalog tracks; a track of a CD
   image (one file with its `.cue`) plays but is not downloaded. Seeking in a
-  remote track is approximate, as in any streamed track. A device that has not
-  updated cannot send its catalog: on this version it shows «Update Rymembra on
-  <name>» and none of its music in the library, while the older device can
-  still browse this one — update both. A copy of another device’s cover is the
-  320-pixel one until the same file is scanned here. «Listen together»
+  remote track is approximate, as in any streamed track. A PC left on 3.2.0
+  cannot link at all — the device link is new in this version — so update
+  every PC (what a 3.2.0 PC still does to playlists is under «Sync between
+  devices» below). A copy of another device’s cover is the 320-pixel one until
+  the same file is scanned here, and covers from other devices stop being saved
+  at 256 MiB until room is made. «Listen together»
   away from home is as good as the path: the host sends each track to each
   member, so through a relay — or from a phone on mobile data — a session of
   several members can stall, and over a jittery link the members stay in
@@ -1136,8 +1161,15 @@ constraint is stated explicitly in the terms of use.
   skipped» notice. If the device holding the best copy goes off a moment before
   Rymembra notices, only the copy on this device is tried as a fallback. A
   corrected tag can make a track appear twice in a playlist, which loses
-  nothing. Corrections to another device’s lyrics have no clock: the last to
-  arrive wins. After you forget a device its covers stay among the unused covers
+  nothing. A correction to another device’s lyrics carries the clock of when
+  it was decided, and the owner keeps the most recent text timed by hand; the
+  text a correction replaces is kept as a copy of one level, which “Restore
+  the previous lyrics” brings back, and a second replacement of the same track
+  overwrites that copy. Listens you made on a track from another device that
+  move to your copy of it — when the device is forgotten, or stops sharing the
+  track — become part of your history, and “Send all my history” to a
+  scrobbling service can send them again if you never sent it before (the
+  service drops the duplicate). After you forget a device its covers stay among the unused covers
   until the next cleanup (*Settings › Covers and database health*, which also
   runs by itself after a scan).
 - **Sync between devices.** A track taken out of a playlist and, before the
@@ -1146,16 +1178,25 @@ constraint is stated explicitly in the terms of use.
   that removal from a file that is only missing here, and keeps the track
   rather than risk removing it everywhere. Taking it out of the playlist again
   on another device settles it. A playlist open on screen shows a track that
-  sync brings back only when it is opened again.
+  sync brings back only when it is opened again. A PC left on 3.2.0 inside the
+  group does not do this: it keeps removing the playlist entries of the tracks
+  it does not have, and the removals reach the devices that updated — update
+  every device that syncs, or “Forget” the 3.2.0 PC until it is updated. And a
+  Google Drive backup shared by a 3.2.0 and a 3.3.0 computer is rewritten by
+  3.2.0 with only the fields it knows: folders, skins and drafts removed on the
+  3.3.0 side can come back, and the two computers keep re-uploading the file.
 - **The window’s engine on Windows.** WebView2 sends Microsoft its required
   diagnostic data, and a minidump when one of its processes crashes, which
   can hold the titles on screen. Turning the minidumps off needs an option of
   the WebView2 environment that Tauri does not expose yet; see
   [`PRIVACY.md`](PRIVACY.md) § 6-bis. With the X set to close the window and
   keep Rymembra in the tray, events sent while there is no window are lost (a
-  notice that was shown and missed does not come back), and if the tray icon is
+  notice that was shown and missed does not come back; a playback error is the
+  exception, and is shown when the window opens again), and if the tray icon is
   not there — Windows refused it, or its menu labels have not been remembered
   yet, as on a very first start — the X closes the program, as it always did.
+  A second launch, or a `rymembra://` link, that arrives while Rymembra is
+  quitting (about two seconds at most) is ignored: open it again.
 - **Proxies.** Rymembra follows the proxy set in Windows Settings
   (`ProxyEnable`, `ProxyServer`, `ProxyOverride`); names without a dot — a
   NAS, a computer at home — and this computer itself always go direct. It does
@@ -1193,7 +1234,9 @@ constraint is stated explicitly in the terms of use.
     signature too (`<apk>.sig`). Before Android's installer sees it, Rymembra
     checks that signature with the same key as the computer’s updater, for
     the version announced, then that it is this same app signed with the same
-    certificate as the installed one; if not, it deletes it and says so. A
+    certificate as the installed one; if not, it deletes it and says so. The
+    signature is checked again when you tap «Install», so a file that changed
+    in the cache while it waited is deleted and never handed over. A
     copy signed with another key — a test build — is not offered the update
     at all (see [Installation](#installation)). Installing it is then up
     to Android, which asks the person using the phone to confirm every time —
@@ -1218,8 +1261,8 @@ constraint is stated explicitly in the terms of use.
     your PCs may not find the phone. Rymembra does not request the exemption
     itself, which Google Play reserves for other apps: the setting opens
     Android’s page instead. With the setting on the service restarts after a
-    reboot, as soon as the phone is unlocked for the first time, and starts the
-    core by itself — the library, the player, the car’s session, the link to
+    reboot — as soon as the phone is unlocked for the first time — and after
+    an update of the app, and starts the core by itself — the library, the player, the car’s session, the link to
     your PCs — without opening the app; when you open it, it joins that core.
     The notification says «Rymembra is starting» until the core is up, and
     «Rymembra is resting» only if it does not start — the library could not
@@ -1253,17 +1296,23 @@ constraint is stated explicitly in the terms of use.
     appears as soon as that core is up; the car shows «Open Rymembra on your
     phone», with a button that opens the app, only if the core does not start.
     With «Stay active in the background» on, Rymembra stays running, and starts
-    again by itself after a restart of the phone, so the car should find it
-    ready — which has not been tried with a real car. The car lists only what
+    again by itself after a restart of the phone or an update of the app, so
+    the car should find it ready — which has not been tried with a real car. The car lists only what
     can be played now: tracks of a device that is off are left out, and a
     track stays if another device that answers has a copy. «Start with the
     car» is only as reliable as Android Auto’s own connection report: a loose
     cable makes the music start again each time, and Google’s rule for media
     apps in cars (MA-1) forbids starting by itself, which is why the Google
-    Play build lacks it. The car’s queue has no covers for a «Listen together»
+    Play build lacks it. If Android does not grant the audio focus — a call, an
+    app that will not give it up, or, on Android 17, its restriction on audio
+    asked for from the background — nothing starts; whether that restriction
+    applies to the service Rymembra brings back by itself after a restart or an
+    update has not been verified, and the log says why the focus was refused. The car’s queue has no covers for a «Listen together»
     voice, which has no row in the library. Only trusted
-    controllers reach the music session — Android Auto is recognized by its
-    package and Google's certificate — and that check has yet to be tried
+    controllers browse the music session — Android Auto is recognized by its
+    package and Google's certificate; any app can still send a media key
+    (play, pause, next, previous, stop) or a “play from search”, as to every
+    Android music app, which moves what plays and reads nothing — and that check has yet to be tried
     with Android Auto on a real phone (with Google's Desktop Head Unit): if
     the car stops showing Rymembra, it is the first thing to look at.
   - **Connecting a service** (Google Drive, OneDrive, Dropbox, Last.fm)
