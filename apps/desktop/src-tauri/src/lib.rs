@@ -1597,6 +1597,7 @@ pub fn run() {
             riproduzione::eq_preset_salva,
             riproduzione::eq_preset_cancella,
             riproduzione::riproduzione_stato,
+            riproduzione::riproduzione_coda,
             riproduzione::coda_accoda,
             riproduzione::coda_dopo,
             riproduzione::coda_vai,

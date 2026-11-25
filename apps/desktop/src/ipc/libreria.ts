@@ -1051,7 +1051,18 @@ export interface StatoRiproduzione {
   ripeti: Ripetizione;
   volume: number;
   muto: boolean;
+  /**
+   * La coda, nell'ordine in cui suonerà. L'evento `riproduzione:stato` non la porta
+   * se non è cambiata (`StatoRiproduzioneEvento`): la finestra la tiene in mano
+   * (`codaTenuta.ts`), e questo campo è sempre quella.
+   */
   coda: number[];
+  /**
+   * La versione della coda, che il nucleo numera a ogni cambiamento: con la stessa
+   * versione la coda è la stessa. Parte dal tempo di avvio, perché un nucleo
+   * riavviato non riparta da un numero che la finestra ha già visto.
+   */
+  versioneCoda: number;
   posizioneCoda: number | null;
   eqAttivo: boolean;
   eqGuadagni: number[];
@@ -1138,6 +1149,19 @@ export interface StatoRiproduzione {
    * `Tempo.inAttesa`), e `useRiproduzione` lo aggiunge qui. Assente vale no.
    */
   inAttesa?: boolean;
+}
+
+/**
+ * `riproduzione:stato`, com'è sul filo: la coda c'è solo se è cambiata dall'ultimo
+ * evento spedito (S7-5). `codaTenuta.ts` la rimette al suo posto prima che
+ * qualcuno disegni lo stato.
+ */
+export type StatoRiproduzioneEvento = Omit<StatoRiproduzione, "coda"> & { coda?: number[] };
+
+/** La coda del lettore con la sua versione, per chi l'ha persa: `riproduzione_coda`. */
+export interface CodaDelLettore {
+  versione: number;
+  coda: number[];
 }
 
 /**

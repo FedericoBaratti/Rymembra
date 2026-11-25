@@ -27,7 +27,7 @@
           table: {
             head: ["Event", "Payload", "Cadence"],
             rows: [
-              ["`riproduzione:stato`", "`StatoRiproduzione`: track summary, paused, position, duration, shuffle, repeat, volume, mute, queue ids, queue index, EQ, normalization name, sleep timer, autoplay, crossfade, latency, output, format, the session (`insieme`)", "on change"],
+              ["`riproduzione:stato`", "`StatoRiproduzione`: track summary, paused, position, duration, shuffle, repeat, volume, mute, the queue's version and — only when it changed since the last event sent — its ids (`riproduzione_coda` gives the pair to a window that missed one), queue index, EQ, normalization name, sleep timer, autoplay, crossfade, latency, output, format, the session (`insieme`)", "on change"],
               ["`riproduzione:tempo`", "`{ posizione_ms, durata_ms, in_pausa, in_attesa }`", "every 250 ms while playing"],
               ["`riproduzione:audio`", "device lost / decoder stalled", "once per failure"],
               ["`riproduzione:errore`", "`ErroreIpc`", "on failure"],

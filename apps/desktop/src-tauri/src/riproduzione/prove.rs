@@ -440,10 +440,11 @@ const GESTI: [&str; 20] = [
 /// I comandi che **non** sono gesti della sessione, ognuno col suo perché.
 /// Un comando nuovo che non sta né qui né in [`GESTI`] fa fallire la prova:
 /// è il modo di obbligare chi lo scrive a decidere.
-const NON_GESTI: [&str; 24] = [
+const NON_GESTI: [&str; 25] = [
     // Domande, o preferenze di questo PC: volume, equalizzatore, uscita e
     // latenza sono di ciascuno, e restano locali sempre.
     "riproduzione_stato",
+    "riproduzione_coda",
     "dissolvenza",
     "latenza",
     "volume",
@@ -1461,4 +1462,193 @@ fn chi_apre_un_brano_porta_il_numero_dei_gesti_letto_prima_di_ogni_attesa() {
             "{firma} non riceve il numero dei gesti da chi ha deciso"
         );
     }
+}
+
+/// Uno stato di riproduzione di prova, con la coda data: per misurare quanto pesa
+/// l'evento, non per provare un comportamento.
+fn stato_di_prova(coda: Vec<i64>) -> StatoRiproduzione {
+    StatoRiproduzione {
+        brano: None,
+        in_pausa: false,
+        posizione_ms: 61_000,
+        durata_ms: 183_000,
+        shuffle: false,
+        ripeti: nome_ripetizione(RepeatMode::Off).to_owned(),
+        volume: Volume::default().volume,
+        muto: false,
+        coda: std::sync::Arc::new(coda),
+        coda_in_pagina: None,
+        versione_coda: 1,
+        posizione_coda: Some(0),
+        eq_attivo: false,
+        eq_guadagni: vec![0.0; 10],
+        replaygain: nome_normalizzazione(Normalizzazione::default()).to_owned(),
+        spegnimento_ms: None,
+        autoplay: false,
+        dissolvenza_s: 0,
+        latenza_ms: 0,
+        anticipo_ms: rymembra_domain::testo::ANTICIPO_MS,
+        motivo_prossimo: None,
+        audio: None,
+        uscita: None,
+        formato: None,
+        insieme: None,
+    }
+}
+
+/// S7-5, la misura: quanto costa **ogni stato** della riproduzione con una coda da
+/// cinquantamila brani.
+///
+/// Non è una prova di comportamento: scrive i numeri (`println!`), ed è
+/// `#[ignore]`. Si lancia a mano, con `--test-threads=1`:
+///
+/// ```text
+/// cargo test -p rymembra-desktop --locked --lib misura_della_coda_nello_stato -- --ignored --nocapture --test-threads=1
+/// ```
+///
+/// I numeri del «prima» e del «dopo» stanno nel report della revisione. Quel che si
+/// guarda: i byte dell'evento `riproduzione:stato` (serializzato come lo fa Tauri,
+/// con `serde_json`), il tempo per comporlo, e quello per fotografare la coda sotto
+/// il lucchetto del lettore (`in_play_order`).
+#[test]
+#[ignore = "costruisce una coda da 50.000 brani: si lancia a mano"]
+fn misura_della_coda_nello_stato() {
+    use std::time::Instant;
+    const BRANI: i64 = 50_000;
+    const GIRI: u32 = 30;
+    let mut coda = Queue::new();
+    coda.play_tracks((1..=BRANI).collect(), 0, 7);
+
+    // 1. La fotografia sotto il lucchetto del lettore: una copia degli id.
+    let inizio = Instant::now();
+    for _ in 0..GIRI {
+        std::hint::black_box(coda.in_play_order());
+    }
+    let fotografia = inizio.elapsed().as_secs_f64() * 1000.0 / f64::from(GIRI);
+
+    // 2. L'evento, com'è spedito alla finestra. Con la coda cambiata, e — il caso
+    // di ogni pausa e di ogni `vai_a` — con la coda uguale all'ultima spedita.
+    let mut stato = stato_di_prova(coda.in_play_order());
+    let misura_evento = |stato: &StatoRiproduzione| {
+        let inizio = Instant::now();
+        let mut byte = 0;
+        for _ in 0..GIRI {
+            byte = serde_json::to_string(std::hint::black_box(stato))
+                .map(|json| json.len())
+                .unwrap_or(0);
+        }
+        (
+            byte,
+            inizio.elapsed().as_secs_f64() * 1000.0 / f64::from(GIRI),
+        )
+    };
+    stato.coda_in_pagina = Some(std::sync::Arc::clone(&stato.coda));
+    let (byte_con, ms_con) = misura_evento(&stato);
+    println!(
+        "[misura S7-5] {BRANI} brani in coda, coda CAMBIATA: fotografia {fotografia:.2} ms, evento {byte_con} byte, composto in {ms_con:.2} ms (media di {GIRI} giri)"
+    );
+    // Il confronto con l'ultima spedita, che decide se la coda va: sta sul filo del
+    // seguito, fuori dal lucchetto del lettore.
+    let mut pubblicata = CodaPubblicata::nuova(1);
+    let mut prima = std::sync::Arc::new(coda.in_play_order());
+    pubblicata.registra(&mut prima);
+    let inizio = Instant::now();
+    for _ in 0..GIRI {
+        let mut uguale = std::sync::Arc::new(coda.in_play_order());
+        std::hint::black_box(pubblicata.registra(&mut uguale));
+    }
+    let confronto = inizio.elapsed().as_secs_f64() * 1000.0 / f64::from(GIRI);
+    stato.coda_in_pagina = None;
+    let (byte, serializzazione) = misura_evento(&stato);
+    println!(
+        "[misura S7-5] {BRANI} brani in coda, coda UGUALE: evento {byte} byte, composto in {serializzazione:.2} ms; confronto con l'ultima spedita (fuori dal lettore, con la fotografia) {confronto:.2} ms"
+    );
+    println!(
+        "[misura S7-5] a 30 `vai_a` al secondo (freccia tenuta premuta): {:.1} ms/s di fotografia, {:.1} ms/s di serializzazione, {:.1} MB/s verso la finestra",
+        fotografia * 30.0,
+        serializzazione * 30.0,
+        byte as f64 * 30.0 / 1_048_576.0
+    );
+}
+
+/// S7-5: la coda va alla finestra solo quando cambia. Il registro dell'ultima
+/// pubblicata numera ogni cambiamento, e una coda uguale non ne fa una copia: lo
+/// stato la condivide con quella già in mano.
+#[test]
+fn la_coda_va_alla_finestra_solo_se_cambia() {
+    use std::sync::Arc;
+    let mut registro = CodaPubblicata::nuova(100);
+    let mut prima = Arc::new(vec![1, 2, 3]);
+    assert!(registro.registra(&mut prima), "la prima coda va");
+    assert_eq!(registro.versione, 101);
+
+    // Gli stessi id, un'altra allocazione: niente da mandare, stessa versione, e lo
+    // stato adotta la memoria di quella già pubblicata.
+    let mut uguale = Arc::new(vec![1, 2, 3]);
+    assert!(
+        !registro.registra(&mut uguale),
+        "una coda uguale non si rimanda"
+    );
+    assert_eq!(registro.versione, 101);
+    assert!(Arc::ptr_eq(&uguale, &prima), "e non se ne tiene una copia");
+
+    // Un brano in più, o un altro ordine: cambia, e la versione sale di uno.
+    let mut piu = Arc::new(vec![1, 2, 3, 4]);
+    assert!(registro.registra(&mut piu));
+    assert_eq!(registro.versione, 102);
+    let mut sparso = Arc::new(vec![4, 2, 3, 1]);
+    assert!(
+        registro.registra(&mut sparso),
+        "l'ordine è parte della coda"
+    );
+    assert_eq!(registro.versione, 103);
+
+    // La coda vuota di partenza non si rimanda: la finestra ce l'ha già.
+    let mut vuota = CodaPubblicata::nuova(7);
+    let mut niente = Arc::new(Vec::new());
+    assert!(!vuota.registra(&mut niente));
+    assert_eq!(vuota.versione, 7);
+}
+
+/// S7-5: sull'evento la coda c'è solo se è cambiata, e la sua versione c'è sempre.
+/// Dentro il nucleo (`coda`) resta intera per chi la legge — scheda di Windows,
+/// vassoio, Android Auto — ma non viaggia.
+#[test]
+fn l_evento_senza_la_coda_non_la_porta_e_dice_la_versione() {
+    let mut stato = stato_di_prova(vec![5, 6, 7]);
+    stato.versione_coda = 42;
+    let senza = serde_json::to_value(&stato).expect("json");
+    assert!(
+        senza.get("coda").is_none(),
+        "la coda non cambiata non viaggia: {senza}"
+    );
+    assert_eq!(senza["versioneCoda"], 42);
+    assert_eq!(stato.coda.len(), 3, "dentro il nucleo c'è ancora");
+
+    stato.coda_in_pagina = Some(std::sync::Arc::clone(&stato.coda));
+    let con = serde_json::to_value(&stato).expect("json");
+    assert_eq!(con["coda"], serde_json::json!([5, 6, 7]));
+    assert_eq!(con["versioneCoda"], 42);
+}
+
+/// S7-5: la decisione sta dopo il controllo di `superato`. Una fotografia scartata
+/// non è mai arrivata a nessuno: se avesse registrato la sua coda, la prossima si
+/// crederebbe «uguale a quella spedita» e la finestra resterebbe con la vecchia.
+#[test]
+fn la_coda_si_registra_solo_per_lo_stato_che_parte_davvero() {
+    let seguito = senza_prove(include_str!("seguito.rs"));
+    let pubblica = &seguito[seguito.find("pub(super) fn pubblica(").expect("pubblica")..];
+    let pubblica = &pubblica[..pubblica.find("\n}\n").expect("fine")];
+    let scartata = pubblica.find("superato(").expect("controlla superato");
+    let registra = pubblica
+        .find("registra_la_coda(app, &mut stato, false)")
+        .expect("registra la coda");
+    assert!(
+        scartata < registra,
+        "la coda si registra prima di sapere se parte"
+    );
+    assert!(
+        pubblica.find("app.emetti(\"riproduzione:stato\"") > Some(registra),
+        "l'evento parte con la coda già decisa"
+    );
 }

@@ -300,6 +300,55 @@ impl BandeIpc {
     }
 }
 
+/// Gli id di una coda condivisa come una sequenza JSON, senza clonarli.
+fn serializza_la_coda<S: serde::Serializer>(
+    coda: &Option<std::sync::Arc<Vec<i64>>>,
+    serializzatore: S,
+) -> Result<S::Ok, S::Error> {
+    match coda {
+        Some(coda) => serializzatore.collect_seq(coda.iter()),
+        None => serializzatore.serialize_none(),
+    }
+}
+
+/// L'ultima coda che la finestra ha avuto, e la versione con cui il nucleo l'ha
+/// numerata (S7-5).
+///
+/// Sta fuori dal lettore, in un lucchetto suo e **foglia**: la scrive il filo del
+/// seguito (`pubblica`) e la legge il comando che dà la coda a una finestra che ne
+/// ha perso l'evento. La versione parte dal tempo di avvio e non da zero: un nucleo
+/// riavviato sotto una finestra viva non deve ripartire da un numero che la
+/// finestra ha già visto, o terrebbe una coda vecchia per sempre.
+#[derive(Debug)]
+pub(crate) struct CodaPubblicata {
+    versione: u64,
+    coda: std::sync::Arc<Vec<i64>>,
+}
+
+impl CodaPubblicata {
+    /// La coda vuota, con questa versione.
+    pub(crate) fn nuova(versione: u64) -> Self {
+        Self {
+            versione,
+            coda: std::sync::Arc::new(Vec::new()),
+        }
+    }
+
+    /// Registra la coda di uno stato che sta per partire. `true` se è diversa
+    /// dall'ultima: la versione sale e la coda va mandata. Se è uguale, `coda`
+    /// diventa quella già in mano — la stessa memoria, non una copia — e non c'è
+    /// niente da mandare.
+    fn registra(&mut self, coda: &mut std::sync::Arc<Vec<i64>>) -> bool {
+        if *self.coda == **coda {
+            *coda = std::sync::Arc::clone(&self.coda);
+            return false;
+        }
+        self.versione = self.versione.wrapping_add(1);
+        self.coda = std::sync::Arc::clone(coda);
+        true
+    }
+}
+
 /// Lo stato della riproduzione, come lo vede la finestra.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -326,7 +375,27 @@ pub struct StatoRiproduzione {
     /// cambio di brano vorrebbe dire spedire qualche megabyte per aggiornare un
     /// titolo. Chi apre il pannello della coda chiede le righe con
     /// [`brani_per_id`].
-    pub coda: Vec<i64>,
+    ///
+    /// Dentro il nucleo la leggono la scheda di Windows, il vassoio, Android Auto:
+    /// è condivisa (`Arc`) con l'ultima pubblicata, e non viaggia sull'evento —
+    /// vedi `coda_in_pagina`.
+    #[serde(skip)]
+    pub coda: std::sync::Arc<Vec<i64>>,
+    /// La coda per la finestra, **solo se è cambiata** dall'ultimo stato spedito
+    /// (S7-5): con cinquantamila brani in coda erano ~290 KB di JSON a ogni cambio
+    /// di brano, a ogni pausa e — con la freccia della barra tenuta premuta —
+    /// trenta volte al secondo. Sull'evento si chiama `coda`; chi non la trova con
+    /// la `versione_coda` che ha, la chiede con `riproduzione_coda`. Lo stato
+    /// chiesto dalla finestra la porta sempre.
+    #[serde(
+        rename = "coda",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serializza_la_coda"
+    )]
+    pub coda_in_pagina: Option<std::sync::Arc<Vec<i64>>>,
+    /// Il numero della coda: cresce a ogni cambiamento, e con la stessa versione
+    /// la coda è la stessa. Parte dal tempo di avvio (`CodaPubblicata`).
+    pub versione_coda: u64,
     /// Dove siamo dentro la coda.
     pub posizione_coda: Option<usize>,
     /// L'equalizzatore è acceso.
@@ -1098,6 +1167,10 @@ pub struct CorpoLettore {
     /// altri due. Così non entra nell'ordine «prima il lettore, poi la
     /// libreria», e non può chiudere un cerchio con nessuno.
     preferenze: Mutex<()>,
+    /// L'ultima coda mandata alla finestra, e la sua versione: vedi
+    /// [`CodaPubblicata`]. Un lucchetto **foglia**: chi lo tiene non chiede
+    /// nient'altro.
+    coda_pubblicata: Mutex<CodaPubblicata>,
     /// Le voci della sessione d'«Ascolta insieme»: maniglia → voce.
     ///
     /// Un lucchetto suo e **foglia**: si può prendere col lettore in mano, per
@@ -1346,6 +1419,9 @@ impl StatoLettore {
                 sfumando_fino: std::sync::atomic::AtomicI64::new(0),
                 aprendo: std::sync::atomic::AtomicI64::new(NESSUN_BRANO),
                 preferenze: Mutex::new(()),
+                coda_pubblicata: Mutex::new(CodaPubblicata::nuova(
+                    u64::try_from(adesso_ms()).unwrap_or(0),
+                )),
                 ospiti: ospiti::registro_nuovo(),
             }),
             orecchio,
@@ -4596,6 +4672,40 @@ pub async fn riproduzione_stato(app: Nucleo) -> Esito<StatoRiproduzione> {
     col_lettore_in_disparte(app, "stato del lettore", riproduzione_stato_ora).await
 }
 
+/// La coda del lettore, con la versione con cui il nucleo l'ha numerata.
+///
+/// Per una finestra che ha perso l'evento `riproduzione:stato` che la portava:
+/// l'evento non porta la coda se non è cambiata dall'ultimo spedito (S7-5), e una
+/// finestra che apre il suo ascolto in ritardo, o che si ricarica, si trova con una
+/// versione che non ha. È **l'ultima pubblicata**, la stessa che gli eventi
+/// nominano, e non la coda di questo istante: così la versione e la coda vanno
+/// d'accordo, e un gesto che l'ha già cambiata arriva col suo evento.
+#[tauri::command]
+pub async fn riproduzione_coda(app: Nucleo) -> Esito<CodaDelLettore> {
+    crate::disparte::comanda("coda del lettore", move || {
+        let stato = crate::disparte::stato_del_nucleo::<StatoLettore>(&app)?;
+        let pubblicata = stato
+            .coda_pubblicata
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(CodaDelLettore {
+            versione: pubblicata.versione,
+            coda: pubblicata.coda.to_vec(),
+        })
+    })
+    .await
+}
+
+/// La coda e la sua versione: la risposta di [`riproduzione_coda`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodaDelLettore {
+    /// Il numero della coda: lo stesso di `StatoRiproduzione::versione_coda`.
+    pub versione: u64,
+    /// Gli identificativi, nell'ordine in cui suoneranno.
+    pub coda: Vec<i64>,
+}
+
 /// Il lavoro di [`riproduzione_stato`], sincrono.
 fn riproduzione_stato_ora(app: Nucleo, stato: StatoLettore) -> Esito<StatoRiproduzione> {
     let fotografia = {
@@ -4606,7 +4716,13 @@ fn riproduzione_stato_ora(app: Nucleo, stato: StatoLettore) -> Esito<StatoRiprod
         }
     };
     match fotografia {
-        Ok(abbozzo) => Ok(completa(&app, abbozzo, None)),
+        Ok(abbozzo) => {
+            let mut stato = completa(&app, abbozzo, None);
+            // La finestra che chiede lo stato non ha niente: la coda le arriva intera,
+            // con la versione che il nucleo le ha dato.
+            seguito::registra_la_coda(&app, &mut stato, true);
+            Ok(stato)
+        }
         Err(err) => Ok(StatoRiproduzione {
             brano: None,
             in_pausa: true,
@@ -4616,7 +4732,9 @@ fn riproduzione_stato_ora(app: Nucleo, stato: StatoLettore) -> Esito<StatoRiprod
             ripeti: nome_ripetizione(RepeatMode::Off).to_owned(),
             volume: Volume::default().volume,
             muto: false,
-            coda: Vec::new(),
+            coda: std::sync::Arc::new(Vec::new()),
+            coda_in_pagina: Some(std::sync::Arc::new(Vec::new())),
+            versione_coda: 0,
             posizione_coda: None,
             eq_attivo: false,
             eq_guadagni: Vec::new(),
