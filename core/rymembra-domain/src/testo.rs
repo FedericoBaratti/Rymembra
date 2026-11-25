@@ -482,6 +482,13 @@ fn fondi_allo_stesso_tempo(righe: Vec<Riga>) -> Vec<Riga> {
         if secondarie >= MASSIME_SECONDARIE_PER_RIGA {
             continue;
         }
+        // Una secondaria si riscrive come una riga sua, `[tempo]testo`, e non ha parole: se quel testo,
+        // riletto, non torna lo stesso, la riga che `scrivi` produce è un'altra — con un tempo in più,
+        // un'intestazione, o senza un pezzo — e la riscrittura non sarebbe stabile. Succede solo con il
+        // testo di una riga di parole (`<0:0>[0:7]tradotta`, `x<0<0:1>:0>y`): non entra.
+        if !si_rilegge_uguale(&riga.testo) {
+            continue;
+        }
         match ultima.secondaria.as_mut() {
             Some(gia) if gia.lines().any(|l| l == riga.testo) => {}
             Some(gia) => {
@@ -496,6 +503,12 @@ fn fondi_allo_stesso_tempo(righe: Vec<Riga>) -> Vec<Riga> {
         }
     }
     fuse
+}
+
+/// Il testo, scritto come una riga sua (`[tempo]testo`), si rilegge com'è: non comincia con un tag
+/// (`[0:7]`, `[ti:…]`) e non ne ha uno di parola (`<0:0>`) in mezzo.
+fn si_rilegge_uguale(testo: &str) -> bool {
+    !separa_tag(testo).0.ha_tag && separa_parole(testo).0 == testo
 }
 
 /// I `[…]` in testa a una riga: i tempi che portano, lo scarto dichiarato, e se
@@ -1430,6 +1443,35 @@ mod prove {
         let secondo = scrivi(&leggi(&primo));
         assert_eq!(secondo, "[00:02.00]uno\n", "la lettura le fonde");
         assert_eq!(scrivi(&leggi(&secondo)), secondo, "e da lì è stabile");
+    }
+
+    #[test]
+    fn una_secondaria_che_riscritta_si_leggerebbe_diversa_non_entra() {
+        let _uno = una_alla_volta();
+        // B2 (fuzzing): il testo di una riga di parole (`<0:0>[0:7]tradotta`) comincia con qualcosa che
+        // sembra un tag, ma lì è testo di una parola. Se la riga cade sullo stesso tempo di un'altra
+        // diventa la sua secondaria, che `scrivi` scrive come riga sua: `[0:0][0:7]tradotta`, che si
+        // rilegge come due tempi e un testo senza il suo inizio. La riscrittura non era stabile.
+        for grezzo in [
+            "[0:0]uno\n[0:0]<0:0>[0:7]tradotta\n",
+            "[0:0]uno\n[0:0]x<0<0:1>:0>y\n",
+            "[0:0]uno\n[0:0]<0:0>[ti:titolo]\n",
+        ] {
+            let letto = leggi(grezzo);
+            assert_eq!(letto.righe.len(), 1, "{grezzo:?}");
+            assert_eq!(
+                letto.righe.first().and_then(|r| r.secondaria.as_deref()),
+                None,
+                "{grezzo:?}"
+            );
+            riscrittura_stabile(grezzo);
+        }
+        // Una traduzione vera continua a entrare.
+        let vera = leggi("[0:0]uno\n[0:0]one\n");
+        assert_eq!(
+            vera.righe.first().and_then(|r| r.secondaria.as_deref()),
+            Some("one")
+        );
     }
 
     #[test]
