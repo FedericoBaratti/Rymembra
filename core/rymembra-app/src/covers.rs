@@ -825,13 +825,23 @@ impl CoverStore {
                 let bytes_miniatura = encode_jpeg(&miniatura, QUALITA_MINIATURA, ETICHETTA)?;
                 Ok((grande, bytes_piena, bytes_miniatura))
             })?;
+        // Lo spazio si guarda anche su quel che si scrive davvero: la piena ricodificata e
+        // la miniatura possono pesare molto più dei byte arrivati — una PNG di 60 KB di
+        // rumore che si ripete diventa una JPEG di 400 KB —, e il controllo di sopra vede
+        // solo quelli: con un margine più largo dell'ingresso il tetto restava superato.
+        let scritti = u64::try_from(bytes_piena.len() + bytes_miniatura.len()).unwrap_or(u64::MAX);
+        if !self.ha_spazio_per_estranee(scritti) {
+            return Err(decode_error(
+                ETICHETTA,
+                "lo spazio per le copertine degli altri dispositivi è finito",
+            ));
+        }
         // Il segno prima, la miniatura poi, la piena per ultima: la stessa
         // regola di `store` («piena ⇒ miniatura»), con il segno davanti a
         // tutto, perché una piena senza segno sembrerebbe quella vera.
         scrivi_atomico(&self.percorso_segno(hash), b"")?;
         scrivi_atomico(&self.thumbnail_path_for(hash), &bytes_miniatura)?;
         scrivi_atomico(&piena, &bytes_piena)?;
-        let scritti = u64::try_from(bytes_piena.len() + bytes_miniatura.len()).unwrap_or(u64::MAX);
         self.aggiorna_le_estranee(|usato| usato.saturating_add(scritti));
         Ok(StoredCover {
             hash: hash.to_owned(),
