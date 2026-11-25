@@ -450,7 +450,7 @@ function ricevitore(nome: string): string {
   return blocco?.[0] ?? "";
 }
 
-test("all'accensione riparte solo BOOT_COMPLETED: dopo lo sblocco, non directBootAware, non esportato", () => {
+test("all'accensione riparte BOOT_COMPLETED, e non LOCKED_BOOT_COMPLETED: dopo lo sblocco, non directBootAware, non esportato", () => {
   const avvio = ricevitore("AvvioAccensione");
   assert.ok(avvio, "il ricevitore .AvvioAccensione non c'è");
   assert.match(avvio, /<action\s+android:name="android\.intent\.action\.BOOT_COMPLETED"\s*\/>/);
@@ -470,13 +470,41 @@ test("il ricevitore dell'accensione avvia Presenza solo se il sottofondo è volu
   const avvio = kotlin("AvvioAccensione.kt");
   const corpo = /override fun onReceive\([\s\S]*?\n  }\n/.exec(avvio)?.[0] ?? "";
   assert.ok(corpo, "onReceive non si trova");
-  assert.match(corpo, /intento\.action != Intent\.ACTION_BOOT_COMPLETED\) return/);
+  // Le due notizie che il sistema manda e che permettono di avviare un servizio in
+  // primo piano dallo sfondo (S6-2): l'accensione e l'aggiornamento dell'app. Ogni
+  // altra azione, e un intento senza azione, non fa niente.
+  assert.match(
+    corpo,
+    /intento\.action != Intent\.ACTION_BOOT_COMPLETED &&\s*intento\.action != Intent\.ACTION_MY_PACKAGE_REPLACED\) return/,
+  );
   const voluto = corpo.indexOf("Presenza.voluto(contesto)");
   const parte = corpo.indexOf("startForegroundService(");
   assert.ok(voluto > 0 && parte > voluto, "il servizio parte prima di sapere se il sottofondo è voluto");
   assert.match(corpo, /if \(!Presenza\.voluto\(contesto\)\) return/);
   // Non fa altro: niente nucleo, niente libreria, niente attività.
   assert.doesNotMatch(corpo, /Ponte\.|Nucleo\.|startActivity/);
+});
+
+test("l'aggiornamento dell'app riavvia il sottofondo: .AvvioAccensione ascolta MY_PACKAGE_REPLACED (S6-2)", () => {
+  // Android ferma il processo quando sostituisce l'app, e con lui il servizio, il
+  // nucleo e il collegamento con i PC: senza questa notizia nessuno li fa
+  // ripartire finché la persona non apre l'app. È fra le esenzioni dal divieto di
+  // avviare un servizio in primo piano dallo sfondo, accanto a BOOT_COMPLETED
+  // (developer.android.com/develop/background-work/services/fgs/restrictions-bg-start).
+  const avvio = ricevitore("AvvioAccensione");
+  assert.ok(avvio, "il ricevitore .AvvioAccensione non c'è");
+  assert.match(avvio, /<action\s+android:name="android\.intent\.action\.MY_PACKAGE_REPLACED"\s*\/>/);
+  // Il sistema la manda solo all'app sostituita, e a un componente non esportato:
+  // nessun'altra app può mandarla, e non serve nessun permesso.
+  assert.match(avvio, /android:exported="false"/);
+  assert.doesNotMatch(avvio, /directBootAware/);
+  // La guardia resta una sola: il sottofondo voluto, come per l'accensione.
+  const corpo = /override fun onReceive\([\s\S]*?\n  }\n/.exec(kotlin("AvvioAccensione.kt"))?.[0] ?? "";
+  assert.ok(corpo.indexOf("ACTION_MY_PACKAGE_REPLACED") > 0, "il ricevitore non guarda l'aggiornamento");
+  assert.ok(
+    corpo.indexOf("ACTION_MY_PACKAGE_REPLACED") < corpo.indexOf("Presenza.voluto(contesto)"),
+    "l'azione si controlla prima del sottofondo",
+  );
 });
 
 test("il servizio avvia il nucleo da sé, e l'attività toglie il contesto del servizio prima di nascere", () => {
