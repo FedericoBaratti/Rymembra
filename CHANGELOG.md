@@ -679,6 +679,11 @@ answer.
   (`ui.window.geometry`, never in a profile) and, when it recreates the window,
   measures the new window’s own frame and checks the size it got, so a window
   that goes to the tray and comes back many times does not grow.
+- **The log records the phases of start-up**, one line each (`[avvio] fase …:
+  +N ms`, counted from the beginning of `run()`), so that a slow start can be read
+  from it: the library opened, the rest of the start on the window’s thread, the
+  gate, the page’s first questions, and which way showed the window — the page’s
+  “ready” or the two-second safety net. Only phase names and milliseconds.
 
 ### New — updates that show where they are
 
@@ -799,6 +804,10 @@ answer.
   nothing reads it yet, but a later 3.3.x will be able to tell a 3.3.0 device
   from a PC still on 3.2.0. Each device rewrites its own document once, on the
   first sync after updating.
+- **The log writes the same line at most three times a minute**, then counts
+  the rest and says how many it left out, so a linked device that keeps asking
+  while a scan holds the library can no longer fill the three log files (2 MB
+  each) in a few hours. Panics and start-up failures are never held back.
 
 **Folders in the cloud.**
 
@@ -1060,9 +1069,10 @@ findings are still open, and signing the sync documents is planned work
 - **A device that insists cannot cost much.** More than 30 presence
   announcements a minute from one device are refused, and 30 wrong requests a
   minute make it ignored for a while — without disconnecting it; the node
-  writes at most 20 diary lines a minute, and the window’s mailbox is bounded,
-  so a device that insists can neither wake the window’s thread without end nor
-  rotate the diary away. A device that asks for large answers and never reads
+  writes at most 20 diary lines a minute, the app’s diary writes the same line
+  at most three times a minute and counts the rest, and the window’s mailbox is
+  bounded, so a device that insists can neither wake the window’s thread without
+  end nor rotate the diary away. A device that asks for large answers and never reads
   them does not keep its seats: each 64 KiB piece of an answer has 30 seconds,
   and a link attempt that never opens its stream is closed after 10.
 - **“Download here” cannot be made to write without limit.** The size a device
@@ -2280,6 +2290,12 @@ release:
 - **Linking dialogs.** After accepting two linking requests in a row with the
   keyboard, the focus does not return to the control that had it before the
   dialogs.
+- **The log and “Recently added”.** The log’s cap holds for a line that repeats:
+  a flood of different lines is not capped by it (the node’s own cap of 20 lines
+  a minute for linked devices still holds). Deep pages of “Recently added”, past
+  the middle of a library of tens of thousands of songs, cost 40–90 ms, because
+  the order among songs added at the same moment follows the disc order and
+  needs every earlier song to be read.
 - **Playback.** The track boundaries of an MP3 CD image played from another
   device are estimated, as on the cloud: exact only at a constant bitrate. When
   the audio device is lost, a pause still waits for the device to reopen.

@@ -358,8 +358,11 @@ feature off nothing listens. What is supposed to hold:
   ignored for a while, not disconnected; each 64 KiB piece of an answer has 30
   seconds, so a device that never reads cannot keep the seats, and a link that
   never opens its stream is closed after 10; the node writes at most 20 diary
-  lines a minute and the mailbox of the window’s thread holds 512 messages, so a
-  device that insists cannot wake it without end or rotate the diary away;
+  lines a minute, the app’s diary writes the same line at most three times a
+  minute — then it counts the repeats and says how many it left out, while
+  panics and start-up failures are never held back — and the mailbox of the
+  window’s thread holds 512 messages, so a device that insists cannot wake it
+  without end or rotate the diary away;
 - the device's secret key lives in the system keychain
   (`lontano.chiave.<device>`), is never overwritten, and is never sent; the key
   of «Listen together» exchanged when linking is used only to recognize that
