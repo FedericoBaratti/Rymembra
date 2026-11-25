@@ -36,7 +36,7 @@ What increments what:
   (`SKIN_FORMAT_VERSION`), to the transport protocol
   (`SKIN_TRANSFER_PROTOCOL`, the old phone app's, which this repository does
   not have) or, since 3.1.0, to the «Listen together» protocol
-  (`rymembra_insieme::messaggi::VERSIONE`) — and, once it ships, to those of
+  (`rymembra_insieme::messaggi::VERSIONE`) — and, since 3.3.0, to those of
   the device link, the `/1` of `rymembra/lontano/1`, `rymembra/associa/1` and
   `rymembra/insieme/1` — that is, the points at which an updated device would
   stop understanding one that stayed put.
@@ -95,446 +95,47 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
-## [Unreleased]
+## [3.3.0] — 2026-11-25
 
-**One library across your devices, a background that stays on, and updates
-that show where they are.** The device link keeps its protocol number
-(`rymembra/lontano/1`): every new question sits behind a capability the other
-device declares in its presence (`catalogo`, `testi`), so a build without it is
-never asked and keeps answering what it always did. What that means for a
-device that has not updated is under Known limits.
+**Rymembra on Android, your devices as one library, a background that stays
+on, and updates that show where they are.** The same application now runs on a
+phone, from the same code: the core crates build for `aarch64-linux-android`
+and `x86_64-linux-android` unchanged, and the window becomes an Android
+activity. Your PCs and your phone find each other over the internet — there is
+no Rymembra server — and the music of each one is in the library of the others.
+On the computer, Rymembra can start with Windows and stay in the tray with no
+window at all, and an update shows every step it takes. Two reviews of the
+code, in November 2026, fixed what they found; one flaw they found already
+affected 3.2.0: a crafted lyrics text could take gigabytes of memory (see
+Security).
 
-### New — one library
+**If you come from 3.2.0**, three things are not in the lists below:
 
-- **The music of the devices you linked is in your library.** Tracks on your
-  other PCs and your phone show up in Albums, Artists, Tracks, Favorites,
-  Search and playlists as ordinary rows, each with the icon of the device it
-  lives on, and “Browse <device>” is gone. The first time Rymembra reads the
-  device’s catalog — a strip says “Reading the library of “<PC>”… 12,000/50,000”
-  — and after that only what changed. No audio file is copied to this device until you
-  ask; a device whose version cannot send its catalog says “Update Rymembra on
-  “<name>” to see its music”.
-  - **A filter, not a page.** “All · This device · <name>” sits above Albums,
-    Artists, Tracks and Favorites, in Search and on the artist page, on the
-    phone and on the PC (it is not remembered, and it does not appear when
-    nothing is linked). The sidebar’s “Devices” group, More › Your devices and
-    Settings › Devices › “Show in library” open the library already filtered;
-    a linked device that is off stays in the list.
-  - **One row per track.** The same track on several devices is shown once, and
-    the copy that plays is the best one — lossless first, then the higher
-    sample rate, then the bitrate; between two lossy files only the bitrate
-    counts; on a tie the copy on this device wins. Each track picks its own best
-    copy, and an album whose tracks sit on several devices is still one album,
-    with one card and its tracks counted once. Two copies on the same device stay two
-    rows, as before. A copy that claims to be lossless is checked against the
-    file’s size and duration it also declares.
-  - **Playing.** A tap plays the track streamed from its device; if that device
-    is off or the file cannot be opened, the copy on this device plays when there
-    is one, and otherwise the row says “<PC> is not reachable” instead of
-    showing an error. “Other devices’ music on mobile data” is respected: with
-    Yes the best copy plays on any network; with Wi-Fi only a copy on another
-    device is not used on mobile data (this device’s copy plays, or the track
-    says so); with Ask the question comes once, only when the best copy is on
-    another device.
-  - **A device that is off stays listed.** Its rows are greyed out and keep
-    their menu, heart and stars — except a row with a copy on this device, which
-    stays playable and plays that copy. Play on an album, an artist or a playlist skips
-    them, and Android Auto, autoplay, radio and smart playlists leave out
-    devices that do not answer.
-  - **Playlists, hearts and stars work on them.** A playlist can hold a track
-    that exists only on another device. Hearts and star ratings given to such a
-    track are sent to its owner (they wait if it is off and arrive when it is
-    back, the newest wins per field), and plays are counted on the owner, once,
-    and scrobbled there — never here.
-  - **When a device stops sharing tracks.** If at least 50 tracks and a fifth of
-    its catalog disappear at once you are asked before they leave your library;
-    “Keep them” removes nothing, and the answer is remembered after a restart,
-    per device and for that number of tracks. A track that goes away for a
-    moment — an unplugged disk, a rebuilt library — stays hidden for seven days
-    and finds its place in your playlists again if it comes back, even with a
-    new identifier. A playlist that holds one shows it faded, with “<PC> no
-    longer shares this track”.
-  - **“Forget” says what it will cost.** It tells you how many playlists would
-    lose tracks; the entries that have another copy of the track move to it.
-  - **“Download here”** copies the tracks to this device, one queue and one
-    thread per device, so a slow PC does not hold back the others. It is in the
-    menu of a row, of an album card and of a selection, on the album page and
-    on the artist page. From 50 tracks it asks first, saying how many tracks
-    and how much space (“at least” when some sizes are unknown), with “Cancel”
-    as the default; a set of more than 5,000 is sent in blocks. Once the file is
-    here it joins the copy already in the library.
-- **The lyrics of a track on another device.** The lyrics panel asks the device
-  that owns the track for its text (timed or plain, with its source and offset)
-  and falls back to your own lookup — LRCLIB, only with the panel open — if that
-  device is off, older, or has none; there is never an error banner for it.
-  Offset corrections, a text you timed by hand, a candidate chosen from the list
-  and “not this one” on such a track apply here and are sent to the owner, where
-  they wait if it is off. A text you timed here is not replaced by the owner’s
-  copy; a plain text does not replace one with timings. In the timing editor of
-  a track on another device “Straighten” becomes “Next”, with a note that the
-  audio is on that device.
-- **The artist page is complete.** The artist’s name in Now playing, on the
-  phone and on the PC, is a button that opens the page — the album’s artist
-  when there is one — and Back returns to Now playing. Under the albums the
-  page lists all the artist’s tracks, including those with no album, sorted by
-  album, year, title or most played; “Also appears on” shows tracks that carry
-  the name on someone else’s album, such as compilations; and “May also appear
-  on”, labeled as a search that can be wrong, shows tracks that name the artist
-  in their credits, after “feat.” for example. On the PC the page has Play,
-  Shuffle and Download here, and the library filter applies to all of it.
-- **The menu of a track of another device** no longer offers Show in folder,
-  Remove from library or Delete from disk, which cannot work from here — and a
-  selection that holds even one such track loses them too. “Shuffle” is in the
-  album card’s menu.
+- The first start migrates the library from schema 38 to 43 in one opening,
+  after making a full copy of it, `rymembra.db.schema-038.bak`. A library that
+  has been migrated does not open in 3.2.0, which shows a black window with no
+  message: use “Go back to the copy from before the update” first (see
+  Database).
+- A PC that stays on 3.2.0 cannot link to your other devices, and inside a sync
+  group it keeps removing playlist entries of the tracks it does not have, which
+  reaches the devices that updated (see Known limits). Update every PC.
+- iTunes and Deezer are off after the update (see Changed): switch them back on
+  if you want them.
 
-### New — in the background and at startup
+### The number
 
-- **Start with Windows** (Settings › Startup and closing, which used to be
-  “Closing and background”). When you sign in to Windows, Rymembra starts
-  minimized to the taskbar. The switch shows what Windows says: if you turned
-  the entry off in Task Manager it tells you so and does not override your
-  choice. It works on the installer copy (an entry in Windows’ startup list,
-  removed on uninstall) and on the Microsoft Store copy (a startup task). Off
-  until you turn it on.
-- **A one-time question** on the PC offers to start with Windows and keep
-  Rymembra in the tray when you close it; the phone gets its own, about the
-  background service below. It does not appear during first-run setup or the
-  tour (on the phone, which has no tour, it waits only for setup and “What’s
-  new”). “Later” puts it off until Rymembra next starts; once you answer, it is
-  not asked again.
-- **Stay active in the background** (Settings › Devices, Android). A foreground
-  service keeps Rymembra running after you swipe it away from recent apps, so
-  your PCs can reach the phone whenever they like, with a minimal notification
-  (“Rymembra is active · connected to <PC>”, hidden on the lock screen) and a
-  “Turn off” button. Off by default, and it costs battery. It does not turn on
-  “Reachable from the internet” — that is a separate yes, and the card says so.
-  A button opens Android’s battery optimization page, with a note for
-  manufacturers (Xiaomi, Huawei, Samsung, Nothing, OnePlus, Oppo) that close
-  background apps on their own; Rymembra never asks for the exemption itself.
-- **It starts when the phone does** (Android). With “Stay active in the
-  background” on, after a restart of the phone Rymembra starts by itself, without
-  opening the app, as soon as you have unlocked it for the first time: the
-  notification comes back, the PCs you linked reach the phone, Android Auto finds
-  Rymembra ready (the tree, the resume), the play key of a headset or a car works,
-  and “Start with the car” works. When you open the app later it joins what is
-  already running — one core, the music keeps playing. With the setting off
-  nothing changes: nothing starts at power-on.
-- **Android Auto no longer needs the app open.** When the car asks for the
-  library and Rymembra is not running, it now starts its core by itself, even with
-  “Stay active in the background” off, instead of showing “Open Rymembra”. (Android
-  may close the process again when nothing plays and nothing keeps it alive; the
-  car then asks again.) Only the core starts: the backup, the sync, the
-  enrichment, the analysis, the folder watch and the update check wait for the
-  app, so a restart of the phone costs no battery and no disk for them.
-- **Start with the car** (Settings › Devices, Android, under “Stay active in the
-  background”). When the phone connects to Android Auto, Rymembra starts playing
-  by itself in place of the last app you used, resuming the queue it had saved.
-  Off by default, it works only with the background service on and turns off
-  with it. Rymembra asks for the audio focus first: if another app keeps it,
-  nothing starts. It is not in the Google Play build.
-- **Start from a link.** `rymembra://collega/…` links open Rymembra on Windows,
-  from the installer copy and the Store copy, and ask you to confirm the
-  device’s name and fingerprint before linking anything.
+**3.3.0 is a minor**, by the rules at the top of this file, and not because of
+its size. After this release something *outside* this copy of Rymembra has to
+keep up: the other PCs that sync with it, which must be on 3.3.0 too, and the
+meantime breaks nothing that 3.2.0 did not already do. The skin format is still
+2 and the «Listen together» protocol still 1; the device link
+(`rymembra/lontano/1`, `rymembra/associa/1` and `rymembra/insieme/1`) is new in
+this release, so there is no earlier version of it that could stop understanding
+a newer one. What stops an older copy opening the library — migrations 039 to
+043 — is named under Database, with what going back costs, as the rule of 2.3.1
+asks of every release that migrates.
 
-### New — Android Auto
-
-- **The cover of a track that plays from another device** shows in Android
-  Auto, in the notification, on the lock screen and on the Windows media card
-  even when the app window never showed it. Rymembra asks the other device for
-  the cover once, in the background, and the card refreshes when it arrives; a
-  cover that does not arrive is not asked for again for a minute. The car’s
-  queue shows the covers already stored, plus the next track’s.
-- **The same for a “Listen together” session’s voices**: their covers reach the
-  notification, the lock screen and the media card too.
-- **The resume card after a restart** keeps the cover of a track from another
-  device.
-- **The play key of a headset or a car, and the system’s resume card, can
-  restart the music after you swiped Rymembra away** — with the background
-  service on. The receiver is switched off otherwise.
-- Android Auto lists only what can be played right now: tracks of devices that
-  are off are hidden, and a track stays if another device that answers has a
-  copy.
-
-### New — updates
-
-- **A card in the notification stack shows each step**: downloading (percentage,
-  size, speed and time left), verifying the signature, installing, restarting.
-  It moved there from the top of the page, so it no longer pushes the page down.
-- **“At close”** (PC, installer copy). The update is downloaded and verified
-  right away and installs when you really exit Rymembra — “Exit” from the tray,
-  or the × when there is no tray icon — without reopening it. After three days
-  the card offers “Install now” again, and “Exit” from the tray installs. It
-  never installs while Windows is shutting down or signing you out. The Store
-  copy has no updater: the Store updates it.
-- **On the phone** the update is downloaded and verified first, and Android’s
-  install screen opens only when you tap “Install”. If it finishes while
-  Rymembra is out of view, a low-importance “Update ready to install”
-  notification brings you to the card — only if notifications are already
-  allowed: Rymembra does not ask for the permission for it.
-- **A “What’s new” window** with a few illustrated steps opens once after an
-  update, not on a fresh install — not even one that is linked to a PC right
-  away. On the phone you swipe through it.
-- **Two builds of the Android app.** The one on GitHub keeps the updater. The
-  Google Play build has no updater and no permission to install apps: Google
-  Play updates it, it never contacts GitHub, and “Start with the car” is not
-  offered there. (A build is chosen with `-Pdistribuzione=play`; the release
-  workflow builds only the GitHub one.)
-
-### Changed
-
-- **The X really closes the window** when “The X closes the window and Rymembra
-  stays in the tray” is on: the music, the media keys and the tray icon stay,
-  and the window’s WebView2 processes go away. “Show”, a click on the icon,
-  opening Rymembra again, a `rymembra://` link or a “Listen together”
-  invitation bring the window back. With the Skin Studio open, closing waits
-  for it to save, like every other close. The tray menu labels are remembered,
-  so the icon needs no window to appear, and the media keys and the volume
-  flyout hang on a window of the program’s engine, not on the app window.
-- **A phone is reachable while Rymembra is on screen or playing, and for two
-  minutes after** — or all the time with “Stay active in the background” on,
-  in which case the connection to your other devices no longer goes to sleep
-  and swiping Rymembra away no longer stops the music service.
-- **The covers of other devices’ tracks** are saved in the cover store like your
-  own, at 320 pixels, and replaced by the full-size cover when the same file is
-  scanned here. On the first start after the update, what earlier versions left
-  in the `copertine-lontane` cache of covers of linked devices (up to 50 MB) is
-  deleted.
-- **“Browse <device>” is gone**; the same music is in the library. Tracks of
-  other devices are ordinary rows in the queue, and the queue saved by the
-  version with “Browse” is moved once onto the library rows (tracks that are no
-  longer there are dropped); if a device’s catalog has not arrived yet, the move
-  waits for it, up to two minutes. A device on 3.2.1 can still browse this one.
-- **Messages.** The one shown when another device does not answer no longer
-  says “with Rymembra open”. A tap on a greyed-out row shows a neutral notice
-  with the device’s icon, not a success notice with a check mark.
-- **Linking two PCs is easier to find.** The texts say to press “Copy link” on
-  one PC and paste it in “Paste link” on the other, and that field has its own
-  heading and line of explanation. A new QR code or link replaces the previous
-  one, which is now written next to the code. After linking a computer you are
-  offered a name that tells your PCs apart, on both sides. When several devices
-  ask to link at once the question shows one at a time and says how many are
-  waiting behind it.
-- **Play and Shuffle on an artist** play the artist’s own tracks, not the whole
-  albums they appear on (a compilation used to bring in the other artists’
-  tracks).
-- **The library’s lists and counts** — artists, albums, tracks, an artist’s
-  page, search — are read without taking the library lock, so rereading them
-  while a linked device’s catalog is being read no longer makes a scan, the
-  analysis or the mirror wait. “All” counts and lists cost less when duplicates
-  are hidden.
-- **Lyrics.** “Fill the library” leaves tracks of other devices out: their titles
-  and artists are never sent to LRCLIB without a panel open. The next track’s
-  lyrics are not prefetched from another device on a metered network.
-- **“Send all my history” and “now playing”** never scrobble tracks of other
-  devices: the owner does it.
-- **Notices on the phone** appear in the stack at the bottom of the screen, like
-  on the PC.
-
-### Fixed
-
-- **The cover of a track that plays from another device** was missing from
-  Android Auto, the notification, the lock screen and the Windows media card: only
-  the app window had it. See “New — Android Auto”.
-- **A “resume” from Android Auto, the notification or a media key** that arrives
-  while the audio engine is still opening, right after Rymembra starts, waits
-  for it — up to ten seconds — instead of failing with “Rymembra can’t play
-  that right now”. A pause pressed meanwhile is not held back and cancels the pending
-  resume.
-- **Android: the page no longer freezes** while a scan or another long job holds
-  the library or the player. Every command that can wait now runs off the thread
-  the page waits on, and volume, equalizer, stars and settings still apply in the
-  order you made them. On the PC an action no longer gives up after four seconds
-  with “The database is busy”: it waits and completes.
-- **Android: when the car, a cable or headphones disconnect** and the sound would
-  move to the phone’s speaker, Rymembra pauses.
-- **The window reopens where it was** — same size, maximized if it was — after
-  the X with the tray icon and after a restart, instead of at Windows’ cascade
-  position; if its monitor is gone it opens on the main screen.
-- **An update whose signature doesn’t verify says so**: “The update that was
-  downloaded isn’t signed with Rymembra’s key, so it wasn’t installed. Try again
-  later, or download Rymembra from the website.” It used to say “Something went
-  wrong in a way that wasn’t expected”. On the phone a signature that doesn’t
-  read, doesn’t match or covers another version says the same; a failure to
-  check at all is still reported as unexpected.
-- **“Listen together” says why tracks of another device cannot join a session**
-  instead of a generic error: a session plays only tracks on this device.
-
-### Security
-
-- **New questions between devices**: the catalog (a summary, then pages of 500
-  ids), a heart or rating (`Valuta`), the lyrics of a track (`Testo`) and a
-  correction to them (`TestoScrivi`). A device is asked a new question only after
-  it declared the matching capability — `catalogo` or `testi` — in its presence;
-  an older build is never sent one, and answers the old ones as before. The
-  answering side serves only devices that are still linked, and checks that on
-  every question, not only when the connection opens.
-- **Which tracks are shared did not change** — only files in watched local and
-  network folders, never cloud folders, catalog tracks, a path, or the rows of
-  another device — though what a device now sends for each of them, and what the
-  other keeps, is more: genre, album artist, when it was added and last played,
-  codec, bitrate, sample rate, a content key, the MusicBrainz ids and the times
-  of the last heart and rating (PRIVACY § 4-quinquies lists them). Those rows
-  are not shared onward, not in the profile, the Drive backup, sync, playlist
-  files or scrobbles, and a restore or an account import no longer writes
-  statistics onto them. A playlist that contains one carries only the track’s
-  key. The one exception is the text of a song fetched from the owner, which
-  sits in the lyrics table and so goes into a profile you export.
-- **Writes from another device**: `Valuta` and `TestoScrivi` act only on tracks
-  the answering device shares (never cloud, catalog or a third device’s tracks),
-  and count together against a limit of 60 writes a minute for each device.
-  Lyrics are written to the library only: a linked device never writes a file in
-  the owner’s music folders. A text is capped at 256 KiB when read and 48,000
-  bytes when written, 4,000 lines, 40,000 words, times up to 12 hours, an offset
-  up to one hour, no control characters; at most six corrections wait per track.
-- **Everything received is validated field by field** before it reaches the
-  library: at most 200,000 rows per device, names of 200 characters, keys of
-  300, a cover of at most 1 MiB that is decoded and saved again as a JPEG of our
-  own. A bad page is discarded alone. A device cannot make this one hold the
-  library lock for tens of seconds: rows leave in blocks of 2,000, 10,000 at most
-  per round; at most 20,000 rows are matched in memory; a round stops after 2,000
-  pages or 10 minutes; whether the device is still linked is checked inside the
-  write transaction, so a page that arrives after “Forget” brings nothing back.
-- **The quality a device declares for a track** is checked against the size and
-  duration it also declares.
-- **`rymembra:` links on Windows are untrusted input**, as on Android: only the
-  exact prefix, at most 1,024 characters of `A-Za-z0-9-_/=`, anything smuggled
-  after the closing quote of `"%1"` is ignored, and nothing is linked without
-  your confirmation. The handler is registered by the installer (and by the
-  Store package) for the current user only.
-- **The startup entry** is never written by a test copy (one with a custom data
-  folder), and an entry turned off in Windows is never overridden.
-- **Two new places of `unsafe`**, both declared in `rymembra-barra` and each
-  block saying why it is correct: three registry calls for the startup entry
-  (`registro`) and the never-shown native window that hangs the media keys
-  (`messaggi`). With the five of 3.2.1 — the taskbar buttons (`finestra`), the
-  drive type (`unita`), background mode and battery (`sottofondo`), USB eject
-  (`espulsione`) and the Shift key at startup (`maiusc`) — that makes seven in
-  that crate, plus `jvm.rs` in `rymembra-android`, eight in all. The lists in the
-  `Cargo.toml` comments agree.
-- **Android.** The background service is not exported and has the new
-  `FOREGROUND_SERVICE_CONNECTED_DEVICE` permission. The media-button receiver is
-  exported, because the system sends the key, but disabled by default: it is
-  enabled only while “Stay active in the background” is on, and it starts nothing
-  when the core is not running. The Car App Library (`androidx.car.app:app`
-  1.7.0, Apache-2.0) is used only to learn whether the phone is connected to
-  Android Auto: it adds two components that are not exported, no permission and
-  a query for Android Auto’s connection provider on the same phone. “Start with
-  the car” and its observation of the connection never leave the phone, not in
-  profiles, not in backups.
-- **Covers served to the system.** The Android cover provider’s second root
-  holds only the covers of a “Listen together” session, under a name derived from
-  a hash of the cover’s access token (never the token itself), removed when the
-  session ends. It opens only `lontane/<64 hex>/<2–128 hex>.jpg` inside that
-  root, read-only, with the canonical path checked.
-- **The update package is kept in memory, not on disk**, until it is installed:
-  the signature is checked when it is downloaded, so a file left on disk could
-  not be checked again. The installer is written to a temporary folder only at
-  the moment it runs, and only when a person closed Rymembra. The Google Play
-  build does not contact GitHub to look for updates and does not request the
-  permission to install apps.
-
-### Database
-
-Migration 043, schema 42 → 43, additive.
-
-- `tracks.copia_di` (no foreign key, so the way back can drop it) with a partial
-  index; and four tables: `lontano_cataloghi` (one state per device),
-  `lontano_secchi` (the buckets of 500 ids and their fingerprints),
-  `lontano_brani` (what a row of another device has more than a row of this one,
-  with indexes on the owner’s content key, the cover and, partial, on the rows
-  not sent any more) and `dispositivi_posta` (the outbox of hearts, ratings and
-  lyric corrections that wait for their owner). A track of another device is a
-  `tracks` row with `path = 'lontano://<64 hex>/<id>'` and `source = 'lontano'`;
-  its `content_key` stays NULL, on purpose. Nothing in it travels in a profile,
-  the Drive backup or sync.
-- A copy `rymembra.db.schema-042.bak` is made before migrating. **Going back**:
-  “Go back to the copy from before the update” in *Settings › Library and
-  data* puts it back. Without the copy the recipe is written at the top of
-  `043_libreria_unica.sql`, to 042 and to 038; it must start with `PRAGMA
-  foreign_keys = ON` outside a transaction, and it costs the playlist entries
-  and the listening history of other devices’ tracks, and the hearts and stars
-  not yet delivered; no track of this device is lost.
-- No other migration: the new settings (`daemon.attivo`, `daemon.auto`,
-  `lontano.lasciati`, `ui.trayLabels`, `ui.proposta.sottofondo`,
-  `ui.novita.vista`, `ui.window.geometry`) are rows of `settings` and stay out of profiles. Start with
-  Windows lives in the registry, not in the library.
-
-### Known limits
-
-See README, «Known limits and planned work». The ones that belong to this
-release:
-
-- **A device that has not updated.** A phone or PC on 3.2.1 cannot send its
-  catalog, so a device on this version shows “Update Rymembra on “<name>” to see
-  its music” and nothing of it in the library; the 3.2.1 device can still browse
-  this one. Update both. Every device that syncs together has to be on 3.2.1 or
-  later, as before.
-- **Doze and manufacturers.** A foreground service does not exempt an app from
-  Doze: with the screen off and the phone still, Android suspends the network of
-  apps that are not excluded from battery optimization, so your PCs may not find
-  the phone even with “Stay active in the background” on. The setting’s card
-  opens Android’s page for it. Some manufacturers close background apps on
-  their own, and the Google Play review of the service type is not settled.
-  The service now restarts after a reboot and starts the core by itself; the
-  notification says “Rymembra is starting” until the core is up, and “Rymembra is
-  resting” only if the core does not start at all — the library could not be
-  opened, a full disk for example. Then opening the app starts the core again from
-  scratch, and if the problem is still there the app shows the library’s error as
-  after any other start, and the notification asks you to force stop Rymembra and
-  open it again once you have fixed it: a process that is already running does not
-  reopen the library by itself. If the core falls over halfway, the notification
-  says the same, and the app shows “Rymembra did not start properly” instead of
-  its screens. A file that lives in a cloud folder plays only after the app has
-  been opened once in that run: the cloud folders start with the app. The
-  battery cost is not measured.
-- **“Start with the car”** needs Android Auto and is not
-  offered in the Google Play build, because Google’s quality rule for media apps
-  in cars (MA-1) forbids starting playback without a user action. It has not
-  been tried with a real car. A loose cable that connects and disconnects makes
-  the music start again each time.
-- **Covers.** A cover from another device is the 320-pixel version until the same
-  file is scanned here. After you forget a device its covers stay as unused
-  covers until the next cleanup (Settings › Covers and database health, which
-  also runs by itself after a scan). The queue of Android Auto has no covers for
-  a “Listen together” voice, which has no row in the library.
-- **Greyed-out rows.** Play on a selection or on a whole view that includes
-  tracks of a device that is off skips them one by one, with a “was skipped”
-  notice each. A copy of the track on this device hidden behind a greyed-out
-  row is reachable from “This device”. If the owner’s device is off while a
-  copy of the same track exists on another reachable device, it plays; if it
-  goes off a moment before Rymembra notices, only the copy on this device is
-  tried.
-- **Duplicates and sync.** A corrected tag can make a track appear twice in a
-  playlist, which loses nothing. A declared quality is checked, not proved: an
-  MP3 at 192 kbps passed off as a 44.1 kHz FLAC is not caught. A text you timed
-  by hand on another device’s track keeps the owner’s later text out; two
-  corrections to the same lyrics have no clock, and the last to arrive wins.
-  A lyrics correction over 48,000 bytes stays on this device.
-- **Updates.** “Install now” after three days is seen only with the window open.
-  The update package holds about 16 MB of memory while it waits. On the phone a
-  notification is shown only if notifications are already allowed. The Google
-  Play build has no In-App Update, and it keeps `MANAGE_EXTERNAL_STORAGE`,
-  declared to Google for review: Google may not allow it for a music player, and
-  without it the app works with
-  the tracks only (no `.lrc`, `.cue` or covers next to them, no deleting
-  non-audio files).
-- **The window on Windows.** Events sent while there is no window are lost (a
-  notice that was shown and missed does not come back). If the tray icon is not
-  there — Windows refused it, or its menu labels have not been remembered yet, as
-  on a very first start — the X closes the program, as it always did.
-
-## [3.2.1] — 2026-11-17
-
-**Rymembra on Android.** The same application, from the same code: the
-fifteen core crates build for `aarch64-linux-android` and
-`x86_64-linux-android` unchanged, and the window becomes an Android activity.
-It ships as **3.2.1**, a patch by the rules above: the skin format is still 2
-and the «Listen together» protocol still 1, so nothing outside Rymembra has to
-keep up — not with a phone that did not exist before, nor with the device link,
-which is new on both ends. What stops an older copy opening the library, the
-migrations, is named under Database, with what going back costs.
-
-### New — the phone
+### New — Rymembra on Android
 
 - **An interface of its own.** On a phone the shell is a column — a top bar,
   the page, a mini player, four tabs — and the shapes, sizes and motion are
@@ -645,16 +246,23 @@ migrations, is named under Database, with what going back costs.
 - **Updates on the phone.** *Settings → Updates* checks the project's latest
   GitHub release, every six hours while the app is alive, and announces it
   only if it carries an APK for the phone's architecture, with the same notes
-  the computer shows (from the release’s `latest.json`). «Update» downloads it
-  into the cache, with its progress, and hands it to Android's installer,
-  which asks for confirmation — and the first time for permission to install
-  apps. Before that, Rymembra verifies the APK with the updater’s minisign
-  key, for the version announced, then opens it and refuses it unless it is
-  this same app signed with the same certificate; it takes it only from a
-  GitHub release asset (see Security). A test build, signed with another key,
-  does not download an update Android would refuse: its banner says how to
-  move to the public version without losing the library. The pure part — which
-  release, which APK — is in `rilasci.rs`, with its tests.
+  the computer shows (from the release’s `latest.json`). “Update” downloads the
+  APK into the cache, with its progress, and verifies it first — with the
+  updater’s minisign key, for the version announced, then it opens it and
+  refuses it unless it is this same app signed with the same certificate — and
+  Android's installer opens only when you tap “Install”, which asks for
+  confirmation and, the first time, for permission to install apps. The
+  signature is checked again right before the handoff, so a file that changed
+  in the cache while it waited is deleted and never reaches the installer.
+  If the download finishes while Rymembra is out of view, a low-importance
+  “Update ready to install” notification brings you to the card — only if
+  notifications are already allowed: Rymembra does not ask for the permission
+  for it. Switching “Check for updates” off stops a download in progress, and a
+  package that finishes after that is not kept waiting. The update is taken
+  only from a GitHub release asset (see Security). A test build, signed with
+  another key, does not download an update Android would refuse: its banner
+  says how to move to the public version without losing the library. The pure
+  part — which release, which APK — is in `rilasci.rs`, with its tests.
 - **The APK is on every release**, `Rymembra_X.Y.Z_android-arm64.apk`, signed
   with the release key (its SHA-256 fingerprint is on the release page), built
   for 16 KB memory pages and with its minisign signature (`.apk.sig`) beside
@@ -671,8 +279,70 @@ migrations, is named under Database, with what going back costs.
 - **Touch targets**: switches, hearts, tabs, small buttons, the rating stars
   and the A–Z index of the artists grow to a finger's size; the artists grid
   has two columns; Explore no longer opens the keyboard by itself.
+- **The cover of a track that plays from another device** shows in Android
+  Auto, in the notification, on the lock screen and on the Windows media card
+  even when the app window never showed it. Rymembra asks the other device for
+  the cover once, in the background, and the card refreshes when it arrives; a
+  cover that does not arrive is not asked for again for a minute. The car’s
+  queue shows the covers already stored, plus the next track’s.
+- **The same for a “Listen together” session’s voices**: their covers reach the
+  notification, the lock screen and the media card too.
+- **The resume card after a restart** keeps the cover of a track from another
+  device.
+- **The play key of a headset or a car, and the system’s resume card, can
+  restart the music after you swiped Rymembra away** — with the background
+  service on. The receiver is switched off otherwise.
+- Android Auto lists only what can be played right now: tracks of devices that
+  are off are hidden, and a track stays if another device that answers has a
+  copy.
+- **Two builds of the Android app.** The one on GitHub keeps the updater. The
+  Google Play build has no updater and no permission to install apps: Google
+  Play updates it, it never contacts GitHub, and “Start with the car” is not
+  offered there. (A build is chosen with `-Pdistribuzione=play`; the release
+  workflow builds only the GitHub one.)
+- **What a phone does differently.**
+  - The app stays in portrait, and the guided tour of the computer is not
+    offered. Notices appear in the stack at the bottom of the screen, as on the
+    computer.
+  - The audio output follows Android: the list has one row, named after where
+    Android plays right now (speaker, wired or Bluetooth headphones), and the
+    sound moves when you connect or disconnect one; *Settings › Playback* says
+    so instead of offering a choice that chooses nothing. When the output you
+    were using disappears — headphones unplugged, a cable pulled, a car that
+    disconnects — playback pauses instead of moving to the speaker.
+  - A “resume” from Android Auto, the notification or a media key that arrives
+    while the audio engine is still opening, right after Rymembra starts, waits
+    for it — up to ten seconds — instead of failing, and a pause pressed in the
+    meantime cancels it.
+  - The page never freezes while a scan or another long job holds the library
+    or the player: every command that can wait runs off the thread the page
+    waits on, and volume, equalizer, stars and settings still apply in the
+    order you made them.
+  - “Listen together” needs, from Android 17, the “Nearby devices” permission,
+    because without it Android keeps the home network away from the app.
+    Rymembra asks for it when you turn the function on, host, pair or join, and
+    says so when it is denied. The same permission is asked before connecting a
+    WebDAV server or a language model on a private address.
+  - A track deleted on the phone does not come back: Android's trash renames
+    the file to `.trashed-…` beside the original, and the folder watcher no
+    longer takes files named `.trashed-…` or `.pending-…` for music.
+  - Links open in the phone's browser through an `Intent` (`https` and `http`
+    only): the project's pages, donations, “Report a problem”, a track's page
+    on its catalog, and the consent pages of Google Drive, OneDrive, Dropbox
+    and Last.fm. While the consent page is open, a short foreground service
+    (“Waiting for your consent”, at most three minutes) keeps Android from
+    freezing Rymembra behind the browser, so the answer finds it.
+  - The phone gives the other devices its own name — Android's “Device name”,
+    or the model — and the icons of the status bar follow the theme the page
+    shows, light or dark.
 
-### New — your devices over the internet
+### New — your devices over the internet, and one library
+
+The device link has protocol numbers of its own (`rymembra/lontano/1`,
+`rymembra/associa/1`, `rymembra/insieme/1`), and every question beyond the first
+ones sits behind a capability that the other device declares in its presence
+(`catalogo`, `testi`): a device is never asked something it did not say it can
+answer.
 
 - **Your PC's music on the phone, away from home — and the other way round.**
   *Settings › Devices* has «Reachable from the internet» (off by default) and
@@ -699,71 +369,311 @@ migrations, is named under Database, with what going back costs.
     path changes (direct or relay, with the round trip — never an address).
   - **A device that drops for a moment stays.** A connection that falls and
     comes back — Wi-Fi to 5G, two devices calling each other at once — keeps
-    the device in view for eight seconds instead of emptying its Browse page.
-    One that does not answer is tried again as soon as its page, or the
-    Devices page, is opened («Try again now»): a PC switched on after a night
-    off is found at once, not after the node's longest pause. Many requests at
-    once to a device without a connection open one, not one each.
-  - **«Browse <device>»** — in the sidebar under «Devices» for the devices
-    that answer, and on the phone in More › Your devices — opens the other
-    library, looking like this one. «Highlights» comes first, like the Home:
-    the other device's most played tracks and the albums added to it lately,
-    each shelf with «Show all». Then Albums, Artists (with their cover
-    mosaic), Tracks in the library's four orders, and a search of its own, in
-    pages of 200 with «Show more». An album or an artist opens with the big
-    header of an album page: cover, «Play», «Shuffle». A row is cover, title,
-    artist and duration — a tap plays it — and its menu (the ⋮, or a right
-    click) has Play next, Add to queue, Go to album and «Download here»;
-    album and artist cards have one too. Tracks are streamed in 256 KiB blocks
-    and never cached; the owner's plays and likes are shown, read-only. Only
-    tracks in local and network folders are shared. Going back from an album
-    or an artist, or to a tab already opened, returns to the list as it was,
-    with its pages and where it was scrolled. Covers of a device that does not
-    answer are not waited for.
-  - **The file's version comes from its first block**, not from the owner's
-    database, which can be behind its disk — after «Re-read all tags», or with
-    a file retagged outside Rymembra since the last scan — and would have made
-    every read fail as «the file changed». A file that really changes while it
-    plays or downloads still stops there, never stitched to the old one.
-  - **Tracks of another device stay in the queue after a restart** — the
-    phone's process ends often. The queue of library rows is saved as always,
-    and the whole queue next to it (`player.queue.remote`, not in profiles or
-    backups); at start the remote tracks come back if their device is still
-    linked, and the position moves as it does when they are dropped.
-  - **«Download here»** copies tracks — one, or a whole album — into this
-    device's download folder as `<Artist>/<Album>/<NN - Title>.<ext>`, one at a
-    time, written as `.part` and renamed when complete; a file already there
-    with the same size is skipped, and the download folder is scanned at the
-    end. A strip on the Browse page shows the progress, with «Cancel». On the
-    phone a notification — «Rymembra is downloading · 3 of 12 · title» — keeps
-    it going with the screen off (a `dataSync` foreground service, stopped at
-    the end of the queue).
+    the device in view for eight seconds instead of emptying its rows. One that
+    does not answer is tried again as soon as the Devices page is opened
+    (“Try again now”): a PC switched on after a night off is found at once, not
+    after the node's longest pause. Many requests at once to a device without a
+    connection open one, not one each.
   - **Listens count on the owner.** A remote track played here is recorded in
     a queue and sent when the owner answers; the owner records it as its own
     play and scrobbles it. Nothing is counted on the device that played.
-  - **«Wi-Fi only».** On a metered network the phone asks once before playing
-    or downloading another device's tracks — Ask (the default), Yes, Wi-Fi
-    only, in *Settings › Devices*. Lists and presence always pass.
-  - **The phone** is reachable while Rymembra is on screen or playing, and its
-    connection goes to sleep two minutes after neither is true. The QR scanner
-    is an activity of its own (CameraX and ZXing core, no Play Services), and a
+  - **Mobile data.** *Settings › Devices* has “Other devices’ music on mobile
+    data”: Ask (the default), Yes or Wi-Fi only. On a metered network, with Yes
+    the best copy plays on any network; with Wi-Fi only a copy on another device
+    is not used (this device’s copy plays, or the track says so); with Ask the
+    question comes once, only when the best copy is on another device, and it
+    is asked from every Play, Next, Previous, queue and radio gesture that opens
+    such a track. Downloading, and “Listen together” sessions over the
+    internet, ask the same way, and lists and presence always pass.
+  - **The phone is reachable while Rymembra is on screen or playing, and for
+    two minutes after** — or all the time with “Stay active in the background”
+    on, which keeps the connection to your other devices awake and keeps the
+    music service alive when you swipe Rymembra away, but does not by itself
+    turn on “Reachable from the internet”. The QR scanner is an activity of
+    its own (CameraX and ZXing core, no Play Services), and a
     `rymembra://collega/…` link opened from the system camera or a message
-    opens Rymembra on the «Link this device?» question. A change of network —
+    opens Rymembra on the “Link this device?” question. A change of network —
     Wi-Fi to 5G — is passed on at once, so the connection finds a new path
     instead of waiting for the old one to time out.
   - **Forget** removes a device here and tells it; it then shows as unlinked
     there.
+
+- **The music of the devices you linked is in your library.** Tracks on your
+  other PCs and your phone show up in Albums, Artists, Tracks, Favorites,
+  Search and playlists as ordinary rows, each with the icon of the device it
+  lives on: there is no separate page for another device’s library. The first
+  time Rymembra reads a device’s catalog, a strip says “Reading the library of
+  “<PC>”… 12,000/50,000”, and after that only what changed; a reading that is
+  interrupted says so, with “Try again now”. No audio file is copied to this
+  device until you ask. Tracks of another device stay in the queue, saved and
+  restored like any other row.
+  - **A filter, not a page.** “All · This device · <name>” sits above Albums,
+    Artists, Tracks and Favorites, in Search and on the artist page, on the
+    phone and on the PC (it is not remembered, and it does not appear when
+    nothing is linked). The sidebar’s “Devices” group, More › Your devices and
+    Settings › Devices › “Show in library” open the library already filtered;
+    a linked device that is off stays in the list.
+  - **One row per track.** The same track on several devices is shown once, and
+    the copy that plays is the best one — lossless first, then the higher
+    sample rate, then the bitrate; between two lossy files only the bitrate
+    counts; on a tie the copy on this device wins. Each track picks its own best
+    copy, and an album whose tracks sit on several devices is still one album,
+    with one card and its tracks counted once. Two copies on the same device stay two
+    rows, as before. A copy that claims to be lossless is checked against the
+    file’s size and duration it also declares.
+  - **Playing.** A tap plays the track streamed from its device, in 256 KiB
+    blocks that are never cached. What the file is — its size and date — comes
+    from its first block, not from the owner’s database, which can be behind
+    its disk; a file that really changes while it plays or downloads stops
+    there, never stitched to the old one. If the device is off or the file
+    cannot be opened, the copy on this device plays when there is one, and
+    otherwise the row says “<PC> is not reachable” instead of showing an
+    error. When the best copy is on another device, the mobile-data setting
+    decides (see “Mobile data” above).
+  - **A device that is off stays listed.** Its rows are greyed out — dimmed
+    with colour, with the title in italics, and a screen reader hears “… is not
+    reachable” — and keep their menu, heart and stars, except a row with a copy
+    on this device, which stays playable and plays that copy. A tap on a
+    greyed-out row shows a neutral notice with the device’s icon. Play on an
+    album, an artist or a playlist skips them, and Android Auto, autoplay,
+    radio and smart playlists leave out devices that do not answer.
+  - **Playlists, hearts and stars work on them.** A playlist can hold a track
+    that exists only on another device. Hearts and star ratings given to such a
+    track are sent to its owner (they wait if it is off and arrive when it is
+    back, the newest wins per field, and an entry the other device refuses with an
+    error of its own does not hold back the others), and plays are counted on the owner, once,
+    and scrobbled there — never here.
+  - **When a device stops sharing tracks.** If at least 50 tracks and a fifth of
+    its catalog disappear at once you are asked before they leave your library;
+    “Keep them” removes nothing, and the answer is remembered after a restart,
+    per device and for that number of tracks. A track that goes away for a
+    moment — an unplugged disk, a rebuilt library — stays hidden for seven days
+    and finds its place in your playlists again if it comes back, even with a
+    new identifier. A playlist that holds one shows it faded, with “<PC> no
+    longer shares this track”.
+  - **“Forget” says what it will cost, and does not hold the library.** It
+    tells you how many playlists would lose tracks and how many listens of
+    tracks that exist only on that device would be lost. What you also have
+    here moves to your copy — the playlist entries and the listening history —
+    even when the owner corrected the tags and the two keys differ. The
+    device’s rows are hidden at once and deleted in blocks of 2,000, each with
+    a short hold of the library, so a catalog of hundreds of thousands of rows
+    never makes a heart, a scan or a playlist edit wait for long; a “Forget”
+    that the app was closed in the middle of is finished at the next start. The
+    tracks that leave this way also leave the saved queue, “Resume where you
+    were”, the queue that “Undo” would restore and the saved position, so a new
+    track that takes the same number cannot play in their place.
+  - **“Download here”** copies the tracks to this device, into its download
+    folder as `<Artist>/<Album>/<NN - Title>.<ext>`, with one queue and one
+    thread per device, so a slow PC does not hold back the others. It is in the
+    menu of a row, of an album card and of a selection, on the album page and
+    on the artist page. From 50 tracks it asks first, saying how many tracks and
+    how much space (“at least” when some sizes are unknown), with “Cancel” as
+    the default; a large selection is prepared one batch at a time, saying that
+    it is counting, and a set of more than 5,000 is sent in blocks. Only audio
+    files with the extensions the scan reads are written. A file is written as
+    `<name>.<8 digits>.part` and renamed when complete: two queues for the same
+    song never write the same part, a file that appears meanwhile is never
+    replaced (the new one takes “ (2)”), the same song already there with the
+    same size is not downloaded again, and the parts an interrupted download
+    left behind are removed the next time that device downloads into the same
+    folder. The download folder is scanned at the end, and once the file is
+    here it joins the copy already in the library. On the phone a notification
+    — “Rymembra is downloading · 3 of 12 · title” — keeps it going with the
+    screen off (a `dataSync` foreground service, stopped at the end of the
+    queue).
+- **The lyrics of a track on another device.** The lyrics panel asks the device
+  that owns the track for its text (timed or plain, with its source and offset)
+  and falls back to your own lookup — LRCLIB, only with the panel open — if
+  that device is off, older, or has none; there is never an error banner for it.
+  The text the owner timed by hand arrives as a copy that follows that device:
+  it updates when the owner redoes it, it is never published as your work, and
+  “Not this one” — or a candidate you choose in its place — holds until the
+  owner sends the same text again. Offset corrections, a text you timed by
+  hand, a candidate chosen from the list and “not this one” on such a track
+  apply here and are sent to the owner, where they wait if it is off; each one
+  carries the clock of when you decided it. A plain text does not replace one
+  with timings. In the timing editor of a track on another device “Straighten”
+  becomes “Next”, with a note that the audio is on that device.
+- **The artist page is complete.** The artist’s name in Now playing, on the
+  phone and on the PC, is a button that opens the page — the album’s artist
+  when there is one — and Back returns to Now playing. Under the albums the
+  page lists all the artist’s tracks, including those with no album, sorted by
+  album, year, title or most played; “Also appears on” shows tracks that carry
+  the name on someone else’s album, such as compilations; and “May also appear
+  on”, labeled as a search that can be wrong, shows tracks that name the artist
+  in their credits, after “feat.” for example. On the PC the page has Play,
+  Shuffle and Download here, and the library filter applies to all of it.
+- **The menu of a track of another device** no longer offers Show in folder,
+  Remove from library or Delete from disk, which cannot work from here — and a
+  selection that holds even one such track loses them too. “Shuffle” is in the
+  album card’s menu.
+- **Linking is easy to find.** The texts say to press “Copy link” on one PC and
+  paste it in “Paste link” on the other, and that field has its own heading and
+  line of explanation. A new QR code or link replaces the previous one, which
+  is now written next to the code. After linking a computer you are offered a
+  name that tells your PCs apart, on both sides. When several devices ask to
+  link at once the question shows one at a time and says how many are waiting
+  behind it; the next one opens with the focus on “Refuse”, so a second Enter
+  cannot accept a device nobody has looked at. A second `rymembra://` link that
+  arrives while the first is waiting for your answer is ignored — the first one
+  wins — and a discarded link does not bring the window to the front.
+- **The rest of the library works around them.** The library’s lists and
+  counts — artists, albums, tracks, an artist’s page, search — are read without
+  taking the library lock, so rereading them while a linked device’s catalog is
+  being read does not make a scan, the analysis or the mirror wait. A changed
+  filter drops the old selection and scrolls the new list back to the top;
+  headers and the sidebar count what the filter shows, not the whole library;
+  on a large selection (Select all) the context menu answers at once.
+  “Fill the library” (lyrics) leaves tracks of other devices out: their titles
+  and artists are never sent to LRCLIB without a panel open, and the next
+  track’s lyrics are not prefetched from another device on a metered network.
+  “Send all my history” and “now playing” never scrobble tracks of other
+  devices: the owner does it. “Listen together” says why tracks of another
+  device cannot join a session — a session plays only tracks on this device —
+  instead of a generic error. Play and Shuffle on an artist play the artist’s
+  own tracks, not the whole albums they appear on (a compilation used to bring
+  in the other artists’ tracks).
+- **The covers of other devices’ tracks** are saved in the cover store like your
+  own, at 320 pixels, and replaced by the full-size cover when the same file is
+  scanned here.
 - **The Wi-Fi stays awake on the phone** during a «Listen together» session
   and while a track of another device plays or downloads (Android's Wi-Fi
   lock: low latency on screen, high performance with the screen off where
   Android still honors it).
-- **A «Devices» section in Settings**, next to sync, with the switch, the QR
-  code and **one list of all your devices**: the ones linked over the
-  internet, the PCs paired for «Listen together» and the devices in sync,
-  merged where they are the same device (a phone linked with the QR shows
-  «Listen together · sync» under its name). Rename, Forget, Block, Accept and
-  Browse are there; the «Listen together» and sync cards point to it instead
-  of keeping their own lists.
+- **A “Devices” section in Settings**, next to sync, with the switch, the QR
+  code and **one list of all your devices**: the ones linked over the internet,
+  the PCs paired for «Listen together» and the devices in sync, merged where
+  they are the same device (a phone linked with the QR shows «Listen together ·
+  sync» under its name). Rename, Forget, Block, Accept and “Show in library” are
+  there; forgetting a «Listen together» PC or a sync device from this page asks
+  first. The «Listen together» and sync cards point to it instead of keeping
+  their own lists.
+
+- **Linking two devices with the QR pairs them for «Listen together» too**,
+  without the four-digit code: each tells the other its «Listen together» key
+  inside the encrypted link. A PC you blocked stays blocked: the QR code does
+  not prove you want it back — “Unblock”, or pairing it again with the
+  four-digit code, does.
+- **Listen together away from home**, between devices linked with the QR. A
+  linked device that hosts a session tells so in its presence, and shows in
+  the panel with «via internet» under its name; joining, inviting, asking to
+  enter and the member's own tracks work as at home. A device that the home
+  discovery also sees stays on the home network.
+  - `rymembra-insieme` no longer knows only TCP: a `Presa` trait (a byte
+    stream with deadlines, implemented for `TcpStream`) carries everything,
+    `Dove` (`Lan(ip:port)` or `Lontano(key)`) replaces the socket address,
+    and a `Strada` opens the internet ones. Over the link each of them is one
+    QUIC connection on the `rymembra/insieme/1` protocol, with the usual Noise
+    handshake inside, against the «Listen together» key that the QR exchanged.
+  - A device that starts or stops hosting tells the linked ones at once, and
+    they look for it at once: it shows within seconds, not half a minute.
+  - Internet connections get wider timings — connect 15 s, handshake 10 s,
+    silence 30 s, forwarded reads 20 s — and the heartbeat stays the same, so
+    an older peer is not cut off. A session with a member over the internet
+    schedules its starts 400 ms ahead instead of 250. The per-address caps of
+    a host count by device key, so two members behind the same relay or
+    carrier NAT do not share one.
+  - A member's clock estimate keeps samples up to a 400 ms round trip, instead
+    of 100 ms at home; the filter on the fastest samples is unchanged.
+  - «Wi-Fi only» covers it: on mobile data, joining, accepting an invite,
+    inviting or admitting someone over the internet asks first, as for the music of
+    other devices.
+- **A paired host is found where the broadcast does not reach.** The last
+  address at which it answered is remembered (migration 040) and asked
+  directly at every discovery round, like an address typed by hand: guest
+  Wi-Fi with client isolation, two subnets, a host that had to take a port
+  outside 47811–47820. Whoever answers there must still prove the paired key.
+- **Forward compatible.** A connection opened for a use this version does
+  not know is closed with `insieme.versione` («update Rymembra») instead of
+  `insieme.protocollo`, and a frame of an unknown type is skipped — its length
+  is in the header — instead of closing the connection: a newer Rymembra can
+  add one without breaking the session for the older ones.
+
+### New — in the background and at startup
+
+- **Start with Windows** (Settings › Startup and closing, which used to be
+  “Closing and background”). When you sign in to Windows, Rymembra starts
+  minimized to the taskbar. The switch shows what Windows says: if you turned
+  the entry off in Task Manager it tells you so and does not override your
+  choice. It works on the installer copy (an entry in Windows’ startup list,
+  removed on uninstall) and on the Microsoft Store copy (a startup task). Off
+  until you turn it on. Installing a newer version by hand over this one keeps it
+  as it was.
+- **A one-time question** on the PC offers to start with Windows and keep
+  Rymembra in the tray when you close it; the phone gets its own, about the
+  background service below. It does not appear during first-run setup or the
+  tour (on the phone, which has no tour, it waits only for setup and “What’s
+  new”). “Later” puts it off until Rymembra next starts, and so does closing
+  the window while the question is unanswered; once you answer, it is not asked
+  again.
+- **Stay active in the background** (Settings › Devices, Android). A foreground
+  service keeps Rymembra running after you swipe it away from recent apps, so
+  your PCs can reach the phone whenever they like, with a minimal notification
+  (“Rymembra is active · connected to <PC>”, hidden on the lock screen) and a
+  “Turn off” button. Off by default, and it costs battery. It does not turn on
+  “Reachable from the internet” — that is a separate yes, and the card says so.
+  A button opens Android’s battery optimization page, with a note for
+  manufacturers (Xiaomi, Huawei, Samsung, Nothing, OnePlus, Oppo) that close
+  background apps on their own; Rymembra never asks for the exemption itself.
+- **It starts when the phone does, and after an update** (Android). With “Stay
+  active in the background” on, after a restart of the phone Rymembra starts by
+  itself, without opening the app, as soon as you have unlocked it for the first
+  time — and again after Android replaced the app with a new version, whether
+  by Google Play’s automatic update or by an update installed from Rymembra:
+  the notification comes back, the PCs you linked reach the phone, Android Auto
+  finds Rymembra ready (the tree, the resume), and the play key of a headset or
+  a car works. “Start with the car” can start the music too, as far as Android
+  grants the audio focus (see Known limits). When you open the app later it
+  joins what is already running — one core, the music keeps playing. With the
+  setting off nothing changes: nothing starts at power-on or after an update.
+- **Android Auto does not need the app open.** When the car asks for the
+  library and Rymembra is not running, it starts its core by itself, even with
+  “Stay active in the background” off, instead of showing “Open Rymembra”.
+  (Android may close the process again when nothing plays and nothing keeps it
+  alive; the car then asks again.) Only the core starts: the backup, the sync,
+  the enrichment, the analysis, the folder watch and the update check wait for
+  the app, so a restart of the phone costs no battery and no disk for them. The
+  notification says “Rymembra is starting” until the core is up, and
+  “Rymembra is resting” if the core cannot even be loaded.
+- **Start with the car** (Settings › Devices, Android, under “Stay active in
+  the background”). When the phone connects to Android Auto, Rymembra starts
+  playing by itself in place of the last app you used, resuming the queue it
+  had saved. Off by default, it works only with the background service on and
+  turns off with it. Rymembra asks for the audio focus first: if Android does
+  not grant it — a call in progress, another app that will not give it up or,
+  on Android 17, the restriction on audio asked for from the background —
+  nothing starts. It is not in the Google Play build.
+- **Start from a link.** `rymembra://collega/…` links open Rymembra on Windows,
+  from the installer copy and the Store copy, and ask you to confirm the
+  device’s name and fingerprint before linking anything.
+- **The window reopens where it was** — same size and place, maximized if it
+  was — after the X with the tray icon, after a `rymembra://` link and after a
+  restart, instead of at Windows’ cascade position; if its monitor is gone it
+  opens on the main screen. Rymembra remembers the window’s outer rectangle
+  (`ui.window.geometry`, never in a profile) and, when it recreates the window,
+  measures the new window’s own frame and checks the size it got, so a window
+  that goes to the tray and comes back many times does not grow.
+
+### New — updates that show where they are
+
+- **A card in the notification stack shows each step**: downloading (percentage,
+  size, speed and time left), verifying the signature, installing, restarting.
+  It moved there from the top of the page, so it no longer pushes the page down.
+- **“At close”** (PC, installer copy). The update is downloaded and verified
+  right away and installs when you really exit Rymembra — “Exit” from the
+  tray, or the × when there is no tray icon — without reopening it. After three
+  days the card offers “Install now” again, and “Exit” from the tray installs.
+  It never installs while Windows is shutting down or signing you out. The
+  download stops at 256 MiB; turning “Check for updates” off stops one in
+  progress and discards a package that finishes afterwards, so no installer
+  waits for the next quit; and the copy that “Install now” restarts opens
+  normally even when the one that ran the installer had been started by Windows
+  or by a `rymembra://` link. The Store copy has no updater: the Store updates
+  it.
+- **A “What’s new” window** with a few illustrated steps opens once after an
+  update, not on a fresh install — not even one that is linked to a PC right
+  away. On the phone you swipe through it.
 
 ### Changed — what works differently
 
@@ -812,8 +722,6 @@ migrations, is named under Database, with what going back costs.
   folder, and its “Open the data folder” and “Open the log folder” open the
   package’s private folder, where Windows really keeps the files. The Store package
   requires Windows 10 2004 (build 19041).
-- **On the phone, for this release,** the app stays in portrait, and the
-  guided tour is not offered: it started out of sight and filled the queue.
 - **A skin you can always get out of.** After you wear a skin from a file, the
   “Keep …?” question goes back to the previous skin by itself after 15 seconds
   without an answer, and holding Shift for half a second as Rymembra’s window
@@ -847,50 +755,21 @@ migrations, is named under Database, with what going back costs.
   battery; the player’s own audio and decoding threads are never put in
   background mode. Elsewhere than Windows the battery is not known, and the
   passes go as they did.
+- **The X really closes the window** when “The X closes the window and Rymembra
+  stays in the tray” is on — in 3.2.0 it only hid it. The music, the media keys
+  and the tray icon stay, and the window’s WebView2 processes go away. “Show”,
+  a click on the icon, opening Rymembra again, a `rymembra://` link or a
+  “Listen together” invitation bring the window back. With the Skin Studio
+  open, closing waits for it to save, like every other close. The tray menu
+  labels are remembered, so the icon needs no window to appear, and the media
+  keys and the volume flyout hang on a window of the program’s engine, not on
+  the app window. The X asks Windows whether the tray icon is really there: if
+  Explorer is missing or not answering, the X closes the program as it always
+  did, instead of leaving a process with no window and no icon. A playback
+  error that happens while the window is closed is shown when you open it
+  again.
 
-### Changed — Listen together
-
-- **Linking two devices with the QR pairs them for «Listen together» too**,
-  without the four-digit code: each tells the other its «Listen together» key
-  inside the encrypted link. A PC you blocked stays blocked: the QR code does
-  not prove you want it back — “Unblock”, or pairing it again with the
-  four-digit code, does.
-- **Listen together away from home**, between devices linked with the QR. A
-  linked device that hosts a session tells so in its presence, and shows in
-  the panel with «via internet» under its name; joining, inviting, asking to
-  enter and the member's own tracks work as at home. A device that the home
-  discovery also sees stays on the home network.
-  - `rymembra-insieme` no longer knows only TCP: a `Presa` trait (a byte
-    stream with deadlines, implemented for `TcpStream`) carries everything,
-    `Dove` (`Lan(ip:port)` or `Lontano(key)`) replaces the socket address,
-    and a `Strada` opens the internet ones. Over the link each of them is one
-    QUIC connection on the `rymembra/insieme/1` protocol, with the usual Noise
-    handshake inside, against the «Listen together» key that the QR exchanged.
-  - A device that starts or stops hosting tells the linked ones at once, and
-    they look for it at once: it shows within seconds, not half a minute.
-  - Internet connections get wider timings — connect 15 s, handshake 10 s,
-    silence 30 s, forwarded reads 20 s — and the heartbeat stays the same, so
-    an older peer is not cut off. A session with a member over the internet
-    schedules its starts 400 ms ahead instead of 250. The per-address caps of
-    a host count by device key, so two members behind the same relay or
-    carrier NAT do not share one.
-  - A member's clock estimate keeps samples up to a 400 ms round trip, instead
-    of 100 ms at home; the filter on the fastest samples is unchanged.
-  - «Wi-Fi only» covers it: on mobile data, joining, accepting an invite,
-    inviting or admitting someone over the internet asks first, as «Browse»
-    does.
-- **A paired host is found where the broadcast does not reach.** The last
-  address at which it answered is remembered (migration 040) and asked
-  directly at every discovery round, like an address typed by hand: guest
-  Wi-Fi with client isolation, two subnets, a host that had to take a port
-  outside 47811–47820. Whoever answers there must still prove the paired key.
-- **Forward compatible.** A connection opened for a use this version does
-  not know is closed with `insieme.versione` («update Rymembra») instead of
-  `insieme.protocollo`, and a frame of an unknown type is skipped — its length
-  is in the header — instead of closing the connection: a newer Rymembra can
-  add one without breaking the session for the older ones.
-
-### Changed — folders in the cloud
+**Folders in the cloud.**
 
 - **The track cache no longer makes one track wait for another.** One lock
   held the whole cache, disk included: a two-megabyte window being written on
@@ -943,16 +822,116 @@ migrations, is named under Database, with what going back costs.
   that `/content` redirects to: the tag reading that follows the listing
   starts from there, one `302` fewer per file. It is kept in memory only,
   for 45 minutes at most, and an expired one goes back to `/content`.
-- **The phone keeps listening while you consent in the browser.** Connecting
-  OneDrive, Dropbox or Google Drive sends you to the browser, and the answer
-  comes back to an address on the phone; with Rymembra behind the browser,
-  Android under memory pressure (or a stricter manufacturer) can freeze it,
-  and the browser then finds nobody. A short foreground service
-  (`ConsensoInAttesa`, `shortService` from Android 14, at most three minutes
-  like the wait itself) runs from before the browser opens until the answer,
-  «Cancel» or the timeout, with the notification «Waiting for your consent».
 
-### Security — your devices over the internet
+**Building and the code.**
+
+- The app crate is a library (`rymembra_lib`, with `run()`); `rymembra.exe`
+  is a one-line binary that calls it.
+- Desktop-only dependencies — the tray, the updater, single instance, SMTC,
+  the Recycle Bin, the native error dialog, the Credential Manager — moved to
+  a `[target]` table, and the modules that use them have an Android
+  counterpart in `src/mobile/` with the same commands. `media.rs` became
+  `media/`: the shared gestures in `mod.rs`, SMTC in `smtc.rs`, the Media3
+  session in `android.rs`.
+- A new crate, `apps/desktop/rymembra-android`, is the bridge to Kotlin: one
+  JNI method, `Ponte.chiama(command, arguments)` with JSON in and out, and its
+  `unsafe` stays in `jvm.rs`, under the same declared exception as
+  `rymembra-barra`.
+- On Android the TLS roots are the Mozilla list compiled in (`webpki-roots`):
+  `rustls-platform-verifier` there needs JNI and a Gradle component.
+- `apps/desktop/src-tauri/gen/android` is versioned now; only `gen/schemas`
+  is ignored.
+- **The CI builds Android.** A new `android` job runs clippy for
+  `aarch64-linux-android`, `tauri android build --apk --debug` and the Gradle
+  lint; `deny.toml` checks the Android dependency graph too (`jni` and
+  `ndk-context` were outside it).
+- `rust-version` is 1.91, the minimum of `iroh` 1.0 (see the device link).
+- **A clean `npm ci` builds the interface again.** `vite.config.ts` reads
+  `process.env` and `@types/node` was not a declared dependency, so `tsc`
+  failed and with it `build:web`, CI and the release build; it is now a dev
+  dependency.
+- **`cargo deny check` passes again**: BSD-2-Clause (`spez`, through iroh) is
+  allowed, and three advisories that do not reach Rymembra's code are listed
+  with the reason (RUSTSEC-2026-0429, `zip::extract`; -0459, SQLite opening
+  someone else's `-wal`; -0386, tokio `AsyncFd`).
+- **Gradle 9.8.2**, with the distribution’s SHA-256 checked by the wrapper; vite 7.3.8.
+- **The release workflow checks the APK’s Android Auto icons.**
+  `strumenti/apk.js controlla` runs `aapt2 dump resources` and stops the
+  release if one of the project’s `auto_*.xml` drawables is missing from the
+  resource table: Android Auto asks for them by name, and R8’s resource
+  shrinking had removed all of them in a test release (`res/raw/keep.xml`
+  keeps them).
+- **Releases start from the tag**, a manual run from a branch stops at once,
+  and a release already published is never uploaded to again. The
+  `niente-di-vietato` check covers `rymembra-android`, `rymembra-barra`, the
+  interface tests and the Kotlin sources; `strumenti/firma.js` accepts a key
+  without a password, as `tauri signer` does.
+- **The release starts with a short job that checks the five signing secrets**
+  of the `release` environment — the shape of the minisign key, the Android
+  keystore opening with its password and alias, and the certificate’s
+  fingerprint — before any long build, so a missing or wrong secret shows up in
+  two minutes instead of after an hour and a half. It is a third approval of
+  that environment, at the start. A minor or major release (patch 0) is stopped
+  at the tag if it has no “What’s new” steps; a patch release can still go out
+  without them. The CI check on R8 also covers the native functions of the
+  Android bridge that start the core from the service, read from the Kotlin
+  source: a renamed one stops the release.
+- **A security advisory published on release day no longer stops the release
+  build**: it is flagged at the top of the draft. The workflow that builds the
+  Microsoft Store package reports it as a warning too. Licenses and bans still
+  block. Release jobs have longer time limits, and the desktop build no longer
+  produces a static library nobody uses.
+
+- `npm run version:set` rewrites `Cargo.lock` and `package-lock.json` too, and
+  `check:version` checks them and refuses a version the Android
+  `versionCode` cannot hold. `npm run verify` uses `--locked`; the new
+  `npm run verify:ci` runs the Rust checks with CI’s toolchain and
+  `-D warnings`.
+- `THIRD-PARTY-NOTICES.md` includes the license files over 32 KiB, which were
+  dropped (crossbeam-channel’s CC BY 3.0 and the Go texts); a file too large
+  is listed and stops the build. The signing preflight stops a key pasted with
+  a trailing newline.
+- The website’s build checks catch external resources on any element, in
+  `srcset`, in `@import` and in copied JavaScript, protocol-relative links,
+  translations that drop a placeholder or a link, and repeated JSON keys. The
+  docs’ links to the sources are checked against git, so a wrong letter case
+  no longer becomes a 404 on GitHub.
+
+### Security — lyrics, linked devices, files and updates
+
+Three reviews of the code, in November 2026. The first, on the 10th, read
+eleven areas against `SECURITY.md`, fuzzed the untrusted parsers for three
+hours and probed the phone build on an emulator; the second, the day after,
+checked those fixes again, read the interface, the texts, the documents and the
+release, and fuzzed the parsers once more; the third, on the 20th, went through
+everything that is new since 3.2.0 with twelve readers, and tried the upgrade
+from 3.2.0 in Windows Sandbox. What they fixed is below, by area. Some low-risk
+findings are still open, and signing the sync documents is planned work
+(`SECURITY.md`).
+
+**Lyrics.**
+
+- **A crafted lyrics text can no longer take all the memory.** A text of a few
+  dozen kilobytes — `[0:0]` tags and `<0:0>x` words — took about a gigabyte of
+  memory and seconds to read, and one of 256 KiB tens of gigabytes, because
+  every time of a line cloned all its words. The flaw was already in 3.2.0,
+  reachable through LRCLIB (where anyone can publish, with no account), a
+  `.lrc` beside a track and the tags of a file; this release added linked
+  devices, which can send a text too. The reader now bounds its own cost
+  whatever it receives — 32 distinct times and 512 timed words per line, 16,000
+  rows and 200,000 words in all, 16 secondary lines per row, the closing `>` of
+  a word tag looked for only within 32 bytes, an `[offset:]` beyond one hour
+  counted as none — and drops the excess instead of leaving it as text, so
+  saving a text and reading it again changes nothing. Every entry point also
+  caps the bytes before the reader sees them: 256 KiB for a `.lrc`, a tag or an
+  LRCLIB field (an LRCLIB entry with a text field over that, or a name over
+  1 KiB, is dropped and the others of the list stay), 48,000 bytes for a
+  correction from a linked device (more is refused, not cut). A text of
+  thousands of different lines at the same time, or of nothing but `<`, no
+  longer takes seconds to read (it was quadratic), and the rejected-entries
+  list of a track keeps the last 64 instead of growing without end.
+
+**Your devices over the internet.**
 
 - **Linking a device needs its QR code and a «yes».** The code's random
   16-byte token is valid for ten minutes and once, compared in constant time;
@@ -965,28 +944,102 @@ migrations, is named under Database, with what going back costs.
   proves its own key in the Noise handshake, checked against the paired PCs as
   at home: two locks, each with its own key.
 - **What a linked device can read**: the lists of tracks in local and network
-  folders, and the file of such a track by its id, while it is still under a
-  watched folder — size and date checked around every read. No path crosses
-  the connection. Frames are capped at 1 MiB, and inflated at 16 KiB while
-  linking, 64 KiB for a request and 8 MiB for an answer; reads at 2 MiB, lists
-  at 500 entries, requests at 8 at a time and connections at four per device
-  (a fifth closes the oldest).
+  folders — only the ones this device watches now, so a folder you take away
+  stops being shared at once — and the file of such a track by its id, while it
+  is still under a watched folder, with size and date checked around every
+  read. No path crosses the connection. Frames are capped at 1 MiB, and
+  inflated at 16 KiB while linking and 64 KiB for a request. An answer is read
+  in two steps, with a ceiling for each kind — a presence 16 KiB; “done”, a
+  refusal and the head of an answer of bytes 1 KiB; data 8 MiB and at most
+  512 Ki JSON nodes — so 8 KB that open into 8 MiB cost about 10 MiB instead of
+  150 to 260; and an answer of bytes is never longer than what the request
+  asked for (a piece of up to 2 MiB, a cover of 1 MiB), which the head says
+  before anything is allocated or downloaded. Lists are capped at 500 entries,
+  requests at 8 at a time and connections at four per device (a fifth closes
+  the oldest).
 - **The device's key** is in the system keychain (`lontano.chiave.<device>`;
   the Android Keystore on the phone), never in the database, and an existing
   one is never overwritten. The log names no key, address or device.
-
-### Security — the reviews of November 2026
-
-Two reviews of the code. The first, on 2026-11-10, read eleven areas against
-`SECURITY.md`, fuzzed the untrusted parsers for three hours and probed the
-phone build on an emulator; the second, the day after, checked those fixes
-again, read the interface, the texts, the documents and the release, and
-fuzzed the parsers once more. What they fixed is below. Some low-risk findings
-are still open, and signing the sync documents is planned work
-(`SECURITY.md`).
-
-**Your devices over the internet.**
-
+- **New questions between devices**: the catalog (a summary, then pages of 500
+  ids), a heart or rating (`Valuta`), the lyrics of a track (`Testo`) and a
+  correction to them (`TestoScrivi`). A device is asked a new question only after
+  it declared the matching capability — `catalogo` or `testi` — in its presence;
+  an older build is never sent one, and answers the old ones as before. The
+  answering side serves only devices that are still linked, and checks that on
+  every question, not only when the connection opens.
+- **Which tracks are shared**: only files in watched local and network
+  folders, never cloud folders, catalog tracks, a path, or the rows of another
+  device — though what a device sends for each of them, and what the other
+  keeps, is quite a lot: genre, album artist, when it was added and last
+  played, codec, bitrate, sample rate, a content key, the MusicBrainz ids and
+  the times of the last heart and rating (PRIVACY § 4-quinquies lists them).
+  The rows of another device are not shared onward, not in the profile, the
+  Drive backup, sync, playlist files or scrobbles, and a restore or an account
+  import no longer writes statistics onto them. A playlist that contains one
+  carries the track’s key — artist, title and album, normalized, in clear —
+  which does travel in the profile, the Drive backup and the sync file, because
+  the playlist must find the track again. The other thing that reaches a
+  profile you export is the text of a song fetched from the owner, which sits
+  in the lyrics table.
+- **Writes from another device**: `Valuta` and `TestoScrivi` act only on tracks
+  the answering device shares (never cloud, catalog or a third device’s
+  tracks), and count together against a limit of 60 writes a minute for each
+  device. Lyrics are written to the library only: a linked device never writes
+  a file in the owner’s music folders. A text is capped at 256 KiB when read
+  and 48,000 bytes when written, 4,000 lines, 40,000 words, times up to 12
+  hours, an offset up to one hour, no control characters; at most six
+  corrections wait per track, and a device can write at most 100 lyrics texts
+  in 24 hours on another one. A correction carries the clock of when it was
+  decided and does not override a hand-timed text that is more recent; when it
+  replaces one, the old text is kept as a copy of one level, and “Restore the
+  previous lyrics” in the lyrics panel puts it back. Hearts and ratings keep a
+  clock each, so a heart given before some stars does not override a heart you
+  removed in between, and an entry waiting for a device that rebuilt its
+  library follows the track to its new id instead of being dropped.
+- **Everything received is validated field by field** before it reaches the
+  library: at most 200,000 rows per device, names of 200 characters, keys of
+  300 — a track whose key is longer is not shared, because a cut key could name
+  another track. A bad page is discarded alone. A device cannot make this one
+  hold the library lock for tens of seconds: rows leave in blocks of 2,000,
+  10,000 at most per round; at most 20,000 rows are matched in memory; a round
+  stops after 2,000 pages or 10 minutes; whether the device is still linked is
+  checked inside the write transaction, so a page that arrives after “Forget”
+  brings nothing back. Listens received from a linked device never move “last
+  played” back, a future start counts as now, and at most 120 an hour are
+  accepted per device — one that arrives again with the same track and start
+  counts toward them without rewriting anything. A device that declares the
+  same MusicBrainz id as one of your albums cannot change that album’s title,
+  artist or cover on your side, and enrichment never reads, sends to
+  MusicBrainz or rewrites the rows of a linked device’s tracks.
+- **The quality a device declares for a track** is checked against the size and
+  duration it also declares.
+- **Covers from another device are held to tighter limits than the ones in
+  your files**: at most 1 MiB, only JPEG, PNG or WebP (also in “Listen
+  together”), at most 1024 pixels a side read from the header before anything
+  is decoded, two decodes at a time in the whole program, and at most 256 MiB
+  in the store. A 0.4 MiB progressive JPEG of 8192×8192 used to cost 577 MiB
+  of memory. They are cached per device, read only while the device is still
+  linked, shown only when their bytes are an image of those three kinds, and
+  never kept by the window; every `rymembra-cover` response says
+  `X-Content-Type-Options: nosniff`. A linked device can ask only for the cover
+  of a track you share, and cannot tell whether another image is in your
+  library; a decoder that fails on a hostile image does not take down the
+  thread that serves the covers of “Listen together”. What a device says about
+  itself (name, platform, version) is cut to 64 characters of plain text.
+- **A device that insists cannot cost much.** More than 30 presence
+  announcements a minute from one device are refused, and 30 wrong requests a
+  minute make it ignored for a while — without disconnecting it; the node
+  writes at most 20 diary lines a minute, and the window’s mailbox is bounded,
+  so a device that insists can neither wake the window’s thread without end nor
+  rotate the diary away. A device that asks for large answers and never reads
+  them does not keep its seats: each 64 KiB piece of an answer has 30 seconds,
+  and a link attempt that never opens its stream is closed after 10.
+- **“Download here” cannot be made to write without limit.** The size a device
+  declares must be close to the one in its catalog, never zero and never above
+  8 GiB; on Windows the disk space is reserved before the first byte (on
+  Android a full disk shows up while writing), a file that ends early is not
+  counted as downloaded, and only audio files with the extensions the scan
+  reads are written.
 - **A forgotten device can no longer read the library on connections it had
   already opened.** Every request of the device link checks that the key is
   still linked, and forgetting a device — here or there — closes all of its
@@ -1002,8 +1055,6 @@ are still open, and signing the sync documents is planned work
   code or opening a link no longer turns on «Reachable from the internet»
   without a separate yes. «Forget» also removes the «Listen together» trust
   the QR gave, and a QR code never unblocks a PC you blocked.
-- **«Download here» writes only audio files** with the extensions the scan
-  reads; anything else another device lists as a track is refused.
 - **Turning off “Reachable from the internet” closes the node at once**, even
   while a command still holds it: nothing is accepted any more, every
   connection closes and the QR code stops being valid. Before, the node stayed
@@ -1011,11 +1062,6 @@ are still open, and signing the sync documents is planned work
   counts an attempt when no QR code is shown, and the QR code is canceled when
   you leave the Devices page or the window goes to the tray, one still being
   made included.
-- **Covers of linked devices** are cached per device, read only while the
-  device is still linked, kept and shown only when their bytes are a JPEG, PNG
-  or WebP image, and never kept by the window; every `rymembra-cover` response
-  says `X-Content-Type-Options: nosniff`. What a device says about itself
-  (name, platform, version) is cut to 64 characters of plain text.
 - **The internet link uses only the system's DNS servers** — no fallback to
   Cloudflare, Google or Quad9 — and makes no plain-HTTP captive-portal check.
 
@@ -1140,19 +1186,48 @@ are still open, and signing the sync documents is planned work
   failed to open, which can carry a token; and text from outside can no longer
   write fake lines into it.
 
+**Windows.**
+
+- **`rymembra:` links on Windows are untrusted input**, as on Android: only the
+  exact prefix, at most 1,024 characters of `A-Za-z0-9-_/=`, anything smuggled
+  after the closing quote of `"%1"` is ignored, and nothing is linked without
+  your confirmation. The handler is registered by the installer (and by the
+  Store package) for the current user only. A second link that arrives while
+  the first waits for your answer is ignored, and neither it nor a link that is
+  not a linking one brings the window to the front.
+- **The startup entry** is never written by a test copy (one with a custom data
+  folder), and an entry turned off in Windows is never overridden.
+- **`unsafe` in six new places.** 3.2.0 had it in two, both in
+  `rymembra-barra`: the taskbar buttons (`finestra`) and the drive type
+  (`unita`). It is now in eight, all declared, each block saying why it is
+  correct: seven in `rymembra-barra` — those two and, new, background mode and
+  battery (`sottofondo`), USB eject (`espulsione`), the Shift key at startup
+  (`maiusc`), the three registry calls for the startup entry (`registro`) and
+  the never-shown native window that hangs the media keys (`messaggi`) — and
+  `jvm.rs` in the new `rymembra-android`, where the two pointers `tao` hands
+  over become `jni` objects. The lists in the `Cargo.toml` comments agree.
+
 **Phone.**
 
-- **Updates: the APK is checked before Android’s installer sees it.** It is
-  verified with the updater’s minisign key, for the version announced — an APK
-  without a signature is not offered — then opened to make sure it is the same
-  package, signed with the same certificate; and it is downloaded only from a
-  GitHub release asset. Android’s own check protected only an update over
+- **Updates: the APK is checked before Android’s installer sees it, and again
+  right before it does.** It is verified with the updater’s minisign key, for
+  the version announced — an APK without a signature is not offered — then
+  opened to make sure it is the same package, signed with the same certificate;
+  and it is downloaded only from a GitHub release asset. The signature is
+  checked once more when you tap “Install”, against the bytes that are then on
+  disk, so a file changed in the cache while it waited is deleted and never
+  reaches the installer. Android’s own check protected only an update over
   Rymembra: an APK with another package name was offered as a new app.
-- **Only trusted controllers reach the music session**: the app, the system
-  (notification, lock screen, Bluetooth), Android Auto, the car’s media
-  center, Google Assistant, and the watches and remote controls you gave
-  notification access. Other apps can no longer browse the library and the
-  history or control playback.
+- **Only trusted controllers browse the music session**: the app, the system
+  (notification, lock screen, Bluetooth), Android Auto, the car’s media center,
+  Google Assistant, and the watches and remote controls you gave notification
+  access. Other apps cannot browse the library or read the history. What any
+  app can do, as with every Android music app, is send Rymembra a media key —
+  play, pause, next, previous, stop — or ask it to play something by name
+  through the system’s “play from search”: the session cannot tell such a key
+  from a headset’s, and a secret token would break the real Bluetooth and car
+  controls. It moves what plays and nothing else: it cannot read the library or
+  the history, and cannot change a setting.
 - **The page gets no camera, microphone or location**: the WebView refuses
   those permissions and has content access, geolocation and windows opened by
   scripts turned off, and the system WebView is opted out of usage metrics.
@@ -1160,6 +1235,34 @@ are still open, and signing the sync documents is planned work
   two cache folders instead of the whole storage, the activity has an empty
   task affinity (StrandHogg on Android 8–10), and an unreadable intent extra
   no longer crashes the app.
+
+- **Android.** The background service is not exported and has the new
+  `FOREGROUND_SERVICE_CONNECTED_DEVICE` permission. The media-button receiver
+  is exported, because the system sends the key, but disabled by default: it is
+  enabled only while “Stay active in the background” is on, and it starts
+  nothing when the core is not running. The receiver that restarts the service
+  at power-on and after an update listens to `BOOT_COMPLETED` — after the first
+  unlock, never the locked-boot broadcast — and to `MY_PACKAGE_REPLACED`, which
+  the system sends only to the app it has just replaced; it is not exported,
+  not direct-boot aware, and starts the service only when “Stay active in the
+  background” is on. The Car App Library (`androidx.car.app:app` 1.7.0,
+  Apache-2.0) is used only to learn whether the phone is connected to Android
+  Auto: it adds two components that are not exported, no permission and a
+  query for Android Auto’s connection provider on the same phone. “Start with
+  the car” and its observation of the connection never leave the phone, not in
+  profiles, not in backups.
+- **Covers served to the system.** The Android cover provider’s second root
+  holds only the covers of a “Listen together” session, under a name derived
+  from a hash of the cover’s access token (never the token itself), removed
+  when the session ends. It opens only `lontane/<64 hex>/<2–128 hex>.jpg`
+  inside that root, read-only, with the canonical path checked.
+- **On the computer the update package is kept in memory, not on disk**, until
+  it is installed: the signature is checked when it is downloaded, so a file
+  left on disk could not be checked again, and the download stops at 256 MiB
+  (the plugin keeps it in memory). The installer is written to a temporary
+  folder only at the moment it runs, and only when a person closed Rymembra.
+  The Google Play build does not contact GitHub to look for updates and does not
+  request the permission to install apps.
 
 **Installer and release.**
 
@@ -1173,10 +1276,17 @@ are still open, and signing the sync documents is planned work
   environment secrets instead of repository secrets readable by any workflow;
   CI builds `cargo-deny` from crates.io instead of downloading an unchecked
   binary, and the website is built by a job that cannot publish.
+- **The release is checked against the bytes.** Before it publishes, the
+  release workflow verifies the minisign signature of the installer, the one
+  inside `latest.json` and the APK’s — BLAKE2b-512 and Ed25519, with Node’s own
+  crypto, as the updater does — instead of comparing only the key id and the
+  version: a signature that is not the one of the file being published stops the
+  release, rather than being discovered by every installed copy.
 
-### Fixed — the reviews of November 2026
+### Fixed — what the reviews found
 
-The rest of what the two reviews fixed, by area.
+What the reviews fixed in what 3.2.0 already had, by area. What they found in
+the new parts is described with the feature, above.
 
 **Library, folders and Home.**
 
@@ -1230,11 +1340,11 @@ The rest of what the two reviews fixed, by area.
   the meantime: the track is skipped, and the next scan looks at it again.
 - **Albums and tracks.** A compilation with no album artist shows “Various
   artists”, not the guest with the shortest name. The album grid sorts like
-  Artists, here and in Browse: accents and a leading article are ignored
+  Artists: accents and a leading article are ignored
   (“Édith Piaf” under E, “The Beatles” under B), and a leading “I” is an
   article only in Italian names — “I Cani” under C, “I Prevail” under I. The
   Tracks list sorts the same way, by title and by shelf order (artist, album,
-  disc, track), here and in Browse from another device: “È sera” and “Ça plane
+  disc, track): “È sera” and “Ça plane
   pour moi” no longer come after Z, at the same speed as before (this needed
   migration 042, see Database). Smart playlists ordered by shelf follow that
   order, and “recently added” ones keep disc order on ties. A tag year of
@@ -1242,7 +1352,7 @@ The rest of what the two reviews fixed, by area.
   first.
 - **On first launch “Play” no longer plays the library backwards**: tracks
   added in the same instant keep album, disc and track order in “Recently
-  added”, the Tracks view and Browse from another device.
+  added” and in the Tracks view.
 - **The Monday collections fill an empty week**: one that came out empty is
   made again when a listening history or the sound analysis arrives, “Rescued”
   no longer repeats tracks from the last four weeks, and collections made
@@ -1375,40 +1485,6 @@ The rest of what the two reviews fixed, by area.
   of a red error banner; a follower’s clicks in the queue act on the track the
   row showed, even if the host changed the queue a moment before; “Invite”
   keeps the keyboard focus after being pressed.
-- On first start «Listen together» and the device link no longer each create
-  a «Listen together» key.
-
-**Your devices over the internet.**
-
-- **The device link no longer waits for the library lock.** The node starts
-  during a long scan or the first sound analysis — a phone could stay
-  unreachable for the whole of it — and *Settings › Devices* no longer answers
-  “the database is busy”. “Browse” requests from a linked device read from a
-  read-only database connection of their own, so a long write on the serving
-  device (a scan, the analysis) does not make them time out; the serving
-  device logs any request it could not serve because the library was busy.
-- **Listens from a linked device no longer move «last played» back**, a
-  future start counts as now, and at most 120 an hour are accepted per device.
-  An expired QR code always says it expired, and with the library busy a
-  just-forgotten device is not readmitted.
-- “Stop waiting” while “Reachable from the internet” is being turned on really
-  stops the link; before, it went ahead with nothing left to stop it.
-  Forgetting a “Listen together” PC or a sync device from the Devices page
-  asks first.
-- Pairing and link requests that arrive while the Skin Studio is open appear
-  above it instead of freezing the window.
-- Browse, on the computer: Esc, Alt+← and the mouse’s back button close an
-  open album, artist or search, as in the library. On the phone, Back no
-  longer closes levels you can no longer see when the other device stops
-  answering. A search count that never arrives no longer leaves “Loading…”,
-  results stay loaded under an album opened from them, and double-clicking
-  the ⋮ or the cover of a row no longer starts the other device’s list.
-- A command’s reply no longer overwrites a newer state of a linked device that
-  arrived while it was in flight; when no track could be downloaded, the
-  notice says so instead of “Downloaded 0 tracks”, and the relay field’s hint
-  is translated.
-- Deep pages of Tracks and the pages of Artists that a linked device browses
-  no longer cost as much as reading the whole library each time.
 
 **Imports, profiles and backup.**
 
@@ -1505,8 +1581,8 @@ The rest of what the two reviews fixed, by area.
   external drive reconnected); a profile read before the music is scanned
   keeps each playlist whole, with the identities it came with, and reading a
   newer profile of the same playlist no longer adds a track twice after the
-  next sync. Removing a track from a playlist still syncs as before. Every
-  device that syncs together has to be on 3.2.1 (see README).
+  next sync. Removing a track from a playlist still syncs as before. A PC
+  left on 3.2.0 still does what it did (see Known limits).
 
 **Explore, catalogs and metadata.**
 
@@ -1565,6 +1641,47 @@ The rest of what the two reviews fixed, by area.
   the next pass lists them in full.
 - On the first start, a cloud folder whose tracks are still arriving no
   longer says that Rymembra found no tracks.
+- **A reassembly interrupted at the wrong moment could serve the wrong
+  bytes.** The in-order copy was renamed over the old file and the index
+  written after: a crash in between left the index of the out-of-order
+  pieces on top of the in-order file, and after a restart the cache served
+  bytes from one point of the track in place of another. The old index is
+  now deleted first; a crash in between leaves a file no index names, which
+  the next start throws away.
+- **A file changed on the service while its copy is being made is no longer
+  stored as a mix of two versions.** WebDAV sends `If-Match` with the file’s
+  strong ETag, and a `412` becomes `cloud.fileChanged`; Dropbox compares the
+  `content_hash` and `rev` it knew and then asks for the link tied to
+  `rev:<rev>`, so a track takes two `get_temporary_link` requests. Playback
+  then stops with “The file changed on the service while it was playing…”, and
+  the library picks the new version up at the next check. OneDrive and Google
+  Drive requests are not tied to a version yet.
+- **Two Rymembra processes on the same data folder no longer delete each
+  other’s cloud cache.** A lock on the cache folder (the `blocco` file) goes
+  to the first; the second runs with the cache off, leaves its files alone,
+  and says so in the log. Cache indexes written by 3.2.0 are discarded once,
+  with their copy, so a copy that a 3.2.0 crash had mixed is downloaded again.
+- **A WebDAV server that ignores `Range` no longer costs shifted bytes or
+  whole downloads.** A read-ahead cut short by a seek left the in-order read
+  behind by the bytes it had already taken, so the next piece arrived
+  shifted — and was cached that way; every block is now counted as it
+  arrives. Reading a file’s tags there no longer reads and throws away whole
+  files to reach the end: a jump of more than 8 MiB is refused
+  (`cloud.rangeUnsupported`), so the trailing ID3v1 or APE tag of a large
+  file is skipped.
+- **A `206` answer that starts at another byte than the one asked for is
+  refused** (`download.badResponse`), and a file whose size the service does
+  not declare — a WebDAV server without `getcontentlength`, a OneDrive item
+  without `size` — is no longer taken for an empty one.
+- **A server certificate the system does not recognize says so.** A home NAS
+  with its factory certificate is still refused, and now the message says why
+  (`net.untrustedCertificate`) and the way out: a recognized certificate
+  (Let’s Encrypt, or your NAS maker’s service), or adding the NAS as a
+  network folder instead.
+- **“Reconnect” with another account is refused**, naming both accounts
+  (“You signed in as … not as …: nothing was changed”). Cancelling a cloud
+  connection no longer saves the account or its password, and a new account
+  cancelled midway takes its password back out of the keychain.
 
 **Skins.**
 
@@ -1590,10 +1707,6 @@ The rest of what the two reviews fixed, by area.
   dialogs) that is transparent or clipped, a focus ring 0 px wide, a required
   text color missing, a part that flashes by scaling to zero, clipping shut or
   moving away. Contrast is measured on what the window shows.
-- On the phone a skin’s `platforms.mobile` overrides apply, and the player and
-  sidebar sizes are the engine’s: the mini player was 92 px tall, with a large
-  gap under every page, even with Plain. Dialog sheets no longer take over a
-  skin’s decorative layer.
 - In the light themes of Plain and Vinile, danger, warning and success text on
   its tinted background reads at 4.8:1 or more, and progress bars follow the
   skin’s colors instead of Plain’s cyan.
@@ -1774,21 +1887,6 @@ The rest of what the two reviews fixed, by area.
   (“3, Play …”), as WCAG 2.5.3 asks; so does “Put it back” after a skin is
   replaced or left with Shift (“Put it back: “Neon””).
 
-**Phone.**
-
-- Reopening from Recents no longer replays a voice search or an old link, the
-  update notice survives the process, and an APK for another architecture is
-  never offered. A menu reopened while the last one slides down shows, and a
-  dialog that arrives with a menu open is no longer hidden under it.
-- Picking a folder outside the phone’s storage (Downloads, a cloud app) says
-  so instead of “Restart Rymembra”, and the “All files access” explanation no
-  longer claims Rymembra fixes tags.
-- Invisible controls no longer catch taps: the lyrics timing strip and the
-  beat editor’s per-line nudges are always visible, and uninstalling a skin
-  moved to the card’s ⋮ menu. The ⋮ in “Now playing” is announced with the
-  track’s title, and “Pick up where you left off” no longer shows before the
-  welcome screen.
-
 **Responsiveness.**
 
 - **Nothing that waits for a slow disk or a busy library holds up the window
@@ -1813,9 +1911,9 @@ The rest of what the two reviews fixed, by area.
 - Only the interface language in use is loaded at start, and the other one
   when you pick it: the main script goes from 1.46 MB to 0.90 MB. On the
   phone, the first frame is in the language you chose, not for a moment in
-  the phone’s. The window
-  no longer redraws on every state of a linked device, and the rows of Browse
-  are not redrawn on every new page.
+  the phone’s. The window does not redraw on every state of a linked device.
+- On the PC an action no longer gives up after four seconds with “The database is busy”:
+  it waits and completes.
 
 **Updates and the library’s data.**
 
@@ -1857,6 +1955,12 @@ The rest of what the two reviews fixed, by area.
   connection (`net.releaseMissing`).
   Update notes list the Security sections first, skip “Known limits”, and end
   with “… and N more in the changelog.” in English.
+- **An update whose signature doesn’t verify says so**: “The update that was
+  downloaded isn’t signed with Rymembra’s key, so it wasn’t installed. Try again
+  later, or download Rymembra from the website.” It used to say “Something went
+  wrong in a way that wasn’t expected”. On the phone a signature that doesn’t
+  read, doesn’t match or covers another version says the same; a failure to
+  check at all is still reported as unexpected.
 
 **Words and error messages.**
 
@@ -1929,223 +2033,10 @@ The rest of what the two reviews fixed, by area.
   redirect to GitHub's file host, how often the device link republishes its
   address and what mDNS carries, and the DNS servers it asks.
 
-### Fixed — folders in the cloud
-
-- **A reassembly interrupted at the wrong moment could serve the wrong
-  bytes.** The in-order copy was renamed over the old file and the index
-  written after: a crash in between left the index of the out-of-order
-  pieces on top of the in-order file, and after a restart the cache served
-  bytes from one point of the track in place of another. The old index is
-  now deleted first; a crash in between leaves a file no index names, which
-  the next start throws away.
-- **A file changed on the service while its copy is being made is no longer
-  stored as a mix of two versions.** WebDAV sends `If-Match` with the file’s
-  strong ETag, and a `412` becomes `cloud.fileChanged`; Dropbox compares the
-  `content_hash` and `rev` it knew and then asks for the link tied to
-  `rev:<rev>`, so a track takes two `get_temporary_link` requests. Playback
-  then stops with “The file changed on the service while it was playing…”, and
-  the library picks the new version up at the next check. OneDrive and Google
-  Drive requests are not tied to a version yet.
-- **Two Rymembra processes on the same data folder no longer delete each
-  other’s cloud cache.** A lock on the cache folder (the `blocco` file) goes
-  to the first; the second runs with the cache off, leaves its files alone,
-  and says so in the log. Cache indexes written by 3.2.0 are discarded once,
-  with their copy, so a copy that a 3.2.0 crash had mixed is downloaded again.
-- **A WebDAV server that ignores `Range` no longer costs shifted bytes or
-  whole downloads.** A read-ahead cut short by a seek left the in-order read
-  behind by the bytes it had already taken, so the next piece arrived
-  shifted — and was cached that way; every block is now counted as it
-  arrives. Reading a file’s tags there no longer reads and throws away whole
-  files to reach the end: a jump of more than 8 MiB is refused
-  (`cloud.rangeUnsupported`), so the trailing ID3v1 or APE tag of a large
-  file is skipped.
-- **A `206` answer that starts at another byte than the one asked for is
-  refused** (`download.badResponse`), and a file whose size the service does
-  not declare — a WebDAV server without `getcontentlength`, a OneDrive item
-  without `size` — is no longer taken for an empty one.
-- **A server certificate the system does not recognize says so.** A home NAS
-  with its factory certificate is still refused, and now the message says why
-  (`net.untrustedCertificate`) and the way out: a recognized certificate
-  (Let’s Encrypt, or your NAS maker’s service), or adding the NAS as a
-  network folder instead.
-- **“Reconnect” with another account is refused**, naming both accounts
-  (“You signed in as … not as …: nothing was changed”). Cancelling a cloud
-  connection no longer saves the account or its password, and a new account
-  cancelled midway takes its password back out of the keychain.
-
-### Fixed — the phone
-
-- **Music came out of the earpiece, and Bluetooth headphones got nothing.** On
-  Android cpal's default output is an empty `Device` — an AAudio stream that
-  doesn't say where, so Android routes it — and it is not in the device list.
-  No row was marked default, the opening fell back to the first one, and on a
-  real phone that is the call earpiece («A059P (Earpiece)», mono, in the log
-  that reported it); a stream pinned with `setDeviceId` stays there. On
-  Android the list is now one row, the empty device, named after where
-  Android plays right now (`AudioManager`, `Uscita.kt`): connecting
-  headphones changes the name, and the device watcher reopens the stream as
-  it does on Windows when the default changes. Settings › Playback says that
-  the output follows Android instead of offering a choice that chooses
-  nothing, and an output picked by an earlier build is ignored.
-- **«Listen together» found nobody, and nobody found the phone**, on
-  Android 17: an app that targets Android 17 sees the home network only with
-  «Nearby devices» (`ACCESS_LOCAL_NETWORK`), and without it the packets stop
-  in the system with no error. Rymembra now asks for it when you turn the
-  function on, host, pair or join, and says so (`net.localNetwork`) when it
-  is denied. The same permission is asked before connecting a WebDAV server
-  or a language model on a private address; a WebDAV server reopened at
-  startup, with nobody to ask, says the permission is missing instead of
-  failing as if the server were down. Tried between two emulators: hosting, discovery by typed
-  address, pairing, joining and playback streamed from the host, in sync.
-- **The phone called itself «Rymembra»** to the other devices: it now uses
-  Android's «Device name», or the model. With two phones, «Rymembra asks to
-  join» did not say who.
-- **«Listen together» could be found only at the bottom of Settings** on the
-  phone: the player's button is in the desktop's player bar. It is now on
-  the “More” page.
-- The first line of the phone's log says which Android and which phone, and
-  a window error says where it happened, not only its message.
-- **A track deleted on the phone came back.** Android's trash is not a
-  folder: `MediaStore` renames the file to `.trashed-<expiry>-<name>` next to
-  where it was, and the folder watcher saw a new MP3 and put it back in the
-  library, with the same title. Files named `.trashed-…` and `.pending-…` are
-  no longer music (`paths::tenuto_da_parte_da_android`), and a row that an
-  earlier build had created for one goes away at the next scan instead of
-  staying because its file is still on disk (`scan_plan`).
-- **No link opened on the phone**, and with them no service could be
-  connected: the project's pages, donations, «Report a problem», a track's
-  page on its catalog, and the consent page of Google Drive, OneDrive,
-  Dropbox and Last.fm. `tauri-plugin-opener` opens a URL by launching a
-  program, which Android does not allow an app to do (`Permission denied`).
-  Every URL now goes through `browser::apri`, which on Android hands it to
-  the bridge, and Kotlin opens it with an `Intent` (`Browser.kt`, `https`
-  and `http` only). Tried on the emulator: with Rymembra behind the browser
-  for twenty seconds, the local server of the consent still answers.
-- **A long press on a track selected a word of its title** along with opening
-  the menu: the title allows selection on the computer, for copying it.
-- **«Show in folder»** in the Folders menu is not offered on the phone, where
-  there is no file manager to open on a folder.
-- **A smart playlist's condition** wraps onto two rows: four columns in a
-  phone's width cut the operator to «conta…».
-- **The clock and the battery were black on black** with Rymembra dark on a
-  light phone (and white on white the other way round): Android picks the
-  color of the system bars' icons from the phone's theme. The page now tells
-  Android which theme it shows (`barreDiSistema.ts`, bridge `sistema.barre`),
-  and an activity reborn after a swipe from the recents keeps it. The first
-  frame no longer flashes the dark base under a light theme: until the skin
-  arrives the page uses the theme it showed last time (`temaDiPartenza`).
-- **An album, an artist, a playlist**: the cover's tint now reaches under the
-  status bar, and the top bar floats over it — two round buttons that read on
-  any cover — and fills in only when the big title slides under it, driven by
-  the scroll (`animation-timeline`). It used to start under a solid bar with a
-  straight cut from edge to edge. Every other top bar gets a hairline once the
-  page scrolls under it.
-- **Alignment**: track lists, the Library's pills and the Search field start
-  at the page's edge, under the title's first letter — the covers were
-  fourteen pixels further in than everything else. The queue in «Now
-  playing» lost an empty column (the drag grip, which a finger never sees),
-  and its titles sit under «Queued».
-- **Settings on the phone**: no more of the section's icon repeated on every
-  card (a ▶ before «Audio output» read as a button); segmented controls share
-  the whole track instead of huddling on the left, and the sleep timer's
-  «End of track» no longer spills out; the search field is a pill like the
-  other ones; «Output latency» and the group titles line up with the rest; a
-  date or a device name among the numbers no longer wraps in the headline
-  size. The sections also have icons of their own — sync, devices, scrobbling,
-  data and updates all had the backup's cloud (on the computer too).
-- **Folders on the phone** are «Internal storage › Music» and «SD card ›
-  Music», not `/storage/emulated/0/Music` (`percorsoAndroid`).
-- **Back from a Settings section opened from «More»** («Link a device»,
-  «Music folders») went to the list of sections, which nobody had seen: it
-  goes back to «More».
-- The Artists' alphabet fits the screen (the Z was under the player), and the
-  page no longer scrolls by one pixel — enough for Android to draw its gray
-  scrollbar down the whole right edge at the first drag.
-- **Words left untranslated**: the skin's motion level («full») and the
-  descriptions of Vinile and Neon in English; «Listen together» in «More» no
-  longer says «on the same network», now that linked devices listen together
-  over the internet.
-- «Relay» and «Send the history you already have too» are gray like any
-  advanced panel, not yellow like a warning (on the computer too).
-- Touch sizes: the first run's «I will do it later» is a full-height text
-  button instead of a 27-pixel pill; small buttons are 34 pixels; the six
-  sources of «Add a folder» are a three-by-two grid instead of two crooked
-  rows. Album cards say «3 tracks», not «· 3», and artist cards use the same
-  type as album cards.
-
-### Changed — for both
-
-- The app crate is a library (`rymembra_lib`, with `run()`); `rymembra.exe`
-  is a one-line binary that calls it.
-- Desktop-only dependencies — the tray, the updater, single instance, SMTC,
-  the Recycle Bin, the native error dialog, the Credential Manager — moved to
-  a `[target]` table, and the modules that use them have an Android
-  counterpart in `src/mobile/` with the same commands. `media.rs` became
-  `media/`: the shared gestures in `mod.rs`, SMTC in `smtc.rs`, the Media3
-  session in `android.rs`.
-- A new crate, `apps/desktop/rymembra-android`, is the bridge to Kotlin: one
-  JNI method, `Ponte.chiama(command, arguments)` with JSON in and out, and
-  the only `unsafe` in `jvm.rs`, under the same declared exception as
-  `rymembra-barra`.
-- On Android the TLS roots are the Mozilla list compiled in (`webpki-roots`):
-  `rustls-platform-verifier` there needs JNI and a Gradle component.
-- `apps/desktop/src-tauri/gen/android` is versioned now; only `gen/schemas`
-  is ignored.
-
-### Changed — building
-
-- **The CI builds Android.** A new `android` job runs clippy for
-  `aarch64-linux-android`, `tauri android build --apk --debug` and the Gradle
-  lint; `deny.toml` checks the Android dependency graph too (`jni` and
-  `ndk-context` were outside it).
-- `rust-version` is 1.91, the minimum of `iroh` 1.0 (see the device link).
-- **Rymembra no longer offers itself to Android TV.** The manifest declared
-  the TV launcher, but the interface is made for a finger and cannot be used
-  with a remote; the Gradle lint is clean of errors.
-- **A clean `npm ci` builds the interface again.** `vite.config.ts` reads
-  `process.env` and `@types/node` was not a declared dependency, so `tsc`
-  failed and with it `build:web`, CI and the release build; it is now a dev
-  dependency.
-- **`cargo deny check` passes again**: BSD-2-Clause (`spez`, through iroh) is
-  allowed, and three advisories that do not reach Rymembra's code are listed
-  with the reason (RUSTSEC-2026-0429, `zip::extract`; -0459, SQLite opening
-  someone else's `-wal`; -0386, tokio `AsyncFd`).
-- **Gradle 9.8.2** (from 9.6.1, affected by GHSA-xwqc-3h47-hg64,
-  GHSA-mvvg-497x-hmj8 and GHSA-j5m7-59rp-24f5), with the distribution's
-  SHA-256 checked by the wrapper; vite 7.3.8.
-- **The release workflow checks the APK’s Android Auto icons.**
-  `strumenti/apk.js controlla` runs `aapt2 dump resources` and stops the
-  release if one of the project’s `auto_*.xml` drawables is missing from the
-  resource table: Android Auto asks for them by name, and R8’s resource
-  shrinking had removed all of them in a test release (`res/raw/keep.xml`
-  keeps them).
-- **Releases start from the tag**, a manual run from a branch stops at once,
-  and a release already published is never uploaded to again. The
-  `niente-di-vietato` check covers `rymembra-android`, `rymembra-barra`, the
-  interface tests and the Kotlin sources; `strumenti/firma.js` accepts a key
-  without a password, as `tauri signer` does.
-- **A security advisory published on release day no longer stops the release
-  build**: it is flagged at the top of the draft. Licenses and bans still
-  block. Release jobs have longer time limits, and the desktop build no
-  longer produces a static library nobody uses.
-- `npm run version:set` rewrites `Cargo.lock` and `package-lock.json` too, and
-  `check:version` checks them and refuses a version the Android
-  `versionCode` cannot hold. `npm run verify` uses `--locked`; the new
-  `npm run verify:ci` runs the Rust checks with CI’s toolchain and
-  `-D warnings`.
-- `THIRD-PARTY-NOTICES.md` includes the license files over 32 KiB, which were
-  dropped (crossbeam-channel’s CC BY 3.0 and the Go texts); a file too large
-  is listed and stops the build. The signing preflight stops a key pasted with
-  a trailing newline.
-- The website’s build checks catch external resources on any element, in
-  `srcset`, in `@import` and in copied JavaScript, protocol-relative links,
-  translations that drop a placeholder or a link, and repeated JSON keys. The
-  docs’ links to the sources are checked against git, so a wrong letter case
-  no longer becomes a 404 on GitHub.
-
 ### Database
 
-Four migrations, schema 38 → 42, all additive.
+Six migrations, schema 38 → 43, all additive, run in one opening of the
+library.
 
 - `039_dispositivi` — three tables, none of which travels in a profile, in the
   Drive backup or in sync: `dispositivi` (each linked device: its public key,
@@ -2177,47 +2068,204 @@ Four migrations, schema 38 → 42, all additive.
   indexes of migration 024 (`idx_tracks_scaffale`, `idx_tracks_titolo`) stay,
   unused, and are still kept up to date at every scan until a later migration
   removes them.
+- `043_libreria_unica` — `tracks.copia_di` (no foreign key, so the way back can
+  drop it) with a partial index; and four tables: `lontano_cataloghi` (one
+  state per device), `lontano_secchi` (the buckets of 500 ids and their
+  fingerprints), `lontano_brani` (what a row of another device has more than a
+  row of this one, with indexes on the owner’s content key, the cover and,
+  partial, on the rows not sent any more) and `dispositivi_posta` (the outbox
+  of hearts, ratings and lyric corrections that wait for their owner). A track
+  of another device is a `tracks` row with `path = 'lontano://<64 hex>/<id>'`
+  and `source = 'lontano'`; its `content_key` stays NULL, on purpose. Nothing
+  in it travels in a profile, the Drive backup or sync.
+- No other migration: the new settings (`daemon.attivo`, `daemon.auto`,
+  `lontano.lasciati`, `ui.trayLabels`, `ui.proposta.sottofondo`,
+  `ui.novita.vista`, `ui.window.geometry`, among them) are rows of `settings`
+  and stay out of profiles. Start with Windows lives in the registry, not in
+  the library.
 
-**Going back.** A version that stops at an earlier migration refuses schema
-42 (`db.versionAhead`). The first way is the copy Rymembra takes before it
-migrates, beside the database, named after the schema it holds:
-`rymembra.db.schema-038.bak` coming from 3.2.0, `rymembra.db.schema-041.bak`
-from a build of this release made before 042. On the computer, “Go back to
-the copy from before the update”, in *Settings › Library and data*, puts it
-back: it sets the current library aside as `rymembra.db.messa-da-parte.bak`,
-puts the copy in its place with SQLite’s backup API and closes Rymembra, so
-that you can install the previous version. By hand: quit Rymembra — from its
-icon next to the clock too — and move `rymembra.db`, `rymembra.db-wal` and
-`rymembra.db-shm` aside together: the last two belong to the new database,
-and next to the copy SQLite would read them as the copy’s own and spoil it.
-Then copy the `.bak` to `rymembra.db` — copy, not move, so that the `.bak`
-stays as a fallback — and open the previous version, because this one would
-update the copy again at once.
+**The copy.** Before it migrates, Rymembra makes a full copy of the library
+beside the database, named after the schema it holds: coming from 3.2.0 it is
+`rymembra.db.schema-038.bak`. It is skipped when the disk has no room for it,
+and then the screen says so. While a chain of steps runs, a row `db.catena_da`
+in `settings` records where it started, so that a chain that stopped partway
+and is resumed still offers the copy made before the first attempt, not the
+copy of the half-updated library; it is removed when the chain ends. A full
+disk or a locked database file during a step is reported as such — “The disk is
+full…”, “The database is busy…” — instead of “the update stopped partway”. The
+sort keys that an interrupted update left empty are rebuilt at the next start,
+not only right after an update. On the phone the copy is deleted after the
+first successful start of the new version: it could not be restored there,
+because Android does not install an older version over a newer one without
+uninstalling it, which takes the library along.
 
-Without the copy, going back to 041 loses no row, only the sort keys, which
-are made again at the next update: `DROP TRIGGER chiavi_d_ordine_da_rifare;
-DROP INDEX idx_tracks_titolo_per_nome; DROP INDEX
-idx_tracks_scaffale_per_nome; ALTER TABLE tracks DROP COLUMN ordine_album;
-ALTER TABLE tracks DROP COLUMN ordine_artista; ALTER TABLE tracks DROP COLUMN
-ordine_titolo; PRAGMA user_version = 41;`. `DROP COLUMN` rewrites the tracks
-table, so on a large library it takes a few seconds and needs room for a
-second copy of the table while it works, and by hand it needs SQLite 3.35 or
-later. Going back to 3.2.0 (schema 38) by hand takes one block, in this
-order: the statements above up to the last `DROP COLUMN`, then `DROP INDEX
-idx_artists_mb; DROP INDEX idx_tracks_mb_recording; DROP TABLE
-insieme_indirizzi; DROP TABLE dispositivi_ricevuti; DROP TABLE
-dispositivi_ascolti; DROP TABLE dispositivi; PRAGMA user_version = 38;`.
-The step written at the top of `042_chiavi_d_ordine.sql`, applied alone, only
-reaches 041, and the one at the top of `039_dispositivi.sql` leaves
-`insieme_indirizzi` behind: 3.2.0 opens all the same, but the next upgrade
-stops at 040, which finds it already there. The devices linked over the internet are
-lost (made again with a QR code), and so are their listens not yet
-delivered; the “Listen together” addresses come back at the next connection.
+**Going back.** 3.2.0 refuses a library at schema 39 or later (`db.versionAhead`)
+and, because it cannot say so, shows a black window with no message (see Known
+limits). The first way back, on the computer, is “Go back to the copy from
+before the update”, in *Settings › Library and data*, **before** installing
+3.2.0 again: it sets the current library aside as `rymembra.db.messa-da-parte.bak`,
+puts the copy in its place with SQLite’s backup API, renames the copy it used
+to `rymembra.db.schema-038.ripristinata.bak` — so that updating again makes a
+fresh copy of the library as it is then — and closes Rymembra. The renamed copy
+is a full copy of the library: like `messa-da-parte`, it stays until you delete
+it.
+
+By hand: quit Rymembra — from its icon next to the clock too — and move
+`rymembra.db`, `rymembra.db-wal` and `rymembra.db-shm` aside together: the last
+two belong to the new database, and next to the copy SQLite would read them as
+the copy’s own and spoil it. Then copy the `.bak` to `rymembra.db` — copy, not
+move, so that the `.bak` stays as a fallback — and open 3.2.0, because this
+version would update the copy again at once.
+
+Without the copy, going back to 3.2.0 is one block of SQL. **Quit Rymembra, and
+switch off sync and the Drive backup on every device first**: 3.2.0, opening a
+library that still has sync rows for tracks of other devices, would bury them
+with tombstones that reach your other devices. It needs `sqlite3` 3.35 or later
+(`DROP COLUMN`). `PRAGMA foreign_keys = ON` goes **outside** a transaction —
+inside one SQLite ignores it without a word, and the cascade stays off — and
+everything else **inside** `BEGIN; … COMMIT;`, so that a failure halfway rolls
+back instead of leaving the library half taken apart with `user_version` still
+43:
+
+```sql
+PRAGMA foreign_keys = ON;
+BEGIN;
+DROP TABLE dispositivi_posta; DROP TABLE lontano_brani;
+DROP TABLE lontano_secchi; DROP TABLE lontano_cataloghi;
+DELETE FROM tracks WHERE path >= 'lontano://' AND path < 'lontano:/0';
+DELETE FROM albums WHERE album_key NOT IN (SELECT album_key FROM tracks WHERE album_key IS NOT NULL);
+DELETE FROM artists WHERE name NOT IN (SELECT DISTINCT TRIM(COALESCE(NULLIF(TRIM(album_artist), ''), artist)) FROM tracks);
+UPDATE libreria_stato SET aggregati = 0;
+DROP INDEX idx_tracks_copia_di; ALTER TABLE tracks DROP COLUMN copia_di;
+DROP TRIGGER chiavi_d_ordine_da_rifare;
+DROP INDEX idx_tracks_titolo_per_nome; DROP INDEX idx_tracks_scaffale_per_nome;
+ALTER TABLE tracks DROP COLUMN ordine_album; ALTER TABLE tracks DROP COLUMN ordine_artista;
+ALTER TABLE tracks DROP COLUMN ordine_titolo;
+DROP INDEX idx_artists_mb; DROP INDEX idx_tracks_mb_recording;
+DROP TABLE insieme_indirizzi;
+DROP TABLE dispositivi_ricevuti; DROP TABLE dispositivi_ascolti; DROP TABLE dispositivi;
+PRAGMA user_version = 38;
+COMMIT;
+```
+
+It costs the playlist entries and the listening history of the tracks of other
+devices, the hearts and stars not yet delivered, the sort keys and the indexes,
+and the devices linked over the internet (made again with a QR code) with their
+listens not yet delivered; the “Listen together” addresses come back at the
+next connection. No track of this device is lost, and the albums and artists
+that no track has any more go with the DELETEs. The same recipe is written,
+without the transaction, at the top of `043_libreria_unica.sql`: those comments
+are frozen with the migration, and this is the one to follow. `DROP COLUMN` rewrites the
+tracks table, so on a large library it takes a few seconds and needs room for
+a second copy of the table while it works.
 
 ### Known limits
 
-See README, «Known limits and planned work» → Android, → «Cloud folders»,
-→ «Your devices over the internet» and → «The window’s engine on Windows».
+See README, «Known limits and planned work». The ones that belong to this
+release:
+
+- **A device that has not updated.** A PC left on 3.2.0 cannot link to your
+  other devices — the device link is new in this release — so none of its music
+  is in your library and none of yours is in its.
+  - **Inside a sync group it still does what it always did.** With only part of
+    the music, a 3.2.0 PC removes from the playlists the entries of the tracks
+    it does not have, and those removals reach the devices that updated: also
+    the playlists that hold other devices’ tracks, which a 3.2.0 PC can never
+    have. What it already removed does not come back by itself. Update every
+    device that syncs together, or use “Forget” on the 3.2.0 PC in the list of
+    devices until it is updated: its old state is not lost, and it can be
+    accepted again afterwards.
+  - **A Google Drive backup shared by a 3.2.0 and a 3.3.0 computer**: 3.2.0
+    rewrites the file with only the fields it knows, so folders, skins and
+    drafts removed on the 3.3.0 side can come back, and the two computers keep
+    re-uploading the file. Update both.
+- **3.2.0 over a migrated library.** Opening a library already updated to 3.3.0
+  with 3.2.0 shows a black window with no message: 3.2.0 refuses the newer
+  database and cannot say so. Nothing is lost and the database is not touched.
+  Use “Go back to the copy from before the update” first, then reinstall 3.2.0
+  (see Database).
+- **Doze and manufacturers.** A foreground service does not exempt an app from
+  Doze: with the screen off and the phone still, Android suspends the network of
+  apps that are not excluded from battery optimization, so your PCs may not find
+  the phone even with “Stay active in the background” on. The setting’s card
+  opens Android’s page for it. Some manufacturers close background apps on
+  their own, and the Google Play review of the service type is not settled.
+  The service restarts after a reboot and after an update of the app, and
+  starts the core by itself; the notification says “Rymembra is starting” until
+  the core is up, and “Rymembra is resting” only if the core does not start at
+  all — the library could not be opened, a full disk for example. Then opening
+  the app starts the core again from scratch, and if the problem is still there
+  the app shows the library’s error as after any other start, and the
+  notification asks you to force stop Rymembra and open it again once you have
+  fixed it: a process that is already running does not reopen the library by
+  itself. If the core falls over halfway, the notification says the same, and
+  the app shows “Rymembra did not start properly” instead of its screens. A
+  file that lives in a cloud folder plays only after the app has been opened
+  once in that run: the cloud folders start with the app. The battery cost is
+  not measured.
+- **“Start with the car”** needs Android Auto and is not offered in the Google
+  Play build, because Google’s quality rule for media apps in cars (MA-1)
+  forbids starting playback without a user action. It has not been tried with a
+  real car. A loose cable that connects and disconnects makes the music start
+  again each time. Android 17 restricts the audio focus that a background
+  service asks for, and the service that Rymembra brings back by itself after a
+  restart of the phone or an update is a background start: whether Android
+  grants it the audio focus then has not been verified, and if it does not,
+  nothing starts and the log says why.
+- **Covers.** A cover from another device is the 320-pixel version until the
+  same file is scanned here. Covers from other devices stop being saved at
+  256 MiB: after that, new rows keep no picture until room is made. After you
+  forget a device its covers stay as unused covers until the next cleanup
+  (Settings › Covers and database health, which also runs by itself after a
+  scan), which is what makes room. The queue of Android Auto has no covers for a
+  “Listen together” voice, which has no row in the library.
+- **Greyed-out rows.** Play on a selection or on a whole view that includes
+  tracks of a device that is off skips them one by one, with a “was skipped”
+  notice each. A copy of the track on this device hidden behind a greyed-out
+  row is reachable from “This device”. If the owner’s device is off while a
+  copy of the same track exists on another reachable device, it plays; if it
+  goes off a moment before Rymembra notices, only the copy on this device is
+  tried.
+- **Duplicates, sync and history.** A corrected tag can make a track appear
+  twice in a playlist, which loses nothing. A declared quality is checked, not
+  proved: an MP3 at 192 kbps passed off as a 44.1 kHz FLAC is not caught.
+  Listens you made on a track from another device that move to your copy of it
+  — when the device is forgotten, or stops sharing the track — become part of
+  your history, and “Send all my history” to a scrobbling service can send
+  them again if you never sent it before (the service drops the duplicate).
+- **Lyrics from other devices.** The copy of the lyrics that a linked device
+  replaced keeps one level: a second replacement of the same track overwrites
+  it, and the copy does not follow the track if its key changes. A text saved by
+  the timing editor beyond the reader’s limits (16,000 lines, 512 timed words
+  in a line, 16 secondary lines per row) is truncated when it is read back.
+- **“Download here” and the shared catalog.** The album track list that a
+  linked device sees stops at 500 tracks. On Android, “Download here” finds out
+  that the disk is full while writing, not before the first byte. The parts
+  that an interrupted download left behind are removed when that device
+  downloads into the same folder again. A linked device that already mirrored a
+  folder you took away from the watched ones drops those tracks at its next
+  round, about five minutes later.
+- **Updates.** “Install now” after three days is seen only with the window
+  open. The update package holds about 16 MB of memory while it waits. On the
+  phone a notification is shown only if notifications are already allowed. The
+  update manifest (`latest.json`) is read on the computer without a size
+  ceiling, because the updater plugin offers none; the installer download has
+  one, 256 MiB. The Google Play build has no In-App Update, and it keeps
+  `MANAGE_EXTERNAL_STORAGE`, declared to Google for review: Google may not
+  allow it for a music player, and without it the app works with the tracks
+  only (no `.lrc`, `.cue` or covers next to them, no deleting non-audio
+  files).
+- **The window on Windows.** Events sent while there is no window are lost (a
+  notice that was shown and missed does not come back); a playback error is the
+  exception, and is shown when the window opens again. If the tray icon is not
+  there — Windows refused it, or its menu labels have not been remembered yet,
+  as on a very first start — the X closes the program, as it always did. A
+  second launch of Rymembra, or a `rymembra://` link, that arrives while
+  Rymembra is quitting (it can take about two seconds) is ignored: open it
+  again, since starting a new copy during the quit would put two processes on
+  the same library. Choosing “Uninstall” on the installer’s own reinstall page
+  leaves the “Start with Windows” entry in place, pointing at a program that is
+  no longer there; Windows ignores it.
 
 ## [3.2.0] — 2026-10-27
 
@@ -2833,13 +2881,13 @@ folders that 3.1.0 cannot reach: kept, not played. If you typed the Google
 client secret again in 3.2, it has moved to the app's own keychain entry, and
 3.1 needs it typed again in the backup's settings.
 
-> **Corrected in 3.2.1.** «Putting that copy in place of `rymembra.db`», as
+> **Corrected in 3.3.0.** «Putting that copy in place of `rymembra.db`», as
 > written above, spoils the copy if it is done the way it reads. 3.2.0 left
 > its journal full on exit, and next to the copy SQLite reads
 > `rymembra.db-wal` as the copy’s own. Quit Rymembra — from its icon next to
 > the clock too — move `rymembra.db`, `rymembra.db-wal` and `rymembra.db-shm`
 > aside together, then copy the `.bak` to `rymembra.db`, without renaming it,
-> so that it stays as a fallback. From 3.2.1 a clean exit leaves the journal
+> so that it stays as a fallback. From 3.3.0 a clean exit leaves the journal
 > empty, and “Go back to the copy from before the update”, in *Settings ›
 > Library and data*, does it for you.
 
