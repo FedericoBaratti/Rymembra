@@ -436,11 +436,12 @@ device that has not updated is under Known limits.
   device answers is read within a weight, not only a size: a value counts one and
   an object five, because that is what it costs to hold. 255,000 tiny objects
   (20 KB on the wire) used to take 164 MiB; they are now refused, and the worst
-  reply that is accepted takes 62 MiB, against 50 MiB for a list of plain values.
-  The largest catalog summary that fits on the wire, and a page of 500 rows, stay
-  inside with a margin of one and a half. The same goes for the 256 MiB that
-  covers from other devices may take on disk: it now counts what is written (the
-  re-encoded cover and its thumbnail), not the size of the image received.
+  reply that is accepted takes about 65 MiB (measured), against about 50 MiB for a
+  list of plain values. The largest catalog summary that fits on the wire, and a
+  page of 500 rows, stay inside with a margin of one and a half. The same goes
+  for the 256 MiB that covers from other devices may take on disk: it now counts
+  what is written (the re-encoded cover and its thumbnail), not the size of the
+  image received.
 
 ### Database
 

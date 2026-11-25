@@ -106,14 +106,17 @@ pub const MASSIMA_TESTA_PICCOLA: usize = 1024;
 /// 113 MiB; 14 400 oggetti da 35 campi, 518 000 nodi, 59 MiB. Con l'oggetto a
 /// [`PESO_DI_UN_OGGETTO`] unità quelle risposte non passano più, e il peggio che
 /// passa, al tetto, è di 62 MiB (95 572 `{"a":0}`) o 59 MiB (14 335 oggetti da 35
-/// campi).
+/// campi); con le misure a mano di `misure.rs` (working set e commit del processo, senza
+/// ASan) sono 64 e 65 MiB per i primi, e 35 e 49 per l'array di zeri.
 ///
 /// Quel che un pari onesto manda sta ben dentro: una pagina da cinquecento righe e
 /// quaranta campi ne pesa ventimila; il riassunto del catalogo più lungo che il
 /// filo lascia passare — il tetto della cornice è 1 MiB compresso, e con
-/// un'impronta casuale di 16 byte a secchio sono circa 39 000 secchi, trovati con
-/// la `cornice` vera — ne pesa al più 360 000 (nove unità a secchio), un tetto e
-/// sessanta centesimi sotto. (I quaranta milioni di id di cui parlava questo
+/// un'impronta casuale di 16 byte a secchio sono circa 39 000 secchi con il
+/// compressore di questo crate da solo (`miniz_oxide`, quello delle prove) e meno
+/// di 35 000 con zlib-rs, che è quello del desktop e dell'APK — ne pesa al più
+/// 360 000 (nove unità a secchio), un tetto e sessanta centesimi sotto, di più nelle
+/// build vere. (I quaranta milioni di id di cui parlava questo
 /// commento, 80 000 secchi, compressi sono 2,3 MB: non li manda né questa build né
 /// `8b89651`.) Il tetto è 560 × 1024 e non 512 × 1024 per questo margine: a 524 288
 /// unità quei 39 000 secchi ne avevano uno e quarantotto centesimi.
