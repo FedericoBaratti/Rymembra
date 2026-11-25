@@ -169,6 +169,12 @@ pub const MASSIMI_TEMPI_PER_RIGA: usize = 32;
 /// lì**: il resto, tag e testo, si scarta — non si accoda all'ultima parola,
 /// perché due pezzi di testo che si toccano senza il tag in mezzo possono
 /// comporre un tag nuovo.
+///
+/// Il pezzo che sta **prima** della prima parola (`Oh <00:10.50>…`) non ha un tag,
+/// ma [`leggi`] gliene dà uno — quello della riga — e [`scrivi`] lo scrive: alla
+/// rilettura è una parola come le altre, e se fosse la cinquecentotredicesima la
+/// riga si accorcerebbe di una parola a ogni giro. Per questo conta nel tetto: una
+/// riga che lo ha ne ha al più cinquecentoundici con un tempo.
 pub const MASSIME_PAROLE_PER_RIGA: usize = 512;
 
 /// Quante righe, al più, [`leggi`] costruisce **prima** della fusione dei tempi
@@ -592,6 +598,10 @@ fn tempo_di_parola(dopo: &str) -> Option<(u32, &str)> {
 /// testo all'ultima parola togliendo solo i tag, perché due pezzi che si toccano
 /// senza un tag in mezzo possono comporne uno nuovo — `x<0` e `:0>y` danno
 /// `x<0:0>y` —, e la riscrittura lo leggerebbe come tempo.
+///
+/// Il pezzo prima del primo tag (se non è di soli spazi) ha già il suo posto fra
+/// le parole: [`leggi`] lo riscrive come parola con il tempo della riga, quindi
+/// ne toglie uno al tetto dei tag.
 fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
     if !testo.contains('<') {
         return (testo.to_owned(), None, Vec::new());
@@ -602,6 +612,7 @@ fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
     let mut pezzo = String::new();
     let mut resto = testo;
     let mut con_tempo = 0_usize;
+    let mut tetto = MASSIME_PAROLE_PER_RIGA;
 
     while let Some(apre) = resto.find('<') {
         let (Some(prima), Some(dopo)) = (resto.get(..apre), resto.get(apre.saturating_add(1)..))
@@ -611,7 +622,10 @@ fn separa_parole(testo: &str) -> (String, Option<String>, Vec<Parola>) {
         match tempo_di_parola(dopo) {
             Some((ms, avanti)) => {
                 pezzo.push_str(prima);
-                if con_tempo >= MASSIME_PAROLE_PER_RIGA {
+                if con_tempo == 0 && !pezzo.trim().is_empty() {
+                    tetto = tetto.saturating_sub(1);
+                }
+                if con_tempo >= tetto {
                     resto = "";
                     break;
                 }
@@ -2159,6 +2173,40 @@ mod prove {
         assert!(!prima.testo.contains('y'));
         assert!(!scrivi(&testo).contains(":0>y"));
         riscrittura_stabile(&grezzo);
+    }
+
+    #[test]
+    fn il_pezzo_prima_della_prima_parola_conta_fra_le_parole_della_riga() {
+        let _uno = una_alla_volta();
+        // B2 (fuzzing): `Oh <0:1>…` non ha un tag per il pezzo davanti, ma `leggi` lo trasforma in
+        // una parola con il tempo della riga e `scrivi` lo scrive con un tag. Con cinquecentododici
+        // parole con un tempo la riga ne aveva cinquecentotredici, e la rilettura dell'ultima non
+        // ne vedeva il tag: ogni giro ne perdeva una, e `scrivi(leggi(scrivi(x))) != scrivi(x)`.
+        let mut grezzo = String::from("[0:0]Oh ");
+        grezzo.push_str(&parole_distinte(MASSIME_PAROLE_PER_RIGA + 5));
+        let testo = leggi(&grezzo);
+        let prima = testo.righe.first().expect("una riga");
+        assert_eq!(
+            prima.parole.len(),
+            MASSIME_PAROLE_PER_RIGA,
+            "il pezzo prima conta come una parola"
+        );
+        assert_eq!(prima.parole.first().map(|p| p.testo.as_str()), Some("Oh "));
+        assert_eq!(
+            leggi(&scrivi(&testo)).righe.first().map(|r| r.parole.len()),
+            Some(MASSIME_PAROLE_PER_RIGA),
+            "e la rilettura ne trova altrettante"
+        );
+        riscrittura_stabile(&grezzo);
+        // Sotto il tetto il pezzo davanti non toglie niente a nessuno.
+        let mut meno = String::from("[0:0]Oh ");
+        meno.push_str(&parole_distinte(MASSIME_PAROLE_PER_RIGA - 1));
+        let senza_taglio = leggi(&meno);
+        assert_eq!(
+            senza_taglio.righe.first().map(|r| r.parole.len()),
+            Some(MASSIME_PAROLE_PER_RIGA)
+        );
+        riscrittura_stabile(&meno);
     }
 
     #[test]
