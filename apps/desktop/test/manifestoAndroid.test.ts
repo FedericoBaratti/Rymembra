@@ -712,3 +712,73 @@ test("Rust esporta le tre funzioni di Ponte, e l'unsafe sta solo in jvm.rs", () 
   assert.match(lib, /rymembra_android::esporta_il_nucleo!\(crate::avvia_dal_servizio\);/);
   assert.doesNotMatch(lib.split("#[cfg(test)]\nmod prove")[0] ?? "", /\bunsafe\b\s*[{(]|unsafe\s+fn|unsafe\(no_mangle\)/);
 });
+
+// ── Gli aggiornamenti del telefono (`mobile/aggiornamenti.rs`) ─────────────────
+//
+// Il modulo si compila solo per `cfg(mobile)`: `cargo test` sul computer non lo
+// raggiunge, e una prova scritta lì dentro non girerebbe mai. Queste leggono il
+// sorgente come le prove di sopra leggono il Kotlin.
+
+/** `mobile/aggiornamenti.rs` senza i commenti: nominano quel che il codice non fa. */
+const aggiornamentiTelefono = () =>
+  leggi("../src-tauri/src/mobile/aggiornamenti.rs").replace(/\/\/.*$/gm, "");
+
+/** Il corpo di una funzione di primo livello, fino alla sua graffa che chiude. */
+function funzioneRust(sorgente: string, nome: string): string {
+  const inizio = new RegExp(`\\bfn ${nome}\\b`).exec(sorgente)?.index ?? -1;
+  assert.ok(inizio >= 0, `fn ${nome} non si trova`);
+  const fine = sorgente.indexOf("\n}\n", inizio);
+  assert.ok(fine > inizio, `fn ${nome} non finisce`);
+  return sorgente.slice(inizio, fine + 3);
+}
+
+test("un APK in attesa si riverifica con minisign prima di consegnarlo (S5-4)", () => {
+  // SECURITY.md promette che il file si ricontrolla contro la firma prima di ogni
+  // consegna, anche se già in cache. Per l'APK in attesa («Installa» dopo «Aggiorna»)
+  // `lavora` chiamava direttamente `consegna`, e Kotlin rifaceva solo «è questa app».
+  const sorgente = aggiornamentiTelefono();
+  const lavora = funzioneRust(sorgente, "lavora");
+  const inizio = lavora.search(/if let Some\([\s\S]*?\) = pronto \{/);
+  const fine = lavora.indexOf("} else {", inizio);
+  assert.ok(inizio >= 0 && fine > inizio, "il ramo dell'APK in attesa non si trova");
+  const ramo = lavora.slice(inizio, fine);
+  const verifica = ramo.indexOf("verifica(");
+  const consegna = ramo.indexOf("consegna(");
+  assert.ok(verifica >= 0, "il ramo dell'APK in attesa non verifica la firma");
+  assert.ok(consegna > verifica, "l'APK in attesa si consegna prima di verificarne la firma");
+  // La firma si tiene con l'APK: senza, non c'è niente da ricontrollare.
+  assert.match(/struct Pronto \{[\s\S]*?\n\}/.exec(sorgente)?.[0] ?? "", /\bfirma: String,/);
+  assert.match(funzioneRust(sorgente, "installa_ora"), /pronto\.firma\.clone\(\)/);
+});
+
+test("un APK finito dopo lo spegnimento del controllo non resta in attesa né accende la notifica (S5-3)", () => {
+  const sorgente = aggiornamentiTelefono();
+  // La generazione si legge **prima** di far partire il filo: spegnere l'interruttore
+  // mentre l'APK scende la fa cambiare, e il filo la confronta con questa.
+  const installa = funzioneRust(sorgente, "installa_ora");
+  const legge = installa.indexOf("generazione.load(");
+  const parte = installa.indexOf("std::thread::Builder");
+  assert.ok(legge >= 0 && legge < parte, "la generazione di partenza non si legge prima del filo");
+  assert.match(installa, /lavora\(&suo, &trovato, pronto, partenza\)/);
+  assert.match(sorgente, /fn lavora\([\s\S]*?partenza: u64[\s\S]*?\) \{/);
+
+  // Il deposito guarda la generazione sotto lo stesso lucchetto del posto: lo spegnimento
+  // alza la generazione e poi svuota il posto, e fra i due un deposito non può sfuggire.
+  const deposita = funzioneRust(sorgente, "deposita_pronto_se_vale");
+  const lucchetto = deposita.indexOf(".lock()");
+  const guarda = deposita.indexOf("generazione.load(");
+  const scrive = deposita.search(/\*\w+ = Some\(/);
+  assert.ok(lucchetto >= 0 && lucchetto < guarda && guarda < scrive, "il deposito non guarda la generazione sotto il lucchetto");
+  assert.match(funzioneRust(sorgente, "tieni_per_installa"), /deposita_pronto_se_vale\(/);
+
+  // La notifica «Pronto da installare» si accende solo se il pacchetto è stato tenuto, e
+  // si rispegne se nel frattempo l'interruttore è stato spento (il posto era già vuoto, e
+  // `scarta_pronto` non avrebbe niente da buttare né da spegnere).
+  const lavora = funzioneRust(sorgente, "lavora");
+  assert.match(lavora, /if tieni_per_installa\([\s\S]*?\) \{\s*notifica_pronto\(true, &trovato\.versione\);/);
+  assert.match(lavora, /generazione\s*\.load\(Ordering::Acquire\) != partenza[\s\S]*?notifica_pronto\(false, ""\)/);
+
+  // E spegnere il controllo ferma anche lo scaricamento in corso, non solo il suo esito.
+  const attivo = funzioneRust(sorgente, "aggiornamenti_attivo");
+  assert.match(attivo, /installazione\s*\.load\(Ordering::Acquire\)[\s\S]*?annulla\s*\.store\(true, Ordering::Release\)/);
+});

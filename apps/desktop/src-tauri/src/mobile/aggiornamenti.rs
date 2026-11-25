@@ -206,6 +206,10 @@ fn senza_aggiornatore() -> bool {
 struct Pronto {
     /// Il file nella cache degli aggiornamenti.
     apk: std::path::PathBuf,
+    /// La firma minisign con cui si è verificato, il testo del `.sig`: serve a
+    /// ricontrollare il file contro di lei un attimo prima di consegnarlo
+    /// ([`verifica`]), dopo le ore o i giorni in cui ha aspettato nella cache.
+    firma: String,
     /// La versione che porta.
     versione: String,
     /// Da quando aspetta, in millisecondi.
@@ -429,6 +433,14 @@ pub async fn aggiornamenti_attivo(app: AppHandle, attivo: bool) -> Esito<StatoAg
                     .trovato
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner) = None;
+                // Un APK che sta ancora scendendo si ferma: non vale la pena finirlo. E
+                // quello che finisse comunque — il filo guarda l'annullo solo mentre
+                // scarica — non si tiene: la generazione è cambiata (vedi
+                // [`deposita_pronto_se_vale`]). Prima l'una e poi lo svuotamento, perché
+                // il deposito controlla la generazione sotto lo stesso lucchetto.
+                if aggiornamenti.installazione.load(Ordering::Acquire) {
+                    aggiornamenti.annulla.store(true, Ordering::Release);
+                }
                 // Anche l'APK già verificato: chi ha detto di non voler essere avvisato
                 // non vuole nemmeno un «Installa» che aspetta.
                 scarta_pronto(&aggiornamenti);
@@ -531,6 +543,10 @@ fn installa_ora(app: &AppHandle, quando: Quando) -> Esito<()> {
             what: Some("questa distribuzione si aggiorna dal Google Play".to_owned()),
         })));
     }
+    // La generazione **prima** di guardare cosa c'è da installare: se l'interruttore
+    // si spegne dopo questo punto, il filo se ne accorge e non tiene il pacchetto;
+    // se si è spento prima, `trovato` è già vuoto e qui si esce (S5-3).
+    let partenza = aggiornamenti.generazione.load(Ordering::Acquire);
     let Some(trovato) = aggiornamenti
         .trovato
         .lock()
@@ -565,18 +581,19 @@ fn installa_ora(app: &AppHandle, quando: Quando) -> Esito<()> {
     // L'APK in attesa di *questa* versione, se c'è: «Installa» lo consegna senza
     // riscaricare niente. Non si toglie dal posto: se l'installatore di Android
     // si chiude senza installare, «Installa» è ancora lì.
+    // Col file va la sua firma: la consegna la ricontrolla ([`lavora`]).
     let pronto = aggiornamenti
         .pronto
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
         .filter(|pronto| pronto.versione == trovato.versione)
-        .map(|pronto| pronto.apk.clone());
+        .map(|pronto| (pronto.apk.clone(), pronto.firma.clone()));
     riferisci(app);
     let suo = app.clone();
     if let Err(err) = std::thread::Builder::new()
         .name("rymembra-aggiornamento".to_owned())
-        .spawn(move || lavora(&suo, &trovato, pronto))
+        .spawn(move || lavora(&suo, &trovato, pronto, partenza))
     {
         aggiornamenti.installazione.store(false, Ordering::Release);
         riferisci(app);
@@ -1000,16 +1017,29 @@ fn controlla(progetto: &str, corrente: &str) -> Result<Option<Trovato>, AppError
 ///
 /// La firma prima dell'APK: una firma che non arriva non vale quaranta
 /// megabyte scaricati per niente.
-fn lavora(app: &AppHandle, trovato: &Trovato, pronto: Option<std::path::PathBuf>) {
+///
+/// `partenza` è la generazione dell'interruttore com'era quando il filo è
+/// partito: se intanto «Controlla se ci sono aggiornamenti» è stato spento, il
+/// pacchetto che finisce non si tiene in attesa e non accende la notifica
+/// (S5-3, [`deposita_pronto_se_vale`]).
+fn lavora(
+    app: &AppHandle,
+    trovato: &Trovato,
+    pronto: Option<(std::path::PathBuf, String)>,
+    partenza: u64,
+) {
     let Some(aggiornamenti) = app.try_state::<StatoAggiornamenti>() else {
         return;
     };
     let turno = Turno::adotta(&aggiornamenti.installazione);
     aggiornamenti.annulla.store(false, Ordering::Release);
 
-    // Consegna: l'APK è già verificato, si apre l'installatore e basta.
-    let esito = if let Some(percorso) = pronto {
-        consegna(&percorso)
+    // Consegna: l'APK è già verificato, ma ha aspettato nella cache, magari per
+    // giorni: la firma minisign si ricontrolla contro i byte che stanno ora sul
+    // disco prima di aprire l'installatore, come promette SECURITY.md (S5-4). Kotlin
+    // ripete poi pacchetto e certificato.
+    let esito = if let Some((percorso, firma)) = pronto {
+        verifica(app, trovato, &firma, &percorso).and_then(|()| consegna(&percorso))
     } else {
         imposta_fase(app, Some(FaseAggiornamento::Scarico));
         scarica_la_firma(trovato).and_then(|firma| {
@@ -1019,10 +1049,18 @@ fn lavora(app: &AppHandle, trovato: &Trovato, pronto: Option<std::path::PathBuf>
             match controlla_il_certificato(&percorso)? {
                 ControlloApk::AltraChiave => Ok(Consegnato::AltraChiave),
                 ControlloApk::Buono => {
-                    tieni_per_installa(&aggiornamenti, trovato, percorso);
-                    // Chi ha toccato «Aggiorna» può essere già altrove: gli si dice
-                    // che c'è da installare.
-                    notifica_pronto(true, &trovato.versione);
+                    if tieni_per_installa(&aggiornamenti, trovato, firma, percorso, partenza) {
+                        // Chi ha toccato «Aggiorna» può essere già altrove: gli si dice
+                        // che c'è da installare.
+                        notifica_pronto(true, &trovato.versione);
+                        // Spento proprio ora: il posto è stato svuotato prima che il
+                        // pacchetto ci arrivasse o subito dopo, e `scarta_pronto` non
+                        // avrebbe trovato niente da buttare né da spegnere. La
+                        // notifica si rispegne qui.
+                        if aggiornamenti.generazione.load(Ordering::Acquire) != partenza {
+                            notifica_pronto(false, "");
+                        }
+                    }
                     Ok(Consegnato::InAttesa)
                 }
             }
@@ -1096,19 +1134,60 @@ fn controlla_il_certificato(percorso: &std::path::Path) -> Result<ControlloApk, 
 }
 
 /// L'APK verificato aspetta «Installa»: vedi [`StatoAggiornamenti::pronto`].
+/// `true` se è stato tenuto; `false` se l'interruttore è stato spento da quando è
+/// partito lo scaricamento ([`deposita_pronto_se_vale`]): allora il file resta
+/// nella cache, come per ogni «Non installare», ma nessuno lo offre.
 fn tieni_per_installa(
     aggiornamenti: &StatoAggiornamenti,
     trovato: &Trovato,
+    firma: String,
     percorso: std::path::PathBuf,
-) {
-    *aggiornamenti
-        .pronto
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(Pronto {
-        apk: percorso,
-        versione: trovato.versione.clone(),
-        dal_ms: adesso_ms(),
-    });
+    partenza: u64,
+) -> bool {
+    let tenuto = deposita_pronto_se_vale(
+        &aggiornamenti.pronto,
+        &aggiornamenti.generazione,
+        partenza,
+        Pronto {
+            apk: percorso,
+            firma,
+            versione: trovato.versione.clone(),
+            dal_ms: adesso_ms(),
+        },
+    );
+    if !tenuto {
+        nota!(
+            "[aggiornamenti] il controllo è stato spento mentre la {} scendeva: \
+             l'APK non si tiene in attesa",
+            trovato.versione
+        );
+    }
+    tenuto
+}
+
+/// Mette `pronto` nel posto **solo se** la generazione è ancora quella di
+/// `partenza`, cioè se l'interruttore non è stato spento da quando il filo è
+/// partito. `true` se l'ha messo.
+///
+/// Il controllo sta sotto il lucchetto del posto, e chi spegne l'interruttore
+/// alza la generazione **prima** di svuotarlo ([`aggiornamenti_attivo`]): un
+/// deposito che passa il controllo sta già nel posto quando lo svuotamento lo
+/// raggiunge, e uno che arriva dopo trova la generazione cambiata. La stessa
+/// regola con cui `passata` protegge `trovato`: un pacchetto finito dopo lo
+/// spegnimento non resta in attesa, e non accende la notifica «Pronto da
+/// installare» a un controllo spento.
+fn deposita_pronto_se_vale(
+    posto: &Mutex<Option<Pronto>>,
+    generazione: &AtomicU64,
+    partenza: u64,
+    pronto: Pronto,
+) -> bool {
+    let mut posto = posto.lock().unwrap_or_else(PoisonError::into_inner);
+    if generazione.load(Ordering::Acquire) != partenza {
+        return false;
+    }
+    *posto = Some(pronto);
+    true
 }
 
 /// La firma minisign dell'APK, il testo del `.sig` della release.
@@ -1137,9 +1216,10 @@ fn scarica_la_firma(trovato: &Trovato) -> Result<String, AppError> {
 
 /// L'APK sul disco è quello firmato con la chiave dell'updater per la
 /// versione annunciata ([`crate::rilasci::verifica_la_firma`]). Si rifà a ogni
-/// consegna, anche per l'APK riusato dalla cache: un file troncato o cambiato
-/// lì dentro non arriva all'installatore. Se non torna si cancella, e il
-/// prossimo «Aggiorna» lo riscarica.
+/// consegna: per l'APK riusato dalla cache, e per quello in attesa di «Installa»
+/// ([`Pronto::firma`], [`lavora`]). Un file troncato o cambiato lì dentro non
+/// arriva all'installatore. Se non torna si cancella, e il prossimo «Aggiorna»
+/// lo riscarica.
 ///
 /// # Errori
 ///
