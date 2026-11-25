@@ -3649,13 +3649,22 @@ pub fn radio_ora(app: Nucleo, stato: StatoLettore, brano: i64) -> Esito<()> {
 /// `in_pausa` fa partire il brano fermo: serve a chi toglie dalla coda il brano
 /// in pausa, che non ha chiesto di sentire il successivo. `da_ms` è il punto da
 /// cui parte, zero quasi sempre: vedi [`riprendi`].
+///
+/// `gesti_prima` è il numero di [`Lettore::pausa_chiesta`] **fissato da chi ha
+/// deciso di far partire il brano**, nella stessa presa del lettore in cui l'ha
+/// deciso e prima di qualunque attesa — la libreria per il segno di ripresa,
+/// l'apertura del file. Una pausa o una ripresa chiesta da lì alla partenza lo
+/// alza, e [`consegna`] la fa vincere. Letto qui, dopo le attese di chi chiama,
+/// la pausa premuta nell'attesa risultava già dentro il numero, e il brano
+/// suonava nonostante la pausa (S7-1).
 fn avvia_corrente(
     app: &Nucleo,
     stato: &StatoLettore,
     in_pausa: bool,
     da_ms: u64,
+    gesti_prima: u64,
 ) -> Result<(), AppError> {
-    match tenta_l_avvio(app, stato, in_pausa, da_ms)? {
+    match tenta_l_avvio(app, stato, in_pausa, da_ms, gesti_prima)? {
         None => Ok(()),
         Some((id, err)) => avvio_fallito(app, stato, id, da_ms, err),
     }
@@ -3669,6 +3678,7 @@ fn tenta_l_avvio(
     stato: &StatoLettore,
     in_pausa: bool,
     da_ms: u64,
+    gesti_prima: u64,
 ) -> Result<Option<(i64, AppError)>, AppError> {
     // ── 0. un brano che parte ──
     //
@@ -3685,12 +3695,9 @@ fn tenta_l_avvio(
     // formato di un motore morto e consegnarglielo vorrebbe dire un play che non
     // suona. Soltanto il dispositivo — il brano lo apre questa funzione, e
     // rimettere al suo posto quello di prima lo farebbe ripartire per un attimo.
-    // Il numero dell'ultima pausa o ripresa chiesta, adesso: una chiesta da
-    // qui alla partenza vince sul `in_pausa` di chi ha chiamato. Vedi
-    // [`Lettore::pausa_chiesta`].
-    let (perso, gesti_prima) = con_lettore(stato, |lettore| {
-        Ok((lettore.motore.dispositivo_perso(), lettore.pausa_chiesta.0))
-    })?;
+    // Il numero dei gesti non si legge qui: lo porta chi ha deciso (`gesti_prima`),
+    // fissato prima delle sue attese. Vedi [`avvia_corrente`].
+    let perso = con_lettore(stato, |lettore| Ok(lettore.motore.dispositivo_perso()))?;
     if perso
         && riapertura::riapri_su(app, stato, None, riapertura::Modo::SoloDispositivo)?
             == riapertura::Riaperta::Saltata
@@ -3880,7 +3887,12 @@ fn riprova_o_salta(app: &Nucleo) {
     };
     let mut saltati = 0;
     loop {
-        let (id, err) = match tenta_l_avvio(app, &stato, false, 0) {
+        // Il numero dei gesti di adesso: a fine brano chi decide è questo filo,
+        // e ad ogni brano saltato si decide di nuovo.
+        let Ok(gesti) = con_lettore(&stato, |lettore| Ok(lettore.pausa_chiesta.0)) else {
+            return;
+        };
+        let (id, err) = match tenta_l_avvio(app, &stato, false, 0, gesti) {
             Ok(None) => return,
             Ok(Some(fallito)) => fallito,
             Err(err) => {
@@ -4182,6 +4194,22 @@ pub fn c_e_un_brano(stato: &StatoLettore) -> bool {
 }
 
 pub fn riprendi_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
+    riprendi_ora_con(app, stato, || {})
+}
+
+/// [`riprendi_ora`], che dice **quando il gesto si è contato**.
+///
+/// I tasti multimediali eseguono pause e riprese una alla volta, sotto un turno
+/// (`media::Turno`): una pausa arrivata prima del conteggio della ripresa non
+/// deve passarle davanti, perché il conteggio la cancellerebbe. Ma il turno non
+/// deve durare quanto l'apertura del file, cinque secondi da un NAS che dorme e
+/// quindici da un flusso: da quando la ripresa ha alzato il numero dei gesti
+/// del lettore (`Lettore::pausa_chiesta`) una pausa che arriva lo alza a sua
+/// volta, e il brano che si sta aprendo la trova alla consegna (S7-1). Per
+/// questo `contato` parte **appena il gesto è contato** — o, se il gesto finisce
+/// prima (la strada lo ha preso un altro, un errore), alla fine; mai due volte.
+pub fn riprendi_ora_con(app: Nucleo, stato: StatoLettore, contato: impl FnOnce()) -> Esito<()> {
+    let mut al_conto = crate::disparte::AllaFine::sempre(contato);
     if let Strada::Fatto = strada(&app, &Gesto::Riprendi).map_err(errore)? {
         return Ok(());
     }
@@ -4219,8 +4247,11 @@ pub fn riprendi_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     // Fuori `None` vuol dire «il motore suonava già, fatto»; dentro è il brano
     // da aprire, che può mancare anche lui — una coda vuota, che
     // `avvia_corrente` sa fermare.
-    let da_aprire = con_lettore(&stato, |lettore| {
+    let (da_aprire, gesti) = con_lettore(&stato, |lettore| {
         lettore.pausa_chiesta = (lettore.pausa_chiesta.0.wrapping_add(1), false);
+        // Il numero si fissa qui, nella stessa presa che conta il gesto: chi apre
+        // il brano lo porta fino alla consegna (S7-1).
+        let gesti = lettore.pausa_chiesta.0;
         if lettore.motore.posizione().track_id.is_none() {
             let corrente = lettore.coda.current();
             // Un salto chiesto a motore vuoto vince sul segno: è più recente, e
@@ -4252,16 +4283,18 @@ pub fn riprendi_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
                 riapertura::continua_l_ascolto(id);
             }
             let chiesto = a_vuoto.or(dalla_ripresa.map(|(_, ms)| ms));
-            return Ok(Some((corrente, chiesto)));
+            return Ok((Some((corrente, chiesto)), gesti));
         }
         insieme::riprendi(lettore);
         if let Some(a) = lettore.ascolto.as_mut() {
             a.resume(adesso_ms());
         }
         manda_stato(&app, lettore);
-        Ok(None)
+        Ok((None, gesti))
     })
     .map_err(errore)?;
+    // Contato: da qui una pausa conta dopo di noi, e non aspetta l'apertura.
+    al_conto.scatta();
     let Some((corrente, chiesto)) = da_aprire else {
         return Ok(());
     };
@@ -4278,7 +4311,7 @@ pub fn riprendi_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
             .unwrap_or(0),
         (None, None) => 0,
     };
-    avvia_corrente(&app, &stato, false, da_ms).map_err(errore)
+    avvia_corrente(&app, &stato, false, da_ms, gesti).map_err(errore)
 }
 
 /// Alterna fra pausa e ripresa.
@@ -4301,6 +4334,14 @@ pub(crate) fn suona_adesso(stato: &StatoLettore) -> bool {
 }
 
 pub fn alterna_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
+    alterna_ora_con(app, stato, || {})
+}
+
+/// [`alterna_ora`], che dice **quando il gesto si è contato**: vedi
+/// [`riprendi_ora_con`]. Una pausa si conta subito, e `contato` parte alla sua
+/// fine.
+pub fn alterna_ora_con(app: Nucleo, stato: StatoLettore, contato: impl FnOnce()) -> Esito<()> {
+    let mut al_conto = crate::disparte::AllaFine::sempre(contato);
     if let Strada::Fatto = strada(&app, &Gesto::Alterna).map_err(errore)? {
         return Ok(());
     }
@@ -4309,7 +4350,7 @@ pub fn alterna_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     })
     .map_err(errore)?;
     if in_pausa {
-        riprendi_ora(app, stato)
+        riprendi_ora_con(app, stato, move || al_conto.scatta())
     } else {
         pausa_ora(app, stato)
     }

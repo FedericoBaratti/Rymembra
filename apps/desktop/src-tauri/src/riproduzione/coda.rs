@@ -616,8 +616,14 @@ pub(super) fn gesto_di_coda(
     stato: &StatoLettore,
     gesto: impl FnOnce(&mut Lettore) -> Result<bool, AppError>,
 ) -> Result<(), AppError> {
-    if con_lettore(stato, gesto)? {
-        avvia_corrente(app, stato, false, 0)?;
+    // Il numero dei gesti si legge nella stessa presa che decide: una pausa
+    // arrivata fra qui e la consegna alza il numero, e il brano parte fermo
+    // (S7-1).
+    let (parte, gesti) = con_lettore(stato, |lettore| {
+        Ok((gesto(lettore)?, lettore.pausa_chiesta.0))
+    })?;
+    if parte {
+        avvia_corrente(app, stato, false, 0, gesti)?;
     }
     Ok(())
 }
@@ -842,10 +848,10 @@ pub fn coda_togli_ora(
         }
         chiudi_ascolto(&app, lettore);
         if !era_ultimo {
-            return Ok(Some(motore.in_pausa));
+            return Ok(Some((motore.in_pausa, lettore.pausa_chiesta.0)));
         }
         if lettore.coda.repeat() == RepeatMode::All && lettore.coda.play_at(0).is_some() {
-            return Ok(Some(motore.in_pausa));
+            return Ok(Some((motore.in_pausa, lettore.pausa_chiesta.0)));
         }
         lettore.ferma();
         salva_coda(&app, lettore);
@@ -853,8 +859,8 @@ pub fn coda_togli_ora(
         Ok(None)
     })
     .map_err(errore)?;
-    if let Some(in_pausa) = partenza {
-        avvia_corrente(&app, &stato, in_pausa, 0).map_err(errore)?;
+    if let Some((in_pausa, gesti)) = partenza {
+        avvia_corrente(&app, &stato, in_pausa, 0, gesti).map_err(errore)?;
     }
     Ok(())
 }
@@ -961,12 +967,12 @@ pub(crate) fn sgombra_dalla_coda(
         chiudi_ascolto(app, lettore);
         if !ferma {
             if c_e_un_dopo {
-                return Ok(Some(motore.in_pausa));
+                return Ok(Some((motore.in_pausa, lettore.pausa_chiesta.0)));
             }
             // Con la ripetizione accesa un dopo c'è comunque, ed è il primo
             // della coda. Senza, non resta che fermarsi.
             if lettore.coda.repeat() == RepeatMode::All && lettore.coda.play_at(0).is_some() {
-                return Ok(Some(motore.in_pausa));
+                return Ok(Some((motore.in_pausa, lettore.pausa_chiesta.0)));
             }
         }
         lettore.ferma();
@@ -974,8 +980,8 @@ pub(crate) fn sgombra_dalla_coda(
         manda_stato(app, lettore);
         Ok(None)
     })?;
-    if let Some(in_pausa) = partenza {
-        avvia_corrente(app, stato, in_pausa, 0)?;
+    if let Some((in_pausa, gesti)) = partenza {
+        avvia_corrente(app, stato, in_pausa, 0, gesti)?;
     }
     Ok(())
 }
@@ -1202,7 +1208,7 @@ pub fn coda_ripristina_ora(app: Nucleo, stato: StatoLettore, numero: u64) -> Esi
         // casella va lasciata prima: `avvia_corrente` la vuole per lo stesso
         // brano.
         drop(aprendo);
-        avvia_corrente(&app, &stato, !suonava, ms).map_err(errore)?;
+        avvia_corrente(&app, &stato, !suonava, ms, gesti_prima).map_err(errore)?;
     }
     Ok(true)
 }

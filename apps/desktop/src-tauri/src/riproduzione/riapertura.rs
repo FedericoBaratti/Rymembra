@@ -1392,7 +1392,7 @@ pub fn riprova_corrente_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
         // La casella va lasciata prima: `avvia_corrente` la vuole per lo
         // stesso brano, e la troverebbe presa da noi.
         drop(aprendo);
-        return super::avvia_corrente(&app, &stato, false, ripresa.ms).map_err(errore);
+        return super::avvia_corrente(&app, &stato, false, ripresa.ms, gesti_prima).map_err(errore);
     }
 
     // Si cancella qui e non prima: se l'apertura fosse fallita saremmo usciti

@@ -548,10 +548,17 @@ fn ogni_comando_di_trasporto_e_di_coda_chiede_la_strada_per_primo() {
         // Il nucleo, se il comando ne ha uno: il comando `async` lo passa
         // al pool bloccante e basta, ed è il nucleo che chiede la strada.
         // Vedi `col_lettore_in_disparte`.
+        // `riprendi` e `alterna` hanno anche la forma `_ora_con`, che dice quando il
+        // gesto si è contato (S7-1): è lì che sta il lavoro, e `_ora` la chiama.
+        let con_conteggio = format!("{nome}_ora_con");
         let nucleo = format!("{nome}_ora");
         let trovati: Vec<&str> = SORGENTI
             .iter()
-            .filter_map(|(_, testo)| corpo(testo, &nucleo).or_else(|| corpo(testo, nome)))
+            .filter_map(|(_, testo)| {
+                corpo(testo, &con_conteggio)
+                    .or_else(|| corpo(testo, &nucleo))
+                    .or_else(|| corpo(testo, nome))
+            })
             .collect();
         assert_eq!(trovati.len(), 1, "«{nome}»: un corpo solo, e dev'esserci");
         let corpo = trovati[0];
@@ -798,10 +805,11 @@ fn fino_alla_parentesi(inizio: &str) -> &str {
 /// la libreria senza limite (`completa(.., None)`), il filo della sessione
 /// (i venti di `ATTESA_COMANDO`), la scheda di un item dell'Archive, il
 /// gestore file su una share, un database scelto dall'utente.
-const ATTESE_LUNGHE: [&str; 14] = [
+const ATTESE_LUNGHE: [&str; 15] = [
     "gesto_di_coda(",
     "avvia_corrente(",
     "riprendi_ora(",
+    "riprendi_ora_con(",
     "riapri_su(",
     "brano_di(",
     "completa(",
@@ -1088,7 +1096,7 @@ fn riprova_continua_l_ascolto_del_brano_interrotto() {
         riprova.contains("continua_l_ascolto("),
         "«Riprova» apre un ascolto nuovo"
     );
-    let riprendi = corpo(include_str!("mod.rs"), "riprendi_ora").expect("riprendi_ora c'è");
+    let riprendi = corpo(include_str!("mod.rs"), "riprendi_ora_con").expect("riprendi_ora_con c'è");
     assert!(
         riprendi.contains("continua_l_ascolto("),
         "play dal punto della rete caduta apre un ascolto nuovo"
@@ -1428,4 +1436,29 @@ fn salvare_una_curva_legge_l_equalizzatore_dalla_corsia_del_lettore() {
         !sul_pool.contains("con_lettore(") && !sul_pool.contains("lettore.eq"),
         "eq_preset_salva rilegge il lettore dal pool"
     );
+}
+
+/// S7-1: chi apre un brano **fissa il numero dei gesti prima di qualunque
+/// attesa** e lo porta fino alla consegna. `tenta_l_avvio` lo rileggeva dopo
+/// che `riprendi_ora` aveva contato il suo gesto e preso la libreria senza
+/// limite per il segno di ripresa: una pausa premuta in quell'attesa alzava il
+/// numero, la rilettura la trovava già dentro, e alla consegna il confronto
+/// risultava uguale — il brano suonava nonostante la pausa premuta dopo il
+/// play.
+#[test]
+fn chi_apre_un_brano_porta_il_numero_dei_gesti_letto_prima_di_ogni_attesa() {
+    let mod_rs = include_str!("mod.rs");
+    let tenta = corpo_privato(mod_rs, "fn tenta_l_avvio(").expect("tenta_l_avvio");
+    assert!(
+        !tenta.contains("pausa_chiesta"),
+        "tenta_l_avvio rilegge il numero dei gesti dopo l'attesa di chi la chiama"
+    );
+    for firma in ["fn avvia_corrente(", "fn tenta_l_avvio("] {
+        let dichiarazione = &senza_prove(mod_rs)[senza_prove(mod_rs).find(firma).expect(firma)..];
+        let dichiarazione = &dichiarazione[..dichiarazione.find("{\n").expect("corpo")];
+        assert!(
+            dichiarazione.contains("gesti_prima: u64"),
+            "{firma} non riceve il numero dei gesti da chi ha deciso"
+        );
+    }
 }

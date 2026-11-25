@@ -298,8 +298,8 @@ pub(crate) fn premi(app: &impl ComeNucleo, gesto: Gesto) {
         let chi_suona = app.clone();
         let chi_aspetta = app.clone();
         let corsie = avvia_corsie(
-            move |gesto| {
-                let _ = crate::stato::sorvegliato(FILO_TASTI, || esegui(&mano, gesto));
+            move |gesto, turno| {
+                let _ = crate::stato::sorvegliato(FILO_TASTI, || esegui(&mano, gesto, turno));
             },
             move || {
                 chi_suona
@@ -394,6 +394,40 @@ impl Corsie {
     }
 }
 
+/// Il turno fra pause e riprese, in mano a chi sta eseguendo il gesto.
+///
+/// Una ripresa lo prende prima di cominciare e lo tiene **finché non ha
+/// contato se stessa** — finché `riprendi_ora_con` non ha alzato il numero dei
+/// gesti del lettore (`Lettore::pausa_chiesta`) —, poi lo [`rilascia`](Self::rilascia)
+/// e va ad aprire il file con calma. Una pausa arrivata prima del conteggio
+/// aspetta quel poco e poi vince; una arrivata dopo non aspetta niente, e
+/// il brano che si sta aprendo la trova al momento di partire (S7-1).
+///
+/// Chi lo lascia cadere senza rilasciarlo lo rilascia comunque, anche in un
+/// panico.
+pub(crate) struct Turno<'a> {
+    guardia: Option<std::sync::MutexGuard<'a, u64>>,
+}
+
+impl<'a> Turno<'a> {
+    /// Un gesto che il turno non lo prende: tutti tranne pause e riprese.
+    const fn nessuno() -> Self {
+        Self { guardia: None }
+    }
+
+    /// Il turno già preso.
+    const fn di(guardia: std::sync::MutexGuard<'a, u64>) -> Self {
+        Self {
+            guardia: Some(guardia),
+        }
+    }
+
+    /// Lascia il turno: da qui una pausa può contare.
+    pub(crate) fn rilascia(&mut self) {
+        self.guardia = None;
+    }
+}
+
 /// Fa partire i fili delle corsie. `esegui` fa il gesto; `suona` dice se la
 /// musica sta andando, per «alterna»; `aspetta` è l'attesa del motore audio che
 /// si sta ancora aprendo, che ogni gesto in fila fa **prima** del suo turno.
@@ -426,15 +460,20 @@ impl Corsie {
 /// Ogni gesto porta un numero, e la pausa vince sulle riprese premute
 /// **prima** di lei: una ripresa rimasta in fila dietro al gesto lento, e
 /// arrivata al suo turno dopo la pausa, non la disfa. Pausa e riprese si
-/// eseguono anche una alla volta — sotto `ultima_pausa` — così una ripresa
-/// già cominciata finisce prima che la pausa arrivata dopo la fermi. Gli
-/// altri gesti in fila — «successivo», «precedente», un salto — non
-/// aspettano la pausa né la pausa aspetta loro.
+/// contano anche una alla volta — sotto `ultima_pausa`, il [`Turno`] — così
+/// una ripresa già cominciata ha alzato il numero dei gesti del lettore prima
+/// che la pausa arrivata dopo alzi il suo, e vince lei. Ma il turno dura solo
+/// fino al conteggio: la ripresa lo rilascia (`riprendi_ora_con`) prima di
+/// aprire il file, che può metterci cinque secondi da un NAS che dorme e
+/// quindici da un flusso, e una pausa arrivata in quel tempo non aspetta
+/// niente — il brano che si apre la trova alla consegna (S7-1). Gli altri
+/// gesti in fila — «successivo», «precedente», un salto — non aspettano la
+/// pausa né la pausa aspetta loro.
 ///
 /// «Alterna» passa dalla corsia veloce: se la musica va è una pausa, e si fa
 /// lì; se no è una ripresa, e torna in fila col suo numero.
 fn avvia_corsie(
-    esegui: impl Fn(Gesto) + Send + Sync + 'static,
+    esegui: impl Fn(Gesto, &mut Turno<'_>) + Send + Sync + 'static,
     suona: impl Fn() -> bool + Send + 'static,
     aspetta: impl Fn(&Gesto) + Send + 'static,
 ) -> Option<Corsie> {
@@ -454,15 +493,16 @@ fn avvia_corsie(
                     // Fuori dal turno: vedi sopra, «Perché l'attesa sta fuori».
                     aspetta(&gesto);
                     if !matches!(gesto, Gesto::Riprendi | Gesto::Alterna) {
-                        esegui(gesto);
+                        esegui(gesto, &mut Turno::nessuno());
                         continue;
                     }
                     let turno = ultima_pausa.lock().unwrap_or_else(PoisonError::into_inner);
                     if numero < *turno {
                         continue;
                     }
-                    esegui(gesto);
-                    drop(turno);
+                    // Il turno passa al gesto, che lo rilascia quando si è contato; se
+                    // non lo fa, cade alla fine del giro.
+                    esegui(gesto, &mut Turno::di(turno));
                 }
             })
             .ok()?;
@@ -475,7 +515,7 @@ fn avvia_corsie(
                 let mut turno = ultima_pausa.lock().unwrap_or_else(PoisonError::into_inner);
                 if matches!(gesto, Gesto::Pausa) || suona() {
                     *turno = (*turno).max(numero);
-                    esegui(gesto);
+                    esegui(gesto, &mut Turno::di(turno));
                 } else {
                     drop(turno);
                     let _ = in_fila.send((numero, gesto));
@@ -496,14 +536,18 @@ fn avvia_corsie(
 /// così un tasto della tastiera, una voce del vassoio e il pulsante nella
 /// finestra fanno **letteralmente** la stessa cosa, salvataggio della coda e
 /// invio dello stato compresi.
-fn esegui(app: &Nucleo, gesto: Gesto) {
+fn esegui(app: &Nucleo, gesto: Gesto, turno: &mut Turno<'_>) {
     let Some(lettore) = app.try_state::<StatoLettore>() else {
         return;
     };
     let esito = match gesto {
-        Gesto::Riprendi => crate::riproduzione::riprendi_ora(app.clone(), lettore),
+        Gesto::Riprendi => {
+            crate::riproduzione::riprendi_ora_con(app.clone(), lettore, || turno.rilascia())
+        }
         Gesto::Pausa => crate::riproduzione::pausa_ora(app.clone(), lettore),
-        Gesto::Alterna => crate::riproduzione::alterna_ora(app.clone(), lettore),
+        Gesto::Alterna => {
+            crate::riproduzione::alterna_ora_con(app.clone(), lettore, || turno.rilascia())
+        }
         Gesto::Prossimo => crate::riproduzione::prossimo_ora(app.clone(), lettore),
         Gesto::Precedente => crate::riproduzione::precedente_ora(app.clone(), lettore),
         Gesto::VaiA(ms) => crate::riproduzione::vai_a_ora(app.clone(), lettore, ms),
@@ -624,7 +668,7 @@ mod prove {
         let (lascia, aspetta) = std::sync::mpsc::channel::<()>();
         let aspetta = Mutex::new(aspetta);
         let corsie = avvia_corsie(
-            move |gesto| {
+            move |gesto, _turno| {
                 let nome = match gesto {
                     Gesto::Prossimo => {
                         let _ = annota.send("prossimo:comincia");
@@ -647,6 +691,95 @@ mod prove {
         )
         .expect("i fili delle corsie partono");
         (corsie, annotati, lascia)
+    }
+
+    /// Le corsie con una ripresa **lenta**, come una che apre un file da un NAS
+    /// che dorme: annota «comincia», «contato» — il punto in cui `riprendi_ora_con`
+    /// ha alzato il numero dei gesti e rilascia il turno — e «finisce», e resta
+    /// ferma finché la prova non la lascia andare o **prima** o **dopo** il
+    /// conteggio, secondo `lenta_prima_del_conto`.
+    fn banco_con_ripresa_lenta(
+        lenta_prima_del_conto: bool,
+    ) -> (Corsie, Receiver<&'static str>, Sender<()>) {
+        let (annota, annotati) = std::sync::mpsc::channel();
+        let (lascia, aspetta) = std::sync::mpsc::channel::<()>();
+        let aspetta = Mutex::new(aspetta);
+        let corsie = avvia_corsie(
+            move |gesto, turno| match gesto {
+                Gesto::Riprendi => {
+                    let ferma = || {
+                        let _ = aspetta
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .recv_timeout(ENTRO);
+                    };
+                    let _ = annota.send("riprendi:comincia");
+                    if lenta_prima_del_conto {
+                        ferma();
+                    }
+                    turno.rilascia();
+                    let _ = annota.send("riprendi:contato");
+                    if !lenta_prima_del_conto {
+                        ferma();
+                    }
+                    let _ = annota.send("riprendi:finisce");
+                }
+                Gesto::Pausa => {
+                    let _ = annota.send("pausa");
+                }
+                _ => {}
+            },
+            || true,
+            |_| {},
+        )
+        .expect("i fili delle corsie partono");
+        (corsie, annotati, lascia)
+    }
+
+    /// S7-1: una pausa non aspetta una ripresa che sta **aprendo il file**. La
+    /// ripresa tiene il turno fino a quando si è contata, poi lo lascia: da lì
+    /// la pausa conta subito, e il brano che si apre la trova al momento di
+    /// partire (`Lettore::pausa_chiesta`). Tenendo il turno per tutta
+    /// l'apertura — cinque secondi da un NAS che dorme, quindici da un flusso —
+    /// la pausa restava ferma senza nessun effetto visibile, e poi il brano
+    /// partiva e veniva fermato subito dopo.
+    #[test]
+    fn una_pausa_non_aspetta_una_ripresa_che_sta_aprendo() {
+        let (corsie, annotati, lascia) = banco_con_ripresa_lenta(false);
+        assert!(corsie.manda(Gesto::Riprendi));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("riprendi:comincia"));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("riprendi:contato"));
+        assert!(corsie.manda(Gesto::Pausa));
+        assert_eq!(
+            annotati.recv_timeout(ENTRO),
+            Ok("pausa"),
+            "la pausa ha aspettato che la ripresa finisse di aprire il file"
+        );
+        let _ = lascia.send(());
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("riprendi:finisce"));
+    }
+
+    /// S7-1: una pausa arrivata **prima** che la ripresa si sia contata aspetta
+    /// il suo conteggio — se passasse davanti, il conteggio della ripresa la
+    /// cancellerebbe — e subito dopo conta.
+    #[test]
+    fn una_pausa_arrivata_prima_del_conteggio_della_ripresa_conta_dopo_di_lei() {
+        let (corsie, annotati, lascia) = banco_con_ripresa_lenta(true);
+        assert!(corsie.manda(Gesto::Riprendi));
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("riprendi:comincia"));
+        assert!(corsie.manda(Gesto::Pausa));
+        assert!(
+            annotati.recv_timeout(Duration::from_millis(300)).is_err(),
+            "la pausa è passata davanti a una ripresa che non si era ancora contata"
+        );
+        let _ = lascia.send(());
+        assert_eq!(annotati.recv_timeout(ENTRO), Ok("riprendi:contato"));
+        let mut dopo = [
+            annotati.recv_timeout(ENTRO).expect("un gesto dopo"),
+            annotati.recv_timeout(ENTRO).expect("un altro gesto dopo"),
+        ];
+        dopo.sort_unstable();
+        assert_eq!(dopo, ["pausa", "riprendi:finisce"]);
     }
 
     /// L'attesa del motore di una prova: sul «riprendi» annota che comincia e
