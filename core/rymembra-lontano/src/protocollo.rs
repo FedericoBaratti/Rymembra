@@ -77,6 +77,32 @@ pub const MASSIMA_DOMANDA: usize = 64 * 1024;
 /// dispositivo associato, e solo a chi gliel'ha chiesta.
 pub const MASSIMA_TESTA: usize = MASSIMA_CORNICE * 8;
 
+/// Quanto può pesare, aperta, la testa di una risposta di presenza: un nome, una
+/// piattaforma, una versione e qualche sigla — qualche centinaio di byte, che
+/// [`Presenza::nei_tetti`] porta poi a [`MASSIMO_TESTO_PRESENZA`] caratteri.
+///
+/// La risposta a [`Domanda::Presenza`] la dà ogni dispositivo a ogni
+/// connessione, senza che nessuno abbia fatto niente: con il tetto delle risposte
+/// di dati (8 MiB aperti) bastavano pochi kilobyte di deflate per far costruire a
+/// serde una memoria di ~150 MiB, ogni volta (reperto S1-2).
+pub const MASSIMA_TESTA_PRESENZA: usize = 16 * 1024;
+
+/// Quanto può pesare, aperta, la testa di una risposta che non porta dati: un
+/// `Fatto`, un rifiuto (il solo codice), la testa di una risposta di byte (tre
+/// numeri e una versione, che per una copertina è la sua impronta).
+pub const MASSIMA_TESTA_PICCOLA: usize = 1024;
+
+/// Quanti nodi JSON — valori di un array, voci di un oggetto — può avere una
+/// risposta di dati.
+///
+/// Il tetto in byte (8 MiB aperti) non dice quanto costa leggerla: un valore di
+/// `serde_json` pesa 32 byte e un `0,` ne occupa due, quindi 8 MiB di zeri
+/// diventavano ~260 MiB (reperto S1-2). Una pagina vera da cinquecento righe ne ha
+/// una decina di migliaia; il riassunto di un catalogo da quaranta milioni di id
+/// — il più lungo che sta negli 8 MiB — ne ha meno di quattrocentomila. A mezzo
+/// milione una risposta ostile costa al più ~26 MiB di memoria (misurato).
+pub const MASSIMI_NODI_DATI: usize = 512 * 1024;
+
 /// Oltre questo il JSON si comprime.
 pub const SOGLIA_COMPRESSIONE: usize = 8 * 1024;
 
@@ -88,6 +114,13 @@ pub const MASSIMO_PEZZO: u64 = 2 * 1024 * 1024;
 
 /// Quante voci per pagina, al più.
 pub const MASSIMA_PAGINA: u32 = 500;
+
+/// Quanti byte può pesare la copertina che si serve e si accetta da un altro
+/// dispositivo: 1 MiB. È `MASSIMO_ESTRANEA` di `rymembra_app::covers`, che chi
+/// serve prova uguale a questo (`lontano::servizio`): chi risponde a una
+/// [`Domanda::Copertina`] manda la copertina media, qualche decina di kilobyte, e
+/// chi la riceve non legge più di così.
+pub const MASSIMA_COPERTINA: u64 = 1024 * 1024;
 
 /// Una domanda a un dispositivo associato.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +363,20 @@ impl Domanda {
         matches!(self, Self::Valuta { .. } | Self::TestoScrivi { .. })
     }
 
+    /// Quanti byte, al più, può avere la risposta di byte a questa domanda: quelli
+    /// che ha chiesto, e non di più. Chi legge la risposta lo guarda sulla testa,
+    /// **prima** di allocare e di leggere i byte (reperto S8-8): un pari che
+    /// risponde con otto mebibyte a una copertina da un mebibyte, o a un pezzo da
+    /// cento byte, non li fa scaricare.
+    #[must_use]
+    pub fn byte_attesi(&self) -> u64 {
+        match self {
+            Self::Leggi { quanti, .. } => (*quanti).min(MASSIMO_PEZZO),
+            Self::Copertina { .. } => MASSIMA_COPERTINA,
+            _ => 0,
+        }
+    }
+
     /// La stessa domanda coi tetti di questo protocollo: pagine e pezzi non
     /// più grandi di quanto si serve.
     #[must_use]
@@ -565,7 +612,12 @@ pub enum Risposta {
 
 /// La testa della risposta sul filo. [`Risposta::Byte`] porta solo la
 /// lunghezza: i byte seguono grezzi, senza JSON di mezzo.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Si **scrive** con serde, e si **legge** solo con [`testa_entro`]: un enum con
+/// `tag = "tipo"` si legge con la `Deserialize` di serde, che tiene l'oggetto
+/// intero in memoria — i campi sconosciuti compresi — prima di scegliere la
+/// variante (reperto S1-2). La lettura a mano ha un tetto per ogni tipo.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(
     tag = "tipo",
     rename_all = "camelCase",
@@ -586,7 +638,8 @@ pub(crate) enum Testa {
     Rifiuto {
         codice: String,
     },
-    #[serde(other)]
+    /// Una testa di una versione più nuova. Non si scrive mai.
+    #[serde(skip)]
     Sconosciuta,
 }
 
@@ -694,27 +747,23 @@ pub(crate) fn lunghezza_entro(testa: [u8; 4], tetto: usize) -> Result<(usize, bo
     Ok((quanti, valore & COMPRESSA != 0))
 }
 
-/// Il valore di un corpo di cornice, che aperto non passa `tetto`.
-///
-/// Il tetto vale sul JSON **aperto**, compresso o no: serde, per un enum con
-/// `tag` come [`Associa`] o [`Domanda`], tiene l'oggetto intero in memoria —
-/// campi sconosciuti compresi — prima di scegliere la variante, e ogni byte di
-/// JSON gliene costa una ventina (reperto R15-1).
+/// Il JSON di un corpo di cornice, aperto, che non passa `tetto`: com'è se non è
+/// compresso, decompresso con un tetto se lo è.
 ///
 /// # Errori
 ///
-/// `lontano.protocollo` per un JSON che non si legge, o che aperto supera
-/// `tetto` (una bomba di deflate).
-pub(crate) fn valore_entro<T: DeserializeOwned>(
+/// `lontano.protocollo` per un corpo che aperto supera `tetto` (una bomba di
+/// deflate) o che non si decomprime.
+fn apri(
     corpo: &[u8],
     compressa: bool,
     tetto: usize,
-) -> Result<T, AppError> {
+) -> Result<std::borrow::Cow<'_, [u8]>, AppError> {
     if !compressa {
         if corpo.len() > tetto {
             return Err(protocollo("una cornice supera il tetto"));
         }
-        return serde_json::from_slice(corpo).map_err(protocollo);
+        return Ok(std::borrow::Cow::Borrowed(corpo));
     }
     let mut json = Vec::new();
     let tetto = u64::try_from(tetto).unwrap_or(u64::MAX);
@@ -725,17 +774,156 @@ pub(crate) fn valore_entro<T: DeserializeOwned>(
     if u64::try_from(json.len()).unwrap_or(u64::MAX) > tetto {
         return Err(protocollo("una cornice decompressa supera il tetto"));
     }
-    serde_json::from_slice(&json).map_err(protocollo)
+    Ok(std::borrow::Cow::Owned(json))
+}
+
+/// Il valore di un corpo di cornice, che aperto non passa `tetto`.
+///
+/// Il tetto vale sul JSON **aperto**, compresso o no: serde, per un enum con
+/// `tag` come [`Associa`] o [`Domanda`], tiene l'oggetto intero in memoria —
+/// campi sconosciuti compresi — prima di scegliere la variante, e ogni byte di
+/// JSON gliene costa una ventina (reperto R15-1). Per la testa di una risposta,
+/// che ha un tetto per ogni tipo, c'è [`testa_entro`].
+///
+/// # Errori
+///
+/// `lontano.protocollo` per un JSON che non si legge, o che aperto supera
+/// `tetto` (una bomba di deflate).
+pub(crate) fn valore_entro<T: DeserializeOwned>(
+    corpo: &[u8],
+    compressa: bool,
+    tetto: usize,
+) -> Result<T, AppError> {
+    serde_json::from_slice(&apri(corpo, compressa, tetto)?).map_err(protocollo)
+}
+
+/// Del JSON di una testa, solo il `tipo`: gli altri campi si scorrono e non si
+/// tengono, comunque siano fatti e comunque vengano dopo.
+#[derive(Deserialize)]
+struct SoloIlTipo {
+    tipo: String,
+}
+
+/// I campi di una testa di dati, di byte, di rifiuto: le varianti di [`Testa`]
+/// che non sono una [`Presenza`], lette ognuna per sé.
+#[derive(Deserialize)]
+struct CampiDati {
+    dati: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CampiByte {
+    lunghezza: u64,
+    totale: u64,
+    versione: String,
+}
+
+#[derive(Deserialize)]
+struct CampiRifiuto {
+    codice: String,
+}
+
+/// Il JSON di una risposta di dati ha un numero di nodi che sta in
+/// [`MASSIMI_NODI_DATI`]? Ogni valore di un array, ogni voce di un oggetto e ogni
+/// contenitore è un nodo: si contano le virgole, le parentesi aperte e la radice,
+/// fuori dalle stringhe — dentro, `\"` non le chiude. Una sola passata sui byte,
+/// senza allocare: costa una frazione di quel che costerebbe leggerli.
+fn nodi_nei_tetti(json: &[u8]) -> bool {
+    let mut nodi = 1_usize;
+    let mut in_stringa = false;
+    let mut protetto = false;
+    for &byte in json {
+        if in_stringa {
+            if protetto {
+                protetto = false;
+            } else if byte == b'\\' {
+                protetto = true;
+            } else if byte == b'"' {
+                in_stringa = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_stringa = true,
+            b',' | b'[' | b'{' => {
+                nodi = nodi.saturating_add(1);
+                if nodi > MASSIMI_NODI_DATI {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 /// La testa di una risposta, dal corpo di una cornice: l'unica porta da cui una
 /// [`Testa`] entra, e dove le si danno i suoi tetti (reperto S1-2).
 ///
+/// Si legge in due passi, senza che serde tenga in memoria niente di quel che non
+/// serve:
+///
+/// 1. il solo `tipo` (una struct con un campo, che scorre gli altri senza
+///    tenerli);
+/// 2. il tetto **di quel tipo** sul JSON aperto — [`MASSIMA_TESTA_PRESENZA`],
+///    [`MASSIMA_TESTA_PICCOLA`], e per i dati `tetto` e [`MASSIMI_NODI_DATI`] —, e
+///    solo allora la variante, letta per sé.
+///
+/// Una testa di un tipo che questa versione non conosce è [`Testa::Sconosciuta`],
+/// se sta nel tetto piccolo: sa dire che c'è, non serve a niente di più.
+///
 /// # Errori
 ///
-/// `lontano.protocollo` per un JSON che non si legge, o che aperto supera `tetto`.
+/// `lontano.protocollo` per un JSON che non si legge, che aperto supera `tetto` o
+/// il tetto del suo tipo, o che per i dati ha troppi nodi.
 pub(crate) fn testa_entro(corpo: &[u8], compressa: bool, tetto: usize) -> Result<Testa, AppError> {
-    valore_entro::<Testa>(corpo, compressa, tetto)
+    let json = apri(corpo, compressa, tetto)?;
+    let SoloIlTipo { tipo } = serde_json::from_slice(&json).map_err(protocollo)?;
+    let massimo = match tipo.as_str() {
+        "presenza" => MASSIMA_TESTA_PRESENZA,
+        "dati" => tetto,
+        _ => MASSIMA_TESTA_PICCOLA,
+    };
+    if json.len() > massimo {
+        return Err(protocollo(format!(
+            "una testa da {} byte aperti supera il tetto del suo tipo",
+            json.len()
+        )));
+    }
+    match tipo.as_str() {
+        "presenza" => serde_json::from_slice(&json)
+            .map(Testa::Presenza)
+            .map_err(protocollo),
+        "dati" => {
+            if !nodi_nei_tetti(&json) {
+                return Err(protocollo(
+                    "una risposta di dati con più nodi di quanti ne servano",
+                ));
+            }
+            serde_json::from_slice(&json)
+                .map(|CampiDati { dati }| Testa::Dati { dati })
+                .map_err(protocollo)
+        }
+        "byte" => serde_json::from_slice(&json)
+            .map(
+                |CampiByte {
+                     lunghezza,
+                     totale,
+                     versione,
+                 }| Testa::Byte {
+                    lunghezza,
+                    totale,
+                    versione,
+                },
+            )
+            .map_err(protocollo),
+        "fatto" => Ok(Testa::Fatto),
+        "rifiuto" => serde_json::from_slice(&json)
+            .map(|CampiRifiuto { codice }| Testa::Rifiuto { codice })
+            .map_err(protocollo),
+        _ => Ok(Testa::Sconosciuta),
+    }
 }
 
 #[cfg(test)]
@@ -1255,7 +1443,7 @@ mod prove {
     fn una_domanda_di_domani_e_sconosciuta_e_non_un_guasto() {
         let domani: Domanda = serde_json::from_str(r#"{"tipo":"playlist","quale":3}"#).unwrap();
         assert_eq!(domani, Domanda::Sconosciuta);
-        let testa: Testa = serde_json::from_str(r#"{"tipo":"video"}"#).unwrap();
+        let testa = testa_entro(br#"{"tipo":"video"}"#, false, MASSIMA_TESTA).unwrap();
         assert_eq!(testa, Testa::Sconosciuta);
         // E i campi in più di una presenza nuova si ignorano.
         let presenza: Presenza = serde_json::from_str(r#"{"nome":"PC","colore":"blu"}"#).unwrap();
@@ -1273,7 +1461,7 @@ mod prove {
         assert!(compressa);
         assert!(quanti < 10_000, "compressa: {quanti} byte");
         assert_eq!(
-            valore_entro::<Testa>(&byte[4..], true, MASSIMA_TESTA).unwrap(),
+            testa_entro(&byte[4..], true, MASSIMA_TESTA).unwrap(),
             grande
         );
 
@@ -1282,10 +1470,209 @@ mod prove {
         let mut bomba = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
         bomba.write_all(&vec![b' '; 10 << 20]).unwrap();
         let bomba = bomba.finish().unwrap();
-        assert!(valore_entro::<Testa>(&bomba, true, MASSIMA_TESTA).is_err());
+        assert!(testa_entro(&bomba, true, MASSIMA_TESTA).is_err());
 
         let troppo = (u32::try_from(MASSIMA_CORNICE).unwrap() + 1).to_be_bytes();
         assert!(lunghezza_entro(troppo, MASSIMA_TESTA).is_err());
+    }
+
+    /// Una cornice compressa di pochi kilobyte che, aperta, è `inizio`, poi
+    /// `[0,0,…]`, poi `fine`: l'amplificatore di memoria di serde. Torna anche
+    /// quanti byte ha, aperta.
+    fn bomba_di_zeri(inizio: &str, fine: &str) -> (Vec<u8>, usize) {
+        let mut json = String::from(inizio);
+        json.push('[');
+        json.push_str(&"0,".repeat((MASSIMA_TESTA - inizio.len() - fine.len() - 8).div_euclid(2)));
+        json.push_str("0]");
+        json.push_str(fine);
+        assert!(json.len() <= MASSIMA_TESTA, "{} byte aperti", json.len());
+        let mut compressore =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+        compressore.write_all(json.as_bytes()).unwrap();
+        let bomba = compressore.finish().unwrap();
+        assert!(
+            bomba.len() < MASSIMA_CORNICE,
+            "{} byte sul filo",
+            bomba.len()
+        );
+        (bomba, json.len())
+    }
+
+    #[test]
+    fn una_presenza_non_si_apre_oltre_il_suo_tetto() {
+        // Reperto S1-2: la risposta a `Presenza` arriva a ogni connessione, e
+        // con 8 MiB aperti di `"z":[0,0,…]` serde ne teneva ~150 MiB.
+        let (bomba, aperti) = bomba_di_zeri(r#"{"tipo":"presenza","nome":"x","z":"#, "}");
+        assert!(
+            testa_entro(&bomba, true, MASSIMA_TESTA).is_err(),
+            "{} byte sul filo, {aperti} aperti: si leggono",
+            bomba.len()
+        );
+        // In chiaro, appena oltre il tetto, nemmeno.
+        let mut oltre = String::from(r#"{"tipo":"presenza","nome":""#);
+        oltre.push_str(&"x".repeat(MASSIMA_TESTA_PRESENZA));
+        oltre.push_str(r#""}"#);
+        assert!(testa_entro(oltre.as_bytes(), false, MASSIMA_TESTA).is_err());
+        // Una presenza vera passa, con il tipo dove capita.
+        let vera = br#"{"nome":"PC","tipo":"presenza","capacita":["catalogo"],"colore":"blu"}"#;
+        let Testa::Presenza(presenza) = testa_entro(vera, false, MASSIMA_TESTA).unwrap() else {
+            panic!("una presenza");
+        };
+        assert_eq!(presenza.nome, "PC");
+        assert!(presenza.dichiara("catalogo"));
+    }
+
+    #[test]
+    fn una_testa_senza_dati_non_si_apre_oltre_il_suo_tetto() {
+        for tipo in ["fatto", "rifiuto", "byte", "video"] {
+            let inizio = format!(r#"{{"tipo":"{tipo}","codice":"x","z":"#);
+            let (bomba, aperti) = bomba_di_zeri(&inizio, "}");
+            assert!(
+                testa_entro(&bomba, true, MASSIMA_TESTA).is_err(),
+                "{tipo}: {} byte sul filo, {aperti} aperti: si leggono",
+                bomba.len()
+            );
+            let oltre = format!(
+                r#"{{"tipo":"{tipo}","codice":"{}"}}"#,
+                "x".repeat(MASSIMA_TESTA_PICCOLA)
+            );
+            assert!(
+                testa_entro(oltre.as_bytes(), false, MASSIMA_TESTA).is_err(),
+                "{tipo}"
+            );
+        }
+    }
+
+    #[test]
+    fn una_risposta_di_dati_ha_un_tetto_di_nodi_oltre_a_quello_dei_byte() {
+        // Reperto S1-2, la forma che nessun tetto per tipo chiude: `Dati` deve
+        // poter pesare megabyte, ma 8 MiB di `0,` sono quattro milioni di valori.
+        let (bomba, aperti) = bomba_di_zeri(r#"{"tipo":"dati","dati":"#, "}");
+        assert!(
+            testa_entro(&bomba, true, MASSIMA_TESTA).is_err(),
+            "{} byte sul filo, {aperti} aperti: si leggono",
+            bomba.len()
+        );
+        // Anche in forme che non hanno virgole fra valori: oggetti e array vuoti.
+        let mut vuoti = String::from(r#"{"tipo":"dati","dati":["#);
+        vuoti.push_str(&"[],".repeat(MASSIMI_NODI_DATI));
+        vuoti.push_str("[]]}");
+        assert!(testa_entro(vuoti.as_bytes(), false, MASSIMA_TESTA).is_err());
+        let mut oggetti = String::from(r#"{"tipo":"dati","dati":["#);
+        oggetti.push_str(&r#"{"a":0},"#.repeat(MASSIMI_NODI_DATI.div_euclid(2)));
+        oggetti.push_str(r#"{"a":0}]}"#);
+        assert!(testa_entro(oggetti.as_bytes(), false, MASSIMA_TESTA).is_err());
+        // Le virgole dentro una stringa non sono nodi, né un `\"` la chiude.
+        let virgole = format!(
+            r#"{{"tipo":"dati","dati":{{"testo":"{}","altro":"a\"{}"}}}}"#,
+            ",[{".repeat(MASSIMI_NODI_DATI),
+            ",".repeat(MASSIMI_NODI_DATI)
+        );
+        assert!(
+            testa_entro(virgole.as_bytes(), false, MASSIMA_TESTA).is_ok(),
+            "il testo non è una struttura"
+        );
+    }
+
+    #[test]
+    fn una_pagina_vera_di_dati_passa_ancora() {
+        // Cinquecento righe da una ventina di campi, e un riassunto del catalogo
+        // da quarantamila secchi: i due più grandi che un pari onesto manda.
+        let righe: Vec<serde_json::Value> = (0..MASSIMA_PAGINA)
+            .map(|n| {
+                let campi: serde_json::Map<String, serde_json::Value> = (0..40)
+                    .map(|c| (format!("campo{c}"), serde_json::json!(n)))
+                    .collect();
+                serde_json::Value::Object(campi)
+            })
+            .collect();
+        let secchi: Vec<serde_json::Value> = (0..40_000)
+            .map(
+                |k| serde_json::json!({ "da": k * 500, "impronta": "ab".repeat(32), "righe": 500 }),
+            )
+            .collect();
+        for dati in [
+            serde_json::json!({ "generazione": 1, "brani": righe }),
+            serde_json::json!({ "generazione": 1, "secchi": secchi }),
+        ] {
+            let testa = Testa::Dati { dati };
+            let byte = cornice(&testa, MASSIMA_TESTA).expect("la cornice parte");
+            let (quanti, compressa) =
+                lunghezza_entro(byte[..4].try_into().unwrap(), MASSIMA_TESTA).unwrap();
+            assert_eq!(quanti, byte.len() - 4);
+            assert_eq!(
+                testa_entro(&byte[4..], compressa, MASSIMA_TESTA).unwrap(),
+                testa
+            );
+        }
+    }
+
+    #[test]
+    fn ogni_testa_torna_com_era_e_si_scrive_come_sempre() {
+        // I campi sul filo sono quelli che una build di prima (`8b89651`, sul
+        // telefono vero) scrive e legge: la lettura è cambiata, la scrittura no.
+        let presenza = Presenza {
+            nome: "PC".to_owned(),
+            piattaforma: "windows".to_owned(),
+            versione: "3.3.0".to_owned(),
+            insieme_acceso: true,
+            insieme_ospita: false,
+            capacita: vec!["catalogo".to_owned(), "testi".to_owned()],
+        };
+        let casi = [
+            (
+                Testa::Presenza(presenza),
+                r#"{"tipo":"presenza","nome":"PC","piattaforma":"windows","versione":"3.3.0","insiemeAcceso":true,"insiemeOspita":false,"capacita":["catalogo","testi"]}"#,
+            ),
+            (
+                Testa::Dati {
+                    dati: serde_json::json!({ "a": [1, 2] }),
+                },
+                r#"{"tipo":"dati","dati":{"a":[1,2]}}"#,
+            ),
+            (
+                Testa::Byte {
+                    lunghezza: 10,
+                    totale: 1000,
+                    versione: "v1".to_owned(),
+                },
+                r#"{"tipo":"byte","lunghezza":10,"totale":1000,"versione":"v1"}"#,
+            ),
+            (Testa::Fatto, r#"{"tipo":"fatto"}"#),
+            (
+                Testa::Rifiuto {
+                    codice: "lontano.fileCambiato".to_owned(),
+                },
+                r#"{"tipo":"rifiuto","codice":"lontano.fileCambiato"}"#,
+            ),
+        ];
+        for (testa, scritta) in casi {
+            assert_eq!(serde_json::to_string(&testa).unwrap(), scritta);
+            assert_eq!(
+                testa_entro(scritta.as_bytes(), false, MASSIMA_TESTA).unwrap(),
+                testa,
+                "{scritta}"
+            );
+        }
+        // Una testa che non si legge, o che non dice cos'è, è un guasto.
+        for storta in [
+            r#"{"tipo":"byte","lunghezza":"molti"}"#,
+            r#"{"tipo":"rifiuto"}"#,
+            r#"{"tipo":"dati"}"#,
+            r#"{"nome":"PC"}"#,
+            r#"{"tipo":7}"#,
+            "[]",
+        ] {
+            assert!(
+                testa_entro(storta.as_bytes(), false, MASSIMA_TESTA).is_err(),
+                "{storta}"
+            );
+        }
+        // Una testa di domani, piccola, resta quel che era: sconosciuta.
+        assert_eq!(
+            testa_entro(br#"{"tipo":"video","quale":[1,2,3]}"#, false, MASSIMA_TESTA).unwrap(),
+            Testa::Sconosciuta
+        );
     }
 
     #[test]

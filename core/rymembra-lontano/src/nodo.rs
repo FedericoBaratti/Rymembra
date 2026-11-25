@@ -86,8 +86,8 @@ use crate::errori::{chiave, da_testo, dal_rifiuto, errore, inatteso, irraggiungi
 use crate::flusso::Flusso;
 use crate::protocollo::{
     ALPN_ASSOCIA, ALPN_INSIEME, ALPN_LONTANO, Associa, Domanda, MASSIMA_ASSOCIA, MASSIMA_DOMANDA,
-    MASSIMA_TESTA, MASSIMO_PEZZO, Presentazione, Presenza, Risposta, SCRITTURE_AL_MINUTO, Testa,
-    cornice, lunghezza_entro, testa_entro, valore_entro,
+    MASSIMA_TESTA, Presentazione, Presenza, Risposta, SCRITTURE_AL_MINUTO, Testa, cornice,
+    lunghezza_entro, testa_entro, valore_entro,
 };
 
 /// Quanto vale un QR.
@@ -135,9 +135,6 @@ pub const PRIMA_PAUSA: Duration = Duration::from_secs(5);
 /// L'ultima: un PC spento la sera si ritrova al più cinque minuti dopo
 /// l'accensione, senza tenere sveglio il telefono a vuoto.
 pub const ULTIMA_PAUSA: Duration = Duration::from_secs(5 * 60);
-
-/// Quanto può pesare una risposta di byte: un pezzo, o una copertina grande.
-const MASSIMI_BYTE: u64 = 4 * MASSIMO_PEZZO;
 
 /// Il motivo con cui si chiude chi non è associato.
 const CHIUSA_NON_ASSOCIATO: &[u8] = b"lontano.nonAssociato";
@@ -1466,18 +1463,21 @@ async fn scrivi_risposta(
 /// Una domanda su una connessione già aperta.
 async fn chiedi_su(conn: &Connection, domanda: Domanda) -> Result<Risposta, AppError> {
     let (mut invio, mut ricevi) = conn.open_bi().await.map_err(|e| perso(conn, e))?;
+    // Quanti byte può avere la risposta: quelli che si chiedono, e non di più.
+    let byte_attesi = domanda.byte_attesi();
     // Il tetto di chi la leggerà: oltre, qui si sa subito perché.
     scrivi(&mut invio, &domanda, MASSIMA_DOMANDA)
         .await
         .map_err(|err| chiusa_perche(conn).unwrap_or(err))?;
     let _ = invio.finish();
-    leggi_risposta(&mut ricevi)
+    leggi_risposta(&mut ricevi, byte_attesi)
         .await
         .map_err(|err| chiusa_perche(conn).unwrap_or(err))
 }
 
-/// Legge la risposta: la testa, e per dei byte i byte.
-async fn leggi_risposta(ricevi: &mut RecvStream) -> Result<Risposta, AppError> {
+/// Legge la risposta: la testa, e per dei byte i byte — al più `byte_attesi`, che
+/// è quanto la domanda ne chiedeva ([`Domanda::byte_attesi`]).
+async fn leggi_risposta(ricevi: &mut RecvStream, byte_attesi: u64) -> Result<Risposta, AppError> {
     match leggi_testa(ricevi, MASSIMA_TESTA).await? {
         // Come l'annuncio (`Domanda::nei_tetti`): quel che l'altro dice di sé
         // arriva al pannello solo nei tetti.
@@ -1489,8 +1489,12 @@ async fn leggi_risposta(ricevi: &mut RecvStream) -> Result<Risposta, AppError> {
             totale,
             versione,
         } => {
-            if lunghezza > MASSIMI_BYTE {
-                return Err(protocollo(format!("{lunghezza} byte in una risposta")));
+            // Prima di allocare e di leggere: un pari che ne dice di più di quanti
+            // se ne sono chiesti non li fa scaricare (reperto S8-8).
+            if lunghezza > byte_attesi {
+                return Err(protocollo(format!(
+                    "{lunghezza} byte in una risposta che ne aspettava al più {byte_attesi}"
+                )));
             }
             let mut byte = vec![0_u8; usize::try_from(lunghezza).map_err(protocollo)?];
             ricevi

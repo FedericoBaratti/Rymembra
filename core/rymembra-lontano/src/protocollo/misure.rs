@@ -18,10 +18,21 @@
 //! `unsafe`. Il «commit» è il numero che conta, perché una memoria azzerata e
 //! non ancora toccata non compare nel working set.
 //!
-//! # I numeri
+//! # I numeri del 25/11/2026
 //!
-//! Sono nel commit che ha corretto S1-2 e nel report del gruppo: «prima» è il
-//! codice di `373c60d`, dove `testa_entro` era `valore_entro::<Testa>`.
+//! Profilo di sviluppo, un processo per misura, picco **in più** rispetto a
+//! quando la cornice è pronta. «Prima» è `373c60d`, dove `testa_entro` era
+//! `valore_entro::<Testa>`: serde teneva l'oggetto intero come `Content`.
+//!
+//! | | prima: working set / commit / tempo | dopo |
+//! |---|---|---|
+//! | presenza ostile (8 MiB di `"z":[0,…]`) | +149,6 / +201,5 MiB / 548 ms | Err: +10,2 / +17,2 MiB / 278 ms |
+//! | dati ostili (8 MiB di `[0,…]`) | +261,8 / +329,0 MiB / 770 ms | Err: +10,2 / +17,2 MiB / 283 ms |
+//! | dati al limite dei nodi (il peggio che passa) | — | Ok: +19,4 / +26,2 MiB / 103 ms |
+//! | pagina onesta da 500 brani (497 KB) | +1,9 / +0,6 MiB / 10 ms | Ok: +1,5 / +0,3 MiB / 16 ms |
+//!
+//! I ~10 MiB che restano sono il JSON aperto (8 MiB, il tetto delle risposte di
+//! dati) e la sua copia di lavoro: non crescono con la cornice.
 
 use std::time::Instant;
 
@@ -134,6 +145,19 @@ fn misura_dati_ostili() {
     let compressa = comprimi(&json);
     assert!(compressa.len() < 16 * 1024, "{} byte", compressa.len());
     misura("dati ostili", &compressa, json.len());
+}
+
+/// Il peggio che passa: una risposta di dati con tanti nodi quanti
+/// [`MASSIMI_NODI_DATI`] ne concede, tutti zeri. Quel che resta di S1-2 dopo la
+/// correzione.
+#[test]
+#[ignore = "misura: si lancia a mano, una per volta"]
+fn misura_dati_al_limite_dei_nodi() {
+    let mut json = String::from(r#"{"tipo":"dati","dati":["#);
+    json.push_str(&"0,".repeat(MASSIMI_NODI_DATI - 8));
+    json.push_str("0]}");
+    let compressa = comprimi(&json);
+    misura("dati al limite dei nodi", &compressa, json.len());
 }
 
 /// Il controllo: una pagina vera da cinquecento brani, come la manda un pari

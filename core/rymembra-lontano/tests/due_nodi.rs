@@ -49,6 +49,9 @@ struct Finta {
     /// sconosciute, e rifiuta. Non le risponderebbe mai, anche se glien'ar-
     /// rivasse una.
     vecchia: Mutex<bool>,
+    /// Un pari ostile: a ogni lettura di byte e a ogni copertina risponde con
+    /// tanti byte, quanti che siano chiesti.
+    byte_a_forza: Mutex<Option<usize>>,
 }
 
 impl Ospite for Finta {
@@ -83,6 +86,15 @@ impl Ospite for Finta {
 
     fn rispondi(&self, da: &str, domanda: Domanda) -> Result<Risposta, AppError> {
         self.viste.lock().unwrap().push(domanda.clone());
+        if let Some(quanti) = *self.byte_a_forza.lock().unwrap()
+            && matches!(domanda, Domanda::Leggi { .. } | Domanda::Copertina { .. })
+        {
+            return Ok(Risposta::Byte {
+                byte: vec![7; quanti],
+                totale: u64::try_from(quanti).unwrap(),
+                versione: "v1".to_owned(),
+            });
+        }
         match domanda {
             // Una build di prima non conosce le domande nuove: per lei sono
             // `Sconosciuta`, e il nodo rifiuta prima che arrivino qui.
@@ -604,15 +616,17 @@ fn la_presenza_arriva_da_sola_e_cambia() {
 #[test]
 fn la_presenza_dell_altro_arriva_nei_tetti() {
     // Reperto 02-13, dalla risposta: chi chiede la presenza la riceve
-    // tagliata, qualunque cosa l'altro dica di sé.
+    // tagliata, quanto che l'altro dica di sé — fin dove sta nei 16 KiB che una
+    // risposta di presenza può pesare (S1-2): oltre, è un guasto di protocollo,
+    // provato in `rymembra_lontano::protocollo`.
     let (pc, del_pc) = nodo("PC");
     let (telefono, _) = nodo("Telefono");
     *del_pc.consente.lock().unwrap() = true;
     telefono.collega(&pc.invita().unwrap().link()).unwrap();
     pc.presenza(Presenza {
-        nome: "PC ".repeat(50_000),
+        nome: "PC ".repeat(3_000),
         piattaforma: "prova".to_owned(),
-        versione: format!("3.2.0\u{202E}{}", "9".repeat(100_000)),
+        versione: format!("3.2.0\u{202E}{}", "9".repeat(5_000)),
         ..Presenza::default()
     });
     let Risposta::Presenza(presenza) = telefono
@@ -634,6 +648,29 @@ fn la_presenza_dell_altro_arriva_nei_tetti() {
     );
     assert!(!presenza.versione.contains('\u{202E}'));
     assert_eq!(presenza.piattaforma, "prova");
+}
+
+#[test]
+fn una_presenza_oltre_il_suo_tetto_e_un_guasto_di_protocollo() {
+    // Reperto S1-2: la risposta a `Presenza` arriva a ogni connessione, e con il
+    // tetto delle risposte di dati (8 MiB) un pari ne faceva costruire a serde
+    // centinaia di mebibyte. Oltre i 16 KiB non si apre: né tagliata né altro.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    *del_pc.consente.lock().unwrap() = true;
+    telefono.collega(&pc.invita().unwrap().link()).unwrap();
+    pc.presenza(Presenza {
+        nome: "PC ".repeat(50_000),
+        piattaforma: "prova".to_owned(),
+        ..Presenza::default()
+    });
+    match telefono.chiedi(&pc.chiave(), Domanda::Presenza, Duration::from_secs(10)) {
+        Err(err) => assert_eq!(err.code().kind(), ErrorCodeKind::LontanoProtocollo),
+        Ok(Risposta::Presenza(presenza)) => {
+            panic!("una presenza da {} caratteri si apre", presenza.nome.len())
+        }
+        Ok(altra) => panic!("{altra:?}"),
+    }
 }
 
 #[test]
@@ -1231,4 +1268,65 @@ fn le_correzioni_dei_testi_sono_scritture_e_hanno_il_tetto_al_minuto() {
         Duration::from_secs(10),
     )
     .unwrap();
+}
+
+/// Come finisce una domanda che aspetta dei byte: i byte letti, o il guasto. Un
+/// `Ok` si dice senza stampare i byte, che possono essere megabyte.
+fn byte_letti(esito: Result<Risposta, AppError>) -> Result<usize, ErrorCodeKind> {
+    match esito {
+        Ok(Risposta::Byte { byte, .. }) => Ok(byte.len()),
+        Ok(altra) => panic!("non dei byte: {altra:?}"),
+        Err(err) => Err(err.code().kind()),
+    }
+}
+
+#[test]
+fn una_risposta_di_byte_oltre_quanto_si_e_chiesto_non_si_legge() {
+    // Reperti S8-8 e S1-2: il tetto delle risposte di byte era uno solo, 8 MiB,
+    // anche per una copertina (1 MiB al più) o per un pezzo da cento byte; chi
+    // chiedeva allocava e scaricava tutto prima di dire di no.
+    let (server, del_server) = nodo("Server");
+    let (cliente, di_cliente) = nodo("Cliente");
+    collegati(&cliente, &server, &del_server, &di_cliente);
+    let tempo = Duration::from_secs(20);
+    let copertina = || Domanda::Copertina {
+        impronta: "ab".repeat(16),
+    };
+    let leggi = |quanti: u64| Domanda::Leggi {
+        brano: 1,
+        da: 0,
+        quanti,
+    };
+
+    // Quel che si chiede, arriva: una copertina nel suo tetto, un pezzo intero.
+    *del_server.byte_a_forza.lock().unwrap() = Some(100 * 1024);
+    assert_eq!(
+        byte_letti(cliente.chiedi(&server.chiave(), copertina(), tempo)),
+        Ok(100 * 1024)
+    );
+    assert_eq!(
+        byte_letti(cliente.chiedi(&server.chiave(), leggi(100 * 1024), tempo)),
+        Ok(100 * 1024)
+    );
+    // Una copertina da due mebibyte non è una copertina: oltre il suo tetto, e
+    // l'altro lo sa dalla testa.
+    *del_server.byte_a_forza.lock().unwrap() = Some(2 * 1024 * 1024);
+    assert_eq!(
+        byte_letti(cliente.chiedi(&server.chiave(), copertina(), tempo)),
+        Err(ErrorCodeKind::LontanoProtocollo),
+        "una copertina da 2 MiB"
+    );
+    // Un pezzo più lungo di quanto se ne è chiesto, nemmeno.
+    *del_server.byte_a_forza.lock().unwrap() = Some(1000);
+    assert_eq!(
+        byte_letti(cliente.chiedi(&server.chiave(), leggi(10), tempo)),
+        Err(ErrorCodeKind::LontanoProtocollo),
+        "mille byte a una domanda che ne voleva dieci"
+    );
+    // E un pezzo da due mebibyte, quando se ne chiedono due, sta nel tetto.
+    *del_server.byte_a_forza.lock().unwrap() = Some(2 * 1024 * 1024);
+    assert_eq!(
+        byte_letti(cliente.chiedi(&server.chiave(), leggi(u64::MAX), tempo)),
+        Ok(2 * 1024 * 1024)
+    );
 }
