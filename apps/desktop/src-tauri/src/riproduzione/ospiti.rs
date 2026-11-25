@@ -656,6 +656,8 @@ pub(super) fn apri(
                     replaygain_db: voce.scheda.replaygain_db,
                     picco: voce.scheda.picco,
                     segmento: segmento.map(|(inizio, fine)| tratto(immagine, inizio, fine)),
+                    // In sessione il salto deve finire sul fotogramma dell'host.
+                    remoto: false,
                 },
                 formato,
             )?

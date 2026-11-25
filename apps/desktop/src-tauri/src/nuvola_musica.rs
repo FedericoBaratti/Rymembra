@@ -2369,6 +2369,10 @@ pub async fn nuvola_conto_scollega(
                 .collect();
             crate::comandi::scrivi_cartelle(&stato, &restano)?;
         }
+        // I conti si rileggono **qui**, dentro il lavoro in disparte: `conti_ipc`
+        // prende la libreria due volte, e dopo l'`.await` si girerebbe su un
+        // *worker* del runtime, fermo finché una scansione non la lascia (S7-2).
+        emetti_conti(&mano);
         Ok::<_, AppError>(stato_cache(&nuvola))
     })
     .await
@@ -2376,7 +2380,6 @@ pub async fn nuvola_conto_scollega(
     .map_err(errore)?;
     app.emetti("nuvola:cache", cache);
     crate::sorveglia::riconfigura(&app);
-    emetti_conti(&app);
     Ok(())
 }
 
@@ -2430,14 +2433,17 @@ pub async fn nuvola_aggiungi(
     let _ = nomi;
     let mano = app.clone();
     let (ordinate, percorso) = in_disparte("cartella dal cloud", move || {
-        aggiungi(&mano, &conto, id.as_deref())
+        let esito = aggiungi(&mano, &conto, id.as_deref())?;
+        // I conti si rileggono qui, in disparte: dopo l'`.await` il worker del
+        // runtime aspetterebbe la libreria (S7-2).
+        emetti_conti(&mano);
+        Ok(esito)
     })
     .await
     .and_then(|esito| esito)
     .map_err(errore)?;
     crate::sorveglia::riconfigura(&app);
     crate::sorveglia::riguarda(&app, vec![percorso]);
-    emetti_conti(&app);
     crate::nuvola::se_riuscito(&app, Ok::<_, Box<ErroreIpc>>(ordinate))
 }
 

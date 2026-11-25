@@ -105,7 +105,7 @@ test("l'applicazione si monta dentro l'attesa", () => {
 test("il lettore che si apre dopo torna disponibile, e la sua attesa non è un guasto", () => {
   const riproduzione = leggi("../src/riproduzione.ts");
   const fotografia = riproduzione.slice(riproduzione.indexOf("const fotografia = () =>"));
-  const prima = fotografia.slice(0, fotografia.indexOf("useAscolto<StatoRiproduzione>"));
+  const prima = fotografia.slice(0, fotografia.indexOf("useAscolto<StatoRiproduzioneEvento>"));
   assert.ok(prima.includes("if (!apreAncora(e)) setErrore(e);"));
   const evento = fotografia.slice(fotografia.indexOf('"riproduzione:stato"'));
   const gestore = evento.slice(0, evento.indexOf("fotografia,"));

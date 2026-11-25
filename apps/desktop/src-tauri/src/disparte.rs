@@ -136,6 +136,55 @@ use rymembra_domain::errors::{AppError, ErrorCode};
 use crate::errore::{Esito, errore};
 use crate::nucleo::ComeNucleo;
 
+/// Una chiusura che parte quando questa guardia finisce — o, con
+/// [`scatta`](Self::scatta), prima —, anche se il filo cade in un panico.
+///
+/// Per chi tiene un «posto» finché un filo vive: una bandiera alzata, una chiave
+/// in un insieme, un turno. Senza guardia un panico lascia il filo morto e il
+/// posto occupato, e la funzione resta spenta fino al riavvio (S7-3). Con
+/// [`sempre`](Self::sempre) la chiusura parte comunque finisca il filo;
+/// con [`solo_se_cade`](Self::solo_se_cade) solo in un panico, per chi alla fine
+/// normale il posto l'ha già passato a un altro e non deve toccarlo.
+#[must_use = "la guardia fa il suo lavoro quando cade: tenuta in una variabile con nome"]
+pub(crate) struct AllaFine<F: FnOnce()> {
+    chiusura: Option<F>,
+    solo_se_cade: bool,
+}
+
+impl<F: FnOnce()> AllaFine<F> {
+    /// Parte alla fine del filo, in ogni caso.
+    pub(crate) const fn sempre(chiusura: F) -> Self {
+        Self {
+            chiusura: Some(chiusura),
+            solo_se_cade: false,
+        }
+    }
+
+    /// Parte alla fine del filo solo se il filo cade in un panico.
+    pub(crate) const fn solo_se_cade(chiusura: F) -> Self {
+        Self {
+            chiusura: Some(chiusura),
+            solo_se_cade: true,
+        }
+    }
+
+    /// La chiusura parte adesso, una volta sola: alla fine non riparte.
+    pub(crate) fn scatta(&mut self) {
+        if let Some(chiusura) = self.chiusura.take() {
+            chiusura();
+        }
+    }
+}
+
+impl<F: FnOnce()> Drop for AllaFine<F> {
+    fn drop(&mut self) {
+        if self.solo_se_cade && !std::thread::panicking() {
+            return;
+        }
+        self.scatta();
+    }
+}
+
 /// Esegue `lavoro` sul pool bloccante e ne aspetta l'esito.
 ///
 /// `nome` è quel che finisce nella causa dell'errore se il lavoro non arriva mai
@@ -422,7 +471,7 @@ mod prove {
     /// accorgerebbe: il risultato è lo stesso, cambia chi aspetta.
     #[test]
     fn le_liste_della_finestra_passano_dalla_connessione_a_parte() {
-        const DA_PARTE: [&str; 12] = [
+        const DA_PARTE: [&str; 15] = [
             "cerca",
             "cerca_conteggio",
             "preferiti",
@@ -430,6 +479,9 @@ mod prove {
             "brani_artista",
             "partecipazioni",
             "partecipazioni_conta",
+            "artista",
+            "artista_righe",
+            "righe_scelte",
             "brani",
             "album",
             "artisti",
@@ -803,6 +855,95 @@ mod prove {
         );
     }
 
+    /// Quel che un comando `async` non può fare **dopo il suo ultimo `.await`**:
+    /// da lì in poi il corpo gira sul *worker* del runtime — uno per processore,
+    /// prestati a tutti i comandi —, e un lucchetto che non si apre o un disco
+    /// che non risponde lo fermano con lui (S7-2). Fra gli aghi non c'è
+    /// `in_disparte`: se il corpo ne chiama un altro dopo l'ultimo `.await`, è
+    /// quello che manca.
+    const DOPO_L_AWAIT: &[&str] = &[
+        "con_libreria",
+        "con_lettore",
+        "leggi_o_aspetta",
+        "leggi_la_libreria",
+        "leggi_a_parte",
+        ".lock(",
+        ".recv(",
+        "recv_timeout",
+        "sleep(",
+        ".join(",
+        "block_on",
+        "std::fs",
+        // Le funzioni che prendono la libreria per conto del chiamante.
+        "emetti_conti(",
+        "conti_ipc(",
+        "cartelle_sorvegliate(",
+    ];
+
+    /// Un `async fn` che fa il lavoro in disparte e poi, tornato dall'`.await`,
+    /// prende un lucchetto, aspetta il disco o la rete **sul worker**: la prova
+    /// di `nessun_comando_sincrono_puo_aspettare` guarda solo la firma, e un
+    /// comando `async` passa qualunque cosa faccia dopo. Qui si guarda il testo
+    /// che segue l'ultimo `.await` di ogni comando.
+    #[test]
+    fn le_async_fn_non_bloccano_dopo_l_await() {
+        let tutti = sorgenti();
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut visti = 0_usize;
+        let mut bloccanti: Vec<String> = Vec::new();
+        for (file, testo) in &tutti {
+            let relativo = file
+                .strip_prefix(&src)
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            for (dove, _) in testo.match_indices(concat!("\n#[tauri::", "command")) {
+                let resto = &testo[dove + 1..];
+                let dopo = resto[concat!("#[tauri::", "command").len()..]
+                    .chars()
+                    .next();
+                if !matches!(dopo, Some(']' | '(')) {
+                    continue;
+                }
+                let firma = &resto[..resto.find('{').unwrap_or(resto.len())];
+                if !firma.contains("async fn ") {
+                    continue;
+                }
+                visti += 1;
+                let nome: String = firma
+                    .find("fn ")
+                    .map(|i| &firma[i + 3..])
+                    .unwrap_or_default()
+                    .chars()
+                    .take_while(|c| *c == '_' || c.is_alphanumeric())
+                    .collect();
+                let corpo = &resto[..resto.find("\n}\n").unwrap_or(resto.len())];
+                let Some(ultimo) = corpo.rfind(".await") else {
+                    continue;
+                };
+                let coda = &corpo[ultimo..];
+                for ago in DOPO_L_AWAIT {
+                    if coda.contains(ago) {
+                        bloccanti.push(format!(
+                            "{relativo}: {nome} contiene `{ago}` dopo l'ultimo `.await`"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            visti >= 250,
+            "i comandi async non si sono trovati ({visti})"
+        );
+        bloccanti.sort();
+        assert!(
+            bloccanti.is_empty(),
+            "comandi `async` che aspettano sul worker dopo l'`.await`: il lavoro va dentro la \
+             chiusura di `in_disparte` ({}): {bloccanti:#?}",
+            bloccanti.len()
+        );
+    }
+
     /// Nessun comando di `lontano/` è sincrono (collaudo del 18/11: la WebView
     /// ferma, tre volte).
     ///
@@ -849,5 +990,44 @@ mod prove {
             sincroni.is_empty(),
             "comandi sincroni in lontano/: {sincroni:#?}"
         );
+    }
+
+    /// S7-3: la guardia fa il suo lavoro in un panico, `scatta` una volta sola, e
+    /// la variante «solo se cade» lascia in pace una fine normale.
+    #[test]
+    fn la_guardia_di_un_filo_libera_il_posto_anche_in_un_panico() {
+        use super::AllaFine;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let volte = std::sync::Arc::new(AtomicU32::new(0));
+        let conta = |v: &std::sync::Arc<AtomicU32>| {
+            let v = std::sync::Arc::clone(v);
+            move || {
+                v.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+
+        // Fine normale: «sempre» parte, «solo se cade» no.
+        drop(AllaFine::sempre(conta(&volte)));
+        assert_eq!(volte.load(Ordering::SeqCst), 1);
+        drop(AllaFine::solo_se_cade(conta(&volte)));
+        assert_eq!(volte.load(Ordering::SeqCst), 1);
+
+        // `scatta` una volta sola, anche con la guardia che cade dopo.
+        let mut guardia = AllaFine::sempre(conta(&volte));
+        guardia.scatta();
+        guardia.scatta();
+        drop(guardia);
+        assert_eq!(volte.load(Ordering::SeqCst), 2);
+
+        // Un panico: partono tutte e due.
+        let dentro = std::sync::Arc::clone(&volte);
+        let caduto = std::thread::spawn(move || {
+            let _sempre = AllaFine::sempre(conta(&dentro));
+            let _se_cade = AllaFine::solo_se_cade(conta(&dentro));
+            std::panic::resume_unwind(Box::new("caduta di prova"));
+        })
+        .join();
+        assert!(caduto.is_err());
+        assert_eq!(volte.load(Ordering::SeqCst), 4);
     }
 }

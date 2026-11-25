@@ -149,8 +149,8 @@ pub use aggregati::{
     riempi_le_chiavi_d_ordine_all_apertura,
 };
 pub use artista::{
-    ContoPartecipazioni, OrdineBraniArtista, Partecipazione, brani_artista, id_dei_brani_artista,
-    id_delle_partecipazioni, partecipazioni, partecipazioni_conta,
+    ContoPartecipazioni, OrdineBraniArtista, Partecipazione, artista_solo, brani_artista,
+    id_dei_brani_artista, id_delle_partecipazioni, partecipazioni, partecipazioni_conta,
 };
 pub use camminata::{
     Cambiamento, Natura, Ricognizione, cammina, cartelle_da_riguardare, dentro_le_radici,

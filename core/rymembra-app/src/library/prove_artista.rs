@@ -599,3 +599,82 @@ fn gli_identificativi_delle_partecipazioni_hanno_l_ordine_delle_pagine() {
             .is_empty()
     );
 }
+
+/// S9-3: l'artista da solo è la stessa riga che la griglia darebbe per lui — nome,
+/// conti, copertine —, con ogni filtro per dispositivo. La pagina non legge più
+/// l'elenco intero per due numeri, e i numeri restano quelli di prima.
+#[test]
+fn l_artista_da_solo_e_la_riga_della_griglia() {
+    let c = libreria();
+    for origine in [
+        Origine::Tutti,
+        Origine::Locale,
+        Origine::Dispositivo(pc()),
+        Origine::Raggiungibili(Vec::new()),
+    ] {
+        let griglia = list_artists(&c, &origine).expect("griglia");
+        assert!(
+            !griglia.is_empty(),
+            "{origine:?}: la prova non guarda niente"
+        );
+        for attesa in &griglia {
+            let sola = artista_solo(&c, &origine, &attesa.name)
+                .expect("artista")
+                .unwrap_or_else(|| panic!("{origine:?}: manca «{}»", attesa.name));
+            assert_eq!(&sola, attesa, "{origine:?}: «{}»", attesa.name);
+        }
+        // Chi la griglia non ha, da solo non c'è: un nome che non esiste, uno
+        // vuoto, e uno che ha brani solo sotto un altro filtro.
+        assert!(
+            artista_solo(&c, &origine, "Nessuno")
+                .expect("artista")
+                .is_none()
+        );
+        assert!(artista_solo(&c, &origine, "").expect("artista").is_none());
+    }
+    // «Tale» ha brani di qui e del PC: con «Questo dispositivo» ha solo i suoi.
+    let tutti = artista_solo(&c, &Origine::Tutti, "Tale").expect("artista");
+    let locale = artista_solo(&c, &Origine::Locale, "Tale").expect("artista");
+    assert!(tutti.is_some() && locale.is_some());
+}
+
+/// S9-3: le copertine sono le quattro dei dischi più vecchi, una per disco: lo
+/// stesso mosaico della griglia.
+#[test]
+fn le_copertine_dell_artista_da_solo_sono_le_quattro_dei_dischi_piu_vecchi() {
+    const CHIAVI: [&str; 6] = ["a0", "a1", "a2", "a3", "a4", "a5"];
+    const DISCHI: [&str; 6] = ["A0", "A1", "A2", "A3", "A4", "A5"];
+    let dischi: Vec<Riga> = (0..6_i64)
+        .zip(CHIAVI.into_iter().zip(DISCHI))
+        .map(|(i, (chiave, disco))| Riga {
+            artista_album: Some("Cover"),
+            album_key: Some(chiave),
+            anno: Some(2000 + i),
+            ..riga(100 + i, "Brano", "Cover", disco)
+        })
+        .collect();
+    let c = libreria_con(&dischi);
+    // Le copertine di prova non hanno la loro riga in `cover_art`: qui conta quali
+    // quattro si scelgono, non il file.
+    c.execute_batch("PRAGMA foreign_keys = OFF")
+        .expect("pragma");
+    for i in 0..6_i64 {
+        c.execute(
+            "UPDATE tracks SET cover_art_hash = ?1 WHERE id = ?2",
+            rusqlite::params![format!("h{i}"), 100 + i],
+        )
+        .expect("copertina");
+    }
+    let sola = artista_solo(&c, &TUTTI, "Cover")
+        .expect("artista")
+        .expect("c'è");
+    assert_eq!(sola.covers, vec!["h0", "h1", "h2", "h3"]);
+    assert_eq!(sola.albums, 6);
+    assert_eq!(sola.tracks, 6);
+    let griglia = list_artists(&c, &TUTTI).expect("griglia");
+    assert_eq!(
+        Some(&sola),
+        griglia.iter().find(|a| a.name == "Cover"),
+        "la riga è quella della griglia"
+    );
+}

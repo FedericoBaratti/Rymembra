@@ -298,6 +298,7 @@ export function statoFinto(conBrano: boolean, inPausa: boolean): StatoRiproduzio
     volume: 0.72,
     muto: false,
     coda: conBrano ? [1, 2, 3, 4, 5, 6, 7] : [],
+    versioneCoda: 0,
     posizioneCoda: 0,
     // Piatto e spento: l'anteprima mostra come si disegna il lettore, non
     // come suona.

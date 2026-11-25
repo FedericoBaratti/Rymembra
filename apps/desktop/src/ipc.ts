@@ -26,7 +26,7 @@ import type {
   StatoLontano,
   ScaricoLontano,
 } from "./ipc/lontano";
-import type { ContoPartecipazioni, Numeri, OrdineArtista, OrigineLibreria, SpecieDiPartecipazione, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
+import type { ArtistaAperto, CodaDelLettore, ContoPartecipazioni, Numeri, OrdineArtista, OrigineLibreria, SpecieDiPartecipazione, AggiuntaPlaylist, AggiuntiDalCatalogo, Album, Artista, Avanzamento, AvanzamentoVolume, Avvio, FaseLibreria, Brano, Cancellazione, CartellaCandidata, CartelleFiltrate, CartelleOrdinate, Casa, CorrezioniMetadati, DispositivoAudio, EsitoAggiuntaTutti, EsitoRicerca, EsitoRimozioni, EsitoScansione, EsportazioneProfilo, FileCartella, ModoLivello, NodoCartella, Normalizzazione, Ordine, PianoProfilo, Playlist, PlaylistEsportata, QualitaSpettro, Raccolta, RigheScelte, RimappaturaRadice, SenzaCestino, StatoRiproduzione, StatoUiCartelle, TracciaIncerta, Trascinati, Traslocati, UsoDelleRighe, VistaBrani, VoceCronologia, VocePreset } from "./ipc/libreria";
 import type { AnteprimaAccount, AnteprimaImport, AnteprimaRegole, DaComprare, DiagnosticaImport, EsitoAccount, EsitoFilePlaylist, EsitoImport, EsitoImportazione, InsiemeSmart, PianoFilePlaylist, ScelteAccount, StatoAccount, StatoScarico } from "./ipc/importazioni";
 import type { AvvioConWindows, RispostaProposta } from "./ipc/sottofondo";
 import type { EsitoMaiusc } from "./tieniSkin";
@@ -415,6 +415,22 @@ export const ipc = {
   ) => invoke<Brano[]>("partecipazioni", { nome, tipo: specie, offset, limite, origine }),
   partecipazioniConta: (nome: string, origine?: OrigineLibreria) =>
     invoke<ContoPartecipazioni>("partecipazioni_conta", { nome, origine }),
+  // L'artista aperto e i suoi due conti in un viaggio solo: la pagina non rilegge più
+  // l'elenco intero degli artisti per due numeri (S9-3).
+  artista: (nome: string, origine?: OrigineLibreria) =>
+    invoke<ArtistaAperto>("artista", { nome, origine }),
+  // Gli id dei brani di un artista, nell'ordine della pagina e già senza le righe che
+  // non servono (S9-8). `uso` dice se per suonare o per scaricare.
+  artistaRighe: (
+    nome: string,
+    ordine: OrdineArtista,
+    uso: UsoDelleRighe,
+    origine?: OrigineLibreria,
+  ) => invoke<RigheScelte>("artista_righe", { nome, ordine, uso, origine }),
+  // Lo stesso per una selezione: il nucleo scarta le righe che non servono e le
+  // conta, senza portare in pagina le righe intere (S9-9).
+  righeScelte: (ids: number[], uso: UsoDelleRighe) =>
+    invoke<RigheScelte>("righe_scelte", { ids, uso }),
   // Senza offset né limite: gli artisti sono pochi e la vista li mostra tutti
   // con un indice alfabetico invece che a pagine.
   artisti: (origine?: OrigineLibreria) =>
@@ -812,6 +828,9 @@ export const ipc = {
   volume: (volume: number, muto: boolean) =>
     invoke<void>("volume", { volume, muto }),
   riproduzioneStato: () => invoke<StatoRiproduzione>("riproduzione_stato"),
+  // La coda con la sua versione, per quando la finestra ha perso l'evento che
+  // la portava (`codaTenuta.ts`).
+  codaDelLettore: () => invoke<CodaDelLettore>("riproduzione_coda"),
   ripeti: () => invoke<void>("ripeti"),
   mescola: () => invoke<void>("mescola"),
 

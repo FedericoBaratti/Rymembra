@@ -703,7 +703,10 @@ test("S9-9: «Scarica qui» passa dalla guardia, dal menù e dagli altri punti, 
     menu,
     /if \(chiedeConfermaPerLoScarico\(ids\.length\)\) setNotizia\(t\("devices\.download\.counting"\)\);/,
   );
-  assert.match(menu, /ipc\.braniPerId\(ids\)/);
+  // E gli id vanno al nucleo, che scarta le spente e le conta: niente righe intere in
+  // pagina per cinquantamila selezionati (S9-9).
+  assert.match(menu, /preparaLoScaricoDaId\(await ipc\.righeScelte\(ids, "scarica"\)\)/);
+  assert.doesNotMatch(menu, /ipc\.braniPerId\(/);
   // Gli altri punti passano da `scaricaQui`, che ha la stessa guardia.
   const scarica = app.slice(app.indexOf("const scaricaQui = useCallback("), app.indexOf("/**\n   * Fa partire **un** brano, da solo."));
   assert.match(scarica, /unoScarico\(\(\) => preparaLoScarico\(brani\)\)/);

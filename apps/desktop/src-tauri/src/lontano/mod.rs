@@ -63,9 +63,10 @@ use filo::{Comune, Modifica, Posta, leggi_a_parte, prendi, scrivi_in_libreria};
 
 pub use ipc::{InvitoIpc, LinkIpc, StatoLontanoIpc};
 pub(crate) use sfoglia::rete_a_consumo;
-pub(crate) use sfoglia::{ascoltato_qui, ripulisci_le_copertine_di_prima};
+pub(crate) use sfoglia::{ConLaPagina, ascolto_in_fila, ripulisci_le_copertine_di_prima};
 pub(crate) use specchio::{
-    apri_riga, copertina_di_una_riga, origine_che_suona, posta_nuova, scegli_la_copia,
+    apri_riga, copertina_di_una_riga, origine_che_suona, posta_nuova, raggiungibili_adesso,
+    scegli_la_copia,
 };
 pub(crate) use testo::dal_proprietario;
 

@@ -235,6 +235,60 @@ pub fn record_play_specchio(connection: &Connection, ascolto: &Listen) -> Result
     Ok(true)
 }
 
+/// Un ascolto di una riga della libreria unica, **in una presa sola**: la
+/// cronologia di qui ([`record_play_specchio`]) e la fila degli ascolti da
+/// mandare al proprietario (`dispositivi_ascolti`), nella stessa transazione.
+///
+/// Prima erano due prese: la seconda aveva due secondi di pazienza, e se in
+/// quei due secondi la libreria era tenuta da un lotto lungo (un «Dimentica»,
+/// una conferma di centomila righe, i doppioni) l'ascolto restava in
+/// cronologia ma non partiva mai verso il proprietario, che non lo contava e
+/// non lo scrobblava (S11-2). Qui o c'è tutto o non c'è niente, e un ascolto
+/// non si conta due volte: la cronologia ignora lo stesso inizio e la fila lo
+/// stesso `chiave` (`INSERT OR IGNORE`).
+///
+/// `proprietario` e `brano` dicono di chi è la riga e con che id sta nella sua
+/// libreria. `true` se l'ascolto contava ed è entrato.
+///
+/// # Errori
+///
+/// Quelli di [`record_play_specchio`] e del database.
+pub fn record_play_specchio_e_in_fila(
+    connection: &mut Connection,
+    ascolto: &Listen,
+    proprietario: &str,
+    brano: i64,
+) -> Result<bool, AppError> {
+    riga_della_libreria(ascolto.track_id)?;
+    if !ascolto.counts {
+        return Ok(false);
+    }
+    let tx = crate::library::transazione_di_scrittura(connection).map_err(|err| {
+        db_error(
+            "apertura della transazione d'ascolto di una riga lontana",
+            &err,
+        )
+    })?;
+    record_play_specchio(&tx, ascolto)?;
+    let ms_ascoltati = i64::try_from(ascolto.listened_ms).unwrap_or(i64::MAX);
+    crate::dispositivi::ricorda_ascolto(
+        &tx,
+        proprietario,
+        &crate::dispositivi::AscoltoLontano {
+            brano,
+            quando_ms: ascolto.started_at,
+            ascoltato_ms: ms_ascoltati,
+            // Un brano non comincia due volte nello stesso millisecondo: l'inizio
+            // e il brano bastano a distinguere ogni ascolto di qui, e chi lo
+            // riceve ci mette davanti la chiave di questo dispositivo.
+            chiave: format!("{}-{brano}", ascolto.started_at),
+        },
+    )?;
+    tx.commit()
+        .map_err(|err| db_error("conferma dell'ascolto di una riga lontana", &err))?;
+    Ok(true)
+}
+
 /// La coda, nella forma che va sul disco.
 ///
 /// Un tipo a parte invece di serializzare `QueueSnapshot` direttamente: il

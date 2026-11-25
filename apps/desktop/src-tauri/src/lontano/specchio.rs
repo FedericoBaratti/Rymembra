@@ -679,22 +679,41 @@ fn presi<T>(m: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
 /// c'è, ne vuole un altro appena finisce): la posta e il catalogo. Non
 /// aspetta.
 pub(super) fn richiedi(app: &Nucleo, chiave: &str) {
+    let app = app.clone();
+    richiedi_con(chiave, move |suo| lavora(&app, suo));
+}
+
+/// [`richiedi`], col lavoro di un giro in mano a chi chiama: una funzione sola
+/// perché si possa provare con un giro che cade.
+///
+/// Il «posto» del dispositivo — la chiave in [`IN_CORSO`] — si libera quando il
+/// filo finisce **comunque finisca**: con una guardia, perché un panico nel giro
+/// (un catalogo di un pari che mette serde, SQLite o un parser davanti a byte
+/// che non si aspettava) lasciava la chiave dov'era, e ogni `richiedi` dopo la
+/// trovava, rimetteva solo `RIPETI` e tornava: quel dispositivo non rileggeva
+/// più il catalogo né mandava più la posta fino al riavvio (S7-3).
+fn richiedi_con(chiave: &str, lavora: impl Fn(&str) + Send + 'static) {
     if !presi(&IN_CORSO).insert(chiave.to_owned()) {
         presi(&RIPETI).insert(chiave.to_owned());
         return;
     }
-    let app = app.clone();
     let suo = chiave.to_owned();
     let partito = std::thread::Builder::new()
         .name("rymembra-lontano-specchio".to_owned())
         .spawn(move || {
+            let _posto = crate::disparte::AllaFine::sempre({
+                let suo = suo.clone();
+                move || {
+                    presi(&RIPETI).remove(&suo);
+                    presi(&IN_CORSO).remove(&suo);
+                }
+            });
             loop {
-                lavora(&app, &suo);
+                lavora(&suo);
                 if !presi(&RIPETI).remove(&suo) {
                     break;
                 }
             }
-            presi(&IN_CORSO).remove(&suo);
         });
     if let Err(err) = partito {
         presi(&IN_CORSO).remove(chiave);
@@ -783,28 +802,37 @@ pub(crate) fn posta_nuova(app: &impl ComeNucleo, dispositivi: &[String]) {
 
 static CICLO: Once = Once::new();
 
+/// Il nome del filo del ciclo, nel diario dei panici e nella salute dei fili.
+const FILO_CICLO: &str = "rymembra-lontano-ciclo";
+
 /// Il filo che, ogni [`OGNI`], riguarda il catalogo di chi risponde.
 fn parte_il_ciclo(app: &Nucleo) {
     CICLO.call_once(|| {
         let app = app.clone();
         let partito = std::thread::Builder::new()
-            .name("rymembra-lontano-ciclo".to_owned())
+            .name(FILO_CICLO.to_owned())
             .spawn(move || {
                 loop {
                     std::thread::sleep(OGNI);
-                    let Ok(comune) = comune(&app) else {
-                        continue;
-                    };
-                    if comune.nodo().is_none() {
-                        continue;
-                    }
-                    let presenti: Vec<String> = super::filo::prendi(&comune.presenze)
-                        .keys()
-                        .cloned()
-                        .collect();
-                    for chiave in presenti {
-                        richiedi(&app, &chiave);
-                    }
+                    // Un giro per volta dentro `sorvegliato`: il ciclo parte una volta
+                    // sola per processo (`CICLO` è un `Once`), e un panico in un giro
+                    // lo spegneva per sempre — la rilettura ogni cinque minuti non
+                    // tornava più per nessuno (S7-3).
+                    let _ = crate::stato::sorvegliato(FILO_CICLO, || {
+                        let Ok(comune) = comune(&app) else {
+                            return;
+                        };
+                        if comune.nodo().is_none() {
+                            return;
+                        }
+                        let presenti: Vec<String> = super::filo::prendi(&comune.presenze)
+                            .keys()
+                            .cloned()
+                            .collect();
+                        for chiave in presenti {
+                            richiedi(&app, &chiave);
+                        }
+                    });
                 }
             });
         if let Err(err) = partito {
@@ -1007,9 +1035,19 @@ pub(crate) fn dispositivi_raggiungibili(app: &Nucleo) -> Vec<String> {
     chiavi
 }
 
+/// I dispositivi che rispondono adesso, come insieme: per chi deve scegliere fra
+/// righe già lette — «Riproduci» su un artista, «Scarica qui» su una selezione —
+/// quali non servono perché il loro dispositivo tace.
+pub(crate) fn raggiungibili_adesso(app: &impl ComeNucleo) -> HashSet<String> {
+    dispositivi_raggiungibili(&app.come_nucleo())
+        .into_iter()
+        .collect()
+}
+
 /// Da dove sceglie chi suona da solo — l'autoplay, la radio, una playlist
 /// intelligente — e chi non può mostrare una riga grigia, come Android Auto:
-/// «Tutti», meno i dispositivi che adesso non rispondono (§4.6).
+/// «Tutti», meno i dispositivi che adesso non rispondono (§4.6) e meno quelli
+/// che i dati mobili non consentono (S11-3).
 ///
 /// Senza nessun dispositivo — nemmeno uno revocato, che può avere ancora le sue
 /// righe — non c'è niente da saltare, ed è «Tutti»: `Raggiungibili` aggiunge a
@@ -1019,12 +1057,39 @@ pub(crate) fn dispositivi_raggiungibili(app: &Nucleo) -> Vec<String> {
 pub(crate) fn origine_che_suona(app: &impl ComeNucleo) -> rymembra_app::specchio::Origine {
     let app = &app.come_nucleo();
     use rymembra_app::specchio::Origine;
-    let ne_ha = comune(app)
-        .is_ok_and(|comune| !super::filo::prendi(&comune.vetrina).dispositivi.is_empty());
+    let Ok(comune) = comune(app) else {
+        return Origine::Tutti;
+    };
+    let ne_ha = !super::filo::prendi(&comune.vetrina).dispositivi.is_empty();
     if !ne_ha {
         return Origine::Tutti;
     }
-    Origine::Raggiungibili(dispositivi_raggiungibili(app))
+    origine_con_la_rete(
+        || dispositivi_raggiungibili(app),
+        super::sfoglia::rete_per_chi_sceglie_da_solo(&comune),
+    )
+}
+
+/// La regola di [`origine_che_suona`], senza i posti da cui vengono i
+/// dispositivi e la rete: una funzione sola perché si possa provare.
+///
+/// Sui dati mobili senza il sì — «No», e «Chiedi», che qui vale «No» perché chi
+/// sceglie da solo non ha a chi chiedere — nessun dispositivo è raggiungibile:
+/// niente righe solo remote, e la copia di qui che «Tutti» nascondeva dietro una
+/// migliore in rete torna visibile. Prima l'autoplay accodava un brano che
+/// esiste solo sul PC, alla sua fine il lettore ne otteneva `lontano.reteAConsumo`
+/// e la musica si fermava.
+fn origine_con_la_rete(
+    raggiungibili: impl FnOnce() -> Vec<String>,
+    rete: rymembra_app::specchio::scelta::Rete,
+) -> rymembra_app::specchio::Origine {
+    use rymembra_app::dispositivi::DatiMobili;
+    use rymembra_app::specchio::Origine;
+    use rymembra_app::specchio::scelta::Rete;
+    match rete {
+        Rete::AConsumo(DatiMobili::No | DatiMobili::Chiedi) => Origine::Raggiungibili(Vec::new()),
+        Rete::AConsumo(DatiMobili::Si) | Rete::Libera => Origine::Raggiungibili(raggiungibili()),
+    }
 }
 
 /// I byte di una riga specchio: la sorgente a blocchi sul nodo del suo
@@ -2578,5 +2643,117 @@ mod prove {
             "si ferma alla prima: le altre non partirebbero nemmeno"
         );
         assert_eq!(in_posta_ancora(&dati, &pc).len(), 3, "nessuna si butta");
+    }
+
+    /// S11-3: sui dati mobili senza il sì, chi sceglie da solo — l'autoplay, la
+    /// radio, Android Auto — non ha nessun dispositivo raggiungibile. Prima
+    /// accodava un brano che esiste solo sul PC, e alla sua fine la musica si
+    /// fermava con `lontano.reteAConsumo`. Con «Sì» o su una rete libera
+    /// nessuno cambia.
+    #[test]
+    fn sui_dati_mobili_senza_il_si_l_origine_che_suona_non_ha_dispositivi() {
+        use rymembra_app::dispositivi::DatiMobili;
+        use rymembra_app::specchio::Origine;
+        let pc = "a".repeat(64);
+        let raggiungibili = || vec![pc.clone()];
+        for scelta in [DatiMobili::No, DatiMobili::Chiedi] {
+            assert_eq!(
+                origine_con_la_rete(raggiungibili, ReteProva::AConsumo(scelta)),
+                Origine::Raggiungibili(Vec::new()),
+                "{scelta:?}: il PC è presente, ma i dati mobili non lo consentono"
+            );
+        }
+        assert_eq!(
+            origine_con_la_rete(raggiungibili, ReteProva::AConsumo(DatiMobili::Si)),
+            Origine::Raggiungibili(vec![pc.clone()])
+        );
+        assert_eq!(
+            origine_con_la_rete(raggiungibili, ReteProva::Libera),
+            Origine::Raggiungibili(vec![pc.clone()])
+        );
+    }
+
+    /// S11-3: con la copia di qui nel gruppo, «Chiedi» senza nessuno che
+    /// risponda suona la copia di qui invece di fermarsi sul PC — che sarebbe
+    /// la copia migliore — con `lontano.reteAConsumo`.
+    #[test]
+    fn chiedi_senza_nessuno_che_risponda_suona_la_copia_di_qui() {
+        use super::super::sfoglia::rete_per;
+        use rymembra_app::dispositivi::DatiMobili;
+        let db = rymembra_app::db::open_in_memory()
+            .expect("database")
+            .connection;
+        let pc = "a".repeat(64);
+        // 10: la riga del PC (la migliore, il rappresentante); 11: la copia di qui.
+        db.execute_batch(&format!(
+            "INSERT INTO tracks (id, path, track_key, title, artist, album, codec, sample_rate,
+                                 bitrate, file_size, duration_ms, date_added, date_modified)
+               VALUES (10, 'lontano://{pc}/77', 'k10', 'T', 'A', 'B', 'flac', 44100, 900, 90000000,
+                       180000, 1, 1);
+             INSERT INTO tracks (id, path, track_key, title, artist, album, codec, sample_rate,
+                                 bitrate, file_size, duration_ms, date_added, date_modified, copia_di)
+               VALUES (11, 'C:/Musica/a.mp3', 'k11', 'T', 'A', 'B', 'mp3', 44100, 128, 4000000,
+                       180000, 1, 1, 10);
+             INSERT INTO lontano_brani (track_id, dispositivo, id_remoto, estensione, versione)
+               VALUES (10, '{pc}', 77, 'flac', 'v1');"
+        ))
+        .expect("gruppo con la copia di qui");
+        let presenti: HashSet<String> = HashSet::from([pc]);
+        // Chi può rispondere: la domanda si fa.
+        let con_la_pagina = rete_per(true, DatiMobili::Chiedi, true);
+        assert_eq!(
+            scegli_con_la_rete(&db, 10, &presenti, con_la_pagina)
+                .expect_err("la domanda")
+                .code()
+                .kind(),
+            rymembra_domain::errors::ErrorCodeKind::LontanoReteAConsumo
+        );
+        // Nessuno: «No», e si suona la copia di qui.
+        let senza = rete_per(true, DatiMobili::Chiedi, false);
+        assert_eq!(
+            scegli_con_la_rete(&db, 10, &presenti, senza).expect("la copia di qui"),
+            11
+        );
+    }
+
+    /// S7-3: un giro che cade in un panico libera il posto del suo dispositivo.
+    /// Il posto restava occupato — la chiave in `IN_CORSO` — e ogni richiesta dopo
+    /// la trovava e tornava: quel dispositivo non rileggeva più il catalogo né
+    /// mandava più la posta fino al riavvio.
+    #[test]
+    fn un_giro_che_panica_libera_il_posto_del_dispositivo() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        // Una chiave solo di questa prova: gli insiemi sono dell'intero processo.
+        let chiave = "prova-un-giro-che-panica";
+        let (cade, caduto) = channel::<()>();
+        richiedi_con(chiave, move |_| {
+            let _ = cade.send(());
+            std::panic::resume_unwind(Box::new("giro caduto di prova"));
+        });
+        caduto
+            .recv_timeout(Duration::from_secs(5))
+            .expect("il primo giro parte");
+        // Il filo muore subito dopo: si aspetta che il posto si liberi.
+        let fine = std::time::Instant::now() + Duration::from_secs(5);
+        while presi(&IN_CORSO).contains(chiave) {
+            assert!(
+                std::time::Instant::now() < fine,
+                "il posto del dispositivo non si libera dopo il panico di un giro"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // E una richiesta dopo il panico esegue davvero il suo giro.
+        let (parte, partito) = channel::<()>();
+        richiedi_con(chiave, move |_| {
+            let _ = parte.send(());
+        });
+        partito
+            .recv_timeout(Duration::from_secs(5))
+            .expect("il secondo giro non parte: il posto era rimasto occupato");
+        while presi(&IN_CORSO).contains(chiave) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!presi(&RIPETI).contains(chiave));
     }
 }

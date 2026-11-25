@@ -1634,3 +1634,69 @@ fn senza_coda_remota_o_con_una_illeggibile_la_coda_di_righe_non_cambia() {
         None
     );
 }
+
+/// S11-2: l'ascolto di un brano di un altro dispositivo entra in cronologia e
+/// nella fila del proprietario **insieme**, in una presa sola. Prima la fila
+/// era una seconda presa con due secondi di pazienza: con la libreria tenuta da
+/// un lotto lungo l'ascolto restava in cronologia e non partiva mai verso chi
+/// doveva contarlo e scrobblarlo.
+#[test]
+fn un_ascolto_di_una_riga_lontana_va_in_cronologia_e_in_fila_insieme() {
+    let mut c = db();
+    let chiave = "ab".repeat(32);
+    c.execute(
+        "INSERT INTO tracks
+                 (id, path, track_key, title, artist, album, duration_ms,
+                  file_size, date_added, date_modified)
+             VALUES (7, ?1, 'k7', 'T', 'A', 'Al', 180000, 1000, 0, 0)",
+        [crate::specchio::percorso(&chiave, 41)],
+    )
+    .expect("riga specchio");
+    let ascolto = Listen {
+        track_id: 7,
+        started_at: 1_700_000_000_000,
+        listened_ms: 120_000,
+        counts: true,
+    };
+    assert_eq!(
+        record_play_specchio_e_in_fila(&mut c, &ascolto, &chiave, 41),
+        Ok(true)
+    );
+    // Cronologia di qui: una riga, e nessun conteggio (è del proprietario).
+    assert_eq!(conteggio(&c, 7), (0, None, 1));
+    // La fila del proprietario, con l'id che ha lui e una chiave che rende
+    // innocuo un invio ripetuto.
+    let in_fila = crate::dispositivi::ascolti_da_mandare(&c, &chiave).expect("fila");
+    assert_eq!(
+        in_fila.len(),
+        1,
+        "l'ascolto non è in fila per il proprietario"
+    );
+    assert_eq!(in_fila[0].brano, 41);
+    assert_eq!(in_fila[0].quando_ms, 1_700_000_000_000);
+    assert_eq!(in_fila[0].ascoltato_ms, 120_000);
+    assert_eq!(in_fila[0].chiave, "1700000000000-41");
+    // Lo stesso ascolto scritto due volte è uno solo, da tutte e due le parti.
+    assert_eq!(
+        record_play_specchio_e_in_fila(&mut c, &ascolto, &chiave, 41),
+        Ok(true)
+    );
+    assert_eq!(conteggio(&c, 7), (0, None, 1));
+    assert_eq!(
+        crate::dispositivi::ascolti_da_mandare(&c, &chiave)
+            .expect("fila")
+            .len(),
+        1
+    );
+    // Un ascolto che non conta non scrive niente da nessuna parte.
+    let breve = Listen {
+        counts: false,
+        started_at: 1_700_000_999_000,
+        ..ascolto
+    };
+    assert_eq!(
+        record_play_specchio_e_in_fila(&mut c, &breve, &chiave, 41),
+        Ok(false)
+    );
+    assert_eq!(conteggio(&c, 7), (0, None, 1));
+}

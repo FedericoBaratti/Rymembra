@@ -88,7 +88,6 @@ import {
   artistaEffettivo,
   tornaAInRiproduzione,
   trovaArtista,
-  tutteLePagine,
 } from "./artista";
 import { useAspetto } from "./aspettoFinestra";
 import { useCartelleSorvegliate } from "./cartelleSorvegliate";
@@ -144,6 +143,7 @@ import {
   type Album,
   type Artista,
   type Brano,
+  type RigheScelte,
   type ContoPartecipazioni,
   type OrdineArtista,
   type AvanzamentoSpecchio,
@@ -231,7 +231,7 @@ import {
   useStatoPresente,
 } from "./presenza";
 import { Primo } from "./Primo";
-import { MISURA_PAGINA, elencoPieno, type ArchivioRado, type Elenco } from "./rada";
+import { elencoPieno, type ArchivioRado, type Elenco } from "./rada";
 import { fasciaDaRitirare, quandoRispondonoLeRadici } from "./radiciVive";
 import { RecintoErrori } from "./Recinto";
 import { indietro, indietroSulComputer } from "./indietro";
@@ -1128,31 +1128,21 @@ export function App() {
    * scansione finita. Non per la lettura del catalogo di un dispositivo che il
    * filtro non vede: vedi `ricaricaContorno`.
    *
-   * # Due letture, non una (S9-3)
+   * # Un artista solo, non l'elenco intero (S9-3)
    *
-   * I conti delle partecipazioni sono veloci e non aspettano l'elenco intero
-   * degli artisti: legati in un `Promise.all`, un database occupato dallo specchio
-   * che faceva fallire la seconda lettura toglieva anche le sezioni «Compare anche
-   * in». Quanto all'elenco intero — migliaia di artisti, megabyte di JSON, per
-   * due numeri — serve un comando del nucleo che dia l'artista solo: finché non
-   * c'è, si rilegge meno spesso che si può.
+   * Prima si leggeva l'elenco intero degli artisti — migliaia, megabyte di JSON —
+   * per due numeri, e si rifaceva a ogni rilettura della libreria. `ipc.artista`
+   * dà la sua riga e i due conti delle partecipazioni in un viaggio solo, dello
+   * stesso peso per ogni libreria: la pagina può rileggere ogni volta che serve.
    */
   useEffect(() => {
     if (nomeAperto === "") return;
     let superata = false;
     ipc
-      .partecipazioniConta(nomeAperto, origineIpc)
-      .then((conto) => {
-        if (!superata) setConteggioPartecipazioni({ chiave: chiaveArtista, conto });
-      })
-      .catch((e: unknown) => {
-        if (!superata) segnalaErrore(e);
-      });
-    ipc
-      .artisti(origineIpc)
-      .then((elenco) => {
+      .artista(nomeAperto, origineIpc)
+      .then(({ artista: suo, partecipazioni: conto }) => {
         if (superata) return;
-        const suo = elenco.find((a) => a.name === nomeAperto);
+        setConteggioPartecipazioni({ chiave: chiaveArtista, conto });
         setArtistaAperto((prima) => {
           if (prima === null || prima.name !== nomeAperto) return prima;
           const adesso = suo ?? { ...prima, albums: 0, tracks: 0, covers: [] };
@@ -2165,24 +2155,14 @@ export function App() {
    */
   // Una preparazione alla volta (S9-9): vedi `unaAllaVolta`.
   const [unoScarico] = useState(() => unaAllaVolta());
-  const preparaLoScarico = useCallback(
-    async (brani: readonly Brano[]) => {
-      const pannello = archivioLontano.leggi();
-      const lontani = brani.filter(
-        (b) => statoDellaRiga(b.path, pannello, b.inGrazia === true) !== null,
-      );
-      if (lontani.length === 0) {
-        setNotizia(t("devices.download.nothing"));
-        return;
-      }
-      const accesi = lontani.filter(
-        (b) => statoDellaRiga(b.path, pannello, b.inGrazia === true)?.spenta !== true,
-      );
-      if (accesi.length === 0) {
-        avvisaNonRaggiungibile(primoSpento(lontani, pannello));
-        return;
-      }
-      const ids = accesi.map((b) => b.id);
+  /**
+   * Da quando si hanno gli id delle righe **da un altro dispositivo che risponde**:
+   * la domanda di conferma se sono tante, poi la coda. Il tratto in comune di chi
+   * parte da righe intere (`preparaLoScarico`) e di chi parte da id che il nucleo
+   * ha già scelto (`preparaLoScaricoDaId`).
+   */
+  const confermaEAccoda = useCallback(
+    async (ids: number[]) => {
       if (chiedeConfermaPerLoScarico(ids.length)) {
         const anteprima = await ipc.lontanoScaricaAnteprima(ids);
         if (chiedeConfermaPerLoScarico(anteprima.brani)) {
@@ -2203,7 +2183,62 @@ export function App() {
       }
       await accodaRighe(ids);
     },
-    [avvisaNonRaggiungibile, setNotizia, setConfermaScarico, accodaRighe, segnalaErrore],
+    [setConfermaScarico, accodaRighe, segnalaErrore],
+  );
+  const preparaLoScarico = useCallback(
+    async (brani: readonly Brano[]) => {
+      const pannello = archivioLontano.leggi();
+      const lontani = brani.filter(
+        (b) => statoDellaRiga(b.path, pannello, b.inGrazia === true) !== null,
+      );
+      if (lontani.length === 0) {
+        setNotizia(t("devices.download.nothing"));
+        return;
+      }
+      const accesi = lontani.filter(
+        (b) => statoDellaRiga(b.path, pannello, b.inGrazia === true)?.spenta !== true,
+      );
+      if (accesi.length === 0) {
+        avvisaNonRaggiungibile(primoSpento(lontani, pannello));
+        return;
+      }
+      await confermaEAccoda(accesi.map((b) => b.id));
+    },
+    [avvisaNonRaggiungibile, setNotizia, confermaEAccoda],
+  );
+  /**
+   * «<PC> non raggiungibile» per una riga che il nucleo ha scartato: se ne legge
+   * **una**, la prima, per sapere di chi è. Le altre non servono: nessuno le
+   * mostra, ne basta una per dire chi non risponde.
+   */
+  const avvisaDellaRigaSpenta = useCallback(
+    async (id: number) => {
+      const [riga] = await ipc.braniPerId([id]);
+      if (riga === undefined) return;
+      avvisaNonRaggiungibile(
+        statoDellaRiga(riga.path, archivioLontano.leggi(), riga.inGrazia === true),
+      );
+    },
+    [avvisaNonRaggiungibile],
+  );
+  /**
+   * «Scarica qui» da id che il nucleo ha già scelto — l'artista, una selezione
+   * grande (S9-8, S9-9) —: niente righe intere in pagina, e le spente le ha già
+   * scartate e contate lui. Stesse parole di `preparaLoScarico` per ogni esito.
+   */
+  const preparaLoScaricoDaId = useCallback(
+    async (scelte: RigheScelte) => {
+      if (scelte.lontane === 0) {
+        if (scelte.spente > 0 && scelte.primaSpenta !== null) {
+          await avvisaDellaRigaSpenta(scelte.primaSpenta);
+        } else {
+          setNotizia(t("devices.download.nothing"));
+        }
+        return;
+      }
+      await confermaEAccoda(scelte.ids);
+    },
+    [avvisaDellaRigaSpenta, setNotizia, confermaEAccoda],
   );
   const scaricaQui = useCallback(
     async (brani: readonly Brano[]) => {
@@ -2244,56 +2279,53 @@ export function App() {
   );
 
   /**
-   * I brani di un artista — **suoi**, tutti, anche quelli senza disco — nell'ordine
-   * in cui la pagina li mostra.
+   * «Riproduci» e «Casuale» dell'artista: i suoi brani — **suoi**, tutti, anche
+   * quelli senza disco — nell'ordine in cui la pagina li mostra, dal primo o in
+   * ordine sparso.
    *
-   * Prima si prendevano i suoi dischi e i brani di ciascuno: una raccolta in cui
-   * compare entrava intera, con i brani di chiunque, e i brani senza disco non
-   * entravano mai. Adesso è la stessa query della sezione «Brani»
-   * (`braniArtista`), pagina dopo pagina: stessi brani, stesso ordine, stesso
-   * filtro per dispositivo. Serve a `suonaArtista` e a «Scarica qui».
-   */
-  const braniDellArtista = useCallback(
-    (nome: string) =>
-      tutteLePagine(
-        (offset, limite) => ipc.braniArtista(nome, ordineArtista, offset, limite, origineIpc),
-        MISURA_PAGINA,
-      ),
-    [ordineArtista, origineIpc],
-  );
-
-  /**
-   * «Riproduci» e «Casuale» dell'artista: i suoi brani, dal primo o in ordine
-   * sparso. Una riga di un dispositivo che non risponde si salta come negli altri
-   * elenchi (`suonaDa`).
+   * Gli id li dà il nucleo in un viaggio solo (`ipc.artistaRighe`), già senza le
+   * righe di un dispositivo che non risponde: prima si leggevano le righe intere,
+   * duecento per volta e in fila — venticinque viaggi per cinquemila brani, la
+   * prima nota dopo secondi senza nessun segno di lavoro — solo per saltare
+   * quelle grigie (S9-8). Se non resta niente da suonare lo dice con l'avviso
+   * «<PC> non raggiungibile», com'era per un elenco.
    */
   const suonaArtista = useCallback(
     async (nome: string, casuale: boolean) => {
       try {
-        const tracce = await braniDellArtista(nome);
-        if (tracce.length === 0) return;
-        await suonaDa(casuale ? mescolato(tracce) : tracce, 0, false);
+        const scelte = await ipc.artistaRighe(nome, ordineArtista, "suona", origineIpc);
+        if (scelte.ids.length === 0) {
+          if (scelte.primaSpenta !== null) await avvisaDellaRigaSpenta(scelte.primaSpenta);
+          return;
+        }
+        // Una riga di un altro dispositivo sui dati mobili, con «Chiedi»: il gesto
+        // aspetta il sì della finestrella (S11-4), come ogni `ipc.suona`.
+        await ipc.suona(casuale ? mescolato(scelte.ids) : scelte.ids, 0);
       } catch (e) {
         segnalaErrore(e);
       }
     },
-    [suonaDa, segnalaErrore, braniDellArtista],
+    [ordineArtista, origineIpc, avvisaDellaRigaSpenta, segnalaErrore],
   );
 
   /**
-   * «Scarica qui» sull'artista: i suoi brani che stanno su altri dispositivi.
-   * `scaricaQui` lascia fuori quelli di qui, e un dispositivo spento lo dice
-   * senza provarci.
+   * «Scarica qui» sull'artista: i suoi brani che stanno su altri dispositivi. Il
+   * nucleo lascia fuori quelli di qui e quelli di un dispositivo spento, e se
+   * resta solo un dispositivo spento lo dice senza provarci.
    */
   const scaricaArtista = useCallback(
     async (nome: string) => {
       try {
-        await scaricaQui(await braniDellArtista(nome));
+        await unoScarico(async () => {
+          await preparaLoScaricoDaId(
+            await ipc.artistaRighe(nome, ordineArtista, "scarica", origineIpc),
+          );
+        });
       } catch (e) {
         segnalaErrore(e);
       }
     },
-    [scaricaQui, segnalaErrore, braniDellArtista],
+    [ordineArtista, origineIpc, unoScarico, preparaLoScaricoDaId, segnalaErrore],
   );
 
   /** Le playlist all'apertura. Vince l'ultima, come `ricarica`: vedi `libreria.ts`. */
@@ -2370,8 +2402,17 @@ export function App() {
     }
     const nuova = origineCheContiene(origine, brano.path);
     const stessa = ugualiOrigini(nuova, origine);
-    const tutti = stessa && artisti.length > 0 ? artisti : await ipc.artisti(perIlNucleo(nuova));
-    const suo = trovaArtista(tutti, nome);
+    // L'artista col suo nome, da solo (S9-3): l'elenco intero — migliaia di righe
+    // per cercarne una — si legge solo se il nome dei tag non è quello esatto, e il
+    // ripiego di `trovaArtista` ne cerca uno che gli somiglia. Sempre col filtro
+    // di arrivo: l'elenco in mano poteva essere quello di un filtro di prima.
+    const esatto = (await ipc.artista(nome, perIlNucleo(nuova))).artista;
+    const suo =
+      esatto ??
+      trovaArtista(
+        stessa && artisti.length > 0 ? artisti : await ipc.artisti(perIlNucleo(nuova)),
+        nome,
+      );
     const daInRiproduzione = grande;
     if (daInRiproduzione) setGrande(false);
     if (!stessa) setOrigine(nuova);
@@ -2478,14 +2519,17 @@ export function App() {
         },
         aggiungiAPlaylist: (brani) => setDaAggiungere(brani),
         scaricaQui: (ids) => {
-          // La guardia copre anche le righe intere che `braniPerId` porta in
-          // pagina — con una selezione grande, secondi — e dice che sta
-          // contando: senza, un secondo clic apriva una seconda anteprima (S9-9).
+          // Gli id vanno al nucleo, che scarta le righe di qui e quelle di un
+          // dispositivo spento e le conta: prima `braniPerId` portava in pagina
+          // tutte le righe intere — con cinquantamila selezionati, decine di
+          // megabyte — solo perché la finestra le scartasse (S9-9). La guardia
+          // copre l'attesa e dice che sta contando: senza, un secondo clic
+          // apriva una seconda anteprima.
           unoScarico(async () => {
             // Solo da una selezione che chiederà la conferma: per una riga sola
             // non c'è niente da aspettare, e la notizia sarebbe rumore.
             if (chiedeConfermaPerLoScarico(ids.length)) setNotizia(t("devices.download.counting"));
-            await preparaLoScarico(await ipc.braniPerId(ids));
+            await preparaLoScaricoDaId(await ipc.righeScelte(ids, "scarica"));
           }).catch(segnalaErrore);
         },
         vaiAlDisco: conBrano(async (brano) => {
@@ -2577,7 +2621,7 @@ export function App() {
       apriArtistaDelBrano,
       riproduzione.archivio,
       unoScarico,
-      preparaLoScarico,
+      preparaLoScaricoDaId,
       setNotizia,
     ],
   );
