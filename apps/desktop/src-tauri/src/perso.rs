@@ -185,20 +185,97 @@ mod prove {
         );
     }
 
-    /// Il cablaggio: ogni evento passa da `emetti` (e solo quello degli errori si
-    /// copia), la fine della pagina lo dice, e la pagina chiede dopo aver aperto
-    /// l'ascolto.
+    /// Ogni `emit` vero del programma passa di qui, appena prima di partire.
+    ///
+    /// Sono due: `Emette::emetti` (`spegnimento.rs`), per chi ha un `AppHandle`, e
+    /// `Nucleo::alla_finestra` (`nucleo.rs`), per chi ha il nucleo — il lettore, i
+    /// tasti multimediali, il vassoio, cioè proprio chi suona a finestra distrutta.
+    /// Il collaudo dal vivo della 3.3.0 ha trovato il secondo che non ci passava:
+    /// «Successivo» dal vassoio su un file illeggibile fermava il lettore,
+    /// l'errore partiva dal nucleo e «Mostra» apriva una finestra che non diceva
+    /// perché. Un terzo `emit` scritto domani deve passare di qui anche lui.
+    #[test]
+    fn ogni_emit_del_programma_passa_dagli_errori_persi() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut cartelle = vec![src.clone()];
+        let mut visti = Vec::new();
+        let mut senza = Vec::new();
+        while let Some(cartella) = cartelle.pop() {
+            let Ok(voci) = std::fs::read_dir(&cartella) else {
+                continue;
+            };
+            for voce in voci.flatten() {
+                let percorso = voce.path();
+                if percorso.is_dir() {
+                    cartelle.push(percorso);
+                    continue;
+                }
+                if percorso.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let Ok(testo) = std::fs::read_to_string(&percorso) else {
+                    continue;
+                };
+                // Le prove stanno in fondo: quel che c'è dopo non parte mai.
+                let codice = testo.split("#[cfg(test)]").next().unwrap_or(&testo);
+                let nome = percorso
+                    .strip_prefix(&src)
+                    .unwrap_or(&percorso)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                for (dove, _) in codice.match_indices(".emit(") {
+                    let riga = codice[..dove].rsplit('\n').next().unwrap_or_default();
+                    if riga.trim_start().starts_with("//") {
+                        continue;
+                    }
+                    // Dalla `fn` che contiene l'`emit` fino all'`emit`.
+                    let inizio = codice[..dove].rfind("fn ").unwrap_or(0);
+                    let corpo = &codice[inizio..dove];
+                    let funzione: String = corpo
+                        .trim_start_matches("fn ")
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    let chi = format!("{nome}::{funzione}");
+                    if !corpo.contains("crate::perso::evento_in_partenza(") {
+                        senza.push(chi.clone());
+                    }
+                    visti.push(chi);
+                }
+            }
+        }
+        visti.sort();
+        assert!(
+            visti.len() >= 2,
+            "la prova non trova più gli `emit` che deve guardare: {visti:?}"
+        );
+        assert!(
+            senza.is_empty(),
+            "questi `emit` non passano dagli errori persi: {senza:?} (tutti: {visti:?})"
+        );
+    }
+
+    /// Il cablaggio: ogni evento passa da `evento_in_partenza` (e solo quello
+    /// degli errori si copia), la fine della pagina lo dice, e la pagina chiede
+    /// dopo aver aperto l'ascolto.
     #[test]
     fn l_errore_perso_e_cablato_dall_emissione_alla_pagina() {
         let emetti = include_str!("spegnimento.rs");
         let emetti = emetti.split("pub trait Emette").nth(1).unwrap_or_default();
         let emetti = emetti.split("#[cfg(test)]").next().unwrap_or(emetti);
-        assert!(emetti.contains("perso::EVENTO_ERRORE_DEL_LETTORE"));
-        assert!(emetti.contains("perso::errore_del_lettore_emesso(&carico)"));
-        assert!(
-            emetti.contains("#[cfg(desktop)]"),
-            "la copia dell'errore è del computer"
-        );
+        let nucleo = include_str!("nucleo.rs");
+        let alla_finestra = nucleo
+            .split("fn alla_finestra<")
+            .nth(1)
+            .and_then(|resto| resto.split("\n    }\n").next())
+            .unwrap_or_default();
+        for corpo in [emetti, alla_finestra] {
+            assert!(corpo.contains("crate::perso::evento_in_partenza(evento, &carico)"));
+            assert!(
+                corpo.contains("#[cfg(desktop)]\n"),
+                "la copia dell'errore è del computer"
+            );
+        }
         let pagina = include_str!("pagina.rs");
         let finita = pagina
             .split("pub(crate) fn pagina_finita(")
