@@ -427,8 +427,8 @@ a longer listening history than the public API offers.
   exported playlist or a scrobble; a playlist that contains one carries only the
   track’s key, and the one thing that does reach a profile you export is the text
   of a song fetched from that device, which sits with the other lyrics. What
-  stays is in [`PRIVACY.md`](PRIVACY.md) § 4-ter and § 4-quinquies. A device
-  that has not updated to this version cannot show its music here.
+  stays is in [`PRIVACY.md`](PRIVACY.md) § 4-ter and § 4-quinquies. Every
+  device you link needs this version: a PC that stays on 3.2.0 cannot link.
 - **Start with Windows, and the tray.** *Settings › Startup and closing* has a
   switch that starts Rymembra when you sign in, minimized to the taskbar. It
   shows what Windows says — if you turned the entry off in Task Manager, it

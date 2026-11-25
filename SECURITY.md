@@ -277,8 +277,8 @@ feature off nothing listens. What is supposed to hold:
   each. A lyrics correction is applied with the commands’ own logic and
   **only to the database, never to a file**: a linked device does not write a
   `.lrc` in the owner’s music folders. It carries the clock of when it was
-  decided (`quandoMs`, optional and ignored by a build that does not know it;
-  without one it counts as made now), and a correction decided before the last
+  decided (`quandoMs`, optional like every field added to the protocol, which
+  keeps the number `/1`; without one it counts as made now), and a correction decided before the last
   touch to a text timed by hand on the owner does not override it — the answer
   is “done”, without writing, so that it does not wait in the outbox for thirty
   days. A text a correction replaces is kept as a copy of one level (never in a
