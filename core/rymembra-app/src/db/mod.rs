@@ -444,6 +444,16 @@ pub struct Opened {
     /// apertura — o quando non c'era niente da proteggere: un database nuovo, o
     /// in memoria. Vedi [`Istantanea`].
     pub istantanea: Option<Istantanea>,
+    /// Quante chiavi d'ordine dei brani ha rifatto l'apertura: 0 quasi sempre,
+    /// tutte quelle di prima dopo la 042, e quelle che una caduta aveva lasciato
+    /// a NULL.
+    pub chiavi_riempite: usize,
+    /// Perché l'apertura **non** ha rifatto le chiavi d'ordine, se ci ha provato
+    /// e non c'è riuscita senza che questo impedisse di aprire — un disco in
+    /// sola lettura, un lucchetto. Fino al prossimo salvataggio dei brani i
+    /// Brani per titolo e per scaffale mettono per primi quelli senza chiave. Chi
+    /// apre lo scrive nel diario.
+    pub chiavi_non_riempite: Option<AppError>,
 }
 
 /// Configura, migra e ottimizza una connessione appena aperta.
@@ -463,19 +473,34 @@ fn open_connection(connection: Connection, percorso: Option<&Path>) -> Result<Op
         .filter(|_| version_before > 0 && version_before < LATEST_VERSION)
         .map(|percorso| manutenzione::prima_di_migrare(&connection, percorso, version_before));
     let applied = migrate(&connection)?;
-    // Le chiavi d'ordine dei brani che non le hanno ancora: dopo la 042 tutte
-    // quelle di prima. Solo quando si è appena migrato, che è anche la prova
-    // che il file si scrive: una libreria aperta da un disco in sola lettura
-    // si apre come prima, e le chiavi che una caduta avesse lasciato a NULL le
-    // rifà la prossima scrittura dei brani (`Toccati::segna_brani`). Vedi
-    // `library::riempi_le_chiavi_d_ordine_all_apertura`.
-    if applied > 0 {
-        crate::library::riempi_le_chiavi_d_ordine_all_apertura(&connection)?;
-    }
-    if percorso.is_some() {
     // La catena, se c'era, è arrivata in fondo: il segno che la proteggeva non
     // serve più. Vedi `manutenzione::chiudi_la_catena`.
     manutenzione::chiudi_la_catena(&connection);
+    // Le chiavi d'ordine dei brani che non le hanno ancora: dopo la 042 tutte
+    // quelle di prima. Si guarda **a ogni apertura**, e non solo dopo una
+    // migrazione: se la riempitura cade — disco pieno per il giornale, una
+    // chiusura da Gestione attività — il riavvio trova il database già alla
+    // versione corrente, e con `applied == 0` le chiavi restavano a NULL, cioè i
+    // Brani per titolo in ordine di disco (S3-4). Il controllo è una lettura
+    // d'indice (`EXISTS … ordine_titolo IS NULL`).
+    //
+    // Subito dopo una migrazione un errore ferma l'apertura, com'era: è anche la
+    // prova che il file si scrive. Altrimenti no: una libreria aperta da un
+    // disco in sola lettura si apre come prima, e l'errore non si butta — resta
+    // in [`Opened::chiavi_non_riempite`], e chi apre lo scrive nel diario. Vedi
+    // `library::riempi_le_chiavi_d_ordine_all_apertura`.
+    let (chiavi_riempite, chiavi_non_riempite) = if applied > 0 {
+        (
+            crate::library::riempi_le_chiavi_d_ordine_all_apertura(&connection)?,
+            None,
+        )
+    } else {
+        match crate::library::riempi_le_chiavi_d_ordine_all_apertura(&connection) {
+            Ok(riempite) => (riempite, None),
+            Err(errore) => (0, Some(errore)),
+        }
+    };
+    if percorso.is_some() {
         // Dopo le migrazioni e non prima: SQLite chiede un `optimize` dopo ogni
         // cambio di schema, e un indice appena creato è precisamente la cosa
         // su cui il pianificatore non ha ancora statistiche.
@@ -488,6 +513,8 @@ fn open_connection(connection: Connection, percorso: Option<&Path>) -> Result<Op
         fts5,
         giornale,
         istantanea,
+        chiavi_riempite,
+        chiavi_non_riempite,
     })
 }
 
@@ -785,6 +812,58 @@ fn user_version(connection: &Connection) -> Result<u32, AppError> {
         .map(|value| u32::try_from(value).unwrap_or(0))
 }
 
+/// L'errore di un passo della catena che è caduto: quale codice dire.
+///
+/// Un passo che cade quasi sempre è un difetto della migrazione —
+/// [`ErrorCode::DbMigrationFailed`], la frase che parla di passi fatti e di copie
+/// —, ma due guasti non lo sono, e dirli così era dire una cosa falsa (S3-3):
+///
+/// - `SQLITE_FULL` è il disco della cartella dati pieno, magari per pochi
+///   megabyte su una `CREATE INDEX`, e la cura è liberare spazio:
+///   [`ErrorCode::FsDiskFull`], la stessa frase di ogni altro disco pieno. Il
+///   passo è tornato indietro intero, quindi «niente è stato scritto a metà»
+///   è vero;
+/// - `SQLITE_BUSY` o `SQLITE_LOCKED` oltre l'attesa è un altro programma —
+///   un antivirus, un secondo Rymembra — che tiene il file: [`ErrorCode::DbLocked`],
+///   che si riprova, e che si risolve riavviando quando l'altro ha finito.
+///
+/// In tutti i casi la causa dice **quale passo** e da dove era cominciata la
+/// catena: il codice di un disco pieno non lo porta, ed è la prima cosa che
+/// serve a chi legge il diario.
+fn errore_del_passo(
+    da: u32,
+    migrazione: &Migration,
+    err: &rusqlite::Error,
+    contesto: &Contesto,
+) -> AppError {
+    let dove = || {
+        causa(
+            &format!(
+                "migrazione {} ({}), catena cominciata dalla {da}",
+                migrazione.version, migrazione.name
+            ),
+            err,
+        )
+    };
+    match err.sqlite_error_code() {
+        Some(CodiceSqlite::DiskFull) => AppError::new(ErrorCode::FsDiskFull {
+            path: contesto.percorso.clone(),
+        })
+        .with_cause(dove()),
+        Some(CodiceSqlite::DatabaseBusy | CodiceSqlite::DatabaseLocked) => {
+            AppError::new(ErrorCode::DbLocked).with_cause(dove())
+        }
+        _ => db_error(
+            ErrorCode::DbMigrationFailed {
+                from: da,
+                to: migrazione.version,
+                step: Some(migrazione.name.to_owned()),
+            },
+            err,
+        ),
+    }
+}
+
 /// Applica le migrazioni mancanti, ognuna nella sua transazione.
 ///
 /// Una transazione per migrazione e non una per tutte: se la terza fallisce, le
@@ -808,16 +887,8 @@ fn migrate(connection: &Connection) -> Result<usize, AppError> {
 
     let mut applied = 0;
     for migration in MIGRATIONS.iter().filter(|m| m.version > current) {
-        let fallita = |err: &rusqlite::Error| {
-            db_error(
-                ErrorCode::DbMigrationFailed {
-                    from: current,
-                    to: migration.version,
-                    step: Some(migration.name.to_owned()),
-                },
-                err,
-            )
-        };
+        let fallita =
+            |err: &rusqlite::Error| errore_del_passo(current, migration, err, &contesto());
 
         // Le chiavi esterne si spengono **prima** della transazione, perché è
         // l'unico momento in cui SQLite ascolta: dentro una transazione quel
@@ -1556,6 +1627,155 @@ mod tests {
         let errore = open(&path).expect_err("deve rifiutarsi");
         assert_eq!(errore.code().kind(), ErrorCodeKind::DbVersionAhead);
         assert_eq!(errore.severity(), rymembra_domain::errors::Severity::Fatal);
+    }
+
+    #[test]
+    fn un_disco_pieno_in_un_passo_della_catena_si_dice_disco_pieno() {
+        // S3-3. Ogni errore dentro un passo diventava `db.migrationFailed`, anche
+        // `SQLITE_FULL`: la frase parlava di copie e di «riavviare rifà lo
+        // stesso passo», e il disco pieno stava solo nel diario. Qui lo
+        // `SQLITE_FULL` è vero: il database non può crescere di una pagina, e
+        // la 039 ha bisogno della prima per la sua prima tabella.
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&connection, 38);
+        let pagine: i64 = connection
+            .query_row("PRAGMA page_count", [], |riga| riga.get(0))
+            .expect("pagine");
+        connection
+            .execute_batch(&format!("PRAGMA max_page_count = {pagine}"))
+            .expect("tetto alle pagine");
+
+        let errore = migrate(&connection).expect_err("manca lo spazio per la 039");
+
+        assert_eq!(
+            errore.code().kind(),
+            ErrorCodeKind::FsDiskFull,
+            "{errore:?}"
+        );
+        assert!(
+            errore
+                .cause()
+                .is_some_and(|causa| causa.contains("migrazione 39") && causa.contains("dalla 38")),
+            "la causa dice quale passo e da dove: {:?}",
+            errore.cause()
+        );
+        assert_eq!(
+            user_version(&connection).expect("versione"),
+            38,
+            "il passo che cade torna indietro intero"
+        );
+    }
+
+    #[test]
+    fn un_database_occupato_in_un_passo_della_catena_si_dice_occupato() {
+        // S3-3, l'altra metà: un antivirus o un secondo processo che tiene il
+        // lucchetto oltre l'attesa. È `db.locked`, che si riprova, e non un
+        // difetto di una migrazione che «si è fermata a metà».
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let path = dir.path().join("rymembra.db");
+        let migrante = Connection::open(&path).expect("apertura");
+        fino_alla(&migrante, 38);
+        let altro = Connection::open(&path).expect("seconda connessione");
+        altro.execute_batch("BEGIN IMMEDIATE").expect("lucchetto");
+        // `rusqlite` apre con cinque secondi di attesa: la prova non li aspetta.
+        migrante
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("nessuna attesa");
+
+        let errore = migrate(&migrante).expect_err("il lucchetto è di un altro");
+
+        assert_eq!(errore.code().kind(), ErrorCodeKind::DbLocked, "{errore:?}");
+        assert!(errore.is_retryable());
+        assert!(
+            errore
+                .cause()
+                .is_some_and(|causa| causa.contains("migrazione 39")),
+            "{:?}",
+            errore.cause()
+        );
+        // Liberato il lucchetto, la catena riparte da dove era.
+        altro.execute_batch("ROLLBACK").expect("lucchetto liberato");
+        assert_eq!(
+            migrate(&migrante).expect("riparte"),
+            MIGRATIONS.iter().filter(|m| m.version > 38).count()
+        );
+    }
+
+    #[test]
+    fn un_database_alla_ultima_versione_con_le_chiavi_a_null_si_ripara_all_apertura() {
+        // S3-4. Le chiavi d'ordine si riempivano solo se l'apertura aveva appena
+        // migrato (`applied > 0`): se cadevano — disco pieno per il giornale,
+        // chiusura da Gestione attività — il riavvio trovava il database già
+        // alla versione corrente, e le chiavi restavano a NULL: i Brani per
+        // titolo uscivano in ordine di disco.
+        let dir = tempfile::tempdir().expect("cartella temporanea");
+        let path = dir.path().join("rymembra.db");
+        drop(open(&path).expect("apertura"));
+        Connection::open(&path)
+            .expect("apertura")
+            .execute_batch(
+                "INSERT INTO tracks (path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified)
+                 VALUES ('C:/m/z.flac', 'k1', 'Zeta', 'Artista', 'Disco', 1, 0, 0),
+                        ('C:/m/a.flac', 'k2', 'Alfa', 'Artista', 'Disco', 1, 0, 0);",
+            )
+            .expect("due brani senza chiavi");
+        let a_null = |connection: &Connection| -> i64 {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM tracks WHERE ordine_titolo IS NULL",
+                    [],
+                    |riga| riga.get(0),
+                )
+                .expect("conto")
+        };
+        assert_eq!(a_null(&Connection::open(&path).expect("apertura")), 2);
+
+        let riaperto = open(&path).expect("riapertura");
+
+        assert_eq!(riaperto.applied, 0, "niente da migrare");
+        assert_eq!(a_null(&riaperto.connection), 0, "le chiavi si rifanno");
+        assert_eq!(riaperto.chiavi_riempite, 2, "e l'apertura dice quante");
+        assert!(riaperto.chiavi_non_riempite.is_none());
+        let primo: String = riaperto
+            .connection
+            .query_row(
+                "SELECT title FROM tracks ORDER BY ordine_titolo, ordine_artista LIMIT 1",
+                [],
+                |riga| riga.get(0),
+            )
+            .expect("il primo");
+        assert_eq!(primo, "Alfa");
+    }
+
+    #[test]
+    fn con_le_chiavi_a_null_e_un_database_in_sola_lettura_si_apre_e_lo_dice() {
+        // S3-4, l'altro verso: provare a rifare le chiavi a ogni apertura non
+        // deve far fallire l'apertura di una libreria che non si lascia
+        // scrivere — un disco in sola lettura si apriva come prima — e non deve
+        // nemmeno tacere: l'errore resta in `chiavi_non_riempite`, e chi apre lo
+        // scrive nel diario.
+        let connection = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&connection, LATEST_VERSION);
+        connection
+            .execute_batch(
+                "INSERT INTO tracks (path, track_key, title, artist, album, file_size,
+                                     date_added, date_modified)
+                 VALUES ('C:/m/a.flac', 'k', 'Alfa', 'A', 'B', 1, 0, 0);
+                 PRAGMA query_only = ON;",
+            )
+            .expect("un brano senza chiavi, e il database che non si scrive");
+
+        let aperto = open_connection(connection, None).expect("si apre lo stesso");
+
+        assert_eq!(aperto.applied, 0);
+        assert_eq!(aperto.chiavi_riempite, 0);
+        let errore = aperto.chiavi_non_riempite.expect("l'errore non si butta");
+        assert_eq!(
+            errore.code().kind(),
+            ErrorCodeKind::DbReadOnly,
+            "{errore:?}"
+        );
     }
 
     #[test]
