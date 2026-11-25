@@ -383,8 +383,14 @@ answer.
     the best copy plays on any network; with Wi-Fi only a copy on another device
     is not used (this device’s copy plays, or the track says so); with Ask the
     question comes once, only when the best copy is on another device, and it
-    is asked from every Play, Next, Previous, queue and radio gesture that opens
-    such a track. Downloading, and “Listen together” sessions over the
+    is asked from every Play, Next, Previous, queue and radio gesture that you
+    make in the app and that opens such a track. Where nobody can answer — media
+    keys, the notification, Android Auto, the end of a track, autoplay, and the
+    radio and smart playlists the app builds — Ask counts as No: a track that
+    exists only on another device is skipped (up to three in a row) instead of
+    stopping the music, a copy on this device plays at once, and the tracks that
+    exist only elsewhere stay out of what autoplay, the radio, smart playlists
+    and Android Auto pick. Downloading, and “Listen together” sessions over the
     internet, ask the same way, and lists and presence always pass.
   - **The phone is reachable while Rymembra is on screen or playing, and for
     two minutes after** — or all the time with “Stay active in the background”
@@ -429,7 +435,10 @@ answer.
     there, never stitched to the old one. If the device is off or the file
     cannot be opened, the copy on this device plays when there is one, and
     otherwise the row says “<PC> is not reachable” instead of showing an
-    error. When the best copy is on another device, the mobile-data setting
+    error; a track that cuts out halfway says the stream was interrupted, and
+    seeking in an MP3 does not read the file again from the start through the
+    relay or mobile data (the track boundaries of an MP3 CD image played this
+    way are estimated: see Known limits). When the best copy is on another device, the mobile-data setting
     decides (see “Mobile data” above).
   - **A device that is off stays listed.** Its rows are greyed out — dimmed
     with colour, with the title in italics, and a screen reader hears “… is not
@@ -530,7 +539,16 @@ answer.
   and artists are never sent to LRCLIB without a panel open, and the next
   track’s lyrics are not prefetched from another device on a metered network.
   “Send all my history” and “now playing” never scrobble tracks of other
-  devices: the owner does it. Showing a track of another device in its folder,
+  devices: the owner does it, and a listen of such a track is written to your
+  history and queued for its owner in one step, so a busy library cannot lose
+  it. “Listen together” hosting with a queue that holds a track of another device
+  that you also have here uses your copy — which then counts the listen on this
+  PC — instead of refusing the whole queue, and refuses only the tracks you do
+  not have on this PC. An open artist page reads only that artist, not the whole list
+  of artists, so it does not re-read it every three seconds while a PC’s library
+  arrives; “Play”, “Shuffle” and “Download here” on an artist, and “Download
+  here” from a large selection, get the ids of the tracks to use from the app in
+  one trip instead of loading full rows page by page. Showing a track of another device in its folder,
   from wherever that can be asked, says that the file is on the other device.
   The strips “Reading the library of …” and the download one are not live
   regions with a counter: a screen reader hears when a read starts, ends or is
@@ -1475,6 +1493,11 @@ the new parts is described with the feature, above.
   on the phone risk an “app not responding”. The output now opens in the
   background, with yesterday’s queue put back as before; if it cannot open,
   the error band says so.
+- A pause pressed while a track is still opening — a sleeping network drive, a stream —
+  takes effect at once instead of waiting for the opening, and the track no longer
+  starts playing after you paused it.
+- “Save curve” in the equalizer saves the curve you see, even while a slider is
+  still moving.
 
 **Listen together.**
 
@@ -1927,6 +1950,14 @@ the new parts is described with the feature, above.
   the phone’s. The window does not redraw on every state of a linked device.
 - On the PC an action no longer gives up after four seconds with “The database is busy”:
   it waits and completes.
+- Removing a cloud account or adding a cloud folder no longer ties up a background
+  worker while a scan holds the library.
+- A crash inside a background thread — the device link, the forwarding of listens,
+  the downloads, the “now playing” scrobble — no longer switches that feature off
+  until you restart the app.
+- The player no longer sends the whole queue with every state update: with 50,000
+  tracks that was 289 KB each time, and 8 MB a second while holding the seek arrow.
+  The queue goes to the window only when it changes.
 
 **Updates and the library’s data.**
 
@@ -2239,6 +2270,13 @@ release:
   copy of the same track exists on another reachable device, it plays; if it
   goes off a moment before Rymembra notices, only the copy on this device is
   tried.
+- **Mobile data and the radio.** With “Ask” on a metered network, the radio and
+  the smart playlists you start from the app also leave out the tracks that
+  exist only on another device, because nobody can be asked while they are
+  built; “Yes” brings them back.
+- **Playback.** The track boundaries of an MP3 CD image played from another
+  device are estimated, as on the cloud: exact only at a constant bitrate. When
+  the audio device is lost, a pause still waits for the device to reopen.
 - **Duplicates, sync and history.** A corrected tag can make a track appear
   twice in a playlist, which loses nothing. A declared quality is checked, not
   proved: an MP3 at 192 kbps passed off as a 44.1 kHz FLAC is not caught.

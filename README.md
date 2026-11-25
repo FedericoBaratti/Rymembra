@@ -413,7 +413,9 @@ a longer listening history than the public API offers.
   exists on several devices is one row and plays the best copy — lossless first,
   then sample rate, then bitrate, on a tie the one on this device — while the
   setting «Other devices’ music on mobile data» (Ask, Yes, Wi-Fi only) is
-  respected: with Wi-Fi only, on mobile data, the copy on this device plays. A
+  respected: with Wi-Fi only, on mobile data, the copy on this device plays,
+  and «Ask» asks only from a gesture made in the app — a media key, the
+  notification, the car or autoplay count it as «No». A
   pill filter, «All · This device · <name>», limits any view to one
   device. A device that is off stays in the list, greyed out: its tracks come
   back playable when it is on, and if another copy exists that one plays.

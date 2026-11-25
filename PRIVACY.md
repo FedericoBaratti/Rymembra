@@ -1177,8 +1177,10 @@ folder, and from then on counts here.
 
 On a metered network — mobile data, a hotspot — the phone asks before playing
 or downloading another device's tracks, and before a «Listen together» session
-over the internet (*Settings › Devices*: Ask, Yes, Wi-Fi only). The lists and
-the presence always pass.
+over the internet (*Settings › Devices*: Ask, Yes, Wi-Fi only). The question is
+asked from a gesture you make in the app; where nobody can answer — a media key,
+the notification, the car, autoplay — «Ask» counts as «No». The lists and the
+presence always pass.
 
 ### The phone
 
