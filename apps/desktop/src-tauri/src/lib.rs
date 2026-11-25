@@ -1306,7 +1306,14 @@ pub fn run() {
                 return;
             }
             let mano = finestra.app_handle();
-            match chiusura::alla_richiesta(mano, vassoio::nasconde(mano)) {
+            // La X col vassoio chiede al sistema se l'icona c'è **adesso**: un'icona
+            // che la shell ha rifiutato non è una via di ritorno (S4-1). Sul telefono
+            // il vassoio non c'è.
+            #[cfg(desktop)]
+            let nasconde = vassoio::nasconde_alla_x(mano);
+            #[cfg(mobile)]
+            let nasconde = vassoio::nasconde(mano);
+            match chiusura::alla_richiesta(mano, nasconde) {
                 chiusura::Decisione::Passa => {}
                 // Alt+F4 o la barra delle applicazioni con lo Studio aperto:
                 // la pagina scrive prima, e la chiusura la rifà `chiusura.rs`

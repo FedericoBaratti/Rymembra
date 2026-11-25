@@ -28,6 +28,12 @@
 //! menù non ci sono ancora, la X torna a chiudere il programma — che è il
 //! guasto giusto fra i due possibili.
 //!
+//! «C'è davvero» lo dice il sistema **alla X**, non l'esito della costruzione:
+//! `tray-icon` 0.25.1 ignora la risposta di `Shell_NotifyIconW(NIM_ADD)`, e
+//! `build` torna `Ok` anche con Esplora risorse assente. [`nasconde_alla_x`] manda
+//! all'icona il suggerimento che ha già (`NIM_MODIFY`), che la shell rifiuta se
+//! non la conosce; un'icona nell'area di overflow risponde di sì.
+//!
 //! # Perché le etichette arrivano dalla finestra, e si ricordano
 //!
 //! «Mostra Rymembra» ed «Esci» sono due testi che l'utente legge, e tutti i testi
@@ -530,6 +536,104 @@ fn deve_esserci(acceso: bool, etichette: Option<&Etichette>) -> bool {
     acceso && etichette.is_some()
 }
 
+/// Com'è l'icona, vista da chi decide alla X.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Icona {
+    /// Non c'è un'icona costruita.
+    Assente,
+    /// C'è, e il sistema risponde che la conosce.
+    Registrata,
+    /// C'è, ma il sistema risponde che non la conosce.
+    Rifiutata,
+    /// Non si è potuto chiedere.
+    NonSiSa,
+}
+
+/// La X nasconde? Dato quel che il sistema risponde **adesso** sull'icona.
+///
+/// - `Registrata`: sì, anche se prima era stata rifiutata — Esplora è ripartito e
+///   `TaskbarCreated` ha fatto registrare l'icona da capo (`tray_proc`).
+/// - `Rifiutata`: no. `tray-icon` 0.25.1 ignora l'esito di `Shell_NotifyIconW`
+///   (`NIM_ADD`): `build` torna `Ok` anche se la shell non c'è o non risponde, e
+///   nascondere una finestra da cui non si tornerebbe lascia un processo che suona
+///   senza niente a cui tornare.
+/// - `Assente`: no.
+/// - `NonSiSa`: resta quel che si sapeva.
+fn la_x_nasconde(attivo: bool, costruita: bool, icona: Icona) -> bool {
+    attivo
+        && match icona {
+            Icona::Registrata => true,
+            Icona::Assente | Icona::Rifiutata => false,
+            Icona::NonSiSa => costruita,
+        }
+}
+
+/// Chiede al sistema se l'icona c'è, rimandandole il suggerimento che ha già.
+///
+/// `NIM_MODIFY` su un'icona che la shell non conosce risponde di no, e
+/// `tray-icon` lo riporta come errore (`set_tooltip`): è l'unico segnale **di
+/// esito** che la libreria dà senza `unsafe` nostro. Un'icona nell'area di
+/// overflow risponde di sì: è registrata, solo nascosta dall'utente. `rect()`
+/// non è stato preferito perché con l'icona in overflow non si sa che cosa dica.
+///
+/// Gira sul filo principale (il gestore della chiusura): niente lucchetto in
+/// attesa — un comando può tenerlo mentre aspetta **questo** filo per costruire
+/// l'icona — quindi `try_lock`, e l'icona si clona e si lascia andare prima di
+/// chiamare.
+fn icona_adesso(stato: &StatoVassoio) -> Icona {
+    let copia = match stato.icona.try_lock() {
+        Ok(posto) => posto.clone(),
+        Err(std::sync::TryLockError::Poisoned(guasto)) => guasto.into_inner().clone(),
+        Err(std::sync::TryLockError::WouldBlock) => return Icona::NonSiSa,
+    };
+    let Some(icona) = copia else {
+        return Icona::Assente;
+    };
+    let testo = match stato.in_corso.try_lock() {
+        Ok(in_corso) => in_corso.testo().to_owned(),
+        Err(std::sync::TryLockError::Poisoned(guasto)) => guasto.into_inner().testo().to_owned(),
+        Err(std::sync::TryLockError::WouldBlock) => return Icona::NonSiSa,
+    };
+    match icona.set_tooltip(Some(testo)) {
+        Ok(()) => Icona::Registrata,
+        Err(err) => {
+            nota!("[vassoio] il sistema non conosce l'icona: {err}");
+            Icona::Rifiutata
+        }
+    }
+}
+
+/// La X nasconde invece di chiudere? **La domanda della X**: chiede al sistema,
+/// e la risposta vale anche per chi la legge subito dopo ([`nasconde`], nei rami
+/// di `ExitRequested`): una chiusura non decide in due modi.
+///
+/// Con l'icona **registrata** la X nasconde; con l'icona che la shell non
+/// conosce — Esplora risorse non c'è, o non risponde — il programma esce come
+/// sempre, invece di restare un processo senza finestra e senza via di ritorno.
+pub fn nasconde_alla_x(app: &tauri::AppHandle) -> bool {
+    let Some(stato) = app.try_state::<StatoVassoio>() else {
+        return false;
+    };
+    let attivo = stato.attivo.load(Ordering::Relaxed);
+    if !attivo {
+        return false;
+    }
+    let costruita = stato.presente.load(Ordering::Relaxed);
+    let icona = icona_adesso(&stato);
+    match icona {
+        Icona::Registrata if !costruita => {
+            nota!("[vassoio] la shell conosce l'icona: la X nasconde");
+            stato.presente.store(true, Ordering::Relaxed);
+        }
+        Icona::Rifiutata if costruita => {
+            nota!("[vassoio] la shell non conosce l'icona: la X chiude il programma");
+            stato.presente.store(false, Ordering::Relaxed);
+        }
+        _ => {}
+    }
+    la_x_nasconde(attivo, costruita, icona)
+}
+
 /// Rispecchia la preferenza e rifà l'icona di conseguenza.
 fn ricorda(app: &tauri::AppHandle, attivo: bool) {
     if let Some(stato) = app.try_state::<StatoVassoio>() {
@@ -955,6 +1059,75 @@ mod prove {
     #[test]
     fn spenta_e_senza_etichette_non_c_e_niente_da_montare() {
         assert!(!deve_esserci(false, None));
+    }
+
+    // ── la X e l'icona che il sistema ha rifiutato (S4-1) ───────────────────
+
+    /// `tray-icon` 0.25.1 ignora l'esito di `NIM_ADD`: `build` torna `Ok` anche se
+    /// la shell non ha registrato l'icona (Esplora risorse non c'è, o non
+    /// risponde). La X deve fidarsi di quel che il sistema dice **adesso**.
+    #[test]
+    fn un_icona_che_il_sistema_non_conosce_non_nasconde() {
+        assert!(!la_x_nasconde(true, true, Icona::Rifiutata));
+    }
+
+    /// Esplora riparte, `TaskbarCreated` fa registrare l'icona da capo
+    /// (`tray_proc`): la X torna a nascondere senza ricostruire niente.
+    #[test]
+    fn un_icona_registrata_dopo_nasconde_anche_se_prima_era_rifiutata() {
+        assert!(la_x_nasconde(true, false, Icona::Registrata));
+    }
+
+    #[test]
+    fn senza_la_preferenza_o_senza_icona_la_x_chiude() {
+        for icona in [
+            Icona::Assente,
+            Icona::Registrata,
+            Icona::Rifiutata,
+            Icona::NonSiSa,
+        ] {
+            assert!(
+                !la_x_nasconde(false, true, icona),
+                "{icona:?}, preferenza spenta"
+            );
+        }
+        assert!(!la_x_nasconde(true, true, Icona::Assente));
+        assert!(!la_x_nasconde(true, false, Icona::Assente));
+    }
+
+    /// Se non si è potuto chiedere — il lucchetto dell'icona è in mano a chi la
+    /// sta costruendo — resta quel che si sapeva.
+    /// La domanda della X gira sul filo principale: niente lucchetto in attesa
+    /// (un comando può tenerlo mentre aspetta **questo** filo), e la X chiede al
+    /// sistema invece di fidarsi dell'esito della costruzione.
+    #[test]
+    fn la_domanda_della_x_non_aspetta_nessun_lucchetto() {
+        let sorgente = include_str!("vassoio.rs");
+        let corpo = |firma: &str| {
+            sorgente
+                .split(firma)
+                .nth(1)
+                .and_then(|resto| resto.split("\n}\n").next())
+                .unwrap_or_default()
+        };
+        let adesso = corpo("fn icona_adesso(");
+        assert!(!adesso.is_empty(), "la prova dell'icona non si trova");
+        assert!(adesso.contains("icona.try_lock()") || adesso.contains("stato.icona.try_lock()"));
+        assert!(adesso.contains("in_corso.try_lock()"));
+        assert!(!adesso.contains(".lock()"), "la X aspetta un lucchetto");
+        assert!(
+            adesso.contains(".set_tooltip("),
+            "la X non chiede al sistema"
+        );
+        let x = corpo("pub fn nasconde_alla_x(");
+        assert!(x.contains("icona_adesso(&stato)"));
+        assert!(x.contains("la_x_nasconde(attivo, costruita, icona)"));
+    }
+
+    #[test]
+    fn se_non_si_puo_chiedere_vale_quel_che_si_sapeva() {
+        assert!(la_x_nasconde(true, true, Icona::NonSiSa));
+        assert!(!la_x_nasconde(true, false, Icona::NonSiSa));
     }
 
     #[test]

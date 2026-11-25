@@ -470,7 +470,8 @@ mod prove {
         let finestra = &lib[lib.find(".on_window_event(").expect("il gestore")..];
         let finestra = &finestra[..finestra.find("})").expect("la fine del gestore")];
         assert!(
-            finestra.contains("chiusura::alla_richiesta(mano, vassoio::nasconde(mano))"),
+            finestra.contains("chiusura::alla_richiesta(mano, nasconde)")
+                && finestra.contains("vassoio::nasconde_alla_x(mano)"),
             "Alt+F4 e la barra delle applicazioni non aspettano lo Studio"
         );
         let giro = &lib[lib.find("app.run(|mano, evento|").expect("il ciclo")..];
