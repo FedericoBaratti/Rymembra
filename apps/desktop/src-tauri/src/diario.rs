@@ -789,6 +789,26 @@ fn cartella_di_riserva() -> Option<PathBuf> {
 #[cfg(test)]
 static IL_TURNO: Mutex<()> = Mutex::new(());
 
+/// Per le prove di altri moduli: esegue `prova` con il diario **aperto** in una
+/// cartella temporanea, e restituisce tutto quel che ci è stato scritto.
+///
+/// È la condizione dopo [`apri`]: quel che una prova vuole sapere è se una riga
+/// finisce nel diario di chi legge — a diario chiuso le righe di `nota!` non
+/// vanno da nessuna parte, e solo [`a_diario_chiuso`] vede le righe di riserva.
+#[cfg(test)]
+pub(crate) fn a_diario_aperto(prova: impl FnOnce()) -> String {
+    let _turno = IL_TURNO.lock().unwrap_or_else(PoisonError::into_inner);
+    let Ok(radice) = tempfile::tempdir() else {
+        return String::new();
+    };
+    apri(radice.path());
+    prova();
+    let testo = fs::read_to_string(radice.path().join(CARTELLA).join(NOME)).unwrap_or_default();
+    // Si chiude, o su Windows la cartella temporanea non si cancella.
+    *preso() = None;
+    testo
+}
+
 /// Per le prove di altri moduli: esegue `prova` a diario chiuso, col file di
 /// riserva in una cartella temporanea, e restituisce quel che ci è finito.
 ///
