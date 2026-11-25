@@ -1226,7 +1226,7 @@ installed travels: the comparison is done by the program on your computer, after
 reading the file. The request doesn't even carry a `User-Agent` naming Rymembra,
 and that is deliberate rather than forgotten — the code says so where the request
 is built. What it carries is the one of the library that makes it, Tauri's
-updater, with that library's version: `tauri-plugin-updater/2.13.0` in this
+updater, with that library's version: `tauri-plugin-updater/2.14.1` in this
 release. What GitHub can infer is that somebody, from a certain IP address,
 asked for a public file — exactly what it would know about anyone opening that
 page with a browser.
@@ -1244,8 +1244,9 @@ right away — the same two requests as above, nothing more — and installs it 
 when you really exit Rymembra yourself: «Exit» from the tray icon, or the ×
 (or Alt+F4) when there is no tray icon, and without reopening the program. Until
 then the verified installer is held **in memory**, about 16 MB, and is not
-written to disk — the signature is checked when the file is downloaded, so a copy
-left on disk could not be checked again; at the moment it starts it is extracted
+written to disk — the signature is checked when the file is downloaded and again
+right before it is extracted, on the very bytes held in memory: a copy left on
+disk could have been swapped in between; at the moment it starts it is extracted
 to a temporary folder (`%TEMP%\Rymembra-<version>-updater-*`, the folder in the
 table of *When you uninstall*), as every update does. If Windows is shutting down
 or signing you out, Rymembra exits on its own and installs nothing. If you

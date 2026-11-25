@@ -54,14 +54,16 @@ program (never its data); a way to make that step remove or run something it
 shouldn't is a report too.
 
 On the computer the update can wait for “At close”: the package is downloaded
-and its minisign signature, bound to the version, is checked at that moment —
-`Update::download`, not `install` — and it is then held **in memory**, never
-written to disk, until a person closes Rymembra (“Exit” from the tray, or the ×
-or Alt+F4 when there is no tray icon). Only then is the installer extracted to a
-temporary folder (`%TEMP%\Rymembra-<version>-updater-*`) and started, without
-the restart switch, so Rymembra does not reopen. When Windows shuts down or
-signs the user out the program exits on its own, and nothing is installed: an
-installer launched while Windows is killing processes would stop halfway.
+and its minisign signature, bound to the version, is checked at that moment
+(`Update::download`), and it is then held **in memory**, never written to disk,
+until a person closes Rymembra (“Exit” from the tray, or the × or Alt+F4 when
+there is no tray icon). Only then is the signature checked again, on the same
+bytes (`Update::install` does it before it extracts anything), and the
+installer extracted to a temporary folder (`%TEMP%\Rymembra-<version>-updater-*`)
+and started, without the restart switch, so Rymembra does not reopen. When
+Windows shuts down or signs the user out the program exits on its own, and
+nothing is installed: an installer launched while Windows is killing processes
+would stop halfway.
 Installing a package that did not pass the check, or making an installer start
 when nobody closed the program, is a report. The package waits as long as it
 takes (the card asks again after three days), and is thrown away if the release
