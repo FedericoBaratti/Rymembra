@@ -585,7 +585,7 @@ their reader's search: it appears in its license's group.
 | `time-macros` | 0.2.32 | MIT OR Apache-2.0 | <https://github.com/time-rs/time> |
 | `tinystr` | 0.8.4 | Unicode-3.0 | <https://github.com/unicode-org/icu4x> |
 | `tinyvec` | 1.13.3 | Zlib OR Apache-2.0 OR MIT | <https://github.com/Lokathor/tinyvec> |
-| `tokio` | 1.53.1 | MIT | <https://github.com/tokio-rs/tokio> |
+| `tokio` | 1.53.3 | MIT | <https://github.com/tokio-rs/tokio> |
 | `tokio-macros` | 2.7.2 | MIT | <https://github.com/tokio-rs/tokio> |
 | `tokio-rustls` | 0.26.5 | MIT OR Apache-2.0 | <https://github.com/rustls/tokio-rustls> |
 | `tokio-stream` | 0.1.19 | MIT | <https://github.com/tokio-rs/tokio> |
@@ -6322,7 +6322,7 @@ SOFTWARE.
 
 <details><summary>Which packages</summary>
 
-- `tokio 1.53.1`
+- `tokio 1.53.3`
 - `tokio-stream 0.1.19`
 - `tokio-util 0.7.19`
 

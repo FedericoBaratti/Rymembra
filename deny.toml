@@ -29,9 +29,11 @@ version = 2
 yanked = "deny"
 ignore = [
   # `paste` non ha più un manutentore, e lo dice l'avviso: non c'è un difetto.
-  # È una macro che gira solo in compilazione, portata da `lofty`, e non finisce
-  # nell'eseguibile. Si toglie da qui quando `lofty` la sostituisce.
-  { id = "RUSTSEC-2024-0436", reason = "macro di sola compilazione, portata da lofty; nessun codice nell'eseguibile" },
+  # È una macro che gira solo in compilazione, e non finisce nell'eseguibile. La
+  # portano due crate: `lofty` (i tag dei file audio) e `netlink-packet-core`
+  # (iroh → netwatch → netlink-*, cioè la lettura delle interfacce di rete su
+  # Android). Si toglie da qui quando tutti e due la sostituiscono.
+  { id = "RUSTSEC-2024-0436", reason = "macro di sola compilazione, portata da lofty e da netlink-packet-core; nessun codice nell'eseguibile" },
   # Tre difetti di `zip` (8.x, nostro, e 4.x, di `tauri-plugin-updater`), tutti
   # dentro `ZipArchive::extract` e `ZipStreamReader::extract`, l'estrazione di
   # un archivio intero su disco: bit SUID/SGID conservati, permessi Unix
@@ -84,11 +86,6 @@ ignore = [
   # tabelle vere. Un profilo, un backup e un documento di sincronia sono JSON.
   # Si toglie da qui con `rusqlite` 0.41.
   { id = "RUSTSEC-2026-0459", reason = "SQLite -wal costruito da altri: il proprio database, e il vecchio database scelto dall'utente aperto immutable (il -wal non si legge)" },
-  # `AsyncFd::new` di tokio lascia costruire, senza `unsafe`, un uso che viola
-  # la sicurezza degli I/O: un'API solo Unix che il nostro codice non chiama
-  # (tokio ci arriva con iroh). Si toglie da qui al prossimo aggiornamento di
-  # tokio.
-  { id = "RUSTSEC-2026-0386", reason = "tokio AsyncFd (solo Unix): nessuna chiamata nel nostro codice" },
 ]
 
 # L'elenco chiuso delle licenze che `THIRD-PARTY-NOTICES.md` sa già
