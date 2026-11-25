@@ -4059,6 +4059,96 @@ mod tests {
     }
 
     #[test]
+    fn la_ricetta_dalla_quarantatre_alla_trentotto_in_una_transazione_e_tutta_o_niente() {
+        // S3-7. La ricetta a mano della 043 — quella che si dà a chi vuole
+        // tornare alla 3.2.0 senza la copia — con `sqlite3` gira istruzione per
+        // istruzione: un guasto a metà (un `sqlite3` più vecchio della 3.35, che
+        // non conosce `DROP COLUMN`; uno senza FTS5, dove la `DELETE FROM tracks`
+        // fa scattare un trigger che non trova la tabella) lasciava lo schema
+        // smontato e `user_version = 43`: né la 3.3.0 né la 3.2.0 lo aprono più.
+        // Il testo giusto è `PRAGMA foreign_keys = ON;` **fuori** dalla
+        // transazione, poi `BEGIN; … COMMIT;`: questa prova è la ricetta come va
+        // data, e quella che si dà ai documenti.
+        assert!(
+            rusqlite::version_number() >= 3_035_000,
+            "`DROP COLUMN` chiede SQLite 3.35"
+        );
+        let (accensione, corpo) = RITORNO_DA_43_ALLA_38
+            .split_once(';')
+            .expect("il PRAGMA di testa");
+        assert_eq!(accensione, "PRAGMA foreign_keys = ON");
+        let avvolta = format!("{accensione}; BEGIN; {corpo} COMMIT;");
+
+        // Il caso buono: tutto, e la catena riparte.
+        let alla_38 = Connection::open_in_memory().expect("apertura in memoria");
+        fino_alla(&alla_38, 38);
+        let tornata = open_in_memory().expect("database");
+        libreria_da_perdere(&tornata.connection);
+        riga_specchio(&tornata.connection, 700);
+        tornata
+            .connection
+            .execute_batch(&avvolta)
+            .expect("la ricetta in una transazione");
+        assert_eq!(
+            schema_senza_i_brani(&tornata.connection),
+            schema_senza_i_brani(&alla_38)
+        );
+        assert_eq!(user_version(&tornata.connection).expect("versione"), 38);
+        assert_eq!(
+            u32::try_from(migrate(&tornata.connection).expect("il riaggiornamento riparte"))
+                .expect("conto"),
+            LATEST_VERSION - 38
+        );
+
+        // Il caso che si rompe a metà: la terza istruzione non trova la sua
+        // tabella. Dentro la transazione tutto torna com'era, `user_version`
+        // compresa.
+        let rotta = open_in_memory().expect("database");
+        libreria_da_perdere(&rotta.connection);
+        riga_specchio(&rotta.connection, 700);
+        rotta
+            .connection
+            .execute_batch("DROP TABLE lontano_secchi")
+            .expect("un guasto da provocare");
+        let prima = schema(&rotta.connection);
+        rotta
+            .connection
+            .execute_batch(&avvolta)
+            .expect_err("la ricetta cade a metà");
+        rotta
+            .connection
+            .execute_batch("ROLLBACK")
+            .expect("si torna indietro");
+        assert_eq!(schema(&rotta.connection), prima, "niente è rimasto a metà");
+        assert_eq!(
+            user_version(&rotta.connection).expect("versione"),
+            LATEST_VERSION
+        );
+        assert_eq!(quante(&rotta.connection, "tracks"), 2, "i brani sono lì");
+
+        // Il controllo: senza la transazione le prime due istruzioni restano,
+        // e il database non è più né 43 né 38.
+        let senza = open_in_memory().expect("database");
+        libreria_da_perdere(&senza.connection);
+        riga_specchio(&senza.connection, 700);
+        senza
+            .connection
+            .execute_batch("DROP TABLE lontano_secchi")
+            .expect("lo stesso guasto");
+        let intero = schema(&senza.connection);
+        senza
+            .connection
+            .execute_batch(RITORNO_DA_43_ALLA_38)
+            .expect_err("cade alla stessa istruzione");
+        assert_ne!(schema(&senza.connection), intero, "smontato a metà");
+        assert_eq!(
+            user_version(&senza.connection).expect("versione"),
+            LATEST_VERSION,
+            "e la versione dice ancora 43"
+        );
+    }
+
+    #[test]
     fn aprire_un_file_alla_quarantadue_lascia_la_copia_schema_042() {
         // La strada di serie per tornare indietro: la copia che l'apertura fa
         // da sé prima di migrare, col nome della versione da cui si arriva.
