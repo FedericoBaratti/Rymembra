@@ -83,3 +83,20 @@ test("la Home senza ripiani dice il guasto e offre «Riprova»", () => {
   assert.match(APP, /guasto: guastoCasa/);
   assert.match(APP, /guasto=\{guastoCasa\}\s*onRiprova=\{rileggiCasa\}/);
 });
+
+test("«Alla libreria non è successo niente» solo se la libreria ha risposto", () => {
+  // Con la libreria che non si apre — una migrazione fallita — ogni comando
+  // risponde l'errore dell'apertura, e anche i ripiani falliscono: la Home
+  // diceva «alla libreria non è successo niente» accanto all'avviso rosso che
+  // diceva il contrario (collaudo in Windows Sandbox, D di L-finale-33). Lo si
+  // può dire solo se `avvio` ha risposto: allora è davvero la lettura dei
+  // ripiani a non essere riuscita.
+  const corpo = HOME.slice(HOME.indexOf("export function Home("));
+  const stato = corpo.slice(
+    corpo.indexOf("casa === null && guasto !== null"),
+    corpo.indexOf("if (casa === null) return <CasaFinta />;"),
+  );
+  assert.match(stato, /testo=\{libreriaAperta \? t\("home\.error\.hint"\) : undefined\}/);
+  assert.match(corpo, /libreriaAperta\?: boolean;/);
+  assert.match(APP, /<Home\s+casa=\{casa\}\s+libreriaAperta=\{avvio !== null\}/);
+});

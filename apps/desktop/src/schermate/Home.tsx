@@ -449,6 +449,7 @@ function CasaFinta() {
 
 export function Home({
   casa,
+  libreriaAperta = true,
   guasto = null,
   onRiprova,
   settimana,
@@ -461,6 +462,13 @@ export function Home({
   onAggiungiCartella,
 }: {
   casa: Casa | null;
+  /**
+   * La libreria ha risposto (`avvio` è arrivato). Senza, un guasto dei ripiani è
+   * l'errore dell'apertura che ogni comando ripete — una migrazione fallita — e
+   * «alla libreria non è successo niente» sarebbe falso accanto all'avviso che
+   * dice il contrario. Facoltativo per la stessa ragione di `guasto`.
+   */
+  libreriaAperta?: boolean;
   /**
    * Il guasto della lettura dei ripiani, o `null`. Conta solo senza ripiani in
    * mano: vedi `CasaDellaFinestra.guasto` in `casa.ts`. Facoltativo perché la
@@ -495,7 +503,7 @@ export function Home({
       <StatoVuoto
         icona="i-alert"
         titolo={t("home.error.title")}
-        testo={t("home.error.hint")}
+        testo={libreriaAperta ? t("home.error.hint") : undefined}
         azione={onRiprova && { etichetta: t("common.retry"), fai: onRiprova }}
       />
     );

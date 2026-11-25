@@ -309,7 +309,7 @@ export function StatoVuoto({
 }: {
   icona: NomeIcona;
   titolo: string;
-  testo: React.ReactNode;
+  testo?: React.ReactNode;
   nota?: React.ReactNode;
   azione?:
     | { etichetta: string; fai: () => void; secondaria?: boolean | undefined }
@@ -322,7 +322,7 @@ export function StatoVuoto({
         <Icona nome={icona} dim={30} />
       </span>
       <h2>{titolo}</h2>
-      <p>{testo}</p>
+      {testo !== undefined && <p>{testo}</p>}
       {nota !== undefined && <p className="nota">{nota}</p>}
       {azione && (
         <button
