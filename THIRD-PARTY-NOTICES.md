@@ -242,7 +242,7 @@ their reader's search: it appears in its license's group.
 | `flate2` | 1.1.10 | MIT OR Apache-2.0 | <https://github.com/rust-lang/flate2-rs> |
 | `fnv` | 1.0.7 | Apache-2.0 / MIT | <https://github.com/servo/rust-fnv> |
 | `foldhash` | 0.2.0 | Zlib | <https://github.com/orlp/foldhash> |
-| `form_urlencoded` | 1.2.2 | MIT OR Apache-2.0 | <https://github.com/servo/rust-url> |
+| `form_urlencoded` | 1.2.3 | MIT OR Apache-2.0 | <https://github.com/servo/rust-url> |
 | `futures` | 0.3.34 | MIT OR Apache-2.0 | <https://github.com/rust-lang/futures-rs> |
 | `futures-buffered` | 0.2.14 | MIT | <https://github.com/conradludgate/futures-buffered> |
 | `futures-channel` | 0.3.34 | MIT OR Apache-2.0 | <https://github.com/rust-lang/futures-rs> |
@@ -618,7 +618,7 @@ their reader's search: it appears in its license's group.
 | `untrusted` | 0.9.0 | ISC | <https://github.com/briansmith/untrusted> |
 | `ureq` | 3.4.2 | MIT OR Apache-2.0 | <https://github.com/algesten/ureq> |
 | `ureq-proto` | 0.6.4 | MIT OR Apache-2.0 | <https://github.com/algesten/ureq-proto> |
-| `url` | 2.5.8 | MIT OR Apache-2.0 | <https://github.com/servo/rust-url> |
+| `url` | 2.5.9 | MIT OR Apache-2.0 | <https://github.com/servo/rust-url> |
 | `urlpattern` | 0.6.0 | MIT | <https://github.com/denoland/rust-urlpattern> |
 | `utf8_iter` | 1.0.4 | Apache-2.0 OR MIT | <https://github.com/hsivonen/utf8_iter> |
 | `utf8-zero` | 0.8.1 | MIT OR Apache-2.0 | <https://github.com/algesten/utf8-zero> |
@@ -820,7 +820,7 @@ for the other crates that use it.
 - `fixedbitset 0.5.7`
 - `flate2 1.1.10`
 - `fnv 1.0.7`
-- `form_urlencoded 1.2.2`
+- `form_urlencoded 1.2.3`
 - `futures-lite 2.6.1`
 - `gif 0.14.2`
 - `glob 0.3.4`
@@ -892,7 +892,7 @@ for the other crates that use it.
 - `unicode-normalization 0.1.25`
 - `unicode-segmentation 1.13.3`
 - `unicode-xid 0.2.6`
-- `url 2.5.8`
+- `url 2.5.9`
 - `uuid 1.26.1`
 - `vcpkg 0.2.15`
 - `version_check 0.9.5`
@@ -5514,7 +5514,7 @@ DEALINGS IN THE SOFTWARE.
 
 - `idna 1.1.0`
 - `percent-encoding 2.3.2`
-- `url 2.5.8`
+- `url 2.5.9`
 
 </details>
 
@@ -15662,7 +15662,7 @@ the following restrictions:
 
 <details><summary>Which packages</summary>
 
-- `form_urlencoded 1.2.2`
+- `form_urlencoded 1.2.3`
 
 </details>
 
