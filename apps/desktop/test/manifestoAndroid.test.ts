@@ -636,6 +636,30 @@ test("un avvio che cade in Kotlin lo dice alla notifica: non resta «si sta avvi
   assert.match(kotlin("Ponte.kt"), /"nucleo\.nonParte" -> \{[\s\S]*?principale\.post \{ Presenza\.rinfresca\(app\) \}/);
 });
 
+test("«Installa» non chiude l'app se Android non apre la schermata: l'errore torna a Rust (S5-9)", () => {
+  // `startActivity` dentro `runOnUiThread` senza `try`: se la schermata non si apre
+  // (`ActivityNotFoundException`, `SecurityException`) l'eccezione nasce sul filo
+  // dell'interfaccia, fuori dal `try` di `Ponte.chiama` che ha già risposto, e il
+  // processo muore con la musica e il collegamento con i PC. Qui l'esito torna a chi
+  // aspetta, e a Rust come errore.
+  const sorgente = kotlin("Installatore.kt");
+  const inizio = sorgente.indexOf("object Installatore");
+  const installatore = sorgente.slice(inizio, sorgente.indexOf("object Condividi", inizio));
+  assert.ok(inizio >= 0 && installatore.length > 0, "object Installatore non si trova");
+  assert.doesNotMatch(
+    installatore,
+    /runOnUiThread\s*\{\s*attivita\.startActivity/,
+    "una schermata si apre sul filo dell'interfaccia senza prendere l'eccezione",
+  );
+  const apri = /private fun apri\([\s\S]*?\n  }\n/.exec(installatore)?.[0] ?? "";
+  assert.ok(apri.length > 0, "manca la funzione che apre la schermata e riporta l'esito");
+  assert.match(apri, /runOnUiThread \{\s*try \{\s*attivita\.startActivity\(intento\)[\s\S]*?\} catch \(e: Exception\) \{[\s\S]*?\.complete\(e\)/);
+  assert.match(apri, /\.get\([A-Z_\d]+, TimeUnit\.MILLISECONDS\)/, "chi chiama non aspetta l'esito");
+  assert.match(apri, /throw IllegalStateException\(/, "l'errore non arriva a Rust");
+  // La pagina del permesso e l'installatore passano tutte e due di qui.
+  assert.equal([...installatore.matchAll(/\bapri\(\s*attivita,/g)].length, 2);
+});
+
 test("un nucleo caduto a metà resta caduto: né un «pronto» né un «non parte» in ritardo lo cancellano", () => {
   // FC5, C1. `sessione.pronta` parte a metà di `avvia_il_nucleo` (`media::avvia`), e Kotlin lo
   // posta sul filo principale; `nucleo.nonParte` arriva da un filo di Rust e agisce subito. Un
