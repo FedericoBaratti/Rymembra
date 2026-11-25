@@ -87,7 +87,7 @@ use crate::flusso::Flusso;
 use crate::protocollo::{
     ALPN_ASSOCIA, ALPN_INSIEME, ALPN_LONTANO, Associa, Domanda, MASSIMA_ASSOCIA, MASSIMA_DOMANDA,
     MASSIMA_TESTA, MASSIMO_PEZZO, Presentazione, Presenza, Risposta, SCRITTURE_AL_MINUTO, Testa,
-    cornice, lunghezza_entro, valore_entro,
+    cornice, lunghezza_entro, testa_entro, valore_entro,
 };
 
 /// Quanto vale un QR.
@@ -1478,7 +1478,7 @@ async fn chiedi_su(conn: &Connection, domanda: Domanda) -> Result<Risposta, AppE
 
 /// Legge la risposta: la testa, e per dei byte i byte.
 async fn leggi_risposta(ricevi: &mut RecvStream) -> Result<Risposta, AppError> {
-    match leggi::<Testa>(ricevi, MASSIMA_TESTA).await? {
+    match leggi_testa(ricevi, MASSIMA_TESTA).await? {
         // Come l'annuncio (`Domanda::nei_tetti`): quel che l'altro dice di sé
         // arriva al pannello solo nei tetti.
         Testa::Presenza(presenza) => Ok(Risposta::Presenza(presenza.nei_tetti())),
@@ -1522,6 +1522,23 @@ async fn scrivi(
 /// chi legge sceglie secondo cosa si aspetta e da chi (vedi
 /// `protocollo::MASSIMA_ASSOCIA`).
 async fn leggi<T: DeserializeOwned>(ricevi: &mut RecvStream, tetto: usize) -> Result<T, AppError> {
+    let (corpo, compressa) = leggi_il_corpo(ricevi, tetto).await?;
+    valore_entro(&corpo, compressa, tetto)
+}
+
+/// Come [`leggi`], per la testa di una risposta: ha la sua porta, con i suoi
+/// tetti (vedi [`testa_entro`]).
+async fn leggi_testa(ricevi: &mut RecvStream, tetto: usize) -> Result<Testa, AppError> {
+    let (corpo, compressa) = leggi_il_corpo(ricevi, tetto).await?;
+    testa_entro(&corpo, compressa, tetto)
+}
+
+/// Il corpo di una cornice, com'è sul filo, e se è compresso. La lunghezza si
+/// guarda sulla testa **prima** di allocare il corpo.
+async fn leggi_il_corpo(
+    ricevi: &mut RecvStream,
+    tetto: usize,
+) -> Result<(Vec<u8>, bool), AppError> {
     let mut testa = [0_u8; 4];
     ricevi
         .read_exact(&mut testa)
@@ -1533,7 +1550,7 @@ async fn leggi<T: DeserializeOwned>(ricevi: &mut RecvStream, tetto: usize) -> Re
         .read_exact(&mut corpo)
         .await
         .map_err(irraggiungibile)?;
-    valore_entro(&corpo, compressa, tetto)
+    Ok((corpo, compressa))
 }
 
 /// Il guasto di un flusso, detto col motivo della chiusura se l'altro ha
@@ -1844,10 +1861,12 @@ mod prove {
             let Some(apre) = codice[dopo..].find('(') else {
                 continue;
             };
-            // `leggi(` o `leggi::<T>(`: non `leggi_risposta`, non la definizione.
+            // `leggi(`, `leggi::<T>(` o `leggi_testa(` (la testa di una
+            // risposta, con la sua porta): non `leggi_risposta`, non la definizione.
             let tipo = &codice[dopo..dopo + apre];
-            let chiamata_di_leggi =
-                tipo.is_empty() || (tipo.starts_with("::<") && tipo.ends_with('>'));
+            let chiamata_di_leggi = tipo.is_empty()
+                || tipo == "_testa"
+                || (tipo.starts_with("::<") && tipo.ends_with('>'));
             if !chiamata_di_leggi || codice[..dove].ends_with("fn ") {
                 continue;
             }
@@ -1859,6 +1878,11 @@ mod prove {
                 .unwrap_or_else(|| panic!("leggi{tipo}{chiamata}: senza uno dei tre tetti"));
             if tipo.contains("Associa") {
                 assert_eq!(tetto, "MASSIMA_ASSOCIA", "leggi{tipo}{chiamata}");
+            }
+            // Una testa di risposta si legge col tetto delle risposte, e nessun'altra
+            // cornice passa da `leggi_testa`.
+            if tipo == "_testa" {
+                assert_eq!(tetto, "MASSIMA_TESTA", "leggi{tipo}{chiamata}");
             }
         }
         assert!(letture >= 4, "{letture} letture: la prova non le trova più");

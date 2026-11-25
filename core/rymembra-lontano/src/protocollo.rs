@@ -728,6 +728,19 @@ pub(crate) fn valore_entro<T: DeserializeOwned>(
     serde_json::from_slice(&json).map_err(protocollo)
 }
 
+/// La testa di una risposta, dal corpo di una cornice: l'unica porta da cui una
+/// [`Testa`] entra, e dove le si danno i suoi tetti (reperto S1-2).
+///
+/// # Errori
+///
+/// `lontano.protocollo` per un JSON che non si legge, o che aperto supera `tetto`.
+pub(crate) fn testa_entro(corpo: &[u8], compressa: bool, tetto: usize) -> Result<Testa, AppError> {
+    valore_entro::<Testa>(corpo, compressa, tetto)
+}
+
+#[cfg(test)]
+mod misure;
+
 #[cfg(test)]
 mod prove {
     use super::*;
