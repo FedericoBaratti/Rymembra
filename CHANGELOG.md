@@ -529,7 +529,13 @@ answer.
   and artists are never sent to LRCLIB without a panel open, and the next
   track’s lyrics are not prefetched from another device on a metered network.
   “Send all my history” and “now playing” never scrobble tracks of other
-  devices: the owner does it. “Listen together” says why tracks of another
+  devices: the owner does it. Showing a track of another device in its folder,
+  from wherever that can be asked, says that the file is on the other device.
+  The strips “Reading the library of …” and the download one are not live
+  regions with a counter: a screen reader hears when a read starts, ends or is
+  interrupted. The question “… no longer shares these tracks” waits for the
+  first-run tour and “What’s new”, and the sort button on an artist’s page is
+  named after what it shows. “Listen together” says why tracks of another
   device cannot join a session — a session plays only tracks on this device —
   instead of a generic error. Play and Shuffle on an artist play the artist’s
   own tracks, not the whole albums they appear on (a compilation used to bring
@@ -768,6 +774,12 @@ answer.
   did, instead of leaving a process with no window and no icon. A playback
   error that happens while the window is closed is shown when you open it
   again.
+- **The sync documents carry a capability mark.** Each device’s document has a
+  `capacita` field inside `content` (`["voci-assenti-1"]`). The version of the
+  format is the same, 1, for 3.2.0 and 3.3.0, and 3.2.0 ignores the field;
+  nothing reads it yet, but a later 3.3.x will be able to tell a 3.3.0 device
+  from a PC still on 3.2.0. Each device rewrites its own document once, on the
+  first sync after updating.
 
 **Folders in the cloud.**
 

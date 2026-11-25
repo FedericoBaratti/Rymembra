@@ -325,6 +325,9 @@ constructor that allowed that was removed along with the code that needed it.
 
 These start on their own, on a background thread, when the library holds tracks
 with no album, no cover art, or a title that looks derived from a file name.
+They look up only what is a file on this computer: the tracks of another of your
+devices (§ 4-quinquies) are never sent to MusicBrainz, iTunes or Deezer, not
+even when one of them shares an album with a track of yours.
 Automatic enrichment **can be switched off** in Settings › Folders and
 scanning › Metadata. In the same place, **iTunes and Deezer each have a
 switch of their own, and both are off by default** — for everyone, also
