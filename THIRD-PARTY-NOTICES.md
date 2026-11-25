@@ -70,8 +70,9 @@ this list does not read. The ones Rymembra asks for: **AndroidX** (`webkit`,
 `appcompat`, `activity-ktx`, `lifecycle-process`), **CameraX**
 (`camera-camera2`, `camera-lifecycle`, `camera-view`: the QR scanner that
 links a device), **Media3** (`media3-session` and `media3-common`: the player
-service, its notification and Android Auto), the **Car App Library** (`app`:
-only `CarConnection`, to know when the phone is connected to Android Auto),
+service, its notification and Android Auto), the
+**Car App Library** (`app`: only
+`CarConnection`, to know when the phone is connected to Android Auto),
 **ZXing** (`core`: reading the QR code), **Material Components for Android**
 and the **Kotlin standard library**. And what they bring with them:
 **Guava**, **jspecify**, the pieces of **AndroidX** they build on
