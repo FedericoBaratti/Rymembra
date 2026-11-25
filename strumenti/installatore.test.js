@@ -163,3 +163,57 @@ test("il valore Run dell'avvio si chiama come il prodotto: è così che lo togli
   // E l'argomento che il registro passa è quello che il programma capisce.
   assert.ok(avvio.includes('pub const ARGOMENTO_AVVIO_AUTOMATICO: &str = "--avvio-automatico";'));
 });
+
+// ── «Avvia con Windows» e la reinstallazione a mano (S4-2) ─────────────────────
+//
+// Chi esegue a mano l'installer di una versione più alta sopra quella installata
+// vede «Disinstalla prima di installare», scelto di serie. L'installer lancia il
+// disinstallatore **già installato** come `uninstall.exe _?=<cartella>` — senza
+// `/UPDATE`, che è solo dell'updater — e per lui è una disinstallazione vera:
+// toglieva `Run` e `StartupApproved`, e l'avvio con Windows spariva in silenzio
+// (collaudo in Windows Sandbox, L-WSB33). Il modello di Tauri toglie `Run` da sé,
+// prima del gancio: per questo il valore si legge in PREUNINSTALL e si rimette in
+// POSTUNINSTALL.
+//
+// Come si distingue la disinstallazione dell'installer da quella vera: NSIS
+// (NSIS.chm, §3.2.2) dice che `_?=` «stops the uninstaller from copying itself to
+// the temporary directory», mentre una disinstallazione lanciata da «App e
+// funzionalità» o con un doppio clic si copia nella cartella temporanea e gira da
+// lì. `$EXEDIR`, la cartella dell'eseguibile in corso, vale `$INSTDIR` nel primo
+// caso e una cartella temporanea nel secondo.
+
+const RUN = 'HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "${PRODUCTNAME}"';
+const APPROVATO =
+  'HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run" "${PRODUCTNAME}"';
+
+test("l'avvio con Windows si legge prima che il modello lo tolga, in una variabile del gancio", () => {
+  const prima = macro("NSIS_HOOK_PREUNINSTALL");
+  assert.ok(prima.includes(`ReadRegStr $PrecedenteAvvio ${RUN}`), "PREUNINSTALL non legge Run");
+  // La variabile sta nel blocco `!ifndef PRECEDENTE_NOME`, con le sue sorelle: il
+  // gancio è incluso prima delle `Var` del modello.
+  const blocco = GANCIO.slice(GANCIO.indexOf("!ifndef PRECEDENTE_NOME"), GANCIO.indexOf("!macro NSIS_HOOK_PREINSTALL"));
+  assert.ok(/^\s*Var PrecedenteAvvio\s*$/m.test(blocco), "Var PrecedenteAvvio non è dichiarata col resto");
+});
+
+test("una disinstallazione lanciata dall'installer rimette l'avvio e non toglie lo spento di Windows", () => {
+  const dopo = macro("NSIS_HOOK_POSTUNINSTALL");
+  const dall_installer = dopo.indexOf("${If} $EXEDIR == $INSTDIR");
+  assert.ok(dall_installer >= 0, "POSTUNINSTALL non guarda se gira sul posto (`_?=`)");
+  // Chi ha spuntato «elimina i dati» ha chiesto di ripartire da zero: vale come vera.
+  assert.ok(dopo.includes("${AndIf} $DeleteAppDataCheckboxState <> 1"));
+  const rimette = dopo.indexOf(`WriteRegStr ${RUN} "$PrecedenteAvvio"`);
+  const altrimenti = dopo.indexOf("${Else}", dall_installer);
+  const fine = dopo.indexOf("${EndIf}", altrimenti);
+  assert.ok(rimette > dall_installer && rimette < altrimenti, "l'avvio non si rimette nel ramo dell'installer");
+  // Il valore si rimette solo se c'era: niente `Run` vuoto.
+  assert.ok(dopo.slice(dall_installer, rimette).includes('${If} $PrecedenteAvvio != ""'));
+  // Nell'altro ramo — la disinstallazione vera — si toglie tutto, come prima.
+  const vero = dopo.slice(altrimenti, fine);
+  assert.ok(vero.includes(`DeleteRegValue ${RUN}`));
+  assert.ok(vero.includes(`DeleteRegValue ${APPROVATO}`));
+  // E nel ramo dell'installer non si toglie niente dell'avvio.
+  const dellInstaller = dopo.slice(dall_installer, altrimenti);
+  assert.ok(!dellInstaller.includes("DeleteRegValue"), "la reinstallazione toglie ancora qualcosa");
+  // Il protocollo, invece, si toglie in entrambi i casi: il nuovo installer lo riscrive.
+  assert.ok(dopo.indexOf('DeleteRegKey HKCU "Software\\Classes\\rymembra"') < dall_installer);
+});
