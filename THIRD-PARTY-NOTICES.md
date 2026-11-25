@@ -339,7 +339,7 @@ their reader's search: it appears in its license's group.
 | `lebe` | 0.5.3 | BSD-3-Clause | <https://github.com/johannesvollmer/lebe> |
 | `libc` | 0.2.189 | MIT OR Apache-2.0 | <https://github.com/rust-lang/libc> |
 | `libm` | 0.2.16 | MIT | <https://github.com/rust-lang/compiler-builtins> |
-| `libsqlite3-sys` | 0.38.2 | MIT | <https://github.com/rusqlite/rusqlite> |
+| `libsqlite3-sys` | 0.39.1 | MIT | <https://github.com/rusqlite/rusqlite> |
 | `linux-raw-sys` | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | <https://github.com/sunfishcode/linux-raw-sys> |
 | `litemap` | 0.8.3 | Unicode-3.0 | <https://github.com/unicode-org/icu4x> |
 | `lock_api` | 0.4.14 | MIT OR Apache-2.0 | <https://github.com/Amanieu/parking_lot> |
@@ -469,7 +469,7 @@ their reader's search: it appears in its license's group.
 | `ring` | 0.17.14 | Apache-2.0 AND ISC | <https://github.com/briansmith/ring> |
 | `rtrb` | 0.3.5 | MIT OR Apache-2.0 | <https://github.com/mgeier/rtrb> |
 | `rubato` | 0.16.2 | MIT | <https://github.com/HEnquist/rubato> |
-| `rusqlite` | 0.40.2 | MIT | <https://github.com/rusqlite/rusqlite> |
+| `rusqlite` | 0.41.1 | MIT | <https://github.com/rusqlite/rusqlite> |
 | `rustc_version` | 0.4.1 | MIT OR Apache-2.0 | <https://github.com/djc/rustc-version-rs> |
 | `rustc-hash` | 2.1.3 | Apache-2.0 OR MIT | <https://github.com/rust-lang/rustc-hash> |
 | `rustfft` | 6.4.1 | MIT OR Apache-2.0 | <https://github.com/ejmahler/RustFFT> |
@@ -7754,8 +7754,8 @@ SOFTWARE.
 
 <details><summary>Which packages</summary>
 
-- `libsqlite3-sys 0.38.2`
-- `rusqlite 0.40.2`
+- `libsqlite3-sys 0.39.1`
+- `rusqlite 0.41.1`
 
 </details>
 

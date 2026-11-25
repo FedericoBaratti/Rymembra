@@ -104,7 +104,7 @@ rymembra-catalogo = { path = "../../../core/rymembra-catalogo" }
 # darebbero due tipi `Connection` incompatibili, e l'errore che ne esce parla di
 # tratti non implementati invece che di versioni. Le opzioni di serie spente
 # per la stessa ragione scritta là: accese qui, rientrerebbero per tutti.
-rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
+rusqlite = { version = "0.41", default-features = false, features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 # Senza `protocol-asset`: le copertine passano da uno schema nostro, che accetta

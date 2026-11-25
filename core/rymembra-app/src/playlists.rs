@@ -1193,11 +1193,8 @@ fn fotografa(tx: &Transaction<'_>, id: i64) -> Result<Cancellata, AppError> {
         let mut statement = tx
             .prepare("SELECT * FROM playlists WHERE id = ?1")
             .map_err(guasto)?;
-        let colonne: Vec<String> = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        // Dalla `rusqlite` 0.41 `column_names()` è già un iteratore.
+        let colonne: Vec<String> = statement.column_names().map(str::to_owned).collect();
         statement
             .query_row([id], |row| {
                 colonne
