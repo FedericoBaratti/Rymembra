@@ -288,9 +288,8 @@ pub fn counts(connection: &Connection, origine: &Origine) -> Result<Counts, AppE
                                                AND v.copia_di IS NULL)),
                     (SELECT COUNT(*) FROM tracks WHERE liked = 1)
                       - (SELECT COUNT(*) FROM tracks WHERE liked = 1 AND copia_di IS NOT NULL),
-                    (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks)
-                      - (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks
-                          WHERE copia_di IS NOT NULL)"
+                    (SELECT COALESCE(SUM(CASE WHEN copia_di IS NULL THEN duration_ms END), 0)
+                       FROM tracks)"
         ),
         Some(t) => {
             let senza_alias = origine.sql("")?;
@@ -442,6 +441,46 @@ impl TrackOrder {
             Self::Title => "t.ordine_titolo, t.ordine_artista, t.id",
         }
     }
+
+    /// La tabella da cui si legge una pagina in questo ordine, con la guida
+    /// all'indice quando l'ordine ne vuole una.
+    ///
+    /// # Perché «Recenti» ha una guida e gli altri no
+    ///
+    /// Gli altri ordini hanno un indice che li serve per intero (`idx_tracks_*`):
+    /// SQLite lo trova da sé. «Recenti» ne ha uno che serve **solo il primo
+    /// termine** (`idx_tracks_added`, la data d'ingresso): il resto — l'ordine
+    /// del disco, per i brani entrati nello stesso istante (R18-2) — lo ordina
+    /// SQLite, ma soltanto dentro ogni gruppo di date uguali (una scansione ne
+    /// scrive cinquecento insieme), e si ferma appena la pagina è piena. Il
+    /// pianificatore non lo sa fare da sé: davanti a una pagina da duecento righe
+    /// sceglieva la scansione della tabella e l'ordinamento di **tutta**, 70 ms
+    /// su ventinovemila brani contro 0,4 prima di R18-2. `INDEXED BY` gli toglie
+    /// la scelta; se un giorno l'indice cambiasse, la prova sul piano
+    /// (`la_pagina_dei_recenti_legge_dall_indice_delle_date…`) dice se la guida
+    /// serve ancora, e l'indice manca solo a un database che non ha finito di
+    /// migrare, cioè mai a quello che si interroga.
+    pub(super) const fn da(self) -> &'static str {
+        match self {
+            Self::RecentlyAdded => "tracks t INDEXED BY idx_tracks_added",
+            Self::Shelf | Self::MostPlayed | Self::RecentlyPlayed | Self::Title => "tracks t",
+        }
+    }
+}
+
+/// La domanda di [`list_tracks`], a parte perché la prova ne guardi il piano.
+/// Parametri: il limite, la posizione.
+pub(super) fn sql_della_pagina(
+    connection: &Connection,
+    origine: &Origine,
+    order: TrackOrder,
+) -> Result<String, AppError> {
+    Ok(format!(
+        "SELECT {COLONNE_BRANO} FROM {} WHERE {} ORDER BY {} LIMIT ?1 OFFSET ?2",
+        order.da(),
+        dove(connection, origine, "t.")?,
+        order.sql()
+    ))
 }
 
 /// Una pagina di brani.
@@ -452,11 +491,7 @@ pub fn list_tracks(
     offset: i64,
     limit: i64,
 ) -> Result<Vec<TrackSummary>, AppError> {
-    let sql = format!(
-        "SELECT {COLONNE_BRANO} FROM tracks t WHERE {} ORDER BY {} LIMIT ?1 OFFSET ?2",
-        dove(connection, origine, "t.")?,
-        order.sql()
-    );
+    let sql = sql_della_pagina(connection, origine, order)?;
     let mut statement = connection
         .prepare_cached(&sql)
         .map_err(|err| db_error("elenco dei brani", &err))?;

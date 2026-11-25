@@ -810,3 +810,9 @@ mod prove_per_chiavi;
 /// generazione, il confine di fiducia e le valutazioni che arrivano da fuori.
 #[cfg(test)]
 mod prove_catalogo;
+
+/// Le misure di R33-prestazioni: le query degli ordinamenti dei Brani, della
+/// pagina di un artista e dell'avvio, su una copia di un database vero. Tutte
+/// `#[ignore]`: scrivono tempi, non provano un comportamento.
+#[cfg(test)]
+mod misure_prestazioni;

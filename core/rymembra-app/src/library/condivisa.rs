@@ -581,8 +581,9 @@ pub(super) fn brani_diretti(
 ) -> Result<Vec<BranoRemoto>, AppError> {
     assicura_le_radici(connection)?;
     let sql = format!(
-        "SELECT {COLONNE_REMOTO} FROM tracks t WHERE {CONDIVISO}
+        "SELECT {COLONNE_REMOTO} FROM {} WHERE {CONDIVISO}
          ORDER BY {} LIMIT ?1 OFFSET ?2",
+        ordine.da(),
         ordine.sql()
     );
     righe_di_brani(
