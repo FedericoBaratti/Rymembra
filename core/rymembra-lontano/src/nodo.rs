@@ -317,7 +317,9 @@ pub enum Evento {
     /// Il QR mostrato non vale più: è stato usato, o è scaduto. Chi lo mostra lo toglie dallo schermo —
     /// se nel frattempo non ce n'è già uno nuovo ([`Nodo::invito_attivo`]).
     InvitoFinito,
-    /// Qualcosa da scrivere nel diario.
+    /// Qualcosa da scrivere nel diario. Il testo è **senza prefisso**: l'app
+    /// ci mette il suo («lontano», come ogni riga di questa parte), e un testo
+    /// che ne porta già uno lo mostra due volte nel diario.
     Diario(String),
 }
 
@@ -615,7 +617,7 @@ impl Condiviso {
         };
         if omesse > 0 {
             self.evento(Evento::Diario(format!(
-                "[lontano] altre {omesse} righe di diario omesse: troppe in un minuto"
+                "altre {omesse} righe di diario omesse: troppe in un minuto"
             )));
         }
         self.evento(Evento::Diario(testo));
@@ -1468,7 +1470,7 @@ async fn servi(condiviso: &Arc<Condiviso>, conn: &Connection) {
                 // Il codice e basta: né la chiave dell'altro né la causa, che
                 // per un guasto di rete può portare un indirizzo.
                 condiviso.diario(format!(
-                    "[lontano] una domanda non ha avuto risposta codice={}",
+                    "una domanda non ha avuto risposta codice={}",
                     guasto.code().kind().code()
                 ));
             }
@@ -1560,7 +1562,7 @@ async fn rispondi_a(
     let esito = esito.inspect_err(|guasto| {
         if guasto.code().kind().domain() != Domain::Lontano {
             condiviso.diario(format!(
-                "[lontano] una domanda è caduta codice={}",
+                "una domanda è caduta codice={}",
                 guasto.code().kind().code()
             ));
         }
@@ -1804,7 +1806,7 @@ impl ProtocolHandler for Associazione {
                 ErrorCodeKind::LontanoProtocollo.code().as_bytes(),
             );
             condiviso.diario(format!(
-                "[lontano] un'associazione non è andata codice={}",
+                "un'associazione non è andata codice={}",
                 guasto.code().kind().code()
             ));
         }
@@ -2092,6 +2094,29 @@ mod prove {
             argomenti(prima + "leggi".len()).contains("MASSIMA_ASSOCIA"),
             "associa legge la domanda con un altro tetto"
         );
+    }
+
+    /// Le righe di diario del nodo non portano il prefisso dell'app: lo mette
+    /// l'app (`nota!`) davanti a ogni `Evento::Diario`, e una riga che lo porta
+    /// già lo mostrava due volte (collaudo AVD-2). Questa prova guarda il
+    /// codice, perché una riga nuova che lo rimette — anche una che non si
+    /// raggiunge in una prova di rete — non passi.
+    #[test]
+    fn nessuna_riga_di_diario_del_nodo_porta_il_prefisso_dell_app() {
+        let sorgente = include_str!("nodo.rs");
+        let codice = &sorgente[..sorgente
+            .find("mod prove_connessioni;")
+            .expect("le prove in fondo")];
+        let con_il_prefisso: Vec<String> = codice
+            .match_indices("\"[lontano]")
+            .map(|(da, _)| codice[da..].chars().take(60).collect())
+            .collect();
+        assert!(
+            con_il_prefisso.is_empty(),
+            "righe di diario col prefisso dell'app: {con_il_prefisso:?}"
+        );
+        // E la prova non è vuota: le righe di diario ci sono, e sono queste.
+        assert!(codice.matches("condiviso.diario(").count() >= 3);
     }
 
     #[test]

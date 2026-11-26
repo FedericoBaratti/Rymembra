@@ -21,6 +21,8 @@ struct Finta {
     /// Gli eventi che il nodo ha dato all'app, per genere.
     presenti: AtomicUsize,
     diari: AtomicUsize,
+    /// Le righe di diario, com'è il testo che il nodo ha dato all'app.
+    testi_di_diario: Mutex<Vec<String>>,
     /// `rispondi` risponde a `Leggi` con una risposta più grande di qualunque
     /// finestra di flusso: chi non legge la lascia a metà.
     risposte_enormi: AtomicBool,
@@ -68,7 +70,12 @@ impl Ospite for Finta {
     fn evento(&self, evento: Evento) {
         match evento {
             Evento::Presente { .. } => self.presenti.fetch_add(1, Ordering::SeqCst),
-            Evento::Diario(_) => self.diari.fetch_add(1, Ordering::SeqCst),
+            Evento::Diario(testo) => {
+                if let Ok(mut testi) = self.testi_di_diario.lock() {
+                    testi.push(testo);
+                }
+                self.diari.fetch_add(1, Ordering::SeqCst)
+            }
             _ => 0,
         };
     }
@@ -510,6 +517,59 @@ fn un_pari_che_sbaglia_le_domande_non_riempie_il_diario_e_si_ignora_per_un_po() 
         "una domanda dopo troppe sbagliate non si serve: {esito:?}"
     );
     assert!(conn.close_reason().is_none(), "e la connessione resta");
+}
+
+/// Le righe di diario che il nodo ha dato all'app, aspettando la prima: la
+/// domanda sbagliata si serve su un compito a parte.
+fn righe_di_diario_dopo_una_domanda_sbagliata(finta: &Finta) -> Vec<String> {
+    let fine = Instant::now() + Duration::from_secs(5);
+    while finta.diari.load(Ordering::SeqCst) == 0 && Instant::now() < fine {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    finta.testi_di_diario.lock().expect("lucchetto").clone()
+}
+
+#[test]
+fn la_riga_di_una_domanda_senza_risposta_non_porta_il_prefisso_dell_app() {
+    // Collaudo AVD-2: nel diario di A, `[lontano] [lontano] una domanda non ha
+    // avuto risposta`. Il prefisso lo mette l'app (`nota!`) davanti a ogni
+    // `Evento::Diario`; il nodo ne dava uno suo, e usciva due volte.
+    let (pc, del_pc) = nodo("PC");
+    let (telefono, _) = nodo("Telefono");
+    del_pc.ammetti(&telefono.chiave(), true);
+    let conn = connessione_grezza(&telefono, &pc, ALPN_LONTANO);
+    una_domanda_sbagliata(&telefono, &conn);
+    let testi = righe_di_diario_dopo_una_domanda_sbagliata(&del_pc);
+    assert!(
+        testi
+            .iter()
+            .any(|testo| testo.contains("una domanda non ha avuto risposta")),
+        "la riga della domanda sbagliata manca: {testi:?}"
+    );
+    for testo in &testi {
+        assert!(
+            !testo.starts_with("[lontano]"),
+            "il prefisso è dell'app, e il nodo non lo ripete: {testo}"
+        );
+    }
+}
+
+#[test]
+fn la_riga_delle_righe_omesse_non_porta_il_prefisso_dell_app() {
+    // Stessa regola per la riga che dice quante se ne sono omesse: il conto è già
+    // alto, la finestra del minuto è vuota, e la prossima riga la porta con sé.
+    let (pc, del_pc) = nodo("PC");
+    *chiave(&pc.condiviso.righe_di_diario) = (VecDeque::new(), 3);
+    pc.condiviso.diario("una riga".to_owned());
+    let testi = del_pc.testi_di_diario.lock().expect("lucchetto").clone();
+    assert_eq!(testi.len(), 2, "{testi:?}");
+    assert!(testi[0].contains("3 righe di diario omesse"), "{testi:?}");
+    for testo in &testi {
+        assert!(
+            !testo.starts_with("[lontano]"),
+            "il prefisso è dell'app, e il nodo non lo ripete: {testo}"
+        );
+    }
 }
 
 #[test]
