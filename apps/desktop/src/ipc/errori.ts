@@ -1,6 +1,11 @@
 /** Parte del contratto con il nucleo: l'errore come arriva, e come si legge. La riesporta `ipc.ts`: si importa da lì. */
-import { tSe } from "../lingue";
-import { chiaveDelTestoErrore, chiaveSecondoIDatiMobili, fasciaDaRitirarePerDatiMobili } from "../lontano";
+import { t, tSe } from "../lingue";
+import {
+  chiaveDelMotivoDelSalto,
+  chiaveDelTestoErrore,
+  chiaveSecondoIDatiMobili,
+  fasciaDaRitirarePerDatiMobili,
+} from "../lontano";
 import type { DatiMobili } from "./lontano";
 
 /** Un errore, come lo manda il nucleo. */
@@ -181,4 +186,24 @@ export function guastoAdesso(guasto: Guasto | null, datiMobili: DatiMobili | nul
   const chiave = chiaveSecondoIDatiMobili(guasto.chiave, datiMobili);
   const testo = tSe(chiave, guasto.testo, guasto.valori);
   return testo === guasto.testo ? guasto : { ...guasto, testo };
+}
+
+/**
+ * La frase dell'avviso di un brano saltato (`riproduzione:saltato`): il brano, e
+ * perché non si apriva, con l'impostazione «Dati mobili» di **adesso**.
+ *
+ * L'avviso resta in vista qualche secondo, e `App` la ricompone se in quei secondi
+ * l'impostazione cambia: nata con «Chiedi», diceva «premi play e ti chiederà» anche
+ * a chi aveva appena scelto «Solo Wi-Fi» dalle Impostazioni (D-5 della ripresa di
+ * AVD-2). Con «Sì» il motivo dei dati mobili non vale più, e resta il solo brano.
+ */
+export function fraseDelSalto(
+  titolo: string | null,
+  codice: string,
+  datiMobili: DatiMobili | null | undefined,
+): string {
+  const che = titolo ? t("playback.skipped", { titolo }) : t("playback.skipped.unknown");
+  const chiave = chiaveDelMotivoDelSalto(codice, datiMobili);
+  const perche = chiave === null ? "" : tSe(chiave, "");
+  return perche === "" ? che : `${che} ${perche}`;
 }
