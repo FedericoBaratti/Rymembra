@@ -1555,7 +1555,9 @@ fn ricominciare_il_brano_manda_lo_stato_con_la_posizione_da_zero() {
     let mod_rs = include_str!("mod.rs");
     for firma in ["pub fn precedente_ora(", "pub fn prossimo_ora("] {
         let corpo = corpo_privato(mod_rs, firma).expect(firma);
-        let da = corpo.find("Step::Restart =>").expect("il ramo Step::Restart");
+        let da = corpo
+            .find("Step::Restart =>")
+            .expect("il ramo Step::Restart");
         let ramo = &corpo[da..];
         let ramo = &ramo[..ramo.find("\n            }").expect("la fine del ramo")];
         assert!(
