@@ -222,7 +222,11 @@ pub(super) struct Comune {
     /// Le chiavi dei dispositivi associati e non revocati: il cancello del
     /// nodo le chiede a ogni connessione, e non deve aspettare la libreria.
     pub associati: RwLock<HashSet<String>>,
-    /// Chi risponde adesso, e cosa dice di sé.
+    /// Chi risponde adesso, e cosa dice di sé. Solo chi il cancello
+    /// ([`Comune::associati`]) ammette: chi ne esce — «Dimentica», o un
+    /// «Dimenticami» ricevuto — esce da qui nello stesso momento
+    /// ([`tieni_la_lettura`]), e chi non è ammesso non vi entra
+    /// ([`Comune::segna_presente`]).
     pub presenze: Mutex<HashMap<String, Presenza>>,
     /// Chi aspetta un sì o un no.
     pub richieste: Mutex<Vec<(RichiestaIpc, Sender<bool>)>>,
@@ -307,6 +311,26 @@ impl Comune {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .contains(chiave)
+    }
+
+    /// Un dispositivo risponde, ed ecco chi è: lo si mette fra le presenze.
+    ///
+    /// Solo se il cancello lo ammette: il nodo non fa vedere presente chi non
+    /// è associato (`rispondi_a`), e qui lo si ripete per un annuncio rimasto
+    /// in cassetta dopo un «Dimentica» o un «Dimenticami», che altrimenti
+    /// rimetterebbe in vista chi se n'è appena andato.
+    pub(super) fn segna_presente(&self, chiave: &str, presenza: Presenza) -> Arrivo {
+        if !self.associato(&chiave_di(chiave)) {
+            return Arrivo::Sconosciuto;
+        }
+        if prendi(&self.presenze)
+            .insert(chiave.to_owned(), presenza)
+            .is_none()
+        {
+            Arrivo::Nuovo
+        } else {
+            Arrivo::Gia
+        }
     }
 
     /// Solo il cancello, per le prove che non c'entrano col registro: nel
@@ -516,6 +540,19 @@ fn dispositivo_di(stato: &Stato) -> Result<String, AppError> {
     leggi_da(stato, crate::nuvola::dispositivo).or_else(|_| {
         crate::stato::con_libreria(stato, |l| crate::nuvola::dispositivo(&l.connection))
     })
+}
+
+/// Cosa è successo mettendo un dispositivo fra le presenze: vedi
+/// [`Comune::segna_presente`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Arrivo {
+    /// Prima non rispondeva: da qui partono la lettura del suo catalogo e gli
+    /// ascolti in fila.
+    Nuovo,
+    /// Già in vista: un annuncio ripetuto, che non rilegge niente.
+    Gia,
+    /// Il cancello non lo ammette: non è una presenza.
+    Sconosciuto,
 }
 
 // ── il registro ─────────────────────────────────────────────────────────────
@@ -916,6 +953,14 @@ fn leggi(c: &rusqlite::Connection) -> Result<Letto, AppError> {
 /// tiene l'ultima, col registro sopra: lo stesso cancello che c'era, con le
 /// modifiche fatte nel frattempo. Fino al reperto 02-8 lo si rifaceva dalla
 /// lettura vecchia, senza le modifiche.
+///
+/// Anche chi risponde ([`Comune::presenze`]) viene da lì: chi esce dal cancello
+/// esce dalle presenze. Il nodo, quando smette di seguire un dispositivo
+/// (`Nodo::revoca`, `Nodo::pari`), ferma il compito che lo seguiva **senza**
+/// dire `Evento::Assente`: da sola la voce non si sarebbe mai tolta — la
+/// grazia parte da quell'evento —, e il dispositivo ricollegato subito dopo
+/// non sarebbe risultato «nuovo», senza lettura del catalogo né ascolti in
+/// fila fino al giro di cinque minuti (D-3 del collaudo AVD-2).
 fn tieni_la_lettura(
     comune: &Comune,
     letto: &mut Option<Letto>,
@@ -948,16 +993,22 @@ fn tieni_la_lettura(
     for (chiave, sospesa) in sospese.iter() {
         applica(&mut letto.dispositivi, chiave, &sospesa.modifica);
     }
-    let mut associati = comune
-        .associati
-        .write()
-        .unwrap_or_else(PoisonError::into_inner);
-    *associati = letto
+    let dentro: HashSet<String> = letto
         .dispositivi
         .iter()
         .filter(|d| !d.revocato)
         .map(|d| chiave_di(&d.chiave))
         .collect();
+    // Il cancello si rifà con il registro in mano, come in `Comune::registra`:
+    // una modifica che arriva adesso non passa in mezzo.
+    *comune
+        .associati
+        .write()
+        .unwrap_or_else(PoisonError::into_inner) = dentro.clone();
+    drop(sospese);
+    // Le presenze dopo, in una presa loro: nessuno tiene quel lucchetto e poi
+    // quello del registro o del cancello.
+    prendi(&comune.presenze).retain(|chiave, _| dentro.contains(&chiave_di(chiave)));
     riuscita
 }
 
@@ -1126,6 +1177,13 @@ impl Filo {
         let vista = self.comune.scritture_viste();
         let lettura = leggi_a_parte(&self.app, leggi);
         tieni_la_lettura(&self.comune, &mut self.letto, lettura, vista);
+        // Chi è uscito dal cancello esce anche dai conti del filo: non è in
+        // forse, e un ricollegamento non trova un «visto» scritto da poco.
+        let comune = &self.comune;
+        self.in_forse
+            .retain(|chiave, _| comune.associato(&chiave_di(chiave)));
+        self.visti
+            .retain(|chiave, _| comune.associato(&chiave_di(chiave)));
         // Quel che il registro non ha ancora scritto: un guasto di prima si
         // ritenta qui, a ogni giro.
         scrivi_il_registro(&self.app, &self.comune);
@@ -1383,13 +1441,16 @@ impl Filo {
     fn evento(&mut self, evento: Evento) {
         match evento {
             Evento::Presente { chiave, presenza } => {
+                let arrivo = self.comune.segna_presente(&chiave, presenza);
+                // Un annuncio di chi il cancello non ammette più (rimasto in
+                // cassetta dopo un «Dimentica») non è una presenza.
+                if arrivo == Arrivo::Sconosciuto {
+                    return;
+                }
                 // Tornato prima della fine della grazia: non se n'era andato.
                 self.in_forse.remove(&chiave);
-                let nuovo = prendi(&self.comune.presenze)
-                    .insert(chiave.clone(), presenza)
-                    .is_none();
                 // Appena risponde, gli si mandano gli ascolti rimasti in fila.
-                if nuovo {
+                if arrivo == Arrivo::Nuovo {
                     super::sfoglia::manda_gli_ascolti(&self.app, &self.comune, Some(&chiave));
                     // E si riguarda il suo catalogo, con la posta che aspetta.
                     super::specchio::presente(&self.app, &chiave);
@@ -1976,6 +2037,123 @@ mod prove {
             "«Dimentica» non si perde dietro la revoca già scritta"
         );
         assert!(!comune.associato(&chiave));
+    }
+
+    /// Un `Evento::Presente`, come lo tratta `Filo::evento`: `Arrivo::Nuovo` se
+    /// prima non c'era, cioè se da lì partono la lettura del suo catalogo e gli
+    /// ascolti in fila.
+    fn arriva_la_presenza(comune: &Comune, chiave: &str) -> Arrivo {
+        comune.segna_presente(chiave, Presenza::default())
+    }
+
+    #[test]
+    fn dopo_un_dimenticami_la_presenza_se_ne_va_e_il_ricollegamento_rilegge_subito() {
+        // Reperto D-3 (collaudo AVD-2): chi è stato dimenticato dall'altro
+        // (`Domanda::Dimenticami`, poi `Modifica::Revoca`) e si ricollega subito
+        // non rileggeva il catalogo per cinque minuti, il giro dello specchio. Il
+        // nodo, a «Dimenticami», smette di seguirlo con un `abort` del compito:
+        // nessun `Evento::Assente`, quindi niente `in_forse` e niente fine della
+        // grazia, e la voce in `presenze` restava. Il ricollegamento non era una
+        // presenza «nuova».
+        let db = rymembra_app::db::open_in_memory().unwrap();
+        let c = &db.connection;
+        let lui = chiave_finta('a');
+        collega(c, &lui);
+        let (posta, _cassetta) = nuova_cassetta();
+        let comune = Comune::nuovo(posta);
+        let mut letto = None;
+        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c), 0));
+        assert_eq!(
+            arriva_la_presenza(&comune, &lui),
+            Arrivo::Nuovo,
+            "la prima volta è nuovo"
+        );
+        assert_eq!(
+            arriva_la_presenza(&comune, &lui),
+            Arrivo::Gia,
+            "un annuncio ripetuto non rilegge"
+        );
+
+        // «Dimenticami» da lui: revocato qui, e la lettura dopo lo vede.
+        comune.registra(&lui, Modifica::Revoca);
+        dispositivi::revoca(c, &lui).unwrap();
+        assert!(tieni_la_lettura(
+            &comune,
+            &mut letto,
+            leggi(c),
+            comune.scritture_viste()
+        ));
+        assert!(
+            !prendi(&comune.presenze).contains_key(&lui),
+            "chi ci ha dimenticati non risponde più: il cancello lo tiene fuori"
+        );
+        // Un annuncio rimasto in cassetta, arrivato dopo, non lo rimette in vista.
+        assert_eq!(
+            arriva_la_presenza(&comune, &lui),
+            Arrivo::Sconosciuto,
+            "chi il cancello non ammette non è una presenza"
+        );
+        assert!(!prendi(&comune.presenze).contains_key(&lui));
+
+        // Un QR nuovo, e lui si ricollega: la presenza che torna è nuova.
+        comune.registra(&lui, Modifica::Associa(collegato("PC")));
+        assert!(tieni_la_lettura(
+            &comune,
+            &mut letto,
+            leggi(c),
+            comune.scritture_viste()
+        ));
+        assert!(comune.associato(&lui));
+        assert_eq!(
+            arriva_la_presenza(&comune, &lui),
+            Arrivo::Nuovo,
+            "il ricollegamento è una presenza nuova: parte la lettura del catalogo"
+        );
+    }
+
+    #[test]
+    fn dopo_un_dimentica_la_presenza_se_ne_va_anche_con_la_libreria_occupata() {
+        // La direzione opposta di D-3: chi dimentica (`Modifica::Dimentica`) e
+        // poi ricollega la stessa chiave. Con la lettura che non riesce il
+        // cancello si rifà lo stesso (reperto 02-8), e la presenza con lui.
+        let db = rymembra_app::db::open_in_memory().unwrap();
+        let c = &db.connection;
+        let lui = chiave_finta('a');
+        let resta = chiave_finta('b');
+        collega(c, &lui);
+        collega(c, &resta);
+        let (posta, _cassetta) = nuova_cassetta();
+        let comune = Comune::nuovo(posta);
+        let mut letto = None;
+        assert!(tieni_la_lettura(&comune, &mut letto, leggi(c), 0));
+        assert_eq!(arriva_la_presenza(&comune, &lui), Arrivo::Nuovo);
+        assert_eq!(arriva_la_presenza(&comune, &resta), Arrivo::Nuovo);
+
+        comune.registra(&lui, Modifica::Dimentica);
+        dispositivi::dimentica(c, &lui).unwrap();
+        assert!(!tieni_la_lettura(&comune, &mut letto, occupata(), 0));
+        assert!(
+            !prendi(&comune.presenze).contains_key(&lui),
+            "il dispositivo dimenticato non risponde più"
+        );
+        assert!(
+            prendi(&comune.presenze).contains_key(&resta),
+            "chi è ancora collegato resta in vista"
+        );
+
+        // Ricollegato, senza che la libreria si sia liberata.
+        comune.registra(&lui, Modifica::Associa(collegato("Telefono")));
+        assert!(!tieni_la_lettura(&comune, &mut letto, occupata(), 0));
+        assert_eq!(
+            arriva_la_presenza(&comune, &lui),
+            Arrivo::Nuovo,
+            "il ricollegamento è una presenza nuova: partono la lettura e gli ascolti"
+        );
+        assert_eq!(
+            arriva_la_presenza(&comune, &resta),
+            Arrivo::Gia,
+            "chi non è mai andato via non è nuovo"
+        );
     }
 
     #[test]
