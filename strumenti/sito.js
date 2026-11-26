@@ -602,7 +602,6 @@ function landing(r, testi, problemi, usate) {
       $sponsor: `https://github.com/sponsors/${r.repo.split("/")[3]}`,
       $problemi: `${r.repo}/issues/new/choose`,
       $discussioni: `${r.repo}/discussions`,
-      $email: "barattifederico@gmail.com",
       $anno: r.data.slice(0, 4),
     };
     const prima = problemi.length;

@@ -401,7 +401,12 @@ test("il sito non pubblica un indirizzo email", () => {
   assert.doesNotMatch(pagina, /mailto:/, "la pagina ha ancora un link mailto:");
   const generatore = fs.readFileSync(path.join(__dirname, "sito.js"), "utf8");
   assert.doesNotMatch(generatore, /\$email\b/, "il generatore ha ancora il valore $email");
-  assert.doesNotMatch(generatore, /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/, "un indirizzo email nel generatore");
+  // Un indirizzo, non il nome di un'icona come `128x128@2x.png`.
+  assert.doesNotMatch(
+    generatore,
+    /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.(com|it|org|net|io|dev|me|eu)\b/,
+    "un indirizzo email nel generatore",
+  );
   for (const lingua of fs.readdirSync(path.join(__dirname, "../site/testi"))) {
     const testi = JSON.parse(fs.readFileSync(path.join(__dirname, "../site/testi", lingua), "utf8"));
     assert.equal(testi.sostieni?.scrivi, undefined, `${lingua}: resta il testo del link «Scrivi»`);
