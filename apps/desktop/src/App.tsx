@@ -1272,9 +1272,12 @@ export function App() {
       // L'artista aperto: i suoi numeri sono la lunghezza dei suoi elenchi, e un
       // brano che se ne va li cambia (`giroArtista`).
       setGiroArtista((giro) => giro + 1);
-      // Gli artisti si rileggono subito se la vista è aperta, entrandoci se no.
-      invalidaArtisti();
     }
+    // Gli artisti si rileggono subito se la vista è aperta, entrandoci se no. Fuori
+    // dalla guardia, e col `fuoriFiltro` in mano a lui: gli artisti in mano possono
+    // essere quelli di un altro filtro (la vista si è lasciata sotto «Tutti»), e
+    // quelli per «Tutti» la lettura li ha resi vecchi (`comeRileggereGliArtisti`).
+    invalidaArtisti(opzioni);
     // La Home dopo una scansione o dei brani scaricati: i suoi ripiani sono
     // fatti di «di recente», e quel che è appena entrato in libreria li cambia
     // tutti e quattro. Entrandoci ci pensa invece l'effetto suo, che è quel che

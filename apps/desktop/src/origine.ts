@@ -334,6 +334,41 @@ export function origineVedeIlDispositivo(origine: OrigineLibreria, dispositivo: 
 }
 
 /**
+ * Quando rileggere gli artisti dopo una rilettura della libreria.
+ *
+ * `subito` se la vista è aperta, entrandoci se no; `entrando` solo entrando nella
+ * vista; `mai` finché qualcos'altro non li rende vecchi.
+ */
+export type RilettaDegliArtisti = "subito" | "entrando" | "mai";
+
+/**
+ * Dopo una rilettura della libreria, gli artisti in mano sono ancora buoni?
+ *
+ * `inMano` è la chiave del filtro di cui sono gli artisti in mano (`chiaveDiOrigine`),
+ * `adesso` quella del filtro acceso, e `fuoriFiltro` dice che ogni causa della
+ * rilettura è la lettura del catalogo di un dispositivo che quel filtro non vede
+ * (S9-3).
+ *
+ * - Una causa che conta: `subito`, come sempre.
+ * - Fuori filtro, e gli artisti in mano sono quelli del filtro acceso: `mai`. Con
+ *   la vista Artisti aperta sotto «Questo dispositivo» l'elenco intero si rileggeva
+ *   ogni 3 s per tutta la lettura del catalogo (D-4 del collaudo AVD-2).
+ * - Fuori filtro, ma in mano ci sono gli artisti di **un altro** filtro — la vista
+ *   si è lasciata sotto «Tutti», e il filtro, uno solo per la finestra, è cambiato
+ *   dopo —: per «Tutti» la lettura contava. `entrando`, senza rifare niente adesso:
+ *   tornando a «Tutti» il filtro in mano e quello acceso coincidono, e senza il
+ *   segno la vista mostrerebbe un elenco senza gli artisti arrivati.
+ */
+export function comeRileggereGliArtisti(
+  inMano: string,
+  adesso: string,
+  fuoriFiltro: boolean,
+): RilettaDegliArtisti {
+  if (!fuoriFiltro) return "subito";
+  return inMano === adesso ? "mai" : "entrando";
+}
+
+/**
  * Il filtro con cui aprire la pagina dell'artista di una riga: quello di adesso
  * se contiene la riga, «Tutti» se no.
  *

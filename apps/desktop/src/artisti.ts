@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ipc, type Artista, type OrigineLibreria } from "./ipc";
-import { chiaveDiOrigine, perIlNucleo, TUTTI } from "./origine";
+import { chiaveDiOrigine, comeRileggereGliArtisti, perIlNucleo, TUTTI } from "./origine";
 import type { Vista } from "./parti/Navigazione";
 
 /** Gli artisti in mano, e come dire che sono vecchi. */
@@ -34,8 +34,15 @@ export interface ArtistiDellaFinestra {
    * `invalidaArtisti`.
    */
   artistiGuasto: boolean;
-  /** Li rilegge subito se la vista è aperta, entrandoci se no. */
-  invalidaArtisti: () => void;
+  /**
+   * Li rilegge subito se la vista è aperta, entrandoci se no.
+   *
+   * `fuoriFiltro`: la rilettura è nata dalla lettura del catalogo di un
+   * dispositivo che il filtro non vede. Decide `comeRileggereGliArtisti`: con gli
+   * artisti del filtro acceso in mano non si rilegge niente; con quelli di un altro
+   * filtro si segnano vecchi, per quando si torna (S9-3).
+   */
+  invalidaArtisti: (opzioni?: { fuoriFiltro?: boolean }) => void;
 }
 
 /** Vedi il commento in testa. */
@@ -95,10 +102,15 @@ export function useArtisti(
     // `origine` è detta da `chiaveOrigine`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vista, cercando, segnalaErrore, giroArtisti, chiaveOrigine]);
-  const invalidaArtisti = useCallback(() => {
-    artistiDaRileggere.current = true;
-    setGiroArtisti((n) => n + 1);
-  }, []);
+  const invalidaArtisti = useCallback(
+    (opzioni?: { fuoriFiltro?: boolean }) => {
+      const come = comeRileggereGliArtisti(lette.current, chiaveOrigine, opzioni?.fuoriFiltro === true);
+      if (come === "mai") return;
+      artistiDaRileggere.current = true;
+      if (come === "subito") setGiroArtisti((n) => n + 1);
+    },
+    [chiaveOrigine],
+  );
 
   return { artisti, artistiInArrivo, artistiGuasto, invalidaArtisti };
 }

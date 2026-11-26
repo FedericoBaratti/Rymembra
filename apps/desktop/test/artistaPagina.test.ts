@@ -267,7 +267,7 @@ test("S9-3 (D-4 del collaudo AVD-2): fuori filtro non si rilegge nessun elenco, 
   const contorno = brano(app, "const ricaricaContorno = useCallback(", "}, [ricaricaAlbum");
   const guardia = /if \(!opzioni\?\.fuoriFiltro\) \{([^}]*)\}/;
   const dentro = contorno.match(guardia)?.[1] ?? "";
-  for (const chiamata of ["ricaricaAlbum()", "setGiroArtista(", "invalidaArtisti()"]) {
+  for (const chiamata of ["ricaricaAlbum()", "setGiroArtista("]) {
     assert.ok(
       dentro.includes(chiamata),
       `«${chiamata}» deve stare dentro «if (!opzioni?.fuoriFiltro)»: fuori filtro la vista non cambia`,
@@ -276,9 +276,14 @@ test("S9-3 (D-4 del collaudo AVD-2): fuori filtro non si rilegge nessun elenco, 
   const fuori = contorno.replace(guardia, "");
   assert.doesNotMatch(
     fuori,
-    /invalidaArtisti\(\)|ricaricaAlbum\(\)|setGiroArtista\(/,
+    /ricaricaAlbum\(\)|setGiroArtista\(/,
     "niente di tutto questo resta fuori dalla guardia",
   );
+  // Gli artisti non stanno nella guardia ma nelle mani dell'hook, che sa di quale
+  // filtro sono gli artisti in mano: `artistiFuoriFiltro.test.ts`. Mai senza
+  // `opzioni` e mai tolti di mezzo: una lettura di «Tutti» li deve poter rifare.
+  assert.match(fuori, /invalidaArtisti\(opzioni\);/);
+  assert.doesNotMatch(dentro, /invalidaArtisti/);
   // La Home no: `ipc.casa()` non ha un filtro, e i suoi ripiani «di recente»
   // cambiano anche quando il catalogo arriva da un dispositivo che non si vede.
   assert.match(fuori, /if \(vista === "home"\) rileggiCasa\(\);/);
