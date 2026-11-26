@@ -76,7 +76,7 @@
 //! predefinita. Scegliere un'uscita a mano lì non esiste: lo fa Android, dal
 //! suo selettore, e la musica va dove l'ha mandata lui.
 //!
-//! Il nome di quella riga è dove Android sta suonando adesso — «WH-CH720N»,
+//! Il nome di quella riga è dove Android sta suonando adesso — «Cuffie Bluetooth»,
 //! «Altoparlante del telefono» — come lo dice `AudioManager`, che sta in Kotlin
 //! e arriva qui da [`installa_l_uscita_di_android`]. Ed è anche l'identità, a
 //! proposito: quando le cuffie si collegano il nome cambia, e il sorvegliante

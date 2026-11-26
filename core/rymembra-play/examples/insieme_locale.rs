@@ -17,7 +17,7 @@
 //!
 //! ```text
 //! cargo run -p rymembra-play --release --example insieme_locale -- \
-//!     --a "Altoparlanti (Senary Audio)" --b "Cuffie (WH-CH720N)" \
+//!     --a "Altoparlanti" --b "Cuffie Bluetooth" \
 //!     --csv insieme.csv \
 //!     clic-4k.wav --file-b clic-7k.wav
 //! ```
@@ -26,7 +26,7 @@
 //! ciascuno, nello stesso ordine.
 //!
 //! ```text
-//! … -- --a "Altoparlanti (Senary Audio)" --b "Cuffie (WH-CH720N)" \
+//! … -- --a "Altoparlanti" --b "Cuffie Bluetooth" \
 //!     uno-4k.wav due-4k.wav --file-b uno-7k.wav --file-b due-7k.wav
 //! ```
 //!
