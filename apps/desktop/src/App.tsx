@@ -137,6 +137,7 @@ import { gestoPermesso, idDiLibreria } from "./insieme";
 import {
   eErroreIpc,
   eRitentabile,
+  guastoAdesso,
   guastoDa,
   ipc,
   type Guasto,
@@ -563,6 +564,12 @@ export function App() {
   const [origineScelta, setOrigine] = useState<OrigineLibreria>(TUTTI);
   /** I dispositivi collegati, per sapere se quello scelto c'è ancora. */
   const chiaviCollegate = useArchivio(archivioLontano, chiaviDiLibreria);
+  /**
+   * «Dati mobili» di adesso. La fascia con «sei sui dati mobili» ha una frase per
+   * «Chiedi» e una per «Solo Wi-Fi»: App si ridisegna quando la scelta cambia, e la
+   * fascia — già aperta — dice quella di adesso (AVD-2).
+   */
+  const datiMobili = useArchivio(archivioLontano, (stato) => stato?.datiMobili ?? null);
   const origine = useMemo(
     () => origineConChiavi(origineScelta, chiaviCollegate),
     [origineScelta, chiaviCollegate],
@@ -3507,7 +3514,7 @@ export function App() {
     () => mappaPresenze(skinAttiva?.presenze),
     [skinAttiva],
   );
-  const guasto = errore ?? guastoDa(riproduzione.errore);
+  const guasto = guastoAdesso(errore ?? guastoDa(riproduzione.errore), datiMobili);
   const messaggio = guasto?.testo ?? null;
   /**
    * Il guasto in fascia si può riprovare.

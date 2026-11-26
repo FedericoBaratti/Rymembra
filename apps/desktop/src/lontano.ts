@@ -28,6 +28,7 @@ import type {
   AnteprimaDimentica,
   AnteprimaScarico,
   AvanzamentoSpecchio,
+  DatiMobili,
   DispositivoLontano,
   DispositivoSincronia,
   ErroreIpc,
@@ -968,7 +969,23 @@ export function chiaveDelTestoErrore(
   chiave: string,
   stato: StatoLontano | null = archivioLontano.leggi(),
 ): string {
-  if (chiave === "errors.lontano.reteAConsumo" && stato?.datiMobili === "chiedi") {
+  return chiaveSecondoIDatiMobili(chiave, stato?.datiMobili);
+}
+
+/**
+ * La regola di [`chiaveDelTestoErrore`], dato solo quel che sceglie la frase:
+ * l'impostazione «Dati mobili» di chi legge.
+ *
+ * A parte perché una fascia già aperta la rilegge a ogni cambio dell'impostazione
+ * (`guastoAdesso`): nata con «Chiedi», diceva «premi play e ti chiederà» anche
+ * dopo che la finestrella era stata chiusa con «Solo Wi-Fi», e la scelta ormai era
+ * «no» (AVD-2).
+ */
+export function chiaveSecondoIDatiMobili(
+  chiave: string,
+  datiMobili: DatiMobili | null | undefined,
+): string {
+  if (chiave === "errors.lontano.reteAConsumo" && datiMobili === "chiedi") {
     return "errors.lontano.reteAConsumo.chiedi";
   }
   return chiave;

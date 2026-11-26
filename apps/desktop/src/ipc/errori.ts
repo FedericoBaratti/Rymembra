@@ -1,6 +1,7 @@
 /** Parte del contratto con il nucleo: l'errore come arriva, e come si legge. La riesporta `ipc.ts`: si importa da lì. */
 import { tSe } from "../lingue";
-import { chiaveDelTestoErrore } from "../lontano";
+import { chiaveDelTestoErrore, chiaveSecondoIDatiMobili } from "../lontano";
+import type { DatiMobili } from "./lontano";
 
 /** Un errore, come lo manda il nucleo. */
 export interface ErroreIpc {
@@ -128,6 +129,14 @@ export interface Guasto {
    * qualunque, o per un guasto composto a mano.
    */
   codice?: string | null;
+  /**
+   * La chiave della frase e i dati che nomina, come li ha mandati il nucleo: da
+   * qui [`guastoAdesso`] ricompone `testo` quando la frase dipende da una scelta
+   * di chi legge e quella cambia a fascia aperta. Assenti per un guasto che non
+   * viene dal nucleo.
+   */
+  chiave?: string | null;
+  valori?: Record<string, string>;
 }
 
 /**
@@ -147,5 +156,24 @@ export function guastoDa(value: unknown): Guasto | null {
     testo: testoErrore(value),
     dettaglio: dettaglioErrore(value),
     codice: eErroreIpc(value) ? value.code : null,
+    chiave: eErroreIpc(value) ? value.i18nKey : null,
+    valori: eErroreIpc(value) ? valoriDi(value) : undefined,
   };
+}
+
+/**
+ * Lo stesso guasto con la frase che l'impostazione «Dati mobili» di **adesso**
+ * sceglie (AVD-2).
+ *
+ * La frase di «sei sui dati mobili» è una per «Solo Wi-Fi» e un'altra per «Chiedi»
+ * (`chiaveSecondoIDatiMobili`). `guastoDa` la sceglie quando il guasto nasce, e la
+ * fascia resta aperta finché qualcuno non la chiude: chi sceglieva «Solo Wi-Fi»
+ * dalla finestrella continuava a leggere «premi play e ti chiederà se usare i dati
+ * mobili». Quel che non dipende dall'impostazione torna com'era, lo stesso oggetto.
+ */
+export function guastoAdesso(guasto: Guasto | null, datiMobili: DatiMobili | null): Guasto | null {
+  if (guasto === null || guasto.chiave === undefined || guasto.chiave === null) return guasto;
+  const chiave = chiaveSecondoIDatiMobili(guasto.chiave, datiMobili);
+  const testo = tSe(chiave, guasto.testo, guasto.valori);
+  return testo === guasto.testo ? guasto : { ...guasto, testo };
 }
