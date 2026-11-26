@@ -5,8 +5,6 @@
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 
 const { ancoreDelNucleo, elencati, carica, controlla, forma, chiuso, rimandi, esisteNelRepository, cartellaNelRepository } = require("./docs.js");
 
@@ -121,7 +119,7 @@ test("una fonte con le maiuscole sbagliate si vede, su ogni sistema", () => {
   assert.equal(esisteNelRepository("core/Rymembra-app/src"), false);
   assert.equal(cartellaNelRepository("core/rymembra-app/src"), true);
   assert.equal(cartellaNelRepository("README.md"), false);
-  // Quel che non è nel repository non c'è, anche se è sul disco.
-  assert.ok(fs.existsSync(path.join(__dirname, "../apps/desktop/node_modules")));
+  // Quel che non è nel repository non c'è, anche se è sul disco. In CI questo passo gira
+  // prima di `npm ci`, e `node_modules` lì non c'è ancora: non lo si pretende.
   assert.equal(esisteNelRepository("apps/desktop/node_modules"), false);
 });
