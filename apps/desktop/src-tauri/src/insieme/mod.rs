@@ -456,7 +456,7 @@ pub fn copertina_su_file(app: &impl ComeNucleo, chiave: &str) -> Option<PathBuf>
         }
     };
     // La sessione può essere finita mentre si scriveva (`esci_dal_lettore` toglie
-    // le copertine e la cartella insieme, sotto il lucchetto): allora il file
+    // le copertine sotto il lucchetto, e la cartella subito dopo): allora il file
     // appena scritto è un avanzo, e se ne va. Se invece la voce è uscita dalla
     // coda ma un'altra usa ancora quella copertina, il gettone c'è e il file resta.
     let ancora = stato
