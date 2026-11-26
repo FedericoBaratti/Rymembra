@@ -1484,6 +1484,65 @@ fn si_passa_oltre_solo_dove_nessuno_puo_rispondere() {
     );
 }
 
+/// Il brano che non si apre non si salta «su se stesso»: con «ripeti tutto» e una
+/// coda di un brano solo, o quando l'unico brano oltre è lo stesso brano, il passo
+/// della coda rimette il cursore su di lui e `Step::Track` non vuol dire che si
+/// sia andati oltre. Prima il ciclo lo riapriva quattro volte, con tre avvisi
+/// «è stato saltato» sullo stesso brano (fino a 20 s ciascuna apertura, se il
+/// dispositivo non risponde). Vale anche per la fine brano, che usa lo stesso
+/// ciclo: ci si ferma sul brano, con il suo errore.
+#[test]
+fn un_brano_che_e_il_solo_oltre_non_si_salta_su_se_stesso() {
+    for verso in [Verso::Avanti, Verso::Indietro] {
+        // [X] con «ripeti tutto»: `advance` e `previous` tornano su X.
+        let mut coda = coda_ferma_su(&[1], 0);
+        assert_eq!(coda.cycle_repeat(), RepeatMode::All);
+        let (fine, su, saltati) = percorri(coda, &[1], rete_a_consumo, false, verso);
+        assert!(matches!(fine, Ok(Fine::Fermo(1, _))), "{verso:?}: {fine:?}");
+        assert_eq!(su, Some(1));
+        assert!(
+            saltati.is_empty(),
+            "{verso:?}: lo stesso brano saltato su se stesso: {saltati:?}"
+        );
+    }
+    // [X, X]: oltre c'è solo lui, e l'avviso non nomina due volte lo stesso brano.
+    let (fine, su, saltati) = percorri(
+        coda_ferma_su(&[1, 1], 0),
+        &[1],
+        rete_a_consumo,
+        false,
+        Verso::Avanti,
+    );
+    assert!(matches!(fine, Ok(Fine::Fermo(1, _))), "{fine:?}");
+    assert_eq!(su, Some(1));
+    assert!(saltati.is_empty(), "{saltati:?}");
+    // Un altro brano oltre c'è: si salta come sempre, anche con «ripeti tutto».
+    let mut coda = coda_ferma_su(&[1, 2], 0);
+    coda.cycle_repeat();
+    let (fine, su, saltati) = percorri(coda, &[1], rete_a_consumo, false, Verso::Avanti);
+    assert!(matches!(fine, Ok(Fine::Aperto)), "{fine:?}");
+    assert_eq!((su, saltati), (Some(2), vec![1]));
+}
+
+/// «Avanti» da fuori mentre suona A: la coda è già sul brano dopo, che non si apre,
+/// ma il motore suona ancora A. Lo stato che si manda a ogni brano saltato dice dove
+/// il brano nuovo **sarà** — da zero — e non la posizione di A, che farebbe vedere in
+/// barra, nel vassoio e nel controllo di sistema il titolo nuovo con il cursore del
+/// vecchio che avanza (`manda_stato_con_posizione`). Vale anche per la fine brano.
+#[test]
+fn il_brano_saltato_manda_lo_stato_con_la_posizione_da_zero() {
+    let passo =
+        corpo_privato(include_str!("mod.rs"), "fn salta_il_brano(").expect("salta_il_brano");
+    assert!(
+        passo.contains("manda_stato_con_posizione(app, lettore, 0)"),
+        "salta_il_brano manda la posizione del brano di prima"
+    );
+    assert!(
+        !passo.contains("manda_stato("),
+        "salta_il_brano manda lo stato con la posizione del motore"
+    );
+}
+
 /// I nomi dei comandi (`pub async fn nome(`) che nel loro corpo chiamano `ago`.
 fn comandi_che_chiamano(testo: &str, ago: &str) -> Vec<String> {
     let testo = senza_prove(testo);

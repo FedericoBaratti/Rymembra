@@ -4007,7 +4007,13 @@ fn apri_o_salta(
 ///
 /// `None` se `id` non è più il corrente: qualcuno ha mosso la coda e ha già
 /// avviato quel che voleva. `Some(false)` se oltre non c'è niente — la fine della
-/// coda, o la testa, dove «indietro» vorrebbe dire «ricomincia questo».
+/// coda, o la testa, dove «indietro» vorrebbe dire «ricomincia questo» — **o
+/// niente di diverso da lui**: con «ripeti tutto» e un brano solo, o quando l'unico
+/// brano oltre è lo stesso brano, il passo rimette il cursore su `id` e
+/// `Step::Track` non vuol dire che si sia andati oltre. Riaprirlo darebbe lo stesso
+/// errore, quattro volte e con tre avvisi «è stato saltato» sullo stesso brano
+/// (fino a venti secondi ciascuna apertura, se il dispositivo non risponde): ci si
+/// ferma su di lui, con il suo errore.
 fn passa_al_brano_oltre(coda: &mut Queue, id: i64, verso: Verso) -> Option<bool> {
     if coda.current() != Some(id) {
         return None;
@@ -4019,13 +4025,20 @@ fn passa_al_brano_oltre(coda: &mut Queue, id: i64, verso: Verso) -> Option<bool>
         // Da zero: il brano prima, non «ricomincia».
         Verso::Indietro => coda.previous(0),
     };
-    Some(matches!(passo, Step::Track(_)))
+    Some(matches!(passo, Step::Track(_)) && coda.current() != Some(id))
 }
 
 /// [`passa_al_brano_oltre`] sulla coda del lettore, con quel che serve intorno:
 /// la coda salvata e lo stato mandato. Mai per chi segue una sessione: la sua
 /// coda è lo specchio di quella dell'host, e un passo fatto qui sarebbe un passo
 /// che l'host non ha fatto.
+///
+/// Lo stato dice il brano nuovo **da zero**: la coda è già sul brano oltre, ma il
+/// motore suona ancora quello di prima — «avanti» da fuori mentre suona A —, e la
+/// posizione di A farebbe vedere in barra, nel vassoio e nel controllo di sistema il
+/// titolo nuovo con il cursore del vecchio che avanza. Vedi
+/// [`manda_stato_con_posizione`]; a fine brano il motore ha finito, e da zero è
+/// comunque dove il brano nuovo comincerà.
 fn salta_il_brano(app: &Nucleo, stato: &StatoLettore, id: i64, verso: Verso) -> Option<bool> {
     con_lettore(stato, |lettore| {
         if insieme::segue(lettore) {
@@ -4034,7 +4047,7 @@ fn salta_il_brano(app: &Nucleo, stato: &StatoLettore, id: i64, verso: Verso) -> 
         let passato = passa_al_brano_oltre(&mut lettore.coda, id, verso);
         if passato == Some(true) {
             salva_coda(app, lettore);
-            manda_stato(app, lettore);
+            manda_stato_con_posizione(app, lettore, 0);
         }
         Ok(passato)
     })
