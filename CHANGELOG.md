@@ -95,7 +95,7 @@ Entries older than 2.3.1 argue their number under the rule that was in force
 when they were written. They are a record of what shipped and are left as they
 were, not restated.
 
-## [3.3.0] — 2026-11-25
+## [3.3.0] — 2026-11-30
 
 **Rymembra on Android, your devices as one library, a background that stays
 on, and updates that show where they are.** The same application now runs on a
