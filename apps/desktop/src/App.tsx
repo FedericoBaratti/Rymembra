@@ -4790,6 +4790,7 @@ export function App() {
       return (
         <Home
           casa={casa}
+          libreriaAperta={avvio !== null}
           guasto={guastoCasa}
           onRiprova={rileggiCasa}
           settimana={settimana}

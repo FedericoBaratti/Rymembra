@@ -366,7 +366,14 @@ impl Nucleo {
 
     /// L'evento con la finestra agganciata: un `emit`, e un errore si dice nel
     /// diario la prima volta per ogni evento.
+    ///
+    /// «Agganciata» non vuol dire che la finestra ci sia: con la X sul vassoio è
+    /// distrutta e l'`AppHandle` resta. È proprio da qui che parte l'errore di un
+    /// tasto multimediale o di «Successivo» su un file che non si apre, e il nucleo
+    /// ne tiene la copia per la pagina che verrà (S4-5, `perso`).
     fn alla_finestra<C: Serialize + Clone>(&self, app: &AppHandle, evento: &str, carico: C) {
+        #[cfg(desktop)]
+        crate::perso::evento_in_partenza(evento, &carico);
         if let Err(err) = app.emit(evento, carico) {
             let prima_volta = self
                 .0

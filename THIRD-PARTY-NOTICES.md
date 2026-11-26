@@ -75,24 +75,30 @@ service, its notification and Android Auto), the
 `CarConnection`, to know when the phone is connected to Android Auto),
 **ZXing** (`core`: reading the QR code), **Material Components for Android**
 and the **Kotlin standard library**. And what they bring with them:
-**Guava**, **jspecify**, the pieces of **AndroidX** they build on
-(`activity`, `annotation`, `core`, `lifecycle`, `media`), the annotations of
-the **Checker Framework** (`checker-qual`, which the Car App Library brings
-through Guava) and **Jackson**, which comes with Tauri's Android library. R8
+**Guava**, **jspecify**, **kotlinx.coroutines**, the pieces of **AndroidX**
+they build on (`activity`, `annotation`, `core`, `lifecycle`, `media`), the
+boundary interfaces of Chromium's WebView (`org.chromium.support_lib_boundary`,
+which AndroidX `webkit` carries inside it), the annotations of the **Checker
+Framework** (`checker-qual`, which the Car App Library brings through Guava)
+and **Jackson**, which comes with Tauri's Android library. R8
 removes from the release APK what is not used, so not every one of them is in
 every build; they are all listed, because attributing too much costs nothing
 and attributing too little does.
 
-All of them are under **Apache-2.0**, whose text is below, except two. The
+All of them are under **Apache-2.0**, whose text is below, except three. The
 annotations of the Checker Framework (`checker-qual`) are under the **MIT**
-license, whose text follows. And `jackson-core` carries two small parts of its
+license, whose text follows. The WebView boundary interfaces are by The
+Chromium Authors, under Chromium's **BSD-3-Clause** license, whose text
+follows the MIT one. And `jackson-core` carries two small parts of its
 own, whose notices travel in its `META-INF`: **FastDoubleParser** (MIT,
 copyright 2023 Werner Randelshofer) and a big-integer implementation by Tim
 Buktu (BSD-2-Clause). Sources:
 <https://android.googlesource.com/platform/frameworks/support>,
 <https://github.com/androidx/media>, <https://github.com/zxing/zxing>,
 <https://github.com/material-components/material-components-android>,
-<https://github.com/JetBrains/kotlin>, <https://github.com/google/guava>,
+<https://github.com/JetBrains/kotlin>, <https://github.com/Kotlin/kotlinx.coroutines>,
+<https://chromium.googlesource.com/chromium/src/+/main/android_webview/support_library/boundary_interfaces>,
+<https://github.com/google/guava>,
 <https://github.com/typetools/checker-framework> and
 <https://github.com/FasterXML/jackson-core>.
 
@@ -119,6 +125,36 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+```
+
+```text
+Copyright 2015 The Chromium Authors
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 The six icons of the Android Auto tabs (`res/drawable/auto_*.xml`) are

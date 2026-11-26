@@ -103,3 +103,19 @@ test("quel che le dipendenze portano con sé è nominato, e la MIT di checker-qu
   assert.match(testo, /Copyright 2004-present by the Checker Framework developers/);
   assert.match(testo, /THE SOFTWARE IS PROVIDED "AS IS"/);
 });
+
+test("le due librerie che l'APK di rilascio porta e il paragrafo non nominava, con la BSD di Chromium", () => {
+  // Il collaudo dell'APK di rilascio (L-finale-AVD1, V-03) ha letto i pacchetti
+  // nel dex: tutto era nominato tranne `kotlinx.coroutines` e
+  // `org.chromium.support_lib_boundary`. Le interfacce di confine della WebView
+  // stanno dentro `androidx.webkit`, ma i loro sorgenti sono di Chromium
+  // («Copyright 2018 The Chromium Authors … BSD-style license», nel mirror
+  // `platform/external/webview_support_interfaces`): la loro licenza va
+  // scritta per intero, come la MIT di checker-qual.
+  const testo = PARAGRAFO_ANDROID.join("\n");
+  assert.match(testo, /\*\*kotlinx\.coroutines\*\*/);
+  assert.match(testo, /`org\.chromium\.support_lib_boundary`/);
+  assert.match(testo, /Copyright 2015 The Chromium Authors/);
+  assert.match(testo, /Neither the name of Google LLC nor the names of its/);
+  assert.match(testo, /THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS/);
+});

@@ -343,6 +343,11 @@
      tutte: `pretty` toglie le righe orfane senza toccare l'altezza del
      blocco. */
   text-wrap: pretty;
+  /* Un percorso o un indirizzo è una parola sola, e qui ne capitano: la
+     cartella della libreria di prima nella copia del Store usciva a destra,
+     tagliata, con una barra di scorrimento sotto. Si va a capo solo dove una
+     parola non ci sta. */
+  overflow-wrap: anywhere;
 }
 
 /* ── i consensi, fuori dalle skin ─────────────────────────────────────────
