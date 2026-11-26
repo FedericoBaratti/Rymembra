@@ -1543,6 +1543,36 @@ fn il_brano_saltato_manda_lo_stato_con_la_posizione_da_zero() {
     );
 }
 
+/// «Indietro» oltre i tre secondi ricomincia il brano (`Step::Restart`), e così
+/// «Avanti» con «ripeti uno». Il salto a zero è accodato al motore: la posizione
+/// che `manda_stato` legge subito dopo è ancora quella di prima, e Android la
+/// teneva — la notifica, la schermata di blocco, l'auto e le cuffie mostravano il
+/// brano ricominciato con il cursore di prima che avanzava, finché non cambiava
+/// brano (collaudo sul telefono vero, 26/11: tre prove, scarto sempre uguale alla
+/// posizione al momento del tasto). Lo stato dice dove il brano **sarà**: da zero.
+#[test]
+fn ricominciare_il_brano_manda_lo_stato_con_la_posizione_da_zero() {
+    let mod_rs = include_str!("mod.rs");
+    for firma in ["pub fn precedente_ora(", "pub fn prossimo_ora("] {
+        let corpo = corpo_privato(mod_rs, firma).expect(firma);
+        let da = corpo.find("Step::Restart =>").expect("il ramo Step::Restart");
+        let ramo = &corpo[da..];
+        let ramo = &ramo[..ramo.find("\n            }").expect("la fine del ramo")];
+        assert!(
+            ramo.contains("insieme::salta(lettore, 0);"),
+            "{firma}: il ramo Restart non salta più a zero"
+        );
+        assert!(
+            ramo.contains("manda_stato_con_posizione(&app, lettore, 0);"),
+            "{firma}: ricominciare il brano manda la posizione di prima del salto"
+        );
+        assert!(
+            !ramo.contains("manda_stato(&app, lettore)"),
+            "{firma}: ricominciare il brano manda lo stato con la posizione del motore"
+        );
+    }
+}
+
 /// I nomi dei comandi (`pub async fn nome(`) che nel loro corpo chiamano `ago`.
 fn comandi_che_chiamano(testo: &str, ago: &str) -> Vec<String> {
     let testo = senza_prove(testo);
