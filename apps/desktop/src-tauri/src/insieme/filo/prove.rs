@@ -438,28 +438,34 @@ fn l_uscita_dal_lettore_arriva_a_uscito_anche_dopo_un_panico() {
     assert!(sorvegliata < uscito);
 }
 
-/// Alla fine della sessione le copertine su file (quelle che le schede del
-/// sistema aprono: `su_file`) se ne vanno con quelle in memoria, e nello
-/// stesso giro di lucchetto: chi ne sta scrivendo una proprio allora
-/// (`copertina_su_file`) o trova il suo gettone ancora lì, e il file lo toglie
-/// la fine della sessione, o non lo trova più, e lo toglie da sé.
+/// Alla fine della sessione le copertine in memoria se ne vanno sotto il
+/// lucchetto, e quelle su file (che le schede del sistema aprono: `su_file`)
+/// subito dopo, **a lucchetto lasciato**: l'handler di `rymembra-cover` lo
+/// prende sul filo della finestra, e un disco lento che toglie fino a 64 MiB
+/// di file non deve tenerlo fermo (S12-4, la regola di `copertina_su_file`).
+/// Chi ne sta scrivendo una proprio allora non trova più il suo gettone e la
+/// toglie da sé; le copertine di una sessione nuova le mette in memoria questo
+/// stesso filo, quindi non arrivano prima che i file vecchi siano tolti.
 #[test]
-fn l_uscita_dal_lettore_toglie_anche_le_copertine_su_file_sotto_lo_stesso_lucchetto() {
-    let esci = corpo_di("fn esci_dal_lettore(");
-    let lucchetto = esci
-        .find("let mut copertine = self")
-        .expect("il lucchetto delle copertine");
-    let memoria = esci.find("copertine.svuota();").expect("la memoria");
+fn l_uscita_dal_lettore_toglie_le_copertine_su_file_a_lucchetto_lasciato() {
+    // Senza spazi: conta il codice, non come rustfmt lo va a capo.
+    let esci: String = corpo_di("fn esci_dal_lettore(")
+        .split_whitespace()
+        .collect();
+    // Il lucchetto si prende e si lascia nella stessa istruzione che svuota la
+    // memoria: nessuna guardia con un nome che viva fino ai file.
+    let memoria = esci
+        .find("self.comune.copertine.lock().unwrap_or_else(PoisonError::into_inner).svuota();")
+        .expect("la memoria si svuota in un'istruzione sola, che lascia subito il lucchetto");
+    assert_eq!(
+        esci.matches("copertine.lock()").count(),
+        1,
+        "il lucchetto delle copertine si prende una volta sola"
+    );
     let su_file = esci
         .find("su_file::svuota(&cache);")
         .expect("la cartella riservata");
-    assert!(lucchetto < memoria && memoria < su_file);
-    // Il blocco del lucchetto non si chiude in mezzo.
-    let in_mezzo = &esci[memoria..su_file];
-    assert!(
-        !in_mezzo.contains("drop(copertine)"),
-        "il lucchetto si lascia prima di togliere i file"
-    );
+    assert!(memoria < su_file, "prima la memoria, poi i file");
     // E la cache è quella delle copertine lontane, non un'altra cartella.
     assert!(
         esci.contains("crate::lontano::sfoglia::cartella_copertine(&self.app)"),
