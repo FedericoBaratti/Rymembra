@@ -871,9 +871,10 @@ export const RILEGGI_DURANTE_LA_LETTURA_MS = 3_000;
  * Una rilettura nata dalla lettura del catalogo di un dispositivo che il filtro
  * non vede — «Questo dispositivo» acceso e un PC che manda la sua musica — non
  * cambia niente di quel che si mostra, e non vale la pena di rileggere per essa
- * gli artisti per due numeri della pagina aperta (S9-3). Ma la rilettura è una
- * sola per raffica, e se dentro la raffica c'è anche una scansione o un brano
- * scaricato quei numeri vanno rifatti: basta una causa che conta.
+ * gli elenchi: gli artisti (l'elenco intero, a ogni giro), gli album, i brani e
+ * i numeri della pagina dell'artista aperta (S9-3). Ma la rilettura è una sola
+ * per raffica, e se dentro la raffica c'è anche una scansione o un brano
+ * scaricato gli elenchi vanno rifatti: basta una causa che conta.
  *
  * `aggiungi(true)` per ogni causa che può cambiare quel che il filtro mostra,
  * `aggiungi(false)` per una che sicuramente no. `preleva` dice se qualcuna
