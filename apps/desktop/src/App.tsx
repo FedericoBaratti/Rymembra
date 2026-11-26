@@ -1259,16 +1259,22 @@ export function App() {
    * tre elenchi un «togli una riga» non ce l'hanno, perché quanti brani abbia
    * davvero un album lo sa solo il nucleo — la finestra ne vede una pagina.
    */
-  const ricaricaContorno = useCallback((opzioni?: { senzaArtista?: boolean }) => {
-    ricaricaAlbum();
-    // L'artista aperto: i suoi numeri sono la lunghezza dei suoi elenchi, e un
-    // brano che se ne va li cambia (`giroArtista`). Non per la lettura del
-    // catalogo di un dispositivo che il filtro non vede (`senzaArtista`): rileggeva
-    // l'elenco intero degli artisti ogni 3 s per numeri che non potevano cambiare
-    // (S9-3).
-    if (!opzioni?.senzaArtista) setGiroArtista((giro) => giro + 1);
-    // Gli artisti si rileggono subito se la vista è aperta, entrandoci se no.
-    invalidaArtisti();
+  const ricaricaContorno = useCallback((opzioni?: { fuoriFiltro?: boolean }) => {
+    // Non per la lettura del catalogo di un dispositivo che il filtro non vede
+    // (`fuoriFiltro`): sotto «Questo dispositivo» quelle righe non compaiono, e
+    // né la griglia degli album, né quella degli artisti, né i numeri
+    // dell'artista aperto possono essere cambiati. Rileggerli ogni 3 s per tutta
+    // la lettura costava, per gli artisti, l'elenco intero a ogni giro (S9-3,
+    // D-4 del collaudo AVD-2: la prima correzione fermava solo `giroArtista`, e
+    // `invalidaArtisti` rifaceva comunque la richiesta con la vista aperta).
+    if (!opzioni?.fuoriFiltro) {
+      ricaricaAlbum();
+      // L'artista aperto: i suoi numeri sono la lunghezza dei suoi elenchi, e un
+      // brano che se ne va li cambia (`giroArtista`).
+      setGiroArtista((giro) => giro + 1);
+      // Gli artisti si rileggono subito se la vista è aperta, entrandoci se no.
+      invalidaArtisti();
+    }
     // La Home dopo una scansione o dei brani scaricati: i suoi ripiani sono
     // fatti di «di recente», e quel che è appena entrato in libreria li cambia
     // tutti e quattro. Entrandoci ci pensa invece l'effetto suo, che è quel che
@@ -1277,8 +1283,10 @@ export function App() {
   }, [ricaricaAlbum, invalidaArtisti, vista, rileggiCasa]);
 
   const caricaVista = useCallback(
-    (opzioni?: { senzaArtista?: boolean }) => {
-      ricaricaBrani();
+    (opzioni?: { fuoriFiltro?: boolean }) => {
+      // Le liste di brani come quelle del contorno: fuori filtro non cambiano,
+      // e richiedere le pagine che si guardano per niente è lo stesso difetto.
+      if (!opzioni?.fuoriFiltro) ricaricaBrani();
       ricaricaContorno(opzioni);
     },
     [ricaricaBrani, ricaricaContorno],
@@ -1306,14 +1314,17 @@ export function App() {
   useEffect(() => {
     ricaricaDalNucleo.current = () => {
       // Se ogni causa della raffica è la lettura di un catalogo che il filtro non
-      // vede, i numeri dell'artista aperto non possono essere cambiati (S9-3).
-      const senzaArtista = !cause.current.preleva();
+      // vede, nessun elenco di quelli che si mostrano può essere cambiato (S9-3).
+      const fuoriFiltro = !cause.current.preleva();
       // `rileggi` e non `ricarica`: la rilettura nata da un evento toglie solo
       // il guasto messo dalla libreria. Una scansione a mano fallita manda
       // `cartelle:cambiate` e poi l'errore, e con `ricarica` la sua fascia
       // spariva cinquanta millesimi dopo. Vedi `dopoLaLettura`.
+      //
+      // E anche fuori filtro: è una chiamata sola, e i totali di «Tutti» (`avvio`)
+      // sono la lunghezza degli elenchi quando si torna a quel filtro.
       void rileggi();
-      caricaVista({ senzaArtista });
+      caricaVista({ fuoriFiltro });
     };
   });
   const [ricaricaAccorpata] = useState(() =>

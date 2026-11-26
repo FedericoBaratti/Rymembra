@@ -242,17 +242,56 @@ test("S9-3: una lettura di un dispositivo che il filtro non vede non rilegge l'a
   // artisti riletti per due numeri. Sotto «Questo dispositivo», o sotto un altro
   // PC, quel catalogo non cambia niente di quel che l'artista mostra.
   const contorno = brano(app, "const ricaricaContorno = useCallback(", "}, [ricaricaAlbum");
-  assert.match(contorno, /if \(!opzioni\?\.senzaArtista\) setGiroArtista\(/);
+  assert.match(contorno, /if \(!opzioni\?\.fuoriFiltro\) \{[^}]*setGiroArtista\(/);
   // La rilettura accorpata sa se qualcuna delle sue cause riguarda il filtro, e
   // ogni causa che non è una lettura fuori filtro lo dice.
   assert.match(app, /const cause = useRef\(causeDiRilettura\(\)\)/);
-  assert.match(app, /const senzaArtista = !cause\.current\.preleva\(\);/);
+  assert.match(app, /const fuoriFiltro = !cause\.current\.preleva\(\);/);
+  assert.match(app, /caricaVista\(\{ fuoriFiltro \}\)/);
   assert.match(app, /useAscolto\("scarico:in_libreria", \(\) => chiediRilettura\(true\)\)/);
   assert.match(app, /useAscolto\("cartelle:cambiate", \(\) => chiediRilettura\(true\)\)/);
   assert.match(app, /onRilegge=\{\(\) => chiediRilettura\(true\)\}/);
   assert.match(app, /chiediRilettura\(origineVedeIlDispositivo\(origine, nuovo\.dispositivo\)\)/);
   // E nessun'altra chiamata diretta al lavoro accorpato: salterebbe le cause.
   assert.equal([...app.matchAll(/ricaricaAccorpata\.chiama\(\)/g)].length, 1, "solo `chiediRilettura` lo chiama");
+});
+
+test("S9-3 (D-4 del collaudo AVD-2): fuori filtro non si rilegge nessun elenco, nemmeno la vista aperta", () => {
+  // Il collaudo sull'emulatore: B sulla Libreria › Artisti con «Questo
+  // dispositivo» e il catalogo di A che entra. `ipc.artisti` partiva a 0, +3,3,
+  // +6,9 e +9,7 s, a ogni rilettura accorpata. La correzione di prima fermava
+  // soltanto `giroArtista` (i due numeri dell'artista aperto): `invalidaArtisti()`
+  // restava fuori dalla guardia e, con la vista aperta, rifaceva la lettura
+  // dell'elenco intero. Lo stesso per le liste rade di Album e di Brani, che
+  // richiedono di nuovo le pagine che si guardano.
+  const contorno = brano(app, "const ricaricaContorno = useCallback(", "}, [ricaricaAlbum");
+  const guardia = /if \(!opzioni\?\.fuoriFiltro\) \{([^}]*)\}/;
+  const dentro = contorno.match(guardia)?.[1] ?? "";
+  for (const chiamata of ["ricaricaAlbum()", "setGiroArtista(", "invalidaArtisti()"]) {
+    assert.ok(
+      dentro.includes(chiamata),
+      `«${chiamata}» deve stare dentro «if (!opzioni?.fuoriFiltro)»: fuori filtro la vista non cambia`,
+    );
+  }
+  const fuori = contorno.replace(guardia, "");
+  assert.doesNotMatch(
+    fuori,
+    /invalidaArtisti\(\)|ricaricaAlbum\(\)|setGiroArtista\(/,
+    "niente di tutto questo resta fuori dalla guardia",
+  );
+  // La Home no: `ipc.casa()` non ha un filtro, e i suoi ripiani «di recente»
+  // cambiano anche quando il catalogo arriva da un dispositivo che non si vede.
+  assert.match(fuori, /if \(vista === "home"\) rileggiCasa\(\);/);
+  // E le liste di brani: Brani, Preferiti, ricerca e i tre elenchi dell'artista.
+  const carica = brano(app, "const caricaVista = useCallback(", "[ricaricaBrani, ricaricaContorno]");
+  assert.match(carica, /if \(!opzioni\?\.fuoriFiltro\) ricaricaBrani\(\);/);
+  assert.match(carica, /ricaricaContorno\(opzioni\);/);
+  // L'avvio — i totali di «Tutti», che tornando al filtro «Tutti» sarebbero
+  // vecchi — si rilegge sempre: una chiamata sola, e non un elenco.
+  const dalNucleo = brano(app, "ricaricaDalNucleo.current = () => {", "caricaVista({ fuoriFiltro });");
+  assert.match(dalNucleo, /void rileggi\(\);/);
+  // Il vecchio nome non c'è più: la guardia è una sola.
+  assert.doesNotMatch(app, /senzaArtista/);
 });
 
 test("le stringhe nuove hanno la loro frase in italiano e in inglese", () => {
