@@ -78,6 +78,7 @@ import {
   copertinaArrivata,
   domandaDelloScarico,
   eventoDelloSpecchio,
+  fasciaDaRitirarePerDatiMobili,
   inBlocchi,
   rileggereDopo,
   unaAllaVolta,
@@ -5080,6 +5081,18 @@ export function App() {
     () => quandoRispondonoLeRadici((_radici, vive) => ritiraSeTornate.current(vive)),
     [],
   );
+  /*
+   * «Sei sui dati mobili e non si può» non descrive più niente quando chi legge
+   * risponde «Sì» alla finestrella «Usare i dati mobili?»: nessuna delle due frasi
+   * — «Solo Wi-Fi è attivo», «premi play e ti chiederà» — dice più il vero. Il
+   * gesto che aspettava il sì si rifà da sé, e se fallisce di nuovo il suo
+   * errore arriva per la strada di sempre (AVD-2).
+   */
+  useEffect(() => {
+    if (fasciaDaRitirarePerDatiMobili(guasto?.codice, datiMobili)) chiudiErrore();
+    // `chiudiErrore` si rifà a ogni disegno e non cambia il risultato.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guasto?.codice, datiMobili]);
   /**
    * Il gesto che porta alla soluzione del guasto in fascia, quando la frase ne
    * nomina una.

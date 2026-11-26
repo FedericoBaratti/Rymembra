@@ -1,6 +1,6 @@
 /** Parte del contratto con il nucleo: l'errore come arriva, e come si legge. La riesporta `ipc.ts`: si importa da lì. */
 import { tSe } from "../lingue";
-import { chiaveDelTestoErrore, chiaveSecondoIDatiMobili } from "../lontano";
+import { chiaveDelTestoErrore, chiaveSecondoIDatiMobili, fasciaDaRitirarePerDatiMobili } from "../lontano";
 import type { DatiMobili } from "./lontano";
 
 /** Un errore, come lo manda il nucleo. */
@@ -170,9 +170,14 @@ export function guastoDa(value: unknown): Guasto | null {
  * fascia resta aperta finché qualcuno non la chiude: chi sceglieva «Solo Wi-Fi»
  * dalla finestrella continuava a leggere «premi play e ti chiederà se usare i dati
  * mobili». Quel che non dipende dall'impostazione torna com'era, lo stesso oggetto.
+ *
+ * Con «Sì» nessuna frase dice il vero, e la regola della chiave sceglierebbe «Solo
+ * Wi-Fi è attivo»: il guasto resta com'era, per i pochi istanti prima che `App` lo
+ * ritiri (`fasciaDaRitirarePerDatiMobili`).
  */
 export function guastoAdesso(guasto: Guasto | null, datiMobili: DatiMobili | null): Guasto | null {
   if (guasto === null || guasto.chiave === undefined || guasto.chiave === null) return guasto;
+  if (fasciaDaRitirarePerDatiMobili(guasto.codice, datiMobili)) return guasto;
   const chiave = chiaveSecondoIDatiMobili(guasto.chiave, datiMobili);
   const testo = tSe(chiave, guasto.testo, guasto.valori);
   return testo === guasto.testo ? guasto : { ...guasto, testo };

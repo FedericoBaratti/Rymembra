@@ -990,3 +990,20 @@ export function chiaveSecondoIDatiMobili(
   }
   return chiave;
 }
+
+/**
+ * La fascia «sei sui dati mobili e non si può» non descrive più niente: chi legge
+ * ha risposto «Sì» (la finestrella «Usare i dati mobili?», o le impostazioni).
+ *
+ * Con «Sì» nessuna delle due frasi dice il vero — «Solo Wi-Fi è attivo» e «premi
+ * play e ti chiederà» —, e la regola di [`chiaveSecondoIDatiMobili`] sceglierebbe la
+ * prima, falsa. Quindi la fascia si ritira, e fino a quel momento resta con la frase
+ * con cui era nata (`guastoAdesso`). Con «Chiedi» e «Solo Wi-Fi» dice ancora il
+ * vero, ciascuna la sua.
+ */
+export function fasciaDaRitirarePerDatiMobili(
+  codice: string | null | undefined,
+  datiMobili: DatiMobili | null | undefined,
+): boolean {
+  return codice === "lontano.reteAConsumo" && datiMobili === "si";
+}
