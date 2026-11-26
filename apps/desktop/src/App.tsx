@@ -78,6 +78,7 @@ import {
   copertinaArrivata,
   domandaDelloScarico,
   eventoDelloSpecchio,
+  fasciaDaRitirarePerDatiMobili,
   inBlocchi,
   rileggereDopo,
   unaAllaVolta,
@@ -137,6 +138,7 @@ import { gestoPermesso, idDiLibreria } from "./insieme";
 import {
   eErroreIpc,
   eRitentabile,
+  guastoAdesso,
   guastoDa,
   ipc,
   type Guasto,
@@ -563,6 +565,12 @@ export function App() {
   const [origineScelta, setOrigine] = useState<OrigineLibreria>(TUTTI);
   /** I dispositivi collegati, per sapere se quello scelto c'è ancora. */
   const chiaviCollegate = useArchivio(archivioLontano, chiaviDiLibreria);
+  /**
+   * «Dati mobili» di adesso. La fascia con «sei sui dati mobili» ha una frase per
+   * «Chiedi» e una per «Solo Wi-Fi»: App si ridisegna quando la scelta cambia, e la
+   * fascia — già aperta — dice quella di adesso (AVD-2).
+   */
+  const datiMobili = useArchivio(archivioLontano, (stato) => stato?.datiMobili ?? null);
   const origine = useMemo(
     () => origineConChiavi(origineScelta, chiaviCollegate),
     [origineScelta, chiaviCollegate],
@@ -3521,7 +3529,7 @@ export function App() {
     () => mappaPresenze(skinAttiva?.presenze),
     [skinAttiva],
   );
-  const guasto = errore ?? guastoDa(riproduzione.errore);
+  const guasto = guastoAdesso(errore ?? guastoDa(riproduzione.errore), datiMobili);
   const messaggio = guasto?.testo ?? null;
   /**
    * Il guasto in fascia si può riprovare.
@@ -5087,6 +5095,18 @@ export function App() {
     () => quandoRispondonoLeRadici((_radici, vive) => ritiraSeTornate.current(vive)),
     [],
   );
+  /*
+   * «Sei sui dati mobili e non si può» non descrive più niente quando chi legge
+   * risponde «Sì» alla finestrella «Usare i dati mobili?»: nessuna delle due frasi
+   * — «Solo Wi-Fi è attivo», «premi play e ti chiederà» — dice più il vero. Il
+   * gesto che aspettava il sì si rifà da sé, e se fallisce di nuovo il suo
+   * errore arriva per la strada di sempre (AVD-2).
+   */
+  useEffect(() => {
+    if (fasciaDaRitirarePerDatiMobili(guasto?.codice, datiMobili)) chiudiErrore();
+    // `chiudiErrore` si rifà a ogni disegno e non cambia il risultato.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guasto?.codice, datiMobili]);
   /**
    * Il gesto che porta alla soluzione del guasto in fascia, quando la frase ne
    * nomina una.

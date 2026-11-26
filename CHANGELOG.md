@@ -722,6 +722,17 @@ answer.
   switched off or out of range — on Windows too, with or without a pinned
   output, as it does on the phone. It also pauses when the PC wakes from
   sleep, instead of resuming by itself.
+- **“Next” and “Previous” from outside the app skip a track that cannot be
+  opened, as the end of a track already did.** That is the media keys, the
+  tray menu, the taskbar thumbnail buttons, the notification, headset buttons
+  and Android Auto. They skip a file that is gone, a file Rymembra cannot read
+  or is not allowed to open, and a track that exists only on another device
+  which does not answer or which mobile data does not allow. At most three
+  are skipped in a row, each with a “was skipped” notice. A whole source that
+  is missing — a network folder that does not answer, a drive or a cloud
+  account that is not there — still stops on the track with the error. The
+  buttons inside the app still stop on such a track, with the error and what
+  to do about it.
 - **An import never replaces a playlist you made.** A Spotify archive, a link,
   a playlist file, the old 1.0 database, a profile or a Drive restore that
   brings a different playlist with the same name puts it beside yours — “Name

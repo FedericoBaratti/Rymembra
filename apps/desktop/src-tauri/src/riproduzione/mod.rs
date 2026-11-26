@@ -123,9 +123,9 @@ use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, adesso_ms, con_libreria, con_libreria_entro};
 
-use crate::insieme::{Gesto, Instradato};
+use crate::insieme::{Gesto, Instradato, VociCreate};
 
-use self::coda::{gesto_di_coda, ricorda_coda_di_prima, salva_coda};
+use self::coda::{gesto_di_coda, gesto_di_coda_saltando, ricorda_coda_di_prima, salva_coda};
 use self::fili::prepara_prossimo;
 use self::flusso::{apri_flusso, riferimento_di, sorgente_da_flusso};
 use self::ospiti::Chi;
@@ -3415,8 +3415,9 @@ pub async fn formato_visibile_scegli(app: Nucleo, acceso: bool) -> Esito<bool> {
 pub(super) enum Strada {
     /// Si prosegue come sempre.
     Prosegui,
-    /// Si prosegue con queste maniglie al posto dei brani chiesti.
-    ConVoci(Vec<i64>),
+    /// Si prosegue con queste voci al posto dei brani chiesti, ciascuna al
+    /// posto del brano da cui è nata.
+    ConVoci(VociCreate),
     /// Il gesto l'ha preso l'host: il comando torna `Ok(())` senza fare
     /// altro, e quel che cambia arriva col prossimo stato della sessione.
     Fatto,
@@ -3443,17 +3444,17 @@ pub(super) enum Strada {
 pub(super) fn strada(app: &Nucleo, gesto: &Gesto) -> Result<Strada, AppError> {
     match crate::insieme::instrada(app, gesto) {
         Instradato::Locale => Ok(Strada::Prosegui),
-        Instradato::ConVoci(maniglie) => Ok(Strada::ConVoci(maniglie)),
+        Instradato::ConVoci(voci) => Ok(Strada::ConVoci(voci)),
         Instradato::Inoltrato => Ok(Strada::Fatto),
         Instradato::Rifiutato(err) => Err(err),
     }
 }
 
 /// [`strada`] per un gesto che porta dei brani: `None` se il gesto è già
-/// stato fatto altrove; altrimenti le maniglie delle voci che la sessione ha
-/// appena creato, se ne ha create.
+/// stato fatto altrove; altrimenti le voci che la sessione ha appena creato,
+/// se ne ha create, ciascuna al posto del brano da cui è nata.
 ///
-/// Le maniglie non si usano qui: se entrano in coda lo decide il corpo del
+/// Le voci non si usano qui: se entrano in coda lo decide il corpo del
 /// comando, sotto il lucchetto del lettore, guardando se il lettore ospita
 /// davvero. Vedi `insieme::brani_da_mettere`.
 ///
@@ -3463,10 +3464,10 @@ pub(super) fn strada(app: &Nucleo, gesto: &Gesto) -> Result<Strada, AppError> {
 pub(super) fn voci_dalla_strada(
     app: &Nucleo,
     gesto: &Gesto,
-) -> Result<Option<Option<Vec<i64>>>, AppError> {
+) -> Result<Option<Option<VociCreate>>, AppError> {
     Ok(match strada(app, gesto)? {
         Strada::Prosegui => Some(None),
-        Strada::ConVoci(maniglie) => Some(Some(maniglie)),
+        Strada::ConVoci(voci) => Some(Some(voci)),
         Strada::Fatto => None,
     })
 }
@@ -3608,12 +3609,6 @@ pub fn suona_ora(app: Nucleo, stato: StatoLettore, brani: Vec<i64>, indice: usiz
     let Some(voci) = voci_dalla_strada(&app, &gesto).map_err(errore)? else {
         return Ok(());
     };
-    // La riga dietro ogni voce, per ritrovare il brano scelto fra le voci: dal
-    // registro, prima del lettore.
-    let voci = voci.map(|maniglie| {
-        let righe = insieme::righe_delle_voci(&app, &maniglie);
-        (maniglie, righe)
-    });
     gesto_di_coda(&app, &stato, |lettore| {
         // Voci o righe lo decide il lettore, e un brano scelto che non è
         // diventato una voce non tocca la coda di tutti: vedi
@@ -3938,6 +3933,181 @@ fn titolo_di(app: &Nucleo, track_id: i64) -> Option<String> {
     .filter(|titolo| !titolo.trim().is_empty())
 }
 
+/// Il verso in cui un gesto muove la coda: da lì si passa oltre se il brano non
+/// si apre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verso {
+    /// A fine brano e per «avanti»: il brano dopo.
+    Avanti,
+    /// Per «indietro»: il brano prima, mai «ricomincia questo».
+    Indietro,
+}
+
+/// Come finisce [`apri_o_salta`].
+#[derive(Debug)]
+enum Fine {
+    /// Il brano corrente si è aperto, o non c'era niente da aprire.
+    Aperto,
+    /// Non si passa oltre — manca la sorgente, non c'è un brano oltre, o si sono
+    /// già saltati [`SALTI_DI_FILA`] brani —: si ferma su questo brano, col suo
+    /// errore.
+    Fermo(i64, AppError),
+    /// Qualcuno ha mosso la coda nel frattempo: ha già avviato lui.
+    CodaMossa,
+}
+
+/// Un brano non si è aperto: si passa a un altro?
+///
+/// Sì se non si apre per colpa sua ([`si_salta`]), se non si sono già saltati
+/// [`SALTI_DI_FILA`] brani di fila, e se **nessuno può rispondere** a «Usare i dati
+/// mobili?». Dalla finestra (`la_pagina_puo_chiedere`) il brano che non si apre
+/// torna come errore al comando, e la pagina chiede: saltarlo la lascerebbe senza
+/// la sua domanda. A fine brano, da un tasto, dalla notifica o da Android Auto non
+/// c'è nessuno a cui chiedere, e «Chiedi» vale «No».
+fn si_passa_oltre(err: &AppError, saltati: u32, la_pagina_puo_chiedere: bool) -> bool {
+    !la_pagina_puo_chiedere && saltati < SALTI_DI_FILA && si_salta(err)
+}
+
+/// Il ciclo dei brani che non si aprono, uno solo per la fine brano
+/// ([`riprova_o_salta`]) e per «avanti» e «indietro» ([`avvia_o_salta`]): la
+/// stessa decisione ([`si_passa_oltre`]) con lo stesso limite, in tutti e due.
+///
+/// Si prende tutto da fuori perché lo si provi contro una coda vera e un'apertura
+/// finta: `tenta` apre il corrente (come [`tenta_l_avvio`]), `passa_oltre` sposta
+/// la coda dal brano `id` — `None` se nel frattempo non è più il corrente,
+/// `Some(false)` se oltre non c'è niente —, `dopo_un_salto` lo dice a chi guarda.
+fn apri_o_salta(
+    la_pagina_puo_chiedere: bool,
+    mut tenta: impl FnMut() -> Result<Option<(i64, AppError)>, AppError>,
+    mut passa_oltre: impl FnMut(i64) -> Option<bool>,
+    mut dopo_un_salto: impl FnMut(i64, &AppError),
+) -> Result<Fine, AppError> {
+    let mut saltati = 0;
+    loop {
+        let Some((id, err)) = tenta()? else {
+            return Ok(Fine::Aperto);
+        };
+        let avanzata = if si_passa_oltre(&err, saltati, la_pagina_puo_chiedere) {
+            passa_oltre(id)
+        } else {
+            Some(false)
+        };
+        match avanzata {
+            None => return Ok(Fine::CodaMossa),
+            Some(true) => {
+                dopo_un_salto(id, &err);
+                saltati += 1;
+            }
+            Some(false) => return Ok(Fine::Fermo(id, err)),
+        }
+    }
+}
+
+/// Sposta la coda dal brano `id`, che non si apre, al brano oltre nel `verso`.
+///
+/// `None` se `id` non è più il corrente: qualcuno ha mosso la coda e ha già
+/// avviato quel che voleva. `Some(false)` se oltre non c'è niente — la fine della
+/// coda, o la testa, dove «indietro» vorrebbe dire «ricomincia questo» — **o
+/// niente di diverso da lui**: con «ripeti tutto» e un brano solo, o quando l'unico
+/// brano oltre è lo stesso brano, il passo rimette il cursore su `id` e
+/// `Step::Track` non vuol dire che si sia andati oltre. Riaprirlo darebbe lo stesso
+/// errore, quattro volte e con tre avvisi «è stato saltato» sullo stesso brano
+/// (fino a venti secondi ciascuna apertura, se il dispositivo non risponde): ci si
+/// ferma su di lui, con il suo errore.
+fn passa_al_brano_oltre(coda: &mut Queue, id: i64, verso: Verso) -> Option<bool> {
+    if coda.current() != Some(id) {
+        return None;
+    }
+    let passo = match verso {
+        // `true`: anche con «ripeti uno» si va oltre — il brano da ripetere è
+        // proprio quello che non si apre.
+        Verso::Avanti => coda.advance(true),
+        // Da zero: il brano prima, non «ricomincia».
+        Verso::Indietro => coda.previous(0),
+    };
+    Some(matches!(passo, Step::Track(_)) && coda.current() != Some(id))
+}
+
+/// [`passa_al_brano_oltre`] sulla coda del lettore, con quel che serve intorno:
+/// la coda salvata e lo stato mandato. Mai per chi segue una sessione: la sua
+/// coda è lo specchio di quella dell'host, e un passo fatto qui sarebbe un passo
+/// che l'host non ha fatto.
+///
+/// Lo stato dice il brano nuovo **da zero**: la coda è già sul brano oltre, ma il
+/// motore suona ancora quello di prima — «avanti» da fuori mentre suona A —, e la
+/// posizione di A farebbe vedere in barra, nel vassoio e nel controllo di sistema il
+/// titolo nuovo con il cursore del vecchio che avanza. Vedi
+/// [`manda_stato_con_posizione`]; a fine brano il motore ha finito, e da zero è
+/// comunque dove il brano nuovo comincerà.
+fn salta_il_brano(app: &Nucleo, stato: &StatoLettore, id: i64, verso: Verso) -> Option<bool> {
+    con_lettore(stato, |lettore| {
+        if insieme::segue(lettore) {
+            return Ok(None);
+        }
+        let passato = passa_al_brano_oltre(&mut lettore.coda, id, verso);
+        if passato == Some(true) {
+            salva_coda(app, lettore);
+            manda_stato_con_posizione(app, lettore, 0);
+        }
+        Ok(passato)
+    })
+    .unwrap_or(None)
+}
+
+/// Un brano saltato perché non si apriva: il diario e l'avviso della finestra,
+/// che nomina il brano e dice perché.
+fn avvisa_del_salto(app: &Nucleo, id: i64, err: &AppError) {
+    let codice = err.code().kind().code();
+    nota!("[riproduzione] brano saltato: non si apre brano={id} codice={codice}");
+    app.emetti(
+        "riproduzione:saltato",
+        Saltato {
+            id,
+            titolo: titolo_di(app, id),
+            codice,
+        },
+    );
+}
+
+/// [`avvia_corrente`] per un «avanti» o un «indietro»: se il brano non si apre per
+/// colpa sua e nessuno può rispondere, si passa a quello oltre invece di fermarsi.
+///
+/// # Perché
+///
+/// Un «avanti» che arriva dal sistema — il controllo media nella notifica, il
+/// tasto delle cuffie, Android Auto, il vassoio — non ha una finestra che risponda
+/// a «Usare i dati mobili?» ([`crate::lontano::sfoglia::la_pagina_puo_chiedere`]).
+/// Con «Chiedi» sui dati mobili e un brano che esiste solo su un altro dispositivo,
+/// [`avvia_corrente`] si fermava lì: il lettore in pausa a 0:00, con la fascia
+/// «sei sui dati mobili…», mentre a fine brano lo stesso brano si salta e la musica
+/// continua (S11-4, 5 prove su 5 sui due emulatori). Adesso passano dalla stessa
+/// decisione della fine brano ([`si_passa_oltre`]), con lo stesso limite di
+/// [`SALTI_DI_FILA`].
+///
+/// Dalla finestra non cambia niente: il brano che non si apre torna come errore al
+/// comando, e la pagina chiede.
+///
+/// `gesti_prima` è quello di chi ha deciso, per **tutti** i tentativi: una pausa
+/// chiesta mentre si salta vince su ogni brano che parte dopo (vedi
+/// [`avvia_corrente`]).
+fn avvia_o_salta(
+    app: &Nucleo,
+    stato: &StatoLettore,
+    verso: Verso,
+    gesti_prima: u64,
+) -> Result<(), AppError> {
+    let fine = apri_o_salta(
+        crate::lontano::sfoglia::la_pagina_puo_chiedere(),
+        || tenta_l_avvio(app, stato, false, 0, gesti_prima),
+        |id| salta_il_brano(app, stato, id, verso),
+        |id, err| avvisa_del_salto(app, id, err),
+    )?;
+    match fine {
+        Fine::Fermo(id, err) => avvio_fallito(app, stato, id, 0, err),
+        Fine::Aperto | Fine::CodaMossa => Ok(()),
+    }
+}
+
 /// Il brano dopo non si era aperto e il corrente è finito: si riprova, e se
 /// non si apre ancora si passa oltre.
 ///
@@ -3961,65 +4131,32 @@ fn riprova_o_salta(app: &Nucleo) {
     let Some(stato) = app.try_state::<StatoLettore>() else {
         return;
     };
-    let mut saltati = 0;
-    loop {
-        // Il numero dei gesti di adesso: a fine brano chi decide è questo filo,
-        // e ad ogni brano saltato si decide di nuovo.
-        let Ok(gesti) = con_lettore(&stato, |lettore| Ok(lettore.pausa_chiesta.0)) else {
-            return;
-        };
-        let (id, err) = match tenta_l_avvio(app, &stato, false, 0, gesti) {
-            Ok(None) => return,
-            Ok(Some(fallito)) => fallito,
-            Err(err) => {
+    let fine = apri_o_salta(
+        // Un filo suo, che nessun comando della finestra ha etichettato: a fine
+        // brano non c'è nessuno a cui chiedere.
+        false,
+        || {
+            // Il numero dei gesti di adesso: a fine brano chi decide è questo
+            // filo, e ad ogni brano saltato si decide di nuovo.
+            let Ok(gesti) = con_lettore(&stato, |lettore| Ok(lettore.pausa_chiesta.0)) else {
+                return Ok(None);
+            };
+            tenta_l_avvio(app, &stato, false, 0, gesti)
+        },
+        |id| salta_il_brano(app, &stato, id, Verso::Avanti),
+        |id, err| avvisa_del_salto(app, id, err),
+    );
+    match fine {
+        // Non si salta, o non c'è un brano dopo: fermo su di lui, come prima. Un
+        // errore che non si riprova non ha un comando a cui risalire: va alla
+        // fascia da qui.
+        Ok(Fine::Fermo(id, err)) => {
+            if let Err(err) = avvio_fallito(app, &stato, id, 0, err) {
                 app.emetti("riproduzione:errore", errore(err));
-                return;
-            }
-        };
-        let avanzata = if saltati < SALTI_DI_FILA && si_salta(&err) {
-            con_lettore(&stato, |lettore| {
-                if lettore.coda.current() != Some(id) || insieme::segue(lettore) {
-                    return Ok(None);
-                }
-                // `true`: anche con «ripeti uno» si va oltre — il brano da
-                // ripetere è proprio quello che non si apre.
-                let avanti = matches!(lettore.coda.advance(true), Step::Track(_));
-                if avanti {
-                    salva_coda(app, lettore);
-                    manda_stato(app, lettore);
-                }
-                Ok(Some(avanti))
-            })
-            .unwrap_or(None)
-        } else {
-            Some(false)
-        };
-        match avanzata {
-            // Qualcuno ha mosso la coda nel frattempo: ha già avviato lui.
-            None => return,
-            Some(true) => {
-                let codice = err.code().kind().code();
-                nota!("[riproduzione] brano saltato: non si apre brano={id} codice={codice}");
-                app.emetti(
-                    "riproduzione:saltato",
-                    Saltato {
-                        id,
-                        titolo: titolo_di(app, id),
-                        codice,
-                    },
-                );
-                saltati += 1;
-            }
-            // Non si salta, o non c'è un brano dopo: fermo su di lui, come
-            // prima. Un errore che non si riprova non ha un comando a cui
-            // risalire: va alla fascia da qui.
-            Some(false) => {
-                if let Err(err) = avvio_fallito(app, &stato, id, 0, err) {
-                    app.emetti("riproduzione:errore", errore(err));
-                }
-                return;
             }
         }
+        Ok(Fine::Aperto | Fine::CodaMossa) => {}
+        Err(err) => app.emetti("riproduzione:errore", errore(err)),
     }
 }
 
@@ -4457,11 +4594,14 @@ pub async fn precedente(app: Nucleo) -> Esito<()> {
 }
 
 /// Passa al brano dopo.
+///
+/// Se non si apre per colpa sua e nessuno può rispondere — un tasto, la
+/// notifica, Android Auto —, passa a quello ancora dopo: vedi `avvia_o_salta`.
 pub fn prossimo_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Prossimo).map_err(errore)? {
         return Ok(());
     }
-    gesto_di_coda(&app, &stato, |lettore| {
+    gesto_di_coda_saltando(&app, &stato, Verso::Avanti, |lettore| {
         chiudi_ascolto(&app, lettore);
         match lettore.coda.advance(true) {
             Step::Track(_) => Ok(true),
@@ -4481,11 +4621,14 @@ pub fn prossimo_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
 }
 
 /// Torna al brano prima, o ricomincia questo.
+///
+/// Se il brano prima non si apre per colpa sua e nessuno può rispondere, torna a
+/// quello ancora prima: vedi `avvia_o_salta`.
 pub fn precedente_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
     if let Strada::Fatto = strada(&app, &Gesto::Precedente).map_err(errore)? {
         return Ok(());
     }
-    gesto_di_coda(&app, &stato, |lettore| {
+    gesto_di_coda_saltando(&app, &stato, Verso::Indietro, |lettore| {
         let posizione = lettore.motore.posizione();
         let corrente = lettore.coda.current();
         let si_apre = stato.aprendo.load(std::sync::atomic::Ordering::Acquire);

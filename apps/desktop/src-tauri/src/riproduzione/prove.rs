@@ -392,13 +392,15 @@ fn si_salta_solo_un_brano_che_non_si_apre_per_colpa_sua() {
 #[test]
 fn chi_segue_non_salta() {
     assert!(!dopo_il_fermato(false, true, false, Some(1)).avanza_sul_non_aperto);
-    let lettore = senza_prove(include_str!("mod.rs"));
-    let corpo = &lettore[lettore
-        .find("fn riprova_o_salta(")
-        .expect("riprova_o_salta")..];
-    let corpo = &corpo[..corpo.find("\n}\n").expect("fine")];
-    assert!(corpo.contains("insieme::segue(lettore)"));
-    assert!(corpo.contains("SALTI_DI_FILA"));
+    let mod_rs = include_str!("mod.rs");
+    // Il passo e il limite stanno nelle funzioni che la fine brano e «avanti» /
+    // «indietro» dividono (S11-4): la fine brano passa da lì.
+    let passo = corpo_privato(mod_rs, "fn salta_il_brano(").expect("salta_il_brano");
+    assert!(passo.contains("insieme::segue(lettore)"));
+    let decisione = corpo_privato(mod_rs, "fn si_passa_oltre(").expect("si_passa_oltre");
+    assert!(decisione.contains("SALTI_DI_FILA"));
+    let riprova = corpo_privato(mod_rs, "fn riprova_o_salta(").expect("riprova_o_salta");
+    assert!(riprova.contains("salta_il_brano("));
 }
 
 /// I sorgenti dove stanno i comandi del lettore.
@@ -571,6 +573,7 @@ fn ogni_comando_di_trasporto_e_di_coda_chiede_la_strada_per_primo() {
         for presa in [
             "con_lettore(",
             "gesto_di_coda(",
+            "gesto_di_coda_saltando(",
             "sveglia_fuori_dal_lucchetto(",
             "libreria_di(",
             "cambia_preferenza(",
@@ -1281,6 +1284,263 @@ fn si_salta_un_brano_che_i_dati_mobili_non_consentono() {
     }
     // Resta vero che a mancare la sorgente intera non si salta.
     assert!(!si_salta(&AppError::new(ErrorCode::LontanoNonAssociato)));
+}
+
+/// S11-4: «Avanti» e «Indietro» che arrivano dal sistema — il controllo media
+/// nella notifica, il tasto delle cuffie, Android Auto — non hanno nessuno che
+/// possa rispondere a «Usare i dati mobili?». Passano dalla stessa decisione della
+/// fine brano (`si_salta`, entro i `SALTI_DI_FILA`): prima il nucleo avviava il
+/// brano e, se non si apriva, si fermava su di lui con l'errore (5 prove su 5 sui
+/// due emulatori: la musica taceva sul brano solo di un altro dispositivo).
+///
+/// Il corpo dei due comandi del nucleo — quelli che chiamano `crate::media` e la
+/// sessione, non la pagina — deve passare dalla partenza che salta, e la fine
+/// brano dalla stessa funzione di ciclo.
+#[test]
+fn avanti_e_indietro_dal_sistema_passano_dalla_decisione_della_fine_brano() {
+    let mod_rs = include_str!("mod.rs");
+    for nome in ["prossimo_ora", "precedente_ora"] {
+        let corpo = corpo(mod_rs, nome).expect(nome);
+        assert!(
+            corpo.contains("gesto_di_coda_saltando("),
+            "«{nome}» avvia il brano senza passare oltre se non si apre"
+        );
+        assert!(
+            !corpo.contains("gesto_di_coda("),
+            "«{nome}» avvia il brano con la partenza che si ferma al primo errore"
+        );
+    }
+    for firma in ["fn riprova_o_salta(", "fn avvia_o_salta("] {
+        let corpo = corpo_privato(mod_rs, firma).expect(firma);
+        assert!(
+            corpo.contains("apri_o_salta("),
+            "{firma} ha una decisione sua invece del ciclo comune"
+        );
+    }
+}
+
+/// Una coda di prova ferma sul brano di posto `su`.
+fn coda_ferma_su(brani: &[i64], su: usize) -> Queue {
+    let mut coda = Queue::new();
+    coda.play_tracks(brani.to_vec(), su, 1);
+    coda
+}
+
+/// Il ciclo dei brani che non si aprono contro una coda vera e un'apertura finta:
+/// i brani in `guasti` non si aprono, con `codice`. Torna come è finito, il
+/// brano su cui la coda è rimasta, e i brani saltati nell'ordine.
+fn percorri(
+    coda: Queue,
+    guasti: &[i64],
+    codice: fn() -> ErrorCode,
+    la_pagina_puo_chiedere: bool,
+    verso: Verso,
+) -> (Result<Fine, AppError>, Option<i64>, Vec<i64>) {
+    let coda = std::cell::RefCell::new(coda);
+    let saltati = std::cell::RefCell::new(Vec::new());
+    let fine = apri_o_salta(
+        la_pagina_puo_chiedere,
+        || {
+            Ok(coda
+                .borrow()
+                .current()
+                .filter(|id| guasti.contains(id))
+                .map(|id| (id, AppError::new(codice()))))
+        },
+        |id| passa_al_brano_oltre(&mut coda.borrow_mut(), id, verso),
+        |id, _| saltati.borrow_mut().push(id),
+    );
+    (fine, coda.into_inner().current(), saltati.into_inner())
+}
+
+fn rete_a_consumo() -> ErrorCode {
+    ErrorCode::LontanoReteAConsumo
+}
+
+/// S11-4, il percorso del nucleo: «avanti» dal sistema, con «Chiedi» e nessuno che
+/// possa rispondere, su un brano che esiste solo su un altro dispositivo. La coda è
+/// [brano di qui, brano solo dell'altro, brano di qui] e «avanti» l'ha già portata
+/// sul secondo: la musica deve continuare col terzo, come a fine brano.
+#[test]
+fn avanti_dal_sistema_salta_il_brano_che_i_dati_mobili_non_consentono() {
+    let (fine, su, saltati) = percorri(
+        coda_ferma_su(&[1, 2, 3], 1),
+        &[2],
+        rete_a_consumo,
+        false,
+        Verso::Avanti,
+    );
+    assert!(matches!(fine, Ok(Fine::Aperto)), "{fine:?}");
+    assert_eq!(su, Some(3), "la coda doveva continuare col terzo");
+    assert_eq!(saltati, vec![2]);
+}
+
+/// …ma dalla pagina no: lì il brano che non si apre torna come errore al comando,
+/// e la finestra chiede «Usare i dati mobili?». Saltarlo le toglierebbe la domanda.
+#[test]
+fn avanti_dalla_pagina_non_salta_e_lascia_chiedere() {
+    let (fine, su, saltati) = percorri(
+        coda_ferma_su(&[1, 2, 3], 1),
+        &[2],
+        rete_a_consumo,
+        true,
+        Verso::Avanti,
+    );
+    match fine {
+        Ok(Fine::Fermo(2, err)) => {
+            assert_eq!(err.code().kind(), ErrorCodeKind::LontanoReteAConsumo)
+        }
+        altro => panic!("doveva fermarsi sul brano che chiede il sì: {altro:?}"),
+    }
+    assert_eq!(su, Some(2));
+    assert!(saltati.is_empty());
+}
+
+/// «Indietro» passa oltre all'indietro: dal brano prima che non si apre torna a
+/// quello ancora prima, non a quello dopo.
+#[test]
+fn indietro_dal_sistema_salta_all_indietro() {
+    let (fine, su, saltati) = percorri(
+        coda_ferma_su(&[1, 2, 3], 1),
+        &[2],
+        rete_a_consumo,
+        false,
+        Verso::Indietro,
+    );
+    assert!(matches!(fine, Ok(Fine::Aperto)), "{fine:?}");
+    assert_eq!(su, Some(1));
+    assert_eq!(saltati, vec![2]);
+    // In testa alla coda «indietro» vorrebbe dire «ricomincia questo»: si ferma sul
+    // brano che non si apre, con il suo errore.
+    let (fine, su, saltati) = percorri(
+        coda_ferma_su(&[2, 3], 0),
+        &[2],
+        rete_a_consumo,
+        false,
+        Verso::Indietro,
+    );
+    assert!(matches!(fine, Ok(Fine::Fermo(2, _))), "{fine:?}");
+    assert_eq!(su, Some(2));
+    assert!(saltati.is_empty());
+}
+
+/// Il limite dei salti di fila è quello di sempre: dopo `SALTI_DI_FILA` si ferma
+/// sul successivo, con l'errore in vista. Anche con «ripeti uno», che «avanti»
+/// non segue.
+#[test]
+fn si_salta_al_piu_il_limite_di_fila_anche_con_ripeti_uno() {
+    let brani = [1, 2, 3, 4, 5, 6];
+    let mut coda = coda_ferma_su(&brani, 0);
+    coda.cycle_repeat();
+    assert_eq!(coda.cycle_repeat(), RepeatMode::One);
+    let (fine, su, saltati) = percorri(coda, &brani, rete_a_consumo, false, Verso::Avanti);
+    assert_eq!(saltati, vec![1, 2, 3], "{SALTI_DI_FILA} salti, non di più");
+    assert!(matches!(fine, Ok(Fine::Fermo(4, _))), "{fine:?}");
+    assert_eq!(su, Some(4));
+}
+
+/// Quel che manca per colpa della sorgente intera non si salta, e nemmeno dove
+/// nessuno può rispondere; e una coda mossa da un altro non si tocca.
+#[test]
+fn non_si_passa_oltre_se_manca_la_sorgente_o_la_coda_e_stata_mossa() {
+    let non_associato = || ErrorCode::LontanoNonAssociato;
+    let (fine, su, saltati) = percorri(
+        coda_ferma_su(&[1, 2, 3], 1),
+        &[2],
+        non_associato,
+        false,
+        Verso::Avanti,
+    );
+    assert!(matches!(fine, Ok(Fine::Fermo(2, _))), "{fine:?}");
+    assert_eq!((su, saltati), (Some(2), vec![]));
+    // Il brano che non si apre non è più il corrente: qualcuno ha già avviato.
+    let mut coda = coda_ferma_su(&[1, 2, 3], 2);
+    assert_eq!(passa_al_brano_oltre(&mut coda, 2, Verso::Avanti), None);
+    assert_eq!(coda.current(), Some(3), "la coda non si tocca");
+    // Dopo l'ultimo non c'è niente: si ferma, la coda resta dov'è.
+    assert_eq!(
+        passa_al_brano_oltre(&mut coda, 3, Verso::Avanti),
+        Some(false)
+    );
+    assert_eq!(coda.current(), Some(3));
+}
+
+/// La decisione, da sola: sì solo se la colpa è del brano, non si è al limite e
+/// nessuna pagina può rispondere.
+#[test]
+fn si_passa_oltre_solo_dove_nessuno_puo_rispondere() {
+    let rete = AppError::new(ErrorCode::LontanoReteAConsumo);
+    assert!(si_passa_oltre(&rete, 0, false));
+    assert!(si_passa_oltre(&rete, SALTI_DI_FILA - 1, false));
+    assert!(
+        !si_passa_oltre(&rete, SALTI_DI_FILA, false),
+        "oltre il limite"
+    );
+    assert!(!si_passa_oltre(&rete, 0, true), "la pagina può chiedere");
+    let sorgente = AppError::new(ErrorCode::LontanoNonAssociato);
+    assert!(
+        !si_passa_oltre(&sorgente, 0, false),
+        "manca la sorgente intera"
+    );
+}
+
+/// Il brano che non si apre non si salta «su se stesso»: con «ripeti tutto» e una
+/// coda di un brano solo, o quando l'unico brano oltre è lo stesso brano, il passo
+/// della coda rimette il cursore su di lui e `Step::Track` non vuol dire che si
+/// sia andati oltre. Prima il ciclo lo riapriva quattro volte, con tre avvisi
+/// «è stato saltato» sullo stesso brano (fino a 20 s ciascuna apertura, se il
+/// dispositivo non risponde). Vale anche per la fine brano, che usa lo stesso
+/// ciclo: ci si ferma sul brano, con il suo errore.
+#[test]
+fn un_brano_che_e_il_solo_oltre_non_si_salta_su_se_stesso() {
+    for verso in [Verso::Avanti, Verso::Indietro] {
+        // [X] con «ripeti tutto»: `advance` e `previous` tornano su X.
+        let mut coda = coda_ferma_su(&[1], 0);
+        assert_eq!(coda.cycle_repeat(), RepeatMode::All);
+        let (fine, su, saltati) = percorri(coda, &[1], rete_a_consumo, false, verso);
+        assert!(matches!(fine, Ok(Fine::Fermo(1, _))), "{verso:?}: {fine:?}");
+        assert_eq!(su, Some(1));
+        assert!(
+            saltati.is_empty(),
+            "{verso:?}: lo stesso brano saltato su se stesso: {saltati:?}"
+        );
+    }
+    // [X, X]: oltre c'è solo lui, e l'avviso non nomina due volte lo stesso brano.
+    let (fine, su, saltati) = percorri(
+        coda_ferma_su(&[1, 1], 0),
+        &[1],
+        rete_a_consumo,
+        false,
+        Verso::Avanti,
+    );
+    assert!(matches!(fine, Ok(Fine::Fermo(1, _))), "{fine:?}");
+    assert_eq!(su, Some(1));
+    assert!(saltati.is_empty(), "{saltati:?}");
+    // Un altro brano oltre c'è: si salta come sempre, anche con «ripeti tutto».
+    let mut coda = coda_ferma_su(&[1, 2], 0);
+    coda.cycle_repeat();
+    let (fine, su, saltati) = percorri(coda, &[1], rete_a_consumo, false, Verso::Avanti);
+    assert!(matches!(fine, Ok(Fine::Aperto)), "{fine:?}");
+    assert_eq!((su, saltati), (Some(2), vec![1]));
+}
+
+/// «Avanti» da fuori mentre suona A: la coda è già sul brano dopo, che non si apre,
+/// ma il motore suona ancora A. Lo stato che si manda a ogni brano saltato dice dove
+/// il brano nuovo **sarà** — da zero — e non la posizione di A, che farebbe vedere in
+/// barra, nel vassoio e nel controllo di sistema il titolo nuovo con il cursore del
+/// vecchio che avanza (`manda_stato_con_posizione`). Vale anche per la fine brano.
+#[test]
+fn il_brano_saltato_manda_lo_stato_con_la_posizione_da_zero() {
+    let passo =
+        corpo_privato(include_str!("mod.rs"), "fn salta_il_brano(").expect("salta_il_brano");
+    assert!(
+        passo.contains("manda_stato_con_posizione(app, lettore, 0)"),
+        "salta_il_brano manda la posizione del brano di prima"
+    );
+    assert!(
+        !passo.contains("manda_stato("),
+        "salta_il_brano manda lo stato con la posizione del motore"
+    );
 }
 
 /// I nomi dei comandi (`pub async fn nome(`) che nel loro corpo chiamano `ago`.

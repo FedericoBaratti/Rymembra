@@ -105,3 +105,73 @@ test("S11-4: i punti che dicono l'errore dei dati mobili scelgono la frase per �
   assert.match(leggi("ipc/errori.ts"), /tSe\(chiaveDelTestoErrore\(value\.i18nKey\)/);
   assert.match(leggi("App.tsx"), /tSe\(chiaveDelTestoErrore\(`errors\.\$\{codice\}`\), ""\)/);
 });
+
+/**
+ * AVD-2: dopo «Solo Wi-Fi» la fascia diceva ancora «premi play e ti chiederà se usare
+ * i dati mobili», e la scelta ormai era «no».
+ *
+ * La frase si sceglieva una volta, alla nascita del guasto (`guastoDa` ne teneva il
+ * testo), e `App` non si ridisegnava quando cambiava l'impostazione: la sua
+ * iscrizione a `archivioLontano` guarda solo le chiavi della libreria.
+ */
+test("AVD-2: la frase dei dati mobili si sceglie sull'impostazione di adesso, non su quella di quando è nata la fascia", async () => {
+  const { chiaveSecondoIDatiMobili } = await import("../src/lontano");
+  const chiave = "errors.lontano.reteAConsumo";
+  // La fascia nasce con «Chiedi»; chi legge sceglie «Solo Wi-Fi» dalla finestrella;
+  // la frase che si vede da lì in poi è quella di «Solo Wi-Fi».
+  assert.equal(chiaveSecondoIDatiMobili(chiave, "chiedi"), `${chiave}.chiedi`);
+  assert.equal(chiaveSecondoIDatiMobili(chiave, "no"), chiave);
+  // E con «Sì», o senza sapere, la frase di sempre. Gli altri errori non cambiano mai.
+  assert.equal(chiaveSecondoIDatiMobili(chiave, "si"), chiave);
+  assert.equal(chiaveSecondoIDatiMobili(chiave, null), chiave);
+  assert.equal(chiaveSecondoIDatiMobili("errors.lontano.spento", "chiedi"), "errors.lontano.spento");
+});
+
+test("AVD-2: la fascia rilegge la frase quando cambia l'impostazione, in tutti i posti che la mostrano", () => {
+  const errori = leggi("ipc/errori.ts");
+  // Il guasto si porta dietro la chiave e i dati, non solo il testo già composto.
+  assert.match(errori, /chiave: eErroreIpc\(value\) \? value\.i18nKey : null/);
+  assert.match(errori, /export function guastoAdesso\(/);
+  const corpo = errori.slice(errori.indexOf("export function guastoAdesso("));
+  assert.match(corpo.slice(0, corpo.indexOf("\n}\n")), /chiaveSecondoIDatiMobili\(/);
+  // `App` si ridisegna quando cambia `datiMobili` e il guasto — quello della fascia
+  // e quello del pannello di «Ascolta insieme», che è lo stesso — passa da lì.
+  const app = leggi("App.tsx");
+  assert.match(app, /useArchivio\(archivioLontano, \(stato\) => stato\?\.datiMobili \?\? null\)/);
+  assert.match(app, /const guasto = guastoAdesso\(errore \?\? guastoDa\(riproduzione\.errore\), datiMobili\);/);
+});
+
+/**
+ * Con «Sì» nessuna frase del catalogo dice il vero: `errors.lontano.reteAConsumo`
+ * dice «Solo Wi-Fi è attivo», e `.chiedi` «premi play e ti chiederà». Una fascia nata
+ * con «Chiedi», a cui chi legge risponde «Sì» dalla finestrella, non descrive più
+ * niente: si ritira, e fino ad allora non cambia frase (non diventa «Solo Wi-Fi»).
+ */
+test("AVD-2: con «Sì» la fascia dei dati mobili non descrive più niente e si ritira", async () => {
+  const { fasciaDaRitirarePerDatiMobili } = await import("../src/lontano");
+  assert.equal(fasciaDaRitirarePerDatiMobili("lontano.reteAConsumo", "si"), true);
+  // Con «Chiedi» e «Solo Wi-Fi» la fascia dice ancora il vero, ciascuna la sua frase.
+  assert.equal(fasciaDaRitirarePerDatiMobili("lontano.reteAConsumo", "chiedi"), false);
+  assert.equal(fasciaDaRitirarePerDatiMobili("lontano.reteAConsumo", "no"), false);
+  assert.equal(fasciaDaRitirarePerDatiMobili("lontano.reteAConsumo", null), false);
+  // Gli altri guasti non dipendono dall'impostazione.
+  assert.equal(fasciaDaRitirarePerDatiMobili("lontano.spento", "si"), false);
+  assert.equal(fasciaDaRitirarePerDatiMobili(null, "si"), false);
+  assert.equal(fasciaDaRitirarePerDatiMobili(undefined, "si"), false);
+});
+
+test("AVD-2: con «Sì» `guastoAdesso` lascia il guasto com'era e `App` lo ritira", () => {
+  const errori = leggi("ipc/errori.ts");
+  const corpo = errori.slice(errori.indexOf("export function guastoAdesso("));
+  const ricompone = corpo.slice(0, corpo.indexOf("\n}\n"));
+  // La frase non passa a quella di «Solo Wi-Fi» per un istante: prima il ritiro, poi la chiave.
+  assert.ok(
+    ricompone.indexOf("fasciaDaRitirarePerDatiMobili(") >= 0 &&
+      ricompone.indexOf("fasciaDaRitirarePerDatiMobili(") < ricompone.indexOf("chiaveSecondoIDatiMobili("),
+    "guastoAdesso sceglie la frase di «Solo Wi-Fi» anche con «Sì»",
+  );
+  assert.match(
+    leggi("App.tsx"),
+    /if \(fasciaDaRitirarePerDatiMobili\(guasto\?\.codice, datiMobili\)\) chiudiErrore\(\);/,
+  );
+});

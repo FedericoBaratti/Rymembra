@@ -5,6 +5,7 @@ use super::*;
 
 use std::path::Path;
 
+use crate::insieme::VociCreate;
 use rymembra_app::library::TrackSummary;
 use rymembra_app::playback::{Collocazione, SchedaSorgente};
 
@@ -390,7 +391,7 @@ fn solo_le_voci_di_questo_pc_si_mandano() {
 #[test]
 fn le_maniglie_non_entrano_in_una_coda_che_non_e_di_sessione() {
     let righe = vec![10, 11];
-    let voci = Some(vec![-1, -2]);
+    let voci = Some(VociCreate::allineate(vec![Some(-1), Some(-2)]));
     assert_eq!(
         brani_da_mettere(false, righe.clone(), voci.clone()),
         (vec![10, 11], vec![-1, -2])
@@ -403,44 +404,85 @@ fn le_maniglie_non_entrano_in_una_coda_che_non_e_di_sessione() {
         brani_da_mettere(false, righe.clone(), None),
         (righe, vec![])
     );
+    // Una riga che la libreria non ha più non lascia un buco fra le maniglie.
+    let con_un_buco = Some(VociCreate::allineate(vec![Some(-1), None, Some(-3)]));
+    assert_eq!(
+        brani_da_mettere(true, vec![10, 11, 12], con_un_buco),
+        (vec![-1, -3], vec![])
+    );
 }
 
-/// `suona` di chi ospita: l'indice si ricalcola sulla voce del brano
-/// scelto, e un brano che non è diventato una voce non tocca la coda.
+/// `suona` di chi ospita: l'indice si calcola sul **posto** del brano scelto
+/// — la voce che ne è nata —, e un brano che non è diventato una voce non tocca
+/// la coda. Gli id delle righe non entrano nel conto: vedi
+/// `suona_da_una_riga_che_la_strada_ha_sostituito_con_la_copia_di_qui`.
 #[test]
 fn suona_ritrova_il_brano_scelto_fra_le_voci() {
     let ok = |esito: (Partenza, Vec<i64>)| (esito.0.ok(), esito.1);
+    let voci = |al_posto: Vec<Option<i64>>| Some(VociCreate::allineate(al_posto));
     // La riga 11 non c'è più: le voci sono una di meno, e il brano scelto
     // — la riga 12 — è la seconda voce, non la terza.
-    let voci = (vec![-1, -3], vec![Some(10), Some(12)]);
     assert_eq!(
-        ok(lista_da_suonare(true, vec![10, 11, 12], 2, Some(voci))),
+        ok(lista_da_suonare(
+            true,
+            vec![10, 11, 12],
+            2,
+            voci(vec![Some(-1), None, Some(-3)])
+        )),
         (Some((vec![-1, -3], 1)), vec![])
     );
-    // Lo stesso brano due volte: la stessa occorrenza.
-    let voci = (vec![-1, -2, -3], vec![Some(10), Some(11), Some(10)]);
+    // Lo stesso brano due volte: la stessa occorrenza, perché i posti sono due.
     assert_eq!(
-        ok(lista_da_suonare(true, vec![10, 11, 10], 2, Some(voci))),
+        ok(lista_da_suonare(
+            true,
+            vec![10, 11, 10],
+            2,
+            voci(vec![Some(-1), Some(-2), Some(-3)])
+        )),
         (Some((vec![-1, -2, -3], 2)), vec![])
+    );
+    assert_eq!(
+        ok(lista_da_suonare(
+            true,
+            vec![10, 11, 10],
+            0,
+            voci(vec![Some(-1), Some(-2), Some(-3)])
+        )),
+        (Some((vec![-1, -2, -3], 0)), vec![])
     );
     // Il brano scelto non è diventato una voce: rifiuto, e le voci create
     // si dimenticano.
-    let voci = (vec![-1], vec![Some(10)]);
-    let (esito, da_dimenticare) = lista_da_suonare(true, vec![10, 11], 1, Some(voci));
+    let (esito, da_dimenticare) =
+        lista_da_suonare(true, vec![10, 11], 1, voci(vec![Some(-1), None]));
     assert_eq!(
         esito.err().map(|e| e.code().kind()),
         Some(rymembra_domain::errors::ErrorCodeKind::LibraryTrackNotFound)
     );
     assert_eq!(da_dimenticare, vec![-1]);
+    // Un posto fuori dalla lista non è un brano scelto.
+    let (esito, da_dimenticare) = lista_da_suonare(true, vec![10], 5, voci(vec![Some(-1)]));
+    assert!(esito.is_err());
+    assert_eq!(da_dimenticare, vec![-1]);
     // Nessuna voce: rifiuto, non una coda vuota.
-    let (esito, _) = lista_da_suonare(true, vec![10], 0, Some((vec![], vec![])));
+    let (esito, _) = lista_da_suonare(true, vec![10], 0, voci(vec![]));
+    assert!(esito.is_err());
+    let (esito, _) = lista_da_suonare(true, vec![10], 0, voci(vec![None]));
     assert!(esito.is_err());
     // Il lettore non ospita (la gara d'ingresso): le righe, e l'indice
     // chiesto.
-    let voci = (vec![-1], vec![Some(10)]);
     assert_eq!(
-        ok(lista_da_suonare(false, vec![10, 11], 1, Some(voci))),
+        ok(lista_da_suonare(
+            false,
+            vec![10, 11],
+            1,
+            voci(vec![Some(-1), None])
+        )),
         (Some((vec![10, 11], 1)), vec![-1])
+    );
+    // Senza sessione non c'è nessuna voce, e non cambia niente.
+    assert_eq!(
+        ok(lista_da_suonare(false, vec![10, 11], 1, None)),
+        (Some((vec![10, 11], 1)), vec![])
     );
 }
 
@@ -781,4 +823,87 @@ fn ospitare_con_un_rappresentante_remoto_usa_la_copia_di_qui() {
         "il rappresentante remoto non è stato sostituito dalla copia di qui"
     );
     assert_eq!(di_qui.len(), 1, "le righe di qui restano com'erano");
+}
+
+/// S11-7, il caso che la correzione doveva sistemare davvero: B ospita e parte da
+/// una riga di A (10) che ha anche una copia di qui (11). La strada sostituisce la
+/// riga scelta con la copia, quindi la voce **apre** 11 mentre il brano scelto è 10:
+/// la partenza non deve rifiutarsi con `library.trackNotFound`.
+///
+/// La prova di prima dava a «la riga dietro ogni voce» gli stessi id delle righe
+/// chieste, e passava per quel solo motivo: qui le voci le crea la strada vera
+/// (`righe_da_aprire` sul database, `registra_le_voci` nel registro), e l'indice
+/// di partenza esce dal posto, non da un confronto di id.
+#[test]
+fn suona_da_una_riga_che_la_strada_ha_sostituito_con_la_copia_di_qui() {
+    use super::brani::{registra_le_voci, righe_da_aprire};
+    let libreria = libreria_con_righe_di_un_altro_dispositivo();
+    // La riga scelta è 10, di A; la copia di qui è 11. Una riga di qui (1) prima o
+    // dopo, e la stessa riga di A due volte.
+    for (chieste, scelta, atteso_da) in [
+        (vec![10, 1], 0, 0),
+        (vec![1, 10], 1, 1),
+        (vec![10, 1, 10], 2, 2),
+        (vec![10, 1, 10], 0, 0),
+    ] {
+        let da_aprire = righe_da_aprire(&libreria, &chieste).expect("la copia di qui c'è");
+        let aperte: Vec<Option<i64>> = da_aprire
+            .iter()
+            .map(|voce| voce.as_ref().map(|(riga, _)| *riga))
+            .collect();
+        assert!(
+            aperte.contains(&Some(11)) && !aperte.contains(&Some(10)),
+            "{chieste:?}: la voce non apre la copia di qui al posto della riga di A: {aperte:?}"
+        );
+        let mut registro = ospiti::Registro::default();
+        let voci = VociCreate::allineate(registra_le_voci(&mut registro, da_aprire));
+        let maniglie = voci.maniglie();
+        let (esito, da_dimenticare) = lista_da_suonare(true, chieste.clone(), scelta, Some(voci));
+        assert_eq!(
+            esito.ok(),
+            Some((maniglie.clone(), atteso_da)),
+            "{chieste:?} da {scelta}: il brano scelto non è ritrovato fra le voci"
+        );
+        assert!(da_dimenticare.is_empty());
+        // E la voce a quel posto apre davvero la copia di qui, se la scelta era A.
+        let apre = maniglie
+            .get(atteso_da)
+            .and_then(|maniglia| registro.voce(*maniglia))
+            .and_then(|voce| voce.apertura_di_libreria());
+        let riga_chiesta = chieste.get(scelta).copied().unwrap_or_default();
+        assert_eq!(
+            apre,
+            Some(if riga_chiesta == 10 { 11 } else { riga_chiesta })
+        );
+    }
+    // Una riga solo di A, senza copia di qui, resta rifiutata prima ancora di creare
+    // una voce: la frase giusta è `insieme.braniAltrui`, non «brano non trovato».
+    let errore = righe_da_aprire(&libreria, &[3, 1]).expect_err("una riga lontana senza copia");
+    assert_eq!(
+        errore.code().kind(),
+        rymembra_domain::errors::ErrorCodeKind::InsiemeBraniAltrui
+    );
+}
+
+/// L'indice di un «suona» è il posto che la strada dice: non dipende dagli id,
+/// quindi non dalla mappatura che la strada fa di loro (la prova che c'era prima
+/// ne indovinava una).
+#[test]
+fn il_posto_fra_le_maniglie_non_guarda_gli_id() {
+    let voci = VociCreate::allineate(vec![None, Some(-7), None, Some(-8), Some(-9)]);
+    assert_eq!(voci.maniglie(), vec![-7, -8, -9]);
+    assert_eq!(
+        voci.posto_fra_le_maniglie(0),
+        None,
+        "la riga non è diventata una voce"
+    );
+    assert_eq!(voci.posto_fra_le_maniglie(1), Some(0));
+    assert_eq!(voci.posto_fra_le_maniglie(2), None);
+    assert_eq!(voci.posto_fra_le_maniglie(3), Some(1));
+    assert_eq!(voci.posto_fra_le_maniglie(4), Some(2));
+    assert_eq!(voci.posto_fra_le_maniglie(5), None, "fuori dalla lista");
+    assert_eq!(
+        VociCreate::allineate(Vec::new()).posto_fra_le_maniglie(0),
+        None
+    );
 }

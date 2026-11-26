@@ -209,15 +209,55 @@ pub const fn ambito(gesto: &Gesto) -> Option<Ambito> {
     }
 }
 
+/// Le voci che la sessione ha creato per un gesto, **una per ogni brano chiesto,
+/// al posto di quel brano**: al posto `k` c'è la maniglia della voce nata dal
+/// brano `k` della lista d'ingresso, o `None` se la libreria non lo ha più.
+///
+/// # Perché per posto e non per id
+///
+/// Perché la voce non apre sempre la riga che era stata chiesta: una riga di un
+/// altro dispositivo che ha una copia di qui entra con **la copia**
+/// (`voci_allineate`, S11-7). Chi sa da quale posto viene ogni voce è chi la crea;
+/// chi dopo cerca «la voce del brano scelto» confrontando gli id deve indovinare
+/// la mappatura, e si rompe al prossimo cambio. Così l'indice di partenza di un
+/// «suona» si calcola contando i posti, e la stessa occorrenza di un brano che
+/// sta in lista due volte viene da sé.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VociCreate(Vec<Option<i64>>);
+
+impl VociCreate {
+    /// Le voci allineate agli id chiesti: `None` dove la riga non c'è.
+    #[must_use]
+    pub const fn allineate(al_posto: Vec<Option<i64>>) -> Self {
+        Self(al_posto)
+    }
+
+    /// Le maniglie, nell'ordine in cui entrano in coda.
+    #[must_use]
+    pub fn maniglie(&self) -> Vec<i64> {
+        self.0.iter().flatten().copied().collect()
+    }
+
+    /// Dove sta, fra le [maniglie](Self::maniglie), la voce nata dal brano che
+    /// stava al `posto` della lista chiesta. `None` se quel brano non è
+    /// diventato una voce, o se il posto è fuori dalla lista.
+    #[must_use]
+    pub fn posto_fra_le_maniglie(&self, posto: usize) -> Option<usize> {
+        self.0.get(posto)?.as_ref()?;
+        Some(self.0.get(..posto)?.iter().flatten().count())
+    }
+}
+
 /// Com'è andata la strada, per il comando che l'ha chiesta.
 #[derive(Debug)]
 pub enum Instradato {
     /// Il comando prosegue qui, come sempre.
     Locale,
-    /// Il comando prosegue qui con questi id al posto di quelli che aveva:
-    /// le maniglie (negative) delle voci di sessione appena create. Solo chi
-    /// ospita, per [`Regola::LocaleConVoci`].
-    ConVoci(Vec<i64>),
+    /// Il comando prosegue qui con queste voci al posto degli id che aveva:
+    /// le maniglie (negative) delle voci di sessione appena create, ciascuna
+    /// al posto del brano da cui è nata. Solo chi ospita, per
+    /// [`Regola::LocaleConVoci`].
+    ConVoci(VociCreate),
     /// Il gesto è stato mandato all'host: il comando torna `Ok(())` senza fare
     /// altro. Quel che cambia arriva con il prossimo stato della sessione.
     Inoltrato,
