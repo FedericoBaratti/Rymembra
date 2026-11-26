@@ -10,8 +10,9 @@ use rymembra_app::playback::{Collocazione, SchedaSorgente};
 use rymembra_domain::errors::{AppError, ErrorCode};
 use rymembra_insieme::messaggi::MASSIMO_VOCI;
 
+use crate::insieme::VociCreate;
 use crate::nota;
-use crate::riproduzione::ospiti::{self, Apertura, SchedaVoce, Voce};
+use crate::riproduzione::ospiti::{self, Apertura, Registro, SchedaVoce, Voce};
 use crate::stato::con_libreria;
 
 /// Un brano di **questo** PC, con quel che serve per mandarlo in rete come
@@ -75,7 +76,8 @@ pub struct FileDellaVoce {
 }
 
 /// I brani di libreria di questo PC diventano voci di sessione: restituisce le
-/// loro maniglie, nell'ordine. È la strada di `Instradato::ConVoci`.
+/// voci create, ciascuna al posto del brano da cui è nata. È la strada di
+/// `Instradato::ConVoci`.
 ///
 /// Al più [`MASSIMO_VOCI`]: oltre, la sessione non le potrebbe mandare.
 /// Quelli che la libreria non ha più si saltano.
@@ -84,61 +86,92 @@ pub struct FileDellaVoce {
 ///
 /// Quelli della libreria; `insieme.braniAltrui` se una riga è di un altro
 /// dispositivo e non ha una copia di qui — vedi [`le_righe_di_qui`].
-pub fn voci_da_libreria(app: &Nucleo, ids: &[i64]) -> Result<Vec<i64>, AppError> {
-    Ok(voci_allineate(app, ids)?.into_iter().flatten().collect())
+pub fn voci_da_libreria(app: &Nucleo, ids: &[i64]) -> Result<VociCreate, AppError> {
+    Ok(VociCreate::allineate(voci_allineate(app, ids)?))
 }
 
 /// Come [`voci_da_libreria`], ma allineate agli id chiesti: `None` dove la
 /// riga non c'è. Serve a chi deve ritrovare la voce di un posto preciso — il
-/// brano corrente, entrando.
+/// brano corrente, entrando; il brano da cui parte un «suona».
 ///
 /// Una riga di un altro dispositivo che ha una copia di qui entra con **la
 /// copia di qui**: è un file di questo PC, e la sessione lo offre e lo conta
-/// come qualunque altro (`da_contare` è la riga della copia).
+/// come qualunque altro (`da_contare` è la riga della copia). Per questo chi
+/// cerca la voce di un brano non può confrontare gli id: la voce apre una riga
+/// diversa da quella chiesta, e il posto è l'unico dato che non cambia.
 pub(super) fn voci_allineate(app: &Nucleo, ids: &[i64]) -> Result<Vec<Option<i64>>, AppError> {
     let ids = ids.get(..ids.len().min(MASSIMO_VOCI)).unwrap_or_default();
+    // Prima la libreria, poi il registro, mai insieme: il registro è un
+    // lucchetto foglia e il database non si aspetta con quello in mano.
+    let da_aprire = if ids.iter().any(|id| ospiti::e_di_libreria(*id)) {
+        let stato = super::libreria_di(app, "voci di sessione")?;
+        con_libreria(&stato, |libreria| {
+            righe_da_aprire(&libreria.connection, ids)
+        })?
+    } else {
+        vec![None; ids.len()]
+    };
+    ospiti::con_registro(app, |registro| registra_le_voci(registro, da_aprire)).ok_or_else(|| {
+        AppError::new(ErrorCode::InternalAborted {
+            what: Some("voci di sessione".to_owned()),
+        })
+    })
+}
+
+/// Per ogni id chiesto, al suo posto: la riga che la voce aprirà e la sua
+/// scheda, o `None` se la riga non c'è (più) o l'id non è una riga della libreria.
+///
+/// La riga che si apre davvero è quella di qui, se la riga chiesta era di un
+/// altro dispositivo: vedi [`voci_allineate`].
+///
+/// # Errori
+///
+/// Quelli della libreria; `insieme.braniAltrui`, vedi [`le_righe_di_qui`].
+pub(super) fn righe_da_aprire(
+    connection: &rusqlite::Connection,
+    ids: &[i64],
+) -> Result<Vec<Option<(i64, SchedaVoce)>>, AppError> {
     let righe: Vec<i64> = ids
         .iter()
         .copied()
         .filter(|id| ospiti::e_di_libreria(*id))
         .collect();
-    let (di_qui, schede) = if righe.is_empty() {
-        (HashMap::new(), HashMap::new())
-    } else {
-        let stato = super::libreria_di(app, "voci di sessione")?;
-        con_libreria(&stato, |libreria| {
-            let di_qui = le_righe_di_qui(&libreria.connection, &righe)?;
-            let effettive: Vec<i64> = righe
-                .iter()
-                .map(|id| di_qui.get(id).copied().unwrap_or(*id))
-                .collect();
-            let schede = leggi_schede(&libreria.connection, &effettive)?;
-            Ok((di_qui, schede))
-        })?
-    };
-    ospiti::con_registro(app, |registro| {
-        ids.iter()
-            .map(|id| {
-                // La riga che si apre davvero: quella di qui, se la riga in
-                // coda era di un altro dispositivo.
-                let riga = di_qui.get(id).copied().unwrap_or(*id);
-                let scheda = schede.get(&riga)?.clone();
-                let uid = registro.nuovo_uid();
-                Some(registro.registra(Voce {
-                    uid,
-                    proprietario: None,
-                    scheda,
-                    apertura: Apertura::Libreria { track_id: riga },
-                    da_contare: Some(riga),
-                }))
-            })
-            .collect()
-    })
-    .ok_or_else(|| {
-        AppError::new(ErrorCode::InternalAborted {
-            what: Some("voci di sessione".to_owned()),
+    let di_qui = le_righe_di_qui(connection, &righe)?;
+    let effettive: Vec<i64> = righe
+        .iter()
+        .map(|id| di_qui.get(id).copied().unwrap_or(*id))
+        .collect();
+    let schede = leggi_schede(connection, &effettive)?;
+    Ok(ids
+        .iter()
+        .map(|id| {
+            let riga = di_qui.get(id).copied().unwrap_or(*id);
+            let scheda = schede.get(&riga)?.clone();
+            Some((riga, scheda))
         })
-    })
+        .collect())
+}
+
+/// Le voci di sessione per le righe da aprire, nell'ordine e al posto di ciascuna:
+/// la maniglia, o `None` dove non c'era niente da aprire.
+pub(super) fn registra_le_voci(
+    registro: &mut Registro,
+    da_aprire: Vec<Option<(i64, SchedaVoce)>>,
+) -> Vec<Option<i64>> {
+    da_aprire
+        .into_iter()
+        .map(|riga| {
+            let (riga, scheda) = riga?;
+            let uid = registro.nuovo_uid();
+            Some(registro.registra(Voce {
+                uid,
+                proprietario: None,
+                scheda,
+                apertura: Apertura::Libreria { track_id: riga },
+                da_contare: Some(riga),
+            }))
+        })
+        .collect()
 }
 
 /// Le righe della libreria unica (`lontano://…`) fra `righe`, ognuna con la sua

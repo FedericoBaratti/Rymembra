@@ -88,7 +88,7 @@ pub(super) use regole::{corrente_da_mostrare, cursore_sulla_voce, dimentica_voci
 pub(super) use regole::{dissolvenza_ms, dopo_un_avvio, dopo_una_pausa, e_la_calibrazione};
 pub(super) use regole::{entrano, finestra_di_sessione, in_calibrazione, latenza_cambiata};
 pub(super) use regole::{lista_da_suonare, motore_sostituito, ospita, parti};
-pub(super) use regole::{posizione_da_mostrare, righe_delle_voci, riprendi, salta, segue};
+pub(super) use regole::{posizione_da_mostrare, riprendi, salta, segue};
 
 /// L'`uid` riservato alla voce di calibrazione: clic identici, generati uguali
 /// su ogni PC, nessun byte in rete. Non sta mai in coda.

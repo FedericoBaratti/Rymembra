@@ -64,7 +64,7 @@ pub use ipc::{
     AssociazioneIpc, AvvisoIpc, FaseIpc, FidatoIpc, InsiemeNelLettore, InvitoIpc, PersonaIpc,
     ProprietarioIpc, RichiestaIpc, SessioneIpc, SincroniaIpc, StatoInsiemeIpc, VicinoIpc,
 };
-pub use strada::{Gesto, Instradato, Regola, Ruolo};
+pub use strada::{Gesto, Instradato, Regola, Ruolo, VociCreate};
 
 /// Quanto un comando aspetta il filo della sessione.
 ///
@@ -273,7 +273,7 @@ pub fn instrada(app: &Nucleo, gesto: &Gesto) -> Instradato {
                 _ => &[],
             };
             match crate::riproduzione::insieme::voci_da_libreria(app, ids) {
-                Ok(maniglie) => Instradato::ConVoci(maniglie),
+                Ok(voci) => Instradato::ConVoci(voci),
                 Err(err) => Instradato::Rifiutato(err),
             }
         }

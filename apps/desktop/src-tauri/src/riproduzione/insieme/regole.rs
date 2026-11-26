@@ -7,6 +7,7 @@ use rymembra_domain::queue::{Queue, QueueSnapshot};
 use rymembra_insieme::messaggi::MASSIMO_VOCI;
 use rymembra_play::tempo;
 
+use crate::insieme::VociCreate;
 use crate::nota;
 use crate::riproduzione::Lettore;
 use crate::riproduzione::ospiti::{self, MANIGLIA_CALIBRAZIONE};
@@ -258,12 +259,12 @@ fn avvisa_coda_piena(app: &Nucleo, fuori: usize) {
 pub(crate) fn brani_da_mettere(
     ospita: bool,
     righe: Vec<i64>,
-    voci: Option<Vec<i64>>,
+    voci: Option<VociCreate>,
 ) -> (Vec<i64>, Vec<i64>) {
     match voci {
         None => (righe, Vec::new()),
-        Some(maniglie) if ospita => (maniglie, Vec::new()),
-        Some(maniglie) => (righe, maniglie),
+        Some(voci) if ospita => (voci.maniglie(), Vec::new()),
+        Some(voci) => (righe, voci.maniglie()),
     }
 }
 
@@ -273,78 +274,39 @@ pub(crate) fn brani_da_mettere(
 /// # L'indice
 ///
 /// Le voci non sono per forza tante quante le righe: [`voci_da_libreria`](super::voci_da_libreria)
-/// salta quelle che la libreria non ha più. L'indice si ricalcola quindi sulla
-/// voce del brano scelto — la stessa occorrenza, se il brano è in lista due
-/// volte — e se quella manca, o se non c'è nessuna voce, il gesto si rifiuta
-/// con `library.trackNotFound` **senza toccare** la coda di tutti: suonare un
-/// altro brano, o svuotare la coda, sarebbe un gesto che nessuno ha fatto.
-///
-/// `righe_delle_voci` è la riga dietro ogni maniglia, dal registro.
+/// salta quelle che la libreria non ha più. L'indice si ricalcola quindi sul
+/// **posto** del brano scelto, che chi ha creato le voci dice da sé
+/// ([`VociCreate`]): non si confrontano gli id, perché una riga di un altro
+/// dispositivo entra con la sua copia di qui e la voce apre un id diverso da
+/// quello scelto (S11-7). Lo stesso brano due volte in lista tiene la propria
+/// occorrenza, perché i posti sono due. Se il brano scelto non è diventato una
+/// voce, o non c'è nessuna voce, il gesto si rifiuta con `library.trackNotFound`
+/// **senza toccare** la coda di tutti: suonare un altro brano, o svuotare la
+/// coda, sarebbe un gesto che nessuno ha fatto.
 pub(crate) fn lista_da_suonare(
     ospita: bool,
     righe: Vec<i64>,
     indice: usize,
-    voci: Option<VociDaSuonare>,
+    voci: Option<VociCreate>,
 ) -> (Partenza, Vec<i64>) {
     match voci {
         None => (Ok((righe, indice)), Vec::new()),
-        Some((maniglie, _)) if !ospita => (Ok((righe, indice)), maniglie),
-        Some((maniglie, righe_delle_voci)) => {
-            match indice_fra_le_voci(&righe, indice, &righe_delle_voci) {
-                Some(da) => (Ok((maniglie, da)), Vec::new()),
-                None => (
-                    Err(AppError::new(ErrorCode::LibraryTrackNotFound {
-                        track_id: righe.get(indice).copied(),
-                    })
-                    .with_cause("il brano scelto non è diventato una voce della sessione")),
-                    maniglie,
-                ),
-            }
-        }
+        Some(voci) if !ospita => (Ok((righe, indice)), voci.maniglie()),
+        Some(voci) => match voci.posto_fra_le_maniglie(indice) {
+            Some(da) => (Ok((voci.maniglie(), da)), Vec::new()),
+            None => (
+                Err(AppError::new(ErrorCode::LibraryTrackNotFound {
+                    track_id: righe.get(indice).copied(),
+                })
+                .with_cause("il brano scelto non è diventato una voce della sessione")),
+                voci.maniglie(),
+            ),
+        },
     }
 }
 
-/// Le maniglie di un «suona» e, per ciascuna, la riga che apre.
-pub(super) type VociDaSuonare = (Vec<i64>, Vec<Option<i64>>);
-
 /// La lista da suonare e il punto da cui partire, o il rifiuto.
 pub(super) type Partenza = Result<(Vec<i64>, usize), AppError>;
-
-/// Dove sta, fra le voci, il brano che stava a `indice` fra le righe: la
-/// stessa occorrenza della stessa riga. `None` se non è diventato una voce.
-fn indice_fra_le_voci(
-    righe: &[i64],
-    indice: usize,
-    righe_delle_voci: &[Option<i64>],
-) -> Option<usize> {
-    let scelta = *righe.get(indice)?;
-    let occorrenza = righe
-        .get(..=indice)?
-        .iter()
-        .filter(|riga| **riga == scelta)
-        .count();
-    righe_delle_voci
-        .iter()
-        .enumerate()
-        .filter(|(_, riga)| **riga == Some(scelta))
-        .nth(occorrenza.checked_sub(1)?)
-        .map(|(posto, _)| posto)
-}
-
-/// La riga dietro ogni maniglia, dal registro: vedi [`lista_da_suonare`].
-pub(crate) fn righe_delle_voci(app: &Nucleo, maniglie: &[i64]) -> Vec<Option<i64>> {
-    ospiti::con_registro(app, |registro| {
-        maniglie
-            .iter()
-            .map(|maniglia| {
-                registro
-                    .voce(*maniglia)
-                    .and_then(|voce| voce.apertura_di_libreria())
-            })
-            .collect()
-    })
-    .unwrap_or_default()
-}
 
 /// Toglie dal registro voci che nessuna coda nominerà. Il registro è un
 /// lucchetto foglia: si può chiamare col lettore in mano.

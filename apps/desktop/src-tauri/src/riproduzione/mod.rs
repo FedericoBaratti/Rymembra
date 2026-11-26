@@ -123,7 +123,7 @@ use crate::errore::{Esito, errore};
 use crate::nota;
 use crate::stato::{Stato, adesso_ms, con_libreria, con_libreria_entro};
 
-use crate::insieme::{Gesto, Instradato};
+use crate::insieme::{Gesto, Instradato, VociCreate};
 
 use self::coda::{gesto_di_coda, ricorda_coda_di_prima, salva_coda};
 use self::fili::prepara_prossimo;
@@ -3415,8 +3415,9 @@ pub async fn formato_visibile_scegli(app: Nucleo, acceso: bool) -> Esito<bool> {
 pub(super) enum Strada {
     /// Si prosegue come sempre.
     Prosegui,
-    /// Si prosegue con queste maniglie al posto dei brani chiesti.
-    ConVoci(Vec<i64>),
+    /// Si prosegue con queste voci al posto dei brani chiesti, ciascuna al
+    /// posto del brano da cui è nata.
+    ConVoci(VociCreate),
     /// Il gesto l'ha preso l'host: il comando torna `Ok(())` senza fare
     /// altro, e quel che cambia arriva col prossimo stato della sessione.
     Fatto,
@@ -3443,17 +3444,17 @@ pub(super) enum Strada {
 pub(super) fn strada(app: &Nucleo, gesto: &Gesto) -> Result<Strada, AppError> {
     match crate::insieme::instrada(app, gesto) {
         Instradato::Locale => Ok(Strada::Prosegui),
-        Instradato::ConVoci(maniglie) => Ok(Strada::ConVoci(maniglie)),
+        Instradato::ConVoci(voci) => Ok(Strada::ConVoci(voci)),
         Instradato::Inoltrato => Ok(Strada::Fatto),
         Instradato::Rifiutato(err) => Err(err),
     }
 }
 
 /// [`strada`] per un gesto che porta dei brani: `None` se il gesto è già
-/// stato fatto altrove; altrimenti le maniglie delle voci che la sessione ha
-/// appena creato, se ne ha create.
+/// stato fatto altrove; altrimenti le voci che la sessione ha appena creato,
+/// se ne ha create, ciascuna al posto del brano da cui è nata.
 ///
-/// Le maniglie non si usano qui: se entrano in coda lo decide il corpo del
+/// Le voci non si usano qui: se entrano in coda lo decide il corpo del
 /// comando, sotto il lucchetto del lettore, guardando se il lettore ospita
 /// davvero. Vedi `insieme::brani_da_mettere`.
 ///
@@ -3463,10 +3464,10 @@ pub(super) fn strada(app: &Nucleo, gesto: &Gesto) -> Result<Strada, AppError> {
 pub(super) fn voci_dalla_strada(
     app: &Nucleo,
     gesto: &Gesto,
-) -> Result<Option<Option<Vec<i64>>>, AppError> {
+) -> Result<Option<Option<VociCreate>>, AppError> {
     Ok(match strada(app, gesto)? {
         Strada::Prosegui => Some(None),
-        Strada::ConVoci(maniglie) => Some(Some(maniglie)),
+        Strada::ConVoci(voci) => Some(Some(voci)),
         Strada::Fatto => None,
     })
 }
@@ -3608,12 +3609,6 @@ pub fn suona_ora(app: Nucleo, stato: StatoLettore, brani: Vec<i64>, indice: usiz
     let Some(voci) = voci_dalla_strada(&app, &gesto).map_err(errore)? else {
         return Ok(());
     };
-    // La riga dietro ogni voce, per ritrovare il brano scelto fra le voci: dal
-    // registro, prima del lettore.
-    let voci = voci.map(|maniglie| {
-        let righe = insieme::righe_delle_voci(&app, &maniglie);
-        (maniglie, righe)
-    });
     gesto_di_coda(&app, &stato, |lettore| {
         // Voci o righe lo decide il lettore, e un brano scelto che non è
         // diventato una voce non tocca la coda di tutti: vedi
