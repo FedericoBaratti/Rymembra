@@ -4605,9 +4605,11 @@ pub fn prossimo_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
         chiudi_ascolto(&app, lettore);
         match lettore.coda.advance(true) {
             Step::Track(_) => Ok(true),
+            // Il salto a zero è accodato al motore: lo stato dice dove il brano
+            // sarà, non la posizione di prima (vedi `manda_stato_con_posizione`).
             Step::Restart => {
                 insieme::salta(lettore, 0);
-                manda_stato(&app, lettore);
+                manda_stato_con_posizione(&app, lettore, 0);
                 Ok(false)
             }
             Step::Stop => {
@@ -4639,9 +4641,12 @@ pub fn precedente_ora(app: Nucleo, stato: StatoLettore) -> Esito<()> {
                 Ok(true)
             }
             // Ricominciare lo stesso brano non chiude l'ascolto: è ancora quello.
+            // E lo stato dice da zero: il salto è accodato al motore, e la
+            // posizione che si leggerebbe adesso è ancora quella di prima, che
+            // Android teneva (notifica, auto, cuffie) finché non cambiava brano.
             Step::Restart => {
                 insieme::salta(lettore, 0);
-                manda_stato(&app, lettore);
+                manda_stato_con_posizione(&app, lettore, 0);
                 Ok(false)
             }
             Step::Stop => Ok(false),
