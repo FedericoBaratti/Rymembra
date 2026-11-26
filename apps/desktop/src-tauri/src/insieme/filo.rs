@@ -1476,21 +1476,21 @@ impl Filo {
         self.locale = false;
         self.proprietari.clear();
         self.uid_dei_membri = 0;
-        {
-            // Le copertine in memoria e quelle su file (le schede del sistema le
-            // aprono da lì: `su_file`) se ne vanno insieme, e sotto lo stesso
-            // lucchetto: chi sta scrivendone una proprio adesso, finita la
-            // scrittura, non trova più il suo gettone e la toglie da sé
-            // (`copertina_su_file`).
-            let mut copertine = self
-                .comune
-                .copertine
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            copertine.svuota();
-            if let Some(cache) = crate::lontano::sfoglia::cartella_copertine(&self.app) {
-                su_file::svuota(&cache);
-            }
+        // Le copertine in memoria se ne vanno sotto il lucchetto, quelle su file
+        // (le schede del sistema le aprono da lì: `su_file`) subito dopo, a
+        // lucchetto lasciato: l'handler di `rymembra-cover` lo prende sul filo
+        // della finestra, e un disco lento non deve tenerlo fermo. Chi sta
+        // scrivendone una proprio adesso, finita la scrittura, non trova più il
+        // suo gettone e la toglie da sé (`copertina_su_file`). Le copertine di
+        // una sessione nuova le mette in memoria questo stesso filo: non
+        // arrivano prima che i file vecchi siano tolti.
+        self.comune
+            .copertine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .svuota();
+        if let Some(cache) = crate::lontano::sfoglia::cartella_copertine(&self.app) {
+            su_file::svuota(&cache);
         }
         // Dopo `esci`, che ha già ridisegnato col campo vecchio: senza questa
         // riga chi è appena uscito vedrebbe ancora i tasti della sessione
