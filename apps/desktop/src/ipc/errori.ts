@@ -136,7 +136,7 @@ export interface Guasto {
    * viene dal nucleo.
    */
   chiave?: string | null;
-  valori?: Record<string, string>;
+  valori?: Record<string, string> | undefined;
 }
 
 /**
