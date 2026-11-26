@@ -601,7 +601,7 @@ fn testo_puro(grezzo: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Presenza {
-    /// Il nome che mostra («PC di Mario», «Nothing Phone 2a»).
+    /// Il nome che mostra («PC di Mario», «Telefono di Anna»).
     pub nome: String,
     /// `windows`, `android`.
     pub piattaforma: String,

@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 25 November 2026.
+Last updated: 26 November 2026.
 
 **Rymembra has no telemetry and no analytics, sends no crash reports of its
 own, and sends nothing to me.** There is no Rymembra server. There is no account to create. There is
@@ -1103,7 +1103,7 @@ reads the code or receives the link reads that name too. Before asking to
 link, the device that read it shows that name and a short fingerprint of the
 other's key, to compare with the one shown next to the QR code. Anyone who
 reads the code can ask to link, for ten minutes and once; **the device showing
-it asks you to allow it**, naming the other («“Nothing Phone” wants to link»),
+it asks you to allow it**, naming the other («“Anna’s phone” wants to link»),
 and nothing is linked without that yes. Neither showing a code nor opening a
 link turns «Reachable from the internet» on by itself: if it is off, Rymembra
 asks first. When the link is made, the two devices tell each other their

@@ -139,7 +139,7 @@ test("il dispositivo appena collegato è il più recente con quel nome, dentro l
 
 test("il nome si propone per i computer, che hanno quello del sistema; i telefoni hanno già il loro", () => {
   assert.equal(proponiNome(dispositivo("DESKTOP-7K2L9QF")), true);
-  assert.equal(proponiNome(dispositivo("Nothing Phone 2a", { piattaforma: "android" })), false);
+  assert.equal(proponiNome(dispositivo("Telefono di Anna", { piattaforma: "android" })), false);
   assert.equal(proponiNome(dispositivo("STUDIO", { revocato: true })), false);
 });
 

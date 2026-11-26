@@ -8,7 +8,7 @@
 //! # Cosa vale il gettone
 //!
 //! Niente da solo: chi lo presenta deve anche essere accettato da chi mostra
-//! il QR («"Nothing Phone 2a" vuole collegarsi — Consenti/Rifiuta»). Serve a
+//! il QR («"Telefono di Anna" vuole collegarsi — Consenti/Rifiuta»). Serve a
 //! che nessuno possa nemmeno chiedere senza averlo visto: vale dieci minuti e
 //! una volta sola (vedi `nodo`).
 //!

@@ -348,7 +348,7 @@ answer.
 - **Your PC's music on the phone, away from home — and the other way round.**
   *Settings › Devices* has «Reachable from the internet» (off by default) and
   «Link a device»: the PC shows a QR code, the phone scans it from Rymembra
-  (More › Link a device) or with its own camera, the PC asks «“Nothing Phone”
+  (More › Link a device) or with its own camera, the PC asks «“Anna’s phone”
   wants to link» — Refuse first, with the focus — and from then on the two find
   each other on their own, at home or not. Two PCs link with «Copy link» and
   «Paste link». There is no Rymembra server: a new crate, `rymembra-lontano`,
@@ -359,7 +359,7 @@ answer.
     stops being valid — used, refused or past its ten minutes — and «New QR
     code» makes another. While the phone waits for
     the PC's answer, «Stop waiting» cancels it, and the question on the PC
-    disappears with it. The PC says «“Nothing Phone 2a” is linked» too, not
+    disappears with it. The PC says «“Anna’s phone” is linked» too, not
     only the phone.
   - **Finding each other** goes through n0's DNS (pkarr), the BitTorrent
     mainline DHT and, at home, mDNS; the addresses last seen are kept as a

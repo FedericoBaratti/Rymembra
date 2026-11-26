@@ -1049,7 +1049,7 @@ mod prove {
     fn nuovo<'a>(chiave: &'a str, indirizzi: &'a [String]) -> Nuovo<'a> {
         Nuovo {
             chiave,
-            nome: " Nothing\u{202E} Phone 2a ",
+            nome: " Telefono\u{202E} di Anna ",
             piattaforma: "android",
             dispositivo: "d-123",
             chiave_insieme: Some(INSIEME),
@@ -1159,7 +1159,7 @@ mod prove {
         let letto = uno(c, &chiave.to_ascii_uppercase()).unwrap().unwrap();
         assert_eq!(letto.id, id);
         assert_eq!(
-            letto.nome, "Nothing Phone 2a",
+            letto.nome, "Telefono di Anna",
             "ripulito come gli altri nomi"
         );
         assert_eq!(
