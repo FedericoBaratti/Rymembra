@@ -19,6 +19,7 @@ const RELEASE = leggi(".github/workflows/release.yml");
 const VERIFY = leggi(".github/workflows/verify.yml");
 const MSIX = leggi(".github/workflows/msix.yml");
 const SITO = leggi(".github/workflows/sito.yml");
+const PLAY = leggi(".github/workflows/play.yml");
 
 /** I lavori di un workflow: nome → testo, senza i commenti. */
 function lavori(yml) {
@@ -60,7 +61,7 @@ const V = lavori(VERIFY);
 /* ── R20-6: la stessa toolchain dappertutto, e `--locked` anche in locale ── */
 
 test("la toolchain di Rust è la stessa in tutti i workflow, e verify:ci è quella della CI", () => {
-  const versioni = [VERIFY, RELEASE, MSIX].flatMap((yml) => [...yml.matchAll(/RUSTUP_TOOLCHAIN: "([^"]+)"/g)].map((m) => m[1]));
+  const versioni = [VERIFY, RELEASE, MSIX, PLAY].flatMap((yml) => [...yml.matchAll(/RUSTUP_TOOLCHAIN: "([^"]+)"/g)].map((m) => m[1]));
   assert.ok(versioni.length >= 5, versioni.join(" "));
   assert.equal(new Set(versioni).size, 1, `toolchain diverse: ${versioni.join(" ")}`);
   const script = JSON.parse(leggi("apps/desktop/package.json")).scripts;
@@ -192,7 +193,7 @@ test("il sito descrive l'APK della release se c'è, e lo dice se non c'è", () =
 /* ── le azioni ── */
 
 test("ogni azione è inchiodata a un hash", () => {
-  for (const yml of [RELEASE, VERIFY, MSIX, SITO]) {
+  for (const yml of [RELEASE, VERIFY, MSIX, SITO, PLAY]) {
     for (const m of yml.matchAll(/uses: ([^\s]+)/g)) {
       if (m[1].startsWith("./")) continue;
       assert.match(m[1], /@[0-9a-f]{40}$/, m[1]);

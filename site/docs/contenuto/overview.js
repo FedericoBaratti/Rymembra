@@ -253,7 +253,7 @@
               ["`apps/desktop/src/`", "React frontend; `test/` holds its `node --test` suites"],
               ["`strumenti/`", "Repository checks and release tools (Node, no dependencies)"],
               ["`site/`", "The sources of the website — the landing page (one template, `testi/` in four languages) and these docs — built into `_site/` by `strumenti/sito.js` and published by `.github/workflows/sito.yml`"],
-              ["`.github/workflows/`", "`verify.yml`, `release.yml`, `sito.yml`, `msix.yml`"],
+              ["`.github/workflows/`", "`verify.yml`, `release.yml`, `sito.yml`, `msix.yml`, `play.yml`"],
             ],
           },
         },

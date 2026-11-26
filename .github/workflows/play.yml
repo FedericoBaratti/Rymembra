@@ -1,0 +1,292 @@
+# Da un tag a un Android App Bundle (AAB) per il Google Play Store.
+#
+# # Perché non fa parte di `release.yml`
+#
+# Per la stessa ragione di `msix.yml`: la release di GitHub porta l'APK della
+# distribuzione `github`, con l'aggiornatore, e pubblicarla spedisce
+# l'aggiornamento a tutti. Il Play vuole un'altra cosa: la distribuzione `play`
+# (`-Pdistribuzione=play`, vedi `app/build.gradle.kts`: niente aggiornatore,
+# niente `REQUEST_INSTALL_PACKAGES`, niente «Parti con l'auto»), in forma di AAB,
+# caricata a mano in Play Console.
+#
+# Parte a mano, su un tag che esiste già.
+#
+# # La firma
+#
+# Play App Signing: la chiave dell'app la tiene Google, e qui l'AAB si firma
+# con la **chiave di upload**, che non è quella dell'APK di GitHub. Sta nei
+# segreti dell'ambiente `play` (con un revisore): `PLAY_UPLOAD_KEYSTORE_BASE64`,
+# `PLAY_UPLOAD_KEYSTORE_PASSWORD`, `PLAY_UPLOAD_KEY_ALIAS`. Come in
+# `release.yml`, la macchina che compila non vede chiavi: firma un altro lavoro,
+# con `jarsigner`, e il keystore non resta su disco.
+#
+# # Cosa esce
+#
+# Un artefatto `rymembra-play` con l'AAB firmato, e `rymembra-play-mapping` con
+# il `mapping.txt` di R8 da caricare in Play Console (Esplora app bundle ›
+# Download › File di deoffuscamento), per leggere i crash.
+#
+# Le azioni sono inchiodate a un hash come in tutti gli altri workflow.
+
+name: play
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Il tag da costruire per il Play, per esempio v3.3.0"
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: play-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # La stessa di `verify.yml` e `release.yml`.
+  RUSTUP_TOOLCHAIN: "1.97.1"
+  BUILD_TOOLS_VERSIONE: "36.1.0"
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.versione.outputs.tag }}
+
+    steps:
+      # Il tag passa dall'ambiente e non da `${{ }}` dentro `run:`.
+      - name: Quale tag
+        id: scelto
+        shell: bash
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          if ! [[ "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "«$TAG_INPUT» non ha la forma di un tag di versione (v1.2.3)"
+            exit 1
+          fi
+          echo "tag=$TAG_INPUT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.scelto.outputs.tag }}
+          persist-credentials: false
+
+      - name: Il tag coincide con la versione
+        id: versione
+        shell: bash
+        env:
+          TAG: ${{ steps.scelto.outputs.tag }}
+        run: |
+          node strumenti/versione.js
+          trovato=$(node -p "require('./apps/desktop/package.json').version")
+          if [ "$trovato" != "${TAG#v}" ]; then
+            echo "il tag dice ${TAG#v}, i file dicono $trovato"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  # Consultivo come in `msix.yml`: il tag è già uscito, e un avviso arrivato
+  # dopo non si corregge rilanciando lo stesso tag.
+  verifica:
+    needs: tag
+    permissions:
+      contents: read
+    uses: ./.github/workflows/verify.yml
+    with:
+      ref: refs/tags/${{ needs.tag.outputs.tag }}
+      consultivo: true
+
+  aab:
+    needs: [tag, verifica]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      # L'NDK inchiodato, per le pagine da 16 KB: vedi il lavoro `apk` di
+      # `release.yml`.
+      NDK_VERSIONE: "30.0.16248370"
+      # La distribuzione `play`: la CLI di Tauri non inoltra proprietà a Gradle,
+      # che le legge dall'ambiente (`app/build.gradle.kts`).
+      ORG_GRADLE_PROJECT_distribuzione: play
+
+    steps:
+      - name: Gli avvisi sulle dipendenze
+        if: needs.verifica.outputs.avvisi == 'trovati'
+        shell: bash
+        run: |
+          echo "::warning title=Avvisi sulle dipendenze::cargo deny check advisories o npm audit hanno trovato degli avvisi di sicurezza: l'AAB si costruisce lo stesso. Leggili nel lavoro verifica / dipendenze prima di caricarlo su Play."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          persist-credentials: false
+
+      - name: Rust
+        run: |
+          rustup toolchain install ${{ env.RUSTUP_TOOLCHAIN }} --profile minimal
+          rustup target add aarch64-linux-android --toolchain ${{ env.RUSTUP_TOOLCHAIN }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: L'NDK e gli strumenti di Android, inchiodati
+        shell: bash
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "$sdkmanager" --licenses < <(yes) > /dev/null
+          "$sdkmanager" --install "ndk;$NDK_VERSIONE" "build-tools;$BUILD_TOOLS_VERSIONE"
+          ndk="$ANDROID_HOME/ndk/$NDK_VERSIONE"
+          if ! grep -qx "Pkg.Revision = $NDK_VERSIONE" "$ndk/source.properties"; then
+            echo "::error::In $ndk non c'è l'NDK $NDK_VERSIONE."
+            exit 1
+          fi
+          bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo "NDK_HOME=$ndk"
+            echo "ANDROID_NDK_HOME=$ndk"
+            echo "ANDROID_NDK_ROOT=$ndk"
+            echo "JAVA_HOME=$JAVA_HOME_17_X64"
+            echo "LLVM_BIN=$bin"
+            echo "CC_aarch64_linux_android=$bin/aarch64-linux-android26-clang"
+            echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android26-clang++"
+            echo "AR_aarch64_linux_android=$bin/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android26-clang"
+          } >> "$GITHUB_ENV"
+
+      - name: Nessuna chiave sulla macchina che compila
+        shell: bash
+        run: |
+          if [ -e apps/desktop/src-tauri/gen/android/keystore.properties ]; then
+            echo "::error::gen/android/keystore.properties c'è: l'AAB si firma in firma-aab, non qui."
+            exit 1
+          fi
+
+      - name: L'AAB
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npx tauri android build --aab --target aarch64 --ci
+
+      - name: Il lockfile non è cambiato
+        run: git diff --exit-code -- Cargo.lock apps/desktop/package-lock.json
+
+      # Prima della firma: un AAB solo, solo arm64, la `.so` allineata a 16 KB,
+      # e nel manifesto né il permesso di installare app né l'aggiornatore.
+      - name: L'AAB, controllato
+        shell: bash
+        run: |
+          uscite=apps/desktop/src-tauri/gen/android/app/build/outputs
+          mapfile -t aab < <(find "$uscite/bundle" -name '*.aab')
+          if [ "${#aab[@]}" != "1" ]; then
+            echo "atteso un AAB di rilascio, trovati ${#aab[@]}"
+            ls -R "$uscite/bundle" || true
+            exit 1
+          fi
+          mkdir -p uscita-aab mapping-r8 controllo
+          versione=$(node -p "require('./apps/desktop/package.json').version")
+          cp "${aab[0]}" "uscita-aab/Rymembra_${versione}_play.aab"
+          cp "$(find "$uscite/mapping" -name mapping.txt | head -n 1)" mapping-r8/
+          unzip -q "uscita-aab/Rymembra_${versione}_play.aab" -d controllo
+          abi=$(ls controllo/base/lib)
+          if [ "$abi" != "arm64-v8a" ]; then
+            echo "::error::ABI attese: arm64-v8a; trovate: $abi"
+            exit 1
+          fi
+          for so in controllo/base/lib/arm64-v8a/*.so; do
+            if "$LLVM_BIN/llvm-readelf" -lW "$so" | awk '$1=="LOAD" && $NF!="0x4000" && $NF!="0x10000" {m=1} END {exit !m}'; then
+              echo "::error::$(basename "$so") non è allineata a 16 KB"
+              exit 1
+            fi
+          done
+          if grep -aq REQUEST_INSTALL_PACKAGES controllo/base/manifest/AndroidManifest.xml; then
+            echo "::error::il manifesto dell'AAB chiede REQUEST_INSTALL_PACKAGES: non è la distribuzione play"
+            exit 1
+          fi
+          ls -la uscita-aab
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rymembra-play-non-firmato
+          path: uscita-aab/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rymembra-play-mapping
+          path: mapping-r8/
+          if-no-files-found: error
+          retention-days: 90
+
+  firma-aab:
+    needs: [tag, aab]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # L'unico lavoro che vede la chiave di upload. Nessuna compilazione.
+    environment: play
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rymembra-play-non-firmato
+          path: non-firmato/
+
+      # I segreti arrivano dall'ambiente del passo e mai nella riga di comando
+      # (`jarsigner` legge le password con `:env`), il keystore in un file di
+      # `$RUNNER_TEMP` che il passo dopo cancella comunque vada. Niente `set -x`.
+      - name: Firma dell'AAB con la chiave di upload
+        shell: bash
+        env:
+          PLAY_UPLOAD_KEYSTORE_BASE64: ${{ secrets.PLAY_UPLOAD_KEYSTORE_BASE64 }}
+          PLAY_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEYSTORE_PASSWORD }}
+          PLAY_UPLOAD_KEY_ALIAS: ${{ secrets.PLAY_UPLOAD_KEY_ALIAS }}
+        run: |
+          for v in PLAY_UPLOAD_KEYSTORE_BASE64 PLAY_UPLOAD_KEYSTORE_PASSWORD PLAY_UPLOAD_KEY_ALIAS; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Il segreto $v manca fra quelli dell'ambiente play (Settings → Environments → play)."
+              exit 1
+            fi
+          done
+          umask 077
+          ks="$RUNNER_TEMP/upload.jks"
+          if ! printf '%s' "$PLAY_UPLOAD_KEYSTORE_BASE64" | base64 -d > "$ks" 2> /dev/null; then
+            echo "::error::PLAY_UPLOAD_KEYSTORE_BASE64 non è base64: va il file .jks codificato, per intero."
+            exit 1
+          fi
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          mkdir -p uscita
+          for f in non-firmato/*.aab; do
+            "$JAVA_HOME/bin/jarsigner" -keystore "$ks" -storetype PKCS12 \
+              -storepass:env PLAY_UPLOAD_KEYSTORE_PASSWORD -keypass:env PLAY_UPLOAD_KEYSTORE_PASSWORD \
+              -sigalg SHA256withRSA -digestalg SHA-256 \
+              -signedjar "uscita/$(basename "$f")" "$f" "$PLAY_UPLOAD_KEY_ALIAS"
+          done
+          for f in uscita/*.aab; do
+            # Non `-strict`: il certificato di upload è autofirmato, ed è giusto così.
+            if ! "$JAVA_HOME/bin/jarsigner" -verify "$f" | grep -q "jar verified"; then
+              echo "::error::$(basename "$f"): la firma non si verifica"
+              exit 1
+            fi
+            "$JAVA_HOME/bin/keytool" -printcert -jarfile "$f" | grep -E 'SHA256:|Owner:|Proprietario:' || true
+          done
+          ls -la uscita
+
+      - name: La chiave di upload non resta su disco
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rymembra-play
+          path: uscita/
+          if-no-files-found: error
