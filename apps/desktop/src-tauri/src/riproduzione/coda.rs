@@ -25,9 +25,9 @@ use crate::stato::{Stato, adesso_ms, con_libreria};
 
 use super::fili::prepara_prossimo;
 use super::{
-    Lettore, StatoLettore, Strada, avvia_corrente, avvio_fallito, brano_di, chiudi_ascolto,
-    con_lettore, insieme, manda_stato, manda_stato_con_posizione, ospiti, seme, strada,
-    voci_dalla_strada,
+    Lettore, StatoLettore, Strada, Verso, avvia_corrente, avvia_o_salta, avvio_fallito, brano_di,
+    chiudi_ascolto, con_lettore, insieme, manda_stato, manda_stato_con_posizione, ospiti, seme,
+    strada, voci_dalla_strada,
 };
 use crate::insieme::Gesto;
 
@@ -616,6 +616,34 @@ pub(super) fn gesto_di_coda(
     stato: &StatoLettore,
     gesto: impl FnOnce(&mut Lettore) -> Result<bool, AppError>,
 ) -> Result<(), AppError> {
+    gesto_di_coda_con(stato, gesto, |gesti| {
+        avvia_corrente(app, stato, false, 0, gesti)
+    })
+}
+
+/// [`gesto_di_coda`] per «avanti» e «indietro»: se il brano che parte non si apre
+/// per colpa sua e nessuno può rispondere a «Usare i dati mobili?», si passa a
+/// quello oltre nel `verso` invece di fermarsi su di lui. Vedi
+/// [`avvia_o_salta`](super::avvia_o_salta).
+pub(super) fn gesto_di_coda_saltando(
+    app: &Nucleo,
+    stato: &StatoLettore,
+    verso: Verso,
+    gesto: impl FnOnce(&mut Lettore) -> Result<bool, AppError>,
+) -> Result<(), AppError> {
+    gesto_di_coda_con(stato, gesto, |gesti| {
+        avvia_o_salta(app, stato, verso, gesti)
+    })
+}
+
+/// Il gesto sulla coda, e poi la partenza che `avvia` sceglie: la stessa presa
+/// del lettore, e lo stesso numero dei gesti, per tutte le forme di
+/// [`gesto_di_coda`].
+fn gesto_di_coda_con(
+    stato: &StatoLettore,
+    gesto: impl FnOnce(&mut Lettore) -> Result<bool, AppError>,
+    avvia: impl FnOnce(u64) -> Result<(), AppError>,
+) -> Result<(), AppError> {
     // Il numero dei gesti si legge nella stessa presa che decide: una pausa
     // arrivata fra qui e la consegna alza il numero, e il brano parte fermo
     // (S7-1).
@@ -623,7 +651,7 @@ pub(super) fn gesto_di_coda(
         Ok((gesto(lettore)?, lettore.pausa_chiesta.0))
     })?;
     if parte {
-        avvia_corrente(app, stato, false, 0, gesti)?;
+        avvia(gesti)?;
     }
     Ok(())
 }
