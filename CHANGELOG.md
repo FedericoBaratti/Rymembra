@@ -2326,9 +2326,9 @@ release:
   “Next” or “Previous” from outside the app (media keys, tray, notification,
   headset, car) waits for each track it tries: if the next tracks exist only on
   a linked device that does not answer, it can take up to about 80 seconds
-  (four tries of about 20 seconds) before it stops on the fourth, and in the
-  meantime the other keys, and the controls of the people listening together,
-  wait too.
+  (four tries of about 20 seconds) before it stops on the fourth. In the
+  meantime the other keys wait too, except pause, and so do the controls of the
+  people listening together.
 - **Duplicates, sync and history.** A corrected tag can make a track appear
   twice in a playlist, which loses nothing. A declared quality is checked, not
   proved: an MP3 at 192 kbps passed off as a 44.1 kHz FLAC is not caught.
