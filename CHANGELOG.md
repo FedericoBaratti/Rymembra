@@ -2286,13 +2286,16 @@ release:
   not measured.
 - **“Start with the car”** needs Android Auto and is not offered in the Google
   Play build, because Google’s quality rule for media apps in cars (MA-1)
-  forbids starting playback without a user action. It has not been tried with a
-  real car. A loose cable that connects and disconnects makes the music start
-  again each time. Android 17 restricts the audio focus that a background
-  service asks for, and the service that Rymembra brings back by itself after a
-  restart of the phone or an update is a background start: whether Android
-  grants it the audio focus then has not been verified, and if it does not,
-  nothing starts and the log says why.
+  forbids starting playback without a user action. It has been tried with
+  Android Auto’s desktop head unit, not with a real car. A loose cable that
+  connects and disconnects makes the music start again each time. On Android
+  17, after a restart of the phone, Rymembra cannot start the music by itself
+  until you open it once: Android does not give the audio to an app whose
+  service started in the background. The same is expected after an update of
+  the app. Then nothing starts, the log says why, and ▶ in Rymembra on the car’s
+  screen starts the music. Once Rymembra has been opened, it starts with the
+  car again. If Android Auto resumes by itself the last app you used in the car
+  (its own setting) and that app is Rymembra, the music starts anyway.
 - **Covers.** A cover from another device is the 320-pixel version until the
   same file is scanned here. Covers from other devices stop being saved at
   256 MiB: after that, new rows keep no picture until room is made. After you

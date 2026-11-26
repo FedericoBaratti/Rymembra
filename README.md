@@ -1307,9 +1307,10 @@ constraint is stated explicitly in the terms of use.
     apps in cars (MA-1) forbids starting by itself, which is why the Google
     Play build lacks it. If Android does not grant the audio focus — a call, an
     app that will not give it up, or, on Android 17, its restriction on audio
-    asked for from the background — nothing starts; whether that restriction
-    applies to the service Rymembra brings back by itself after a restart or an
-    update has not been verified, and the log says why the focus was refused. The car’s queue has no covers for a «Listen together»
+    asked for from the background — nothing starts, and the log says why the
+    focus was refused. On Android 17 that restriction applies after a restart
+    of the phone until you open Rymembra once (and, by the same mechanism,
+    after an update): ▶ in Rymembra on the car’s screen starts the music. The car’s queue has no covers for a «Listen together»
     voice, which has no row in the library. Only trusted
     controllers browse the music session — Android Auto is recognized by its
     package and Google's certificate; any app can still send a media key
