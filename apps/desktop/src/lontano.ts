@@ -1008,3 +1008,18 @@ export function fasciaDaRitirarePerDatiMobili(
 ): boolean {
   return codice === "lontano.reteAConsumo" && datiMobili === "si";
 }
+
+/**
+ * La chiave del motivo di un brano saltato (`riproduzione:saltato`), con
+ * l'impostazione «Dati mobili» di chi legge: la regola di
+ * [`chiaveSecondoIDatiMobili`]. `null` quando il motivo non vale più: con «Sì» i
+ * dati mobili non fermano niente, e l'avviso dice solo che il brano è stato saltato
+ * ([`fasciaDaRitirarePerDatiMobili`]).
+ */
+export function chiaveDelMotivoDelSalto(
+  codice: string,
+  datiMobili: DatiMobili | null | undefined,
+): string | null {
+  if (fasciaDaRitirarePerDatiMobili(codice, datiMobili)) return null;
+  return chiaveSecondoIDatiMobili(`errors.${codice}`, datiMobili);
+}

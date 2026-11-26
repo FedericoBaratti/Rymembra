@@ -103,7 +103,49 @@ test("S11-4: i punti che dicono l'errore dei dati mobili scelgono la frase per �
   // avviso; `riproduzione:saltato` costruisce la sua frase dal codice, e da lì
   // passano i gesti che la finestra non vede (la notifica, i tasti, l'auto).
   assert.match(leggi("ipc/errori.ts"), /tSe\(chiaveDelTestoErrore\(value\.i18nKey\)/);
-  assert.match(leggi("App.tsx"), /tSe\(chiaveDelTestoErrore\(`errors\.\$\{codice\}`\), ""\)/);
+  // L'avviso del salto passa da `fraseDelSalto`, con l'impostazione di adesso (D-5).
+  assert.match(
+    leggi("App.tsx"),
+    /const testo = fraseDelSalto\(titolo, codice, archivioLontano\.leggi\(\)\?\.datiMobili\);/,
+  );
+});
+
+/**
+ * D-5 della ripresa di AVD-2: l'avviso «saltato» resta qualche secondo, e chi in
+ * quei secondi sceglieva «Solo Wi-Fi» dalle Impostazioni leggeva ancora «premi play
+ * e ti chiederà se usare i dati mobili». La frase si componeva una volta sola, alla
+ * nascita dell'avviso: la correzione di `guastoAdesso` valeva per la fascia d'errore,
+ * non per questa.
+ */
+test("D-5: il motivo del salto si sceglie sull'impostazione di adesso, e con «Sì» non c'è", async () => {
+  const { chiaveDelMotivoDelSalto } = await import("../src/lontano");
+  assert.equal(typeof chiaveDelMotivoDelSalto, "function", "manca chiaveDelMotivoDelSalto");
+  const codice = "lontano.reteAConsumo";
+  assert.equal(chiaveDelMotivoDelSalto(codice, "chiedi"), "errors.lontano.reteAConsumo.chiedi");
+  assert.equal(chiaveDelMotivoDelSalto(codice, "no"), "errors.lontano.reteAConsumo");
+  // Con «Sì» i dati mobili non sono più un motivo: resta il solo brano.
+  assert.equal(chiaveDelMotivoDelSalto(codice, "si"), null);
+  assert.equal(chiaveDelMotivoDelSalto(codice, null), "errors.lontano.reteAConsumo");
+  // Gli altri motivi non dipendono dall'impostazione.
+  assert.equal(chiaveDelMotivoDelSalto("fs.notFound", "si"), "errors.fs.notFound");
+  assert.equal(chiaveDelMotivoDelSalto("fs.notFound", "chiedi"), "errors.fs.notFound");
+});
+
+test("D-5: l'avviso «saltato» ancora in vista rilegge il motivo quando cambia l'impostazione", () => {
+  const errori = leggi("ipc/errori.ts");
+  assert.match(errori, /export function fraseDelSalto\(/);
+  const corpo = errori.slice(errori.indexOf("export function fraseDelSalto("));
+  assert.match(corpo.slice(0, corpo.indexOf("\n}\n")), /chiaveDelMotivoDelSalto\(codice, datiMobili\)/);
+  const app = leggi("App.tsx");
+  // Il salto si ricorda con quel che serve a ricomporne la frase.
+  assert.match(app, /ultimoSalto\.current = \{ titolo, codice, testo \};/);
+  // E un effetto su `datiMobili` la ricompone, solo se l'avviso in vista è ancora quello.
+  const effetto = app.slice(app.indexOf("const salto = ultimoSalto.current;"));
+  assert.ok(effetto.length < app.length, "manca l'effetto che rilegge l'avviso");
+  const corpoEffetto = effetto.slice(0, effetto.indexOf("}, [datiMobili]);"));
+  assert.ok(corpoEffetto.length < effetto.length, "l'effetto dipende da `datiMobili`");
+  assert.match(corpoEffetto, /notizia !== salto\.testo\) return;/);
+  assert.match(corpoEffetto, /fraseDelSalto\(salto\.titolo, salto\.codice, datiMobili\)/);
 });
 
 /**

@@ -71,7 +71,6 @@ import {
   archivioLontano,
   archivioScarico,
   causeDiRilettura,
-  chiaveDelTestoErrore,
   chiediLaFotografiaDelloSpecchio,
   chiedeConfermaPerLoScarico,
   conIlSiDeiDatiMobili,
@@ -138,6 +137,7 @@ import { gestoPermesso, idDiLibreria } from "./insieme";
 import {
   eErroreIpc,
   eRitentabile,
+  fraseDelSalto,
   guastoAdesso,
   guastoDa,
   ipc,
@@ -160,7 +160,7 @@ import {
 } from "./ipc";
 import { conteggiDelFiltro, conteggiDi, creaLibreria, dopoLaLettura } from "./libreria";
 import { nomeDiFile } from "./nomeDiFile";
-import { t, tSe } from "./lingue";
+import { t } from "./lingue";
 import { Trans } from "./lingue/Trans";
 import { Menu, type Apertura } from "./Menu";
 import {
@@ -1434,17 +1434,33 @@ export function App() {
    * silenzio. Il motivo è la frase del catalogo per il codice, che è la stessa
    * della fascia d'errore; un errore di prima, ormai superato, si toglie.
    */
+  const ultimoSalto = useRef<{ titolo: string | null; codice: string; testo: string } | null>(null);
   useAscolto<{ id: number; titolo: string | null; codice: string }>(
     "riproduzione:saltato",
     ({ titolo, codice }) => {
       riproduzione.scartaErrore();
-      const che = titolo
-        ? t("playback.skipped", { titolo })
-        : t("playback.skipped.unknown");
-      const perche = tSe(chiaveDelTestoErrore(`errors.${codice}`), "");
-      setNotizia(perche === "" ? che : `${che} ${perche}`);
+      const testo = fraseDelSalto(titolo, codice, archivioLontano.leggi()?.datiMobili);
+      ultimoSalto.current = { titolo, codice, testo };
+      setNotizia(testo);
     },
   );
+  /*
+   * L'avviso del salto resta in vista qualche secondo. Se in quei secondi cambia
+   * «Dati mobili» — «Solo Wi-Fi» scelto dalle Impostazioni —, il motivo si rilegge
+   * con l'impostazione nuova, come fa la fascia d'errore (`guastoAdesso`): restava
+   * «premi play e ti chiederà» (D-5 della ripresa di AVD-2). Un avviso che nel
+   * frattempo è cambiato, o se n'è andato, non si tocca.
+   */
+  useEffect(() => {
+    const salto = ultimoSalto.current;
+    if (salto === null || notizia !== salto.testo) return;
+    const testo = fraseDelSalto(salto.titolo, salto.codice, datiMobili);
+    if (testo === salto.testo) return;
+    ultimoSalto.current = { ...salto, testo };
+    setNotizia(testo);
+    // Solo al cambio dell'impostazione: `notizia` dice soltanto se l'avviso è ancora quello.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datiMobili]);
 
   /*
    * I brani dell'album aperto.
