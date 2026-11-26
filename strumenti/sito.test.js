@@ -393,3 +393,17 @@ test("con le frasi del telefono nei testi, il sito con l'APK si costruisce in og
     for (const d of [dir, installer, apk]) fs.rmSync(d, { recursive: true, force: true });
   }
 });
+
+// A3 (26/11): il sito non pubblica un indirizzo email. La pagina «Sostieni» aveva il link «Scrivi» con un indirizzo
+// personale; la scelta è toglierlo. Restano «Dona» e «Segnala un problema», che portano a GitHub.
+test("il sito non pubblica un indirizzo email", () => {
+  const pagina = fs.readFileSync(path.join(__dirname, "../site/pagina.html"), "utf8");
+  assert.doesNotMatch(pagina, /mailto:/, "la pagina ha ancora un link mailto:");
+  const generatore = fs.readFileSync(path.join(__dirname, "sito.js"), "utf8");
+  assert.doesNotMatch(generatore, /\$email\b/, "il generatore ha ancora il valore $email");
+  assert.doesNotMatch(generatore, /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/, "un indirizzo email nel generatore");
+  for (const lingua of fs.readdirSync(path.join(__dirname, "../site/testi"))) {
+    const testi = JSON.parse(fs.readFileSync(path.join(__dirname, "../site/testi", lingua), "utf8"));
+    assert.equal(testi.sostieni?.scrivi, undefined, `${lingua}: resta il testo del link «Scrivi»`);
+  }
+});
